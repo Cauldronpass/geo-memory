@@ -293,6 +293,8 @@ function showDetail(p) {
   if (p.rating) html += `<div class="detail-row"><span class="detail-key">Rating</span><span class="detail-val">${'★'.repeat(Math.round(p.rating))} ${p.rating}</span></div>`;
   if (p.notes) html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${p.notes}</span></div>`;
   if (p.tags && p.tags.length) html += `<div class="detail-row"><span class="detail-key">Tags</span><span class="detail-val">${p.tags.join(', ')}</span></div>`;
+  const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&destination_place_id=&travelmode=driving`;
+  html += `<div style="margin-top:14px"><a href="${mapsUrl}" target="_blank" style="display:inline-block;padding:8px 16px;background:#1a1f2e;color:#fff;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;">Directions in Google Maps</a></div>`;
 
   document.getElementById('detail-body').innerHTML = html;
   document.getElementById('detail').classList.add('open');
