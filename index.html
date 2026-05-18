@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Geo Memory</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  /* Header */
+  #header {
+    background: #1a1f2e;
+    color: #fff;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  #header h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+  #count { font-size: 12px; color: #9aa3b8; margin-top: 1px; }
+
+  /* Filter bar */
+  #filters {
+    background: #fff;
+    border-bottom: 1px solid #e8eaf0;
+    padding: 10px 14px;
+    flex-shrink: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .filter-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .filter-row:last-child { margin-bottom: 0; }
+  .filter-label { font-size: 10px; font-weight: 700; color: #9aa3b8; letter-spacing: 0.6px; text-transform: uppercase; margin-right: 4px; white-space: nowrap; }
+
+  .status-btn {
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: 1.5px solid #d0d4df;
+    background: #fff;
+    color: #444;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .status-btn.active { background: #1a1f2e; color: #fff; border-color: #1a1f2e; }
+
+  .cat-chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px 4px 8px;
+    border-radius: 20px;
+    border: 1.5px solid #e0e3ec;
+    background: #fff;
+    font-size: 12px;
+    color: #444;
+    cursor: pointer;
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .cat-chip.off { opacity: 0.35; }
+  .cat-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+  /* Map */
+  #map { flex: 1; z-index: 0; }
+
+  /* Detail panel */
+  #detail {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: #fff;
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -4px 24px rgba(0,0,0,0.15);
+    padding: 16px 18px 28px;
+    transform: translateY(100%);
+    transition: transform 0.25s ease;
+    z-index: 1000;
+    max-height: 55vh;
+    overflow-y: auto;
+  }
+  #detail.open { transform: translateY(0); }
+  #detail-close {
+    position: absolute;
+    top: 12px; right: 14px;
+    background: #f0f2f7;
+    border: none;
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    font-size: 16px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    color: #666;
+  }
+  #detail-name { font-size: 17px; font-weight: 700; color: #1a1f2e; margin-bottom: 4px; padding-right: 36px; }
+  #detail-meta { font-size: 13px; color: #777; margin-bottom: 12px; }
+  .detail-row { display: flex; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+  .detail-key { color: #9aa3b8; width: 80px; flex-shrink: 0; }
+  .detail-val { color: #333; }
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .pill-visited { background: #e8f5e9; color: #2e7d32; }
+  .pill-want { background: #fff3e0; color: #e65100; }
+
+  /* Loading */
+  #loading {
+    position: fixed; inset: 0;
+    background: rgba(255,255,255,0.9);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    z-index: 2000;
+    gap: 12px;
+    font-size: 14px; color: #666;
+  }
+  .spinner {
+    width: 36px; height: 36px;
+    border: 3px solid #e0e3ec;
+    border-top-color: #1a1f2e;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Mobile tweaks */
+  @media (min-width: 600px) {
+    #detail { max-width: 420px; left: auto; right: 20px; bottom: 20px; border-radius: 16px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="header">
+    <div>
+      <div id="header-title">Geo Memory</div>
+      <div id="count">Loading…</div>
+    </div>
+  </div>
+
+  <div id="filters">
+    <div class="filter-row">
+      <span class="filter-label">Status</span>
+      <button class="status-btn active" data-status="all">All</button>
+      <button class="status-btn" data-status="Visited">Visited</button>
+      <button class="status-btn" data-status="Want to Visit">Want to Visit</button>
+    </div>
+    <div class="filter-row" id="cat-row">
+      <span class="filter-label">Category</span>
+    </div>
+  </div>
+
+  <div id="map"></div>
+</div>
+
+<div id="detail">
+  <button id="detail-close">✕</button>
+  <div id="detail-name"></div>
+  <div id="detail-meta"></div>
+  <div id="detail-body"></div>
+</div>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div>Loading places…</div>
+</div>
+
+<script>
+const CATEGORY_COLORS = {
+  'Restaurant': '#e05c3a',
+  'Bar':        '#4a90d9',
+  'Cafe':       '#e8a020',
+  'Hotel':      '#3daa6e',
+  'Shop':       '#e87030',
+  'Attraction': '#2db08e',
+  'Venue':      '#9b59b6',
+  'Other':      '#909090',
+};
+
+let allPlaces = [];
+let markers = [];
+let activeStatus = 'all';
+let activeCategories = new Set(Object.keys(CATEGORY_COLORS));
+let map;
+
+// Init map
+map = L.map('map', { zoomControl: true }).setView([39.5, -95.0], 4);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  maxZoom: 19
+}).addTo(map);
+
+// Load data
+fetch('places.json')
+  .then(r => r.json())
+  .then(data => {
+    allPlaces = data;
+    document.getElementById('loading').style.display = 'none';
+    buildCategoryFilters();
+    buildMarkers();
+    applyFilters();
+  })
+  .catch(err => {
+    document.getElementById('loading').innerHTML =
+      '<div style="color:#c00;text-align:center;padding:20px">Failed to load places.<br><small>' + err.message + '</small></div>';
+  });
+
+function buildCategoryFilters() {
+  const counts = {};
+  for (const p of allPlaces) {
+    counts[p.category] = (counts[p.category] || 0) + 1;
+  }
+  const row = document.getElementById('cat-row');
+  for (const [cat, color] of Object.entries(CATEGORY_COLORS)) {
+    if (!counts[cat]) continue;
+    const chip = document.createElement('button');
+    chip.className = 'cat-chip';
+    chip.dataset.cat = cat;
+    chip.innerHTML = `<span class="cat-dot" style="background:${color}"></span>${cat} <span style="color:#aaa">(${counts[cat] || 0})</span>`;
+    chip.addEventListener('click', () => {
+      if (activeCategories.has(cat)) activeCategories.delete(cat);
+      else activeCategories.add(cat);
+      chip.classList.toggle('off', !activeCategories.has(cat));
+      applyFilters();
+    });
+    row.appendChild(chip);
+  }
+}
+
+function buildMarkers() {
+  for (const p of allPlaces) {
+    if (p.lat == null || p.lng == null) continue;
+    const color = CATEGORY_COLORS[p.category] || '#909090';
+    const visited = p.status === 'Visited';
+    const m = L.circleMarker([p.lat, p.lng], {
+      radius: 7,
+      fillColor: color,
+      color: '#fff',
+      weight: 1.5,
+      fillOpacity: visited ? 0.92 : 0.5,
+      opacity: 1,
+    });
+    m._placeData = p;
+    m.on('click', () => showDetail(p));
+    markers.push({ marker: m, place: p });
+  }
+}
+
+function applyFilters() {
+  let shown = 0;
+  for (const { marker, place } of markers) {
+    const statusOk = activeStatus === 'all' || place.status === activeStatus;
+    const catOk = activeCategories.has(place.category);
+    if (statusOk && catOk) {
+      marker.addTo(map);
+      shown++;
+    } else {
+      marker.remove();
+    }
+  }
+  document.getElementById('count').textContent = shown + ' of ' + allPlaces.filter(p => p.lat != null).length + ' places';
+}
+
+// Status filter
+document.querySelectorAll('.status-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.status-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeStatus = btn.dataset.status;
+    applyFilters();
+  });
+});
+
+// Detail panel
+function showDetail(p) {
+  document.getElementById('detail-name').textContent = p.name;
+  const parts = [p.category, p.city, p.country].filter(Boolean);
+  document.getElementById('detail-meta').textContent = parts.join(' · ');
+
+  let html = '';
+  const statusClass = p.status === 'Visited' ? 'pill-visited' : 'pill-want';
+  html += `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="pill ${statusClass}">${p.status || '—'}</span></span></div>`;
+  if (p.rating) html += `<div class="detail-row"><span class="detail-key">Rating</span><span class="detail-val">${'★'.repeat(Math.round(p.rating))} ${p.rating}</span></div>`;
+  if (p.notes) html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${p.notes}</span></div>`;
+  if (p.tags && p.tags.length) html += `<div class="detail-row"><span class="detail-key">Tags</span><span class="detail-val">${p.tags.join(', ')}</span></div>`;
+
+  document.getElementById('detail-body').innerHTML = html;
+  document.getElementById('detail').classList.add('open');
+}
+
+document.getElementById('detail-close').addEventListener('click', () => {
+  document.getElementById('detail').classList.remove('open');
+});
+
+map.on('click', () => {
+  document.getElementById('detail').classList.remove('open');
+});
+</script>
+</body>
+</html>
