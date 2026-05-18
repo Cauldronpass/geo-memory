@@ -251,7 +251,7 @@ function buildMarkers() {
       opacity: 1,
     });
     m._placeData = p;
-    m.on('click', () => showDetail(p));
+    m.on('click', (e) => { L.DomEvent.stopPropagation(e); showDetail(p); });
     markers.push({ marker: m, place: p });
   }
 }
