@@ -133,6 +133,51 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* Search */
+  #search-row {
+    padding: 8px 14px 2px;
+    background: #fff;
+    border-bottom: 1px solid #e8eaf0;
+    flex-shrink: 0;
+  }
+  #search-input {
+    width: 100%;
+    padding: 7px 12px;
+    border-radius: 20px;
+    border: 1.5px solid #d0d4df;
+    font-size: 13px;
+    outline: none;
+    background: #f5f6fa;
+    color: #222;
+  }
+  #search-input:focus { border-color: #1a1f2e; background: #fff; }
+
+  /* Search results dropdown */
+  #search-results {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    background: #fff;
+    border-radius: 0 0 12px 12px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+    z-index: 500;
+    max-height: 260px;
+    overflow-y: auto;
+    display: none;
+  }
+  .search-result-item {
+    padding: 10px 16px;
+    font-size: 13px;
+    border-bottom: 1px solid #f0f2f7;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .search-result-item:last-child { border-bottom: none; }
+  .search-result-item:hover, .search-result-item:active { background: #f5f6fa; }
+  .sri-name { font-weight: 600; color: #1a1f2e; }
+  .sri-meta { font-size: 11px; color: #9aa3b8; }
+
   /* Mobile tweaks */
   @media (min-width: 600px) {
     #detail { max-width: 420px; left: auto; right: 20px; bottom: 20px; border-radius: 16px; }
@@ -147,6 +192,11 @@
       <div id="count">Loading…</div>
     </div>
   </div>
+
+  <div id="search-row">
+    <input id="search-input" type="search" placeholder="Search places…" autocomplete="off" />
+  </div>
+  <div id="search-results"></div>
 
   <div id="filters">
     <div class="filter-row">
@@ -306,6 +356,53 @@ document.getElementById('detail-close').addEventListener('click', () => {
 
 map.on('click', () => {
   document.getElementById('detail').classList.remove('open');
+});
+
+// Search
+const searchInput = document.getElementById('search-input');
+const searchResults = document.getElementById('search-results');
+
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim().toLowerCase();
+  searchResults.innerHTML = '';
+  if (!q) { searchResults.style.display = 'none'; return; }
+
+  const matches = allPlaces.filter(p =>
+    p.name && p.name.toLowerCase().includes(q)
+  ).slice(0, 8);
+
+  if (!matches.length) { searchResults.style.display = 'none'; return; }
+
+  matches.forEach(p => {
+    const div = document.createElement('div');
+    div.className = 'search-result-item';
+    const meta = [p.category, p.city].filter(Boolean).join(' · ');
+    div.innerHTML = `<span class="sri-name">${p.name}</span><span class="sri-meta">${meta}</span>`;
+    div.addEventListener('click', () => {
+      searchResults.style.display = 'none';
+      searchInput.value = '';
+      searchInput.blur();
+      if (p.lat != null && p.lng != null) {
+        map.setView([p.lat, p.lng], 14, { animate: true });
+      }
+      showDetail(p);
+    });
+    searchResults.appendChild(div);
+  });
+
+  searchResults.style.display = 'block';
+});
+
+searchInput.addEventListener('blur', () => {
+  setTimeout(() => { searchResults.style.display = 'none'; }, 150);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    searchResults.style.display = 'none';
+    searchInput.value = '';
+    searchInput.blur();
+  }
 });
 </script>
 </body>
