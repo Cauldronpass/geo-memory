@@ -344,7 +344,13 @@ function showDetail(p) {
   if (p.notes) html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${p.notes}</span></div>`;
   if (p.tags && p.tags.length) html += `<div class="detail-row"><span class="detail-key">Tags</span><span class="detail-val">${p.tags.join(', ')}</span></div>`;
   const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&destination_place_id=&travelmode=driving`;
-  html += `<div style="margin-top:14px"><a href="${mapsUrl}" target="_blank" style="display:inline-block;padding:8px 16px;background:#1a1f2e;color:#fff;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;">Directions in Google Maps</a></div>`;
+  html += `<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">`;
+  html += `<a href="${mapsUrl}" target="_blank" style="display:inline-block;padding:8px 16px;background:#1a1f2e;color:#fff;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;">Directions</a>`;
+  if (p.notion_id) {
+    const notionUrl = `https://www.notion.so/${p.notion_id}`;
+    html += `<a href="${notionUrl}" target="_blank" style="display:inline-block;padding:8px 16px;background:#f5f6fa;color:#1a1f2e;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;border:1.5px solid #d0d4df;">Open in Notion</a>`;
+  }
+  html += `</div>`;
 
   document.getElementById('detail-body').innerHTML = html;
   document.getElementById('detail').classList.add('open');

@@ -91,17 +91,19 @@ def main():
         if lat is None or lng is None:
             skipped += 1
             continue
+        notion_id = page.get("id", "").replace("-", "")
         places.append({
-            "name":     get_text(props.get("Name", {})),
-            "status":   get_select(props.get("Status")),
-            "category": get_select(props.get("Category")),
-            "city":     get_text(props.get("City", {})),
-            "country":  get_text(props.get("Country", {})),
-            "lat":      lat,
-            "lng":      lng,
-            "rating":   get_number(props.get("Rating Personal")),
-            "notes":    get_text(props.get("Notes Raw", {})),
-            "tags":     get_multi_select(props.get("Tags Raw")),
+            "name":      get_text(props.get("Name", {})),
+            "status":    get_select(props.get("Status")),
+            "category":  get_select(props.get("Category")),
+            "city":      get_text(props.get("City", {})),
+            "country":   get_text(props.get("Country", {})),
+            "lat":       lat,
+            "lng":       lng,
+            "rating":    get_number(props.get("Rating Personal")),
+            "notes":     get_text(props.get("Notes Raw", {})),
+            "tags":      get_multi_select(props.get("Tags Raw")),
+            "notion_id": notion_id,
         })
 
     with open(OUT_PATH, "w") as f:
