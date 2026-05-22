@@ -88,92 +88,76 @@ def get_select(prop):
 
 
 def lookup_place(name, city, country):
-    """Search Google Places for the place, return enriched data dict."""
+    """Search Google Places (New) for the place, return enriched data dict."""
     query = name
     if city:
         query += f" {city}"
     if country:
         query += f" {country}"
 
-    # Text search — more forgiving than findplacefromtext
-    search_resp = requests.get(
-        "https://maps.googleapis.com/maps/api/place/textsearch/json",
-        params={
-            "query": query,
-            "key": GOOGLE_PLACES_KEY,
-        }
+    # Places API (New) — Text Search
+    search_resp = requests.post(
+        "https://places.googleapis.com/v1/places:searchText",
+        headers={
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": GOOGLE_PLACES_KEY,
+            "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.formattedAddress,places.addressComponents,places.types,places.googleMapsUri",
+        },
+        json={"textQuery": query, "pageSize": 1},
     )
     search_resp.raise_for_status()
     search_data = search_resp.json()
 
-    status = search_data.get("status")
-    if status != "OK":
-        print(f"    API status: {status}")
+    places = search_data.get("places", [])
+    if not places:
+        print(f"    No results returned")
         return None
 
-    results = search_data.get("results", [])
-    if not results:
-        return None
-
-    # Take the top result
-    top = results[0]
-    place_id = top.get("place_id")
+    place = places[0]
+    place_id = place.get("id")
     if not place_id:
         return None
 
-    # Get full place details including address components and Maps URL
-    detail_resp = requests.get(
-        "https://maps.googleapis.com/maps/api/place/details/json",
-        params={
-            "place_id": place_id,
-            "fields": "place_id,name,geometry,formatted_address,address_components,types,url",
-            "key": GOOGLE_PLACES_KEY,
-        }
-    )
-    detail_resp.raise_for_status()
-    detail_data = detail_resp.json()
-    if detail_data.get("status") != "OK":
-        print(f"    Details API status: {detail_data.get('status')}")
-        return None
-    detail = detail_data.get("result", {})
-
     # Extract coordinates
-    location = detail.get("geometry", {}).get("location", {})
-    lat = location.get("lat")
-    lng = location.get("lng")
+    location = place.get("location", {})
+    lat = location.get("latitude")
+    lng = location.get("longitude")
 
     # Extract address components
-    components = detail.get("address_components", [])
+    components = place.get("addressComponents", [])
     city_val = ""
     country_val = ""
     neighborhood_val = ""
     for comp in components:
         types = comp.get("types", [])
         if "locality" in types:
-            city_val = comp.get("long_name", "")
+            city_val = comp.get("longText", "")
         elif "country" in types:
-            country_val = comp.get("long_name", "")
+            country_val = comp.get("longText", "")
         elif "neighborhood" in types or "sublocality_level_1" in types:
-            neighborhood_val = comp.get("long_name", "")
+            neighborhood_val = comp.get("longText", "")
 
     # Map Google types to our category
-    types = detail.get("types", [])
+    types = place.get("types", [])
     category = "Other"
     for t in types:
         if t in CATEGORY_MAP:
             category = CATEGORY_MAP[t]
             break
 
+    # Build Google Maps URL from place id if not provided
+    maps_uri = place.get("googleMapsUri", f"https://maps.google.com/?cid={place_id}")
+
     return {
         "lat": lat,
         "lng": lng,
-        "address": detail.get("formatted_address", ""),
+        "address": place.get("formattedAddress", ""),
         "city": city_val,
         "country": country_val,
         "neighborhood": neighborhood_val,
         "category": category,
         "google_place_id": place_id,
-        "google_maps_url": detail.get("url", ""),
+        "google_maps_url": maps_uri,
     }
 
 
