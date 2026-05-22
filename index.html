@@ -516,7 +516,7 @@ function switchMode(mode) {
     applyFilters(); // restores my places markers
   } else {
     myUI.style.display = 'none';
-    discoverUI.style.display = '';
+    discoverUI.style.display = 'block';
     mapEl.className = 'discover-mode';
     // Hide my places markers while in discover mode
     for (const { marker } of myPlacesMarkers) marker.remove();
