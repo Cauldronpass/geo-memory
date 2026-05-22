@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 Enrich Notion Geo Memory records where Enrichment Status = New.
-Calls Google Places API to fill in lat/lng, address, city, country,
+Calls Google Places API (New) to fill in lat/lng, address, city, country,
 neighborhood, category, Google Maps URL, and Google Place ID.
+Calls Claude API to generate a one-sentence AI Summary.
 
 Run by GitHub Actions hourly, or manually:
-  NOTION_TOKEN=ntn_xxx GOOGLE_PLACES_API_KEY=xxx python3 enrich_places.py
+  NOTION_TOKEN=ntn_xxx GOOGLE_PLACES_API_KEY=xxx ANTHROPIC_API_KEY=xxx python3 enrich_places.py
 """
 
 import os
@@ -15,6 +16,7 @@ import requests
 
 NOTION_TOKEN       = os.environ.get("NOTION_TOKEN")
 GOOGLE_PLACES_KEY  = os.environ.get("GOOGLE_PLACES_API_KEY")
+ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
 DATABASE_ID        = "3edc903daeaa41eaa82f93fb0ec55e60"
 NOTION_VERSION     = "2022-06-28"
 
@@ -161,6 +163,41 @@ def lookup_place(name, city, country):
     }
 
 
+def generate_summary(name, category, neighborhood, city, country, address):
+    """Call Claude to generate a one-sentence summary of the place."""
+    if not ANTHROPIC_API_KEY:
+        return ""
+    prompt = (
+        f"Write one sentence describing this place for a personal memory app. "
+        f"Be specific and useful — mention what kind of place it is, what it's known for, "
+        f"and any notable characteristic. Do not start with the place name.\n\n"
+        f"Place: {name}\n"
+        f"Category: {category}\n"
+        f"Neighborhood: {neighborhood}\n"
+        f"City: {city}, {country}\n"
+        f"Address: {address}"
+    )
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 150,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()["content"][0]["text"].strip()
+    except Exception as e:
+        print(f"    Summary generation failed: {e}")
+        return ""
+
+
 def patch_notion_page(page_id, enriched):
     """PATCH the Notion page with enriched data and set status to Enriched."""
     props = {
@@ -185,6 +222,8 @@ def patch_notion_page(page_id, enriched):
         props["Google Place ID"] = {"rich_text": [{"text": {"content": enriched["google_place_id"]}}]}
     if enriched.get("google_maps_url"):
         props["Google Maps URL"] = {"url": enriched["google_maps_url"]}
+    if enriched.get("ai_summary"):
+        props["AI Summary"] = {"rich_text": [{"text": {"content": enriched["ai_summary"]}}]}
 
     resp = requests.patch(
         f"https://api.notion.com/v1/pages/{page_id}",
@@ -233,6 +272,15 @@ def main():
         try:
             result = lookup_place(name, city, country)
             if result:
+                summary = generate_summary(
+                    name,
+                    result.get("category", ""),
+                    result.get("neighborhood", ""),
+                    result.get("city", ""),
+                    result.get("country", ""),
+                    result.get("address", ""),
+                )
+                result["ai_summary"] = summary
                 patch_notion_page(page_id, result)
                 print(f"    ✓ {result['lat']}, {result['lng']} — {result['city']}, {result['country']}")
                 enriched_count += 1
