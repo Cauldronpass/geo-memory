@@ -23,19 +23,49 @@ NOTION_VERSION     = "2022-06-28"
 CATEGORY_MAP = {
     "restaurant": "Restaurant",
     "food": "Restaurant",
+    "meal_takeaway": "Restaurant",
+    "meal_delivery": "Restaurant",
+    "bakery": "Restaurant",
     "cafe": "Cafe",
-    "coffee": "Cafe",
+    "coffee_shop": "Cafe",
     "bar": "Bar",
     "night_club": "Bar",
+    "pub": "Bar",
+    "brewery": "Bar",
+    "wine_bar": "Bar",
     "lodging": "Hotel",
     "hotel": "Hotel",
     "store": "Shop",
     "shopping_mall": "Shop",
+    "clothing_store": "Shop",
     "tourist_attraction": "Attraction",
     "museum": "Attraction",
     "park": "Attraction",
-    "point_of_interest": "Attraction",
+    "art_gallery": "Attraction",
+    "amusement_park": "Attraction",
+    "point_of_interest": "Other",
 }
+
+# Priority order — restaurant types take precedence over bar
+CATEGORY_PRIORITY = [
+    "restaurant", "food", "meal_takeaway", "meal_delivery", "bakery",
+    "cafe", "coffee_shop",
+    "bar", "night_club", "pub", "brewery", "wine_bar",
+    "lodging", "hotel",
+    "store", "shopping_mall", "clothing_store",
+    "tourist_attraction", "museum", "park", "art_gallery", "amusement_park",
+    "point_of_interest",
+]
+
+USER_TAGS = [
+    "Ice cream", "Mexican", "clothing", "Seafood", "farm-to-kitchen", "bar",
+    "restaurant", "music", "Chinese", "coffee", "brunch", "pizza", "Italian",
+    "breakfast", "bakery", "BBQ", "Asian", "Sushi", "Burger", "Conference Center",
+    "Event", "Candy", "Brewery", "pub", "American", "sandwich", "healthy",
+    "art gallery", "tapas", "Park", "steak", "hotel", "spa", "medical", "fun",
+    "billiards", "work", "grocery", "pharmacy", "hospital", "electronics",
+    "hardware", "auto", "gifts", "shopping", "Mediterranean", "lodging",
+]
 
 
 def notion_headers():
@@ -103,7 +133,7 @@ def lookup_place(name, city, country):
         headers={
             "Content-Type": "application/json",
             "X-Goog-Api-Key": GOOGLE_PLACES_KEY,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.formattedAddress,places.addressComponents,places.types,places.googleMapsUri",
+            "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.formattedAddress,places.addressComponents,places.types,places.googleMapsUri,places.nationalPhoneNumber,places.websiteUri,places.priceLevel,places.rating,places.currentOpeningHours",
         },
         json={"textQuery": query, "pageSize": 1},
     )
@@ -139,16 +169,33 @@ def lookup_place(name, city, country):
         elif "neighborhood" in types or "sublocality_level_1" in types:
             neighborhood_val = comp.get("longText", "")
 
-    # Map Google types to our category
+    # Map Google types to our category — use priority order
     types = place.get("types", [])
     category = "Other"
-    for t in types:
-        if t in CATEGORY_MAP:
-            category = CATEGORY_MAP[t]
+    for priority_type in CATEGORY_PRIORITY:
+        if priority_type in types:
+            category = CATEGORY_MAP[priority_type]
             break
 
-    # Build Google Maps URL from place id if not provided
+    # Build Google Maps URL
     maps_uri = place.get("googleMapsUri", f"https://maps.google.com/?cid={place_id}")
+
+    # Price level — Google returns PRICE_LEVEL_INEXPENSIVE etc, map to 1-4
+    price_map = {
+        "PRICE_LEVEL_FREE": 0,
+        "PRICE_LEVEL_INEXPENSIVE": 1,
+        "PRICE_LEVEL_MODERATE": 2,
+        "PRICE_LEVEL_EXPENSIVE": 3,
+        "PRICE_LEVEL_VERY_EXPENSIVE": 4,
+    }
+    price_level = price_map.get(place.get("priceLevel", ""), None)
+
+    # Opening hours — format as plain text
+    hours_val = ""
+    opening_hours = place.get("currentOpeningHours", {})
+    weekday_text = opening_hours.get("weekdayDescriptions", [])
+    if weekday_text:
+        hours_val = "\n".join(weekday_text)
 
     return {
         "lat": lat,
@@ -160,17 +207,24 @@ def lookup_place(name, city, country):
         "category": category,
         "google_place_id": place_id,
         "google_maps_url": maps_uri,
+        "phone": place.get("nationalPhoneNumber", ""),
+        "website": place.get("websiteUri", ""),
+        "price_level": price_level,
+        "rating_external": place.get("rating"),
+        "hours": hours_val,
     }
 
 
-def generate_summary(name, category, neighborhood, city, country, address):
-    """Call Claude to generate a one-sentence summary of the place."""
+def generate_summary_and_tag(name, category, neighborhood, city, country, address):
+    """Call Claude to generate a summary and pick the best tag from USER_TAGS."""
     if not ANTHROPIC_API_KEY:
-        return ""
+        return "", ""
+    tags_str = ", ".join(USER_TAGS)
     prompt = (
-        f"Write one sentence describing this place for a personal memory app. "
-        f"Be specific and useful — mention what kind of place it is, what it's known for, "
-        f"and any notable characteristic. Do not start with the place name.\n\n"
+        f"You are enriching a personal place memory database. Given the place below, return JSON with two fields:\n"
+        f"1. \"summary\": one sentence describing the place — specific, useful, mention what it's known for. Do not start with the place name.\n"
+        f"2. \"tag\": pick the single most relevant tag from this list: {tags_str}\n\n"
+        f"Return only valid JSON, nothing else. Example: {{\"summary\": \"...\", \"tag\": \"Italian\"}}\n\n"
         f"Place: {name}\n"
         f"Category: {category}\n"
         f"Neighborhood: {neighborhood}\n"
@@ -187,15 +241,18 @@ def generate_summary(name, category, neighborhood, city, country, address):
             },
             json={
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 150,
+                "max_tokens": 200,
                 "messages": [{"role": "user", "content": prompt}],
             },
         )
         resp.raise_for_status()
-        return resp.json()["content"][0]["text"].strip()
+        import json as json_lib
+        text = resp.json()["content"][0]["text"].strip()
+        data = json_lib.loads(text)
+        return data.get("summary", ""), data.get("tag", "")
     except Exception as e:
-        print(f"    Summary generation failed: {e}")
-        return ""
+        print(f"    Summary/tag generation failed: {e}")
+        return "", ""
 
 
 def patch_notion_page(page_id, enriched):
@@ -224,6 +281,18 @@ def patch_notion_page(page_id, enriched):
         props["Google Maps URL"] = {"url": enriched["google_maps_url"]}
     if enriched.get("ai_summary"):
         props["AI Summary"] = {"rich_text": [{"text": {"content": enriched["ai_summary"]}}]}
+    if enriched.get("phone"):
+        props["Phone"] = {"phone_number": enriched["phone"]}
+    if enriched.get("website"):
+        props["Website"] = {"url": enriched["website"]}
+    if enriched.get("price_level") is not None:
+        props["Price Level"] = {"number": enriched["price_level"]}
+    if enriched.get("rating_external") is not None:
+        props["Rating External"] = {"number": enriched["rating_external"]}
+    if enriched.get("hours"):
+        props["Hours"] = {"rich_text": [{"text": {"content": enriched["hours"]}}]}
+    if enriched.get("ai_tag"):
+        props["Tags Raw"] = {"multi_select": [{"name": enriched["ai_tag"]}]}
 
     resp = requests.patch(
         f"https://api.notion.com/v1/pages/{page_id}",
@@ -272,7 +341,7 @@ def main():
         try:
             result = lookup_place(name, city, country)
             if result:
-                summary = generate_summary(
+                summary, tag = generate_summary_and_tag(
                     name,
                     result.get("category", ""),
                     result.get("neighborhood", ""),
@@ -281,6 +350,7 @@ def main():
                     result.get("address", ""),
                 )
                 result["ai_summary"] = summary
+                result["ai_tag"] = tag
                 patch_notion_page(page_id, result)
                 print(f"    ✓ {result['lat']}, {result['lng']} — {result['city']}, {result['country']}")
                 enriched_count += 1
