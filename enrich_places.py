@@ -95,29 +95,33 @@ def lookup_place(name, city, country):
     if country:
         query += f" {country}"
 
-    # Text search
+    # Text search — more forgiving than findplacefromtext
     search_resp = requests.get(
-        "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+        "https://maps.googleapis.com/maps/api/place/textsearch/json",
         params={
-            "input": query,
-            "inputtype": "textquery",
-            "fields": "place_id,name,geometry,formatted_address,types,url",
+            "query": query,
             "key": GOOGLE_PLACES_KEY,
         }
     )
     search_resp.raise_for_status()
     search_data = search_resp.json()
 
-    candidates = search_data.get("candidates", [])
-    if not candidates:
+    status = search_data.get("status")
+    if status != "OK":
+        print(f"    API status: {status}")
         return None
 
-    candidate = candidates[0]
-    place_id = candidate.get("place_id")
+    results = search_data.get("results", [])
+    if not results:
+        return None
+
+    # Take the top result
+    top = results[0]
+    place_id = top.get("place_id")
     if not place_id:
         return None
 
-    # Get place details
+    # Get full place details including address components and Maps URL
     detail_resp = requests.get(
         "https://maps.googleapis.com/maps/api/place/details/json",
         params={
@@ -127,7 +131,11 @@ def lookup_place(name, city, country):
         }
     )
     detail_resp.raise_for_status()
-    detail = detail_resp.json().get("result", {})
+    detail_data = detail_resp.json()
+    if detail_data.get("status") != "OK":
+        print(f"    Details API status: {detail_data.get('status')}")
+        return None
+    detail = detail_data.get("result", {})
 
     # Extract coordinates
     location = detail.get("geometry", {}).get("location", {})
