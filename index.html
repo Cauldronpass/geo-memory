@@ -524,7 +524,7 @@ function switchMode(mode) {
     setTimeout(() => document.getElementById('discover-input').focus(), 100);
   }
 
-  map.invalidateSize();
+  setTimeout(() => map.invalidateSize(), 150);
 }
 
 // ── Discover: Google Places search ───────────────────────────────────────────
