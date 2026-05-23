@@ -217,7 +217,6 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .pill-visited { background: #e8f5e9; color: #2e7d32; }
 .pill-want { background: #fff3e0; color: #e65100; }
 
-/* "In your list" section inside discover detail */
 .in-list-box {
   background: #fffbee;
   border: 1.5px solid #ffe082;
@@ -238,6 +237,145 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .btn-action { padding: 9px 18px; border-radius: 9px; text-decoration: none; font-size: 13px; font-weight: 600; border: none; cursor: pointer; display: inline-block; -webkit-tap-highlight-color: transparent; }
 .btn-primary { background: #1a1f2e; color: #fff; }
 .btn-secondary { background: #f5f6fa; color: #1a1f2e; border: 1.5px solid #d0d4df; }
+.btn-save { background: #2e7d32; color: #fff; }
+.btn-save:active { background: #1b5e20; }
+
+/* ── Save modal ──────────────────────────────────────────────────── */
+#save-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 1500;
+  align-items: flex-end;
+  justify-content: center;
+}
+#save-overlay.open { display: flex; }
+#save-modal {
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 20px 20px 40px;
+  width: 100%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+#save-modal-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9aa3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 4px;
+}
+#save-modal-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a1f2e;
+  margin-bottom: 2px;
+  line-height: 1.3;
+}
+#save-modal-addr {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 20px;
+}
+.save-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9aa3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+.status-picker {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.status-pick-btn {
+  flex: 1;
+  padding: 10px;
+  border-radius: 10px;
+  border: 2px solid #e0e3ec;
+  background: #f5f6fa;
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  text-align: center;
+  -webkit-tap-highlight-color: transparent;
+  transition: all 0.12s;
+}
+.status-pick-btn.active-want {
+  border-color: #e65100;
+  background: #fff3e0;
+  color: #e65100;
+}
+.status-pick-btn.active-visited {
+  border-color: #2e7d32;
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+.save-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1.5px solid #d0d4df;
+  font-size: 13px;
+  font-family: inherit;
+  color: #222;
+  background: #f5f6fa;
+  resize: none;
+  outline: none;
+  margin-bottom: 20px;
+  min-height: 72px;
+}
+.save-textarea:focus { border-color: #1a1f2e; background: #fff; }
+.save-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1.5px solid #d0d4df;
+  font-size: 13px;
+  font-family: inherit;
+  color: #222;
+  background: #f5f6fa;
+  outline: none;
+  margin-bottom: 20px;
+}
+.save-input:focus { border-color: #1a1f2e; background: #fff; }
+.save-actions { display: flex; gap: 10px; }
+#save-submit {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  background: #1a1f2e;
+  color: #fff;
+  border: none;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#save-submit:disabled { background: #9aa3b8; cursor: default; }
+#save-cancel {
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: #f5f6fa;
+  color: #1a1f2e;
+  border: 1.5px solid #d0d4df;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#save-status-msg {
+  font-size: 13px;
+  text-align: center;
+  margin-top: 12px;
+  min-height: 18px;
+}
 
 /* ── Loading overlay ─────────────────────────────────────────────── */
 #loading {
@@ -260,13 +398,14 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 
 @media (min-width: 600px) {
   #detail { max-width: 440px; left: auto; right: 20px; bottom: 20px; border-radius: 16px; }
+  #save-overlay { align-items: center; }
+  #save-modal { border-radius: 20px; margin: 20px; }
 }
 </style>
 </head>
 <body>
 <div id="app">
 
-  <!-- Header -->
   <div id="header">
     <div id="header-left">
       <div id="header-title">Geo Memory</div>
@@ -278,7 +417,6 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
     </div>
   </div>
 
-  <!-- My Places controls -->
   <div id="myplaces-ui">
     <div id="search-row">
       <input id="search-input" type="search" placeholder="Search my places…" autocomplete="off" />
@@ -297,24 +435,19 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
     </div>
   </div>
 
-  <!-- Discover controls -->
   <div id="discover-ui">
     <div id="discover-row">
       <input id="discover-input" type="search" placeholder="e.g. ramen in Tokyo, bars in Chicago" autocomplete="off" />
       <button id="discover-btn" onclick="runDiscover()">Search</button>
     </div>
-    <div id="discover-hint">Searches Google Places · places in your database are highlighted</div>
+    <div id="discover-hint">Searches Google Places · tap any result to save it to Notion</div>
   </div>
 
-  <!-- Map (shared) -->
-  <div id="map" class="myplaces-mode"></div>
-
-  <!-- Discover results list (below map) -->
+  <div id="map"></div>
   <div id="discover-results"></div>
 
-</div><!-- #app -->
+</div>
 
-<!-- Detail panel (shared) -->
 <div id="detail">
   <button id="detail-close" onclick="closeDetail()">✕</button>
   <div id="detail-name"></div>
@@ -322,28 +455,47 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   <div id="detail-body"></div>
 </div>
 
-<!-- Initial loading screen -->
+<div id="save-overlay" onclick="handleOverlayClick(event)">
+  <div id="save-modal">
+    <div id="save-modal-title">Save to Notion</div>
+    <div id="save-modal-name"></div>
+    <div id="save-modal-addr"></div>
+
+    <div class="save-field-label">Status</div>
+    <div class="status-picker">
+      <button class="status-pick-btn active-want" id="pick-want" onclick="pickStatus('Want to Visit')">Want to Visit</button>
+      <button class="status-pick-btn" id="pick-visited" onclick="pickStatus('Visited')">Visited</button>
+    </div>
+
+    <div class="save-field-label">Note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+    <textarea id="save-note" class="save-textarea" placeholder="What do you want to remember about this place?"></textarea>
+
+    <div class="save-field-label">Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional, comma-separated)</span></div>
+    <input id="save-tags" class="save-input" type="text" placeholder="e.g. date night, Italian, client dinner" />
+
+    <div class="save-actions">
+      <button id="save-cancel" onclick="closeSaveModal()">Cancel</button>
+      <button id="save-submit" onclick="submitSave()">Save to Notion</button>
+    </div>
+    <div id="save-status-msg"></div>
+  </div>
+</div>
+
 <div id="loading">
   <div class="spinner"></div>
   <div>Loading your places…</div>
 </div>
 
 <script>
-// ── Config ────────────────────────────────────────────────────────────────────
 const GOOGLE_API_KEY = 'AIzaSyCEoi34yEEg9Ka7BtDJMJm9iRTM46CodN8';
+const WORKER_URL     = 'https://geo-memory-save.weissdavid01.workers.dev';
 
 const CATEGORY_COLORS = {
-  'Restaurant': '#e05c3a',
-  'Bar':        '#4a90d9',
-  'Cafe':       '#e8a020',
-  'Hotel':      '#3daa6e',
-  'Shop':       '#e87030',
-  'Attraction': '#2db08e',
-  'Venue':      '#9b59b6',
-  'Other':      '#909090',
+  'Restaurant': '#e05c3a', 'Bar': '#4a90d9', 'Cafe': '#e8a020',
+  'Hotel': '#3daa6e', 'Shop': '#e87030', 'Attraction': '#2db08e',
+  'Venue': '#9b59b6', 'Other': '#909090',
 };
 
-// Maps Google Places primaryType → our category names
 const GOOGLE_TYPE_MAP = {
   restaurant: 'Restaurant', food: 'Restaurant', meal_delivery: 'Restaurant',
   meal_takeaway: 'Restaurant', hamburger_restaurant: 'Restaurant',
@@ -359,24 +511,15 @@ const GOOGLE_TYPE_MAP = {
   event_venue: 'Venue', convention_center: 'Venue',
 };
 
-function googleTypeToCategory(primaryType) {
-  return GOOGLE_TYPE_MAP[primaryType] || 'Other';
-}
+function googleTypeToCategory(t) { return GOOGLE_TYPE_MAP[t] || 'Other'; }
 
-// ── State ─────────────────────────────────────────────────────────────────────
-let allPlaces = [];
-let myPlacesByGoogleId = new Map(); // google_place_id → place object
-let myPlacesMarkers = [];
-let discoverMarkers = [];
-let currentMode = 'myplaces';
-let activeStatus = 'all';
+let allPlaces = [], myPlacesByGoogleId = new Map();
+let myPlacesMarkers = [], discoverMarkers = [];
+let currentMode = 'myplaces', activeStatus = 'all';
 let activeCategories = new Set(Object.keys(CATEGORY_COLORS));
+let _discoverPlaces = [], _discoverMyPlaces = [];
+let _saveIndex = -1, _saveStatus = 'Want to Visit';
 
-// Globals for discover result onclick (set by renderDiscoverResults)
-let _discoverPlaces = [];
-let _discoverMyPlaces = [];
-
-// ── Map init ──────────────────────────────────────────────────────────────────
 const map = L.map('map', { zoomControl: true }).setView([39.5, -95.0], 4);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
@@ -384,7 +527,6 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 map.on('click', closeDetail);
 
-// ── Load my places from nightly JSON ─────────────────────────────────────────
 fetch('places.json')
   .then(r => r.json())
   .then(data => {
@@ -402,7 +544,6 @@ fetch('places.json')
       `<div style="color:#c00;text-align:center;padding:24px">Failed to load places.<br><small>${err.message}</small></div>`;
   });
 
-// ── My Places: category filter chips ─────────────────────────────────────────
 function buildCategoryFilters() {
   const counts = {};
   for (const p of allPlaces) counts[p.category] = (counts[p.category] || 0) + 1;
@@ -423,19 +564,13 @@ function buildCategoryFilters() {
   }
 }
 
-// ── My Places: map markers ────────────────────────────────────────────────────
 function buildMyPlacesMarkers() {
   for (const p of allPlaces) {
     if (p.lat == null || p.lng == null) continue;
     const color = CATEGORY_COLORS[p.category] || '#909090';
-    const visited = p.status === 'Visited';
     const m = L.circleMarker([p.lat, p.lng], {
-      radius: 7,
-      fillColor: color,
-      color: '#fff',
-      weight: 1.5,
-      fillOpacity: visited ? 0.92 : 0.45,
-      opacity: 1,
+      radius: 7, fillColor: color, color: '#fff', weight: 1.5,
+      fillOpacity: p.status === 'Visited' ? 0.92 : 0.45, opacity: 1,
     });
     m.on('click', e => { L.DomEvent.stopPropagation(e); showMyPlaceDetail(p); });
     myPlacesMarkers.push({ marker: m, place: p });
@@ -445,15 +580,12 @@ function buildMyPlacesMarkers() {
 function applyFilters() {
   let shown = 0;
   for (const { marker, place } of myPlacesMarkers) {
-    const ok = (activeStatus === 'all' || place.status === activeStatus) &&
-               activeCategories.has(place.category);
+    const ok = (activeStatus === 'all' || place.status === activeStatus) && activeCategories.has(place.category);
     if (ok) { marker.addTo(map); shown++; } else { marker.remove(); }
   }
-  const total = allPlaces.filter(p => p.lat != null).length;
-  document.getElementById('count').textContent = `${shown} of ${total} places`;
+  document.getElementById('count').textContent = `${shown} of ${allPlaces.filter(p => p.lat != null).length} places`;
 }
 
-// Status filter buttons
 document.querySelectorAll('.status-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.status-btn').forEach(b => b.classList.remove('active'));
@@ -463,29 +595,20 @@ document.querySelectorAll('.status-btn').forEach(btn => {
   });
 });
 
-// ── My Places: local name search ──────────────────────────────────────────────
 const searchInput = document.getElementById('search-input');
 const searchResultsEl = document.getElementById('search-results');
-
 searchInput.addEventListener('input', () => {
   const q = searchInput.value.trim().toLowerCase();
   searchResultsEl.innerHTML = '';
   if (!q) { searchResultsEl.style.display = 'none'; return; }
-
-  const matches = allPlaces
-    .filter(p => p.name && p.name.toLowerCase().includes(q))
-    .slice(0, 8);
-
+  const matches = allPlaces.filter(p => p.name && p.name.toLowerCase().includes(q)).slice(0, 8);
   if (!matches.length) { searchResultsEl.style.display = 'none'; return; }
-
   for (const p of matches) {
     const div = document.createElement('div');
     div.className = 'search-result-item';
     div.innerHTML = `<span class="sri-name">${esc(p.name)}</span><span class="sri-meta">${esc([p.category, p.city].filter(Boolean).join(' · '))}</span>`;
     div.addEventListener('click', () => {
-      searchResultsEl.style.display = 'none';
-      searchInput.value = '';
-      searchInput.blur();
+      searchResultsEl.style.display = 'none'; searchInput.value = ''; searchInput.blur();
       if (p.lat != null) map.setView([p.lat, p.lng], 14, { animate: true });
       showMyPlaceDetail(p);
     });
@@ -493,288 +616,219 @@ searchInput.addEventListener('input', () => {
   }
   searchResultsEl.style.display = 'block';
 });
-searchInput.addEventListener('blur', () => {
-  setTimeout(() => { searchResultsEl.style.display = 'none'; }, 150);
-});
+searchInput.addEventListener('blur', () => { setTimeout(() => { searchResultsEl.style.display = 'none'; }, 150); });
 
-// ── Mode switch ───────────────────────────────────────────────────────────────
 function switchMode(mode) {
-  currentMode = mode;
-  closeDetail();
-
-  document.querySelectorAll('.mode-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.mode === mode);
-  });
-
+  currentMode = mode; closeDetail();
+  document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.mode === mode));
   const myUI = document.getElementById('myplaces-ui');
   const discoverUI = document.getElementById('discover-ui');
-  const discoverResultsEl = document.getElementById('discover-results');
+  const resultsEl = document.getElementById('discover-results');
   const mapEl = document.getElementById('map');
-
   if (mode === 'myplaces') {
-    myUI.style.display = '';
-    discoverUI.style.display = 'none';
-    discoverResultsEl.style.display = 'none';
-    mapEl.style.flex = '1';
-    mapEl.style.height = '';
-    clearDiscoverMarkers();
-    applyFilters();
+    myUI.style.display = ''; discoverUI.style.display = 'none'; resultsEl.style.display = 'none';
+    mapEl.style.flex = '1'; mapEl.style.height = '';
+    clearDiscoverMarkers(); applyFilters();
   } else {
-    myUI.style.display = 'none';
-    discoverUI.style.display = 'block';
-    mapEl.style.flex = '';
-    mapEl.style.height = '38vh';
+    myUI.style.display = 'none'; discoverUI.style.display = 'block';
+    mapEl.style.flex = ''; mapEl.style.height = '38vh';
     for (const { marker } of myPlacesMarkers) marker.remove();
     document.getElementById('count').textContent = 'Google Places search';
     setTimeout(() => document.getElementById('discover-input').focus(), 100);
   }
-
-  // Double rAF: first frame applies styles, second frame Leaflet measures the new size
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      map.invalidateSize(false);
-    });
-  });
+  requestAnimationFrame(() => { requestAnimationFrame(() => { map.invalidateSize(false); }); });
 }
 
-// ── Discover: Google Places search ───────────────────────────────────────────
 async function runDiscover() {
   const query = document.getElementById('discover-input').value.trim();
   if (!query) return;
   document.getElementById('discover-input').blur();
-
   const resultsEl = document.getElementById('discover-results');
   resultsEl.style.display = 'block';
   resultsEl.innerHTML = '<div id="discover-loading"><div class="spinner"></div></div>';
   document.getElementById('count').textContent = 'Searching…';
   clearDiscoverMarkers();
-
   try {
     const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': GOOGLE_API_KEY,
-        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.primaryType',
+        'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_API_KEY,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.primaryType,places.addressComponents,places.googleMapsUri',
       },
       body: JSON.stringify({ textQuery: query, maxResultCount: 20 }),
     });
-
-    if (!resp.ok) {
-      const errData = await resp.json().catch(() => ({}));
-      throw new Error(errData.error?.message || `API error ${resp.status}`);
-    }
-
+    if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error?.message || `API error ${resp.status}`); }
     const data = await resp.json();
     renderDiscoverResults(data.places || [], query);
-
   } catch (e) {
-    resultsEl.innerHTML = `<div id="discover-empty">Search failed: ${esc(e.message)}<br><small style="color:#bbb">Check your connection and try again.</small></div>`;
+    resultsEl.innerHTML = `<div id="discover-empty">Search failed: ${esc(e.message)}</div>`;
     document.getElementById('count').textContent = 'Error';
   }
 }
 
-document.getElementById('discover-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') runDiscover();
-});
+document.getElementById('discover-input').addEventListener('keydown', e => { if (e.key === 'Enter') runDiscover(); });
 
-// ── Discover: render result cards + map pins ──────────────────────────────────
 function renderDiscoverResults(places, query) {
   const resultsEl = document.getElementById('discover-results');
-
   if (!places.length) {
-    resultsEl.innerHTML = `<div id="discover-empty">No results for "<strong>${esc(query)}</strong>".<br>Try a different search.</div>`;
-    document.getElementById('count').textContent = '0 results';
-    return;
+    resultsEl.innerHTML = `<div id="discover-empty">No results for "<strong>${esc(query)}</strong>".</div>`;
+    document.getElementById('count').textContent = '0 results'; return;
   }
-
-  // Store for card onclick handlers
   _discoverPlaces = places;
   _discoverMyPlaces = places.map(gp => myPlacesByGoogleId.get(gp.id) || null);
-
   let matchCount = 0;
-  const bounds = [];
-  const matched = [];
-  const unmatched = [];
-
+  const bounds = [], matched = [], unmatched = [];
   places.forEach((gp, i) => {
-    const lat = gp.location?.latitude;
-    const lng = gp.location?.longitude;
+    const lat = gp.location?.latitude, lng = gp.location?.longitude;
     const name = gp.displayName?.text || 'Unknown';
     const myPlace = _discoverMyPlaces[i];
     if (myPlace) matchCount++;
-
-    // Pin colors: gold = in your database, grey = not
     const pinColor = myPlace ? '#f5c518' : '#8899aa';
     const pinBorder = myPlace ? '#b8960a' : '#fff';
-
-    // Map pin
     if (lat != null && lng != null) {
       bounds.push([lat, lng]);
       const m = L.circleMarker([lat, lng], {
-        radius: myPlace ? 11 : 9,
-        fillColor: pinColor,
-        color: pinBorder,
-        weight: myPlace ? 2.5 : 1.5,
-        fillOpacity: 0.88,
-        opacity: 1,
+        radius: myPlace ? 11 : 9, fillColor: pinColor, color: pinBorder,
+        weight: myPlace ? 2.5 : 1.5, fillOpacity: 0.88, opacity: 1,
       });
       m.on('click', e => { L.DomEvent.stopPropagation(e); showDiscoverDetail(i); });
-      m.addTo(map);
-      discoverMarkers.push(m);
+      m.addTo(map); discoverMarkers.push(m);
     }
-
-    // Card
-    const card = {
-      i,
-      matched: !!myPlace,
-      html: `
-        <div class="discover-card${myPlace ? ' matched' : ''}" onclick="showDiscoverDetail(${i})">
-          <div class="dc-dot-wrap">
-            <div class="dc-dot" style="background:${pinColor}"></div>
-          </div>
-          <div class="dc-body">
-            <div class="dc-name">${esc(name)}</div>
-            <div class="dc-addr">${esc(gp.formattedAddress || '')}</div>
-            ${myPlace ? `<div class="dc-badge">★ In your list</div>` : ''}
-          </div>
-          <div class="dc-right">
-            ${gp.rating ? `<div class="dc-grating">${gp.rating.toFixed(1)}</div><div class="dc-grating-lbl">Google</div>` : ''}
-          </div>
-        </div>`
-    };
-    if (myPlace) matched.push(card);
-    else unmatched.push(card);
+    const card = { matched: !!myPlace, html: `
+      <div class="discover-card${myPlace ? ' matched' : ''}" onclick="showDiscoverDetail(${i})">
+        <div class="dc-dot-wrap"><div class="dc-dot" style="background:${pinColor}"></div></div>
+        <div class="dc-body">
+          <div class="dc-name">${esc(name)}</div>
+          <div class="dc-addr">${esc(gp.formattedAddress || '')}</div>
+          ${myPlace ? `<div class="dc-badge">★ In your list</div>` : ''}
+        </div>
+        <div class="dc-right">${gp.rating ? `<div class="dc-grating">${gp.rating.toFixed(1)}</div><div class="dc-grating-lbl">Google</div>` : ''}</div>
+      </div>` };
+    if (myPlace) matched.push(card); else unmatched.push(card);
   });
-
-  // Matched places appear first
-  const allCards = [...matched, ...unmatched];
-  resultsEl.innerHTML = allCards.map(c => c.html).join('');
-
-  const matchLabel = matchCount > 0
-    ? ` · <strong style="color:#c48f00">${matchCount} in your list</strong>`
-    : '';
+  resultsEl.innerHTML = [...matched, ...unmatched].map(c => c.html).join('');
+  const matchLabel = matchCount > 0 ? ` · <strong style="color:#c48f00">${matchCount} in your list</strong>` : '';
   document.getElementById('count').innerHTML = `${places.length} results${matchLabel}`;
-
-  // Fit map to show all pins
-  if (bounds.length) {
-    map.fitBounds(bounds, { padding: [20, 20], maxZoom: 14, animate: true });
-  }
+  if (bounds.length) map.fitBounds(bounds, { padding: [20, 20], maxZoom: 14, animate: true });
 }
 
-function clearDiscoverMarkers() {
-  for (const m of discoverMarkers) m.remove();
-  discoverMarkers = [];
-}
+function clearDiscoverMarkers() { for (const m of discoverMarkers) m.remove(); discoverMarkers = []; }
 
-// ── Detail panel: My Places ───────────────────────────────────────────────────
 function showMyPlaceDetail(p) {
   document.getElementById('detail-name').textContent = p.name;
-  document.getElementById('detail-meta').textContent =
-    [p.category, p.city, p.country].filter(Boolean).join(' · ');
-
-  const statusClass = p.status === 'Visited' ? 'pill-visited' : 'pill-want';
-  let html = '';
-
-  html += `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="pill ${statusClass}">${esc(p.status || '—')}</span></span></div>`;
-  if (p.rating) {
-    const stars = '★'.repeat(Math.round(p.rating)) + '☆'.repeat(5 - Math.round(p.rating));
-    html += `<div class="detail-row"><span class="detail-key">My rating</span><span class="detail-val">${stars} ${p.rating}</span></div>`;
-  }
-  if (p.notes) {
-    html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(p.notes)}</span></div>`;
-  }
-  if (p.tags && p.tags.length) {
-    html += `<div class="detail-row"><span class="detail-key">Tags</span><span class="detail-val">${p.tags.map(esc).join(', ')}</span></div>`;
-  }
-
+  document.getElementById('detail-meta').textContent = [p.category, p.city, p.country].filter(Boolean).join(' · ');
+  const sc = p.status === 'Visited' ? 'pill-visited' : 'pill-want';
+  let html = `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="pill ${sc}">${esc(p.status || '—')}</span></span></div>`;
+  if (p.rating) { const s = '★'.repeat(Math.round(p.rating)) + '☆'.repeat(5 - Math.round(p.rating)); html += `<div class="detail-row"><span class="detail-key">My rating</span><span class="detail-val">${s} ${p.rating}</span></div>`; }
+  if (p.notes) html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(p.notes)}</span></div>`;
+  if (p.tags && p.tags.length) html += `<div class="detail-row"><span class="detail-key">Tags</span><span class="detail-val">${p.tags.map(esc).join(', ')}</span></div>`;
   html += `<div class="detail-actions">`;
-  if (p.lat != null) {
-    html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
-  }
-  if (p.notion_id) {
-    html += `<a href="https://www.notion.so/${p.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
-  }
+  if (p.lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
+  if (p.notion_id) html += `<a href="https://www.notion.so/${p.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
   html += `</div>`;
-
   document.getElementById('detail-body').innerHTML = html;
   document.getElementById('detail').classList.add('open');
 }
 
-// ── Detail panel: Discover result ─────────────────────────────────────────────
 function showDiscoverDetail(i) {
-  const gp = _discoverPlaces[i];
-  const myPlace = _discoverMyPlaces[i];
+  const gp = _discoverPlaces[i], myPlace = _discoverMyPlaces[i];
   if (!gp) return;
-
   const name = gp.displayName?.text || 'Unknown';
   const category = googleTypeToCategory(gp.primaryType);
-  const lat = gp.location?.latitude;
-  const lng = gp.location?.longitude;
-
+  const lat = gp.location?.latitude, lng = gp.location?.longitude;
   document.getElementById('detail-name').textContent = name;
   document.getElementById('detail-meta').textContent = gp.formattedAddress || '';
-
-  let html = '';
-
-  // Google data row
-  html += `<div class="detail-row"><span class="detail-key">Type</span><span class="detail-val">${esc(category)}</span></div>`;
-  if (gp.rating) {
-    const stars = '★'.repeat(Math.round(gp.rating)) + '☆'.repeat(5 - Math.round(gp.rating));
-    html += `<div class="detail-row"><span class="detail-key">Google</span><span class="detail-val">${stars} ${gp.rating.toFixed(1)}</span></div>`;
-  }
-
-  // Personal overlay — only shown when this place is in your Notion database
+  let html = `<div class="detail-row"><span class="detail-key">Type</span><span class="detail-val">${esc(category)}</span></div>`;
+  if (gp.rating) { const s = '★'.repeat(Math.round(gp.rating)) + '☆'.repeat(5 - Math.round(gp.rating)); html += `<div class="detail-row"><span class="detail-key">Google</span><span class="detail-val">${s} ${gp.rating.toFixed(1)}</span></div>`; }
   if (myPlace) {
-    const statusClass = myPlace.status === 'Visited' ? 'pill-visited' : 'pill-want';
-    html += `<div class="in-list-box" style="margin-top:12px">`;
-    html += `<div class="in-list-label">★ In your list</div>`;
-    html += `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="pill ${statusClass}">${esc(myPlace.status || '—')}</span></span></div>`;
-    if (myPlace.rating) {
-      const stars = '★'.repeat(Math.round(myPlace.rating)) + '☆'.repeat(5 - Math.round(myPlace.rating));
-      html += `<div class="detail-row"><span class="detail-key">My rating</span><span class="detail-val">${stars} ${myPlace.rating}</span></div>`;
-    }
-    if (myPlace.notes) {
-      html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(myPlace.notes)}</span></div>`;
-    }
+    const sc = myPlace.status === 'Visited' ? 'pill-visited' : 'pill-want';
+    html += `<div class="in-list-box" style="margin-top:12px"><div class="in-list-label">★ In your list</div>`;
+    html += `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="pill ${sc}">${esc(myPlace.status || '—')}</span></span></div>`;
+    if (myPlace.rating) { const s = '★'.repeat(Math.round(myPlace.rating)) + '☆'.repeat(5 - Math.round(myPlace.rating)); html += `<div class="detail-row"><span class="detail-key">My rating</span><span class="detail-val">${s} ${myPlace.rating}</span></div>`; }
+    if (myPlace.notes) html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(myPlace.notes)}</span></div>`;
     html += `</div>`;
   }
-
-  // Action buttons
   html += `<div class="detail-actions">`;
-  if (lat != null) {
-    const dest = `${lat},${lng}`;
-    html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${dest}&destination_place_id=${esc(gp.id)}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
-  }
-  if (myPlace && myPlace.notion_id) {
-    html += `<a href="https://www.notion.so/${myPlace.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
-  }
+  if (lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_id=${esc(gp.id)}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
+  if (myPlace && myPlace.notion_id) html += `<a href="https://www.notion.so/${myPlace.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
+  if (!myPlace) html += `<button class="btn-action btn-save" onclick="openSaveModal(${i})">+ Save to Notion</button>`;
   html += `</div>`;
-
   document.getElementById('detail-body').innerHTML = html;
   document.getElementById('detail').classList.add('open');
-
-  // Pan map to this pin — offset center upward so pin sits above the bottom sheet
   if (lat != null && lng != null) {
-    const zoom = 15;
-    const sheetH = window.innerHeight * 0.42; // matches #discover-results height
+    const zoom = 15, sheetH = window.innerHeight * 0.42;
     const pt = map.project([lat, lng], zoom);
-    const adjusted = map.unproject([pt.x, pt.y + sheetH / 2], zoom);
-    map.setView(adjusted, zoom, { animate: true });
+    map.setView(map.unproject([pt.x, pt.y + sheetH / 2], zoom), zoom, { animate: true });
   }
 }
 
-// ── Utilities ─────────────────────────────────────────────────────────────────
-function closeDetail() {
-  document.getElementById('detail').classList.remove('open');
+function openSaveModal(i) {
+  const gp = _discoverPlaces[i]; if (!gp) return;
+  _saveIndex = i; _saveStatus = 'Want to Visit';
+  document.getElementById('save-modal-name').textContent = gp.displayName?.text || 'Unknown';
+  document.getElementById('save-modal-addr').textContent = gp.formattedAddress || '';
+  document.getElementById('save-note').value = '';
+  document.getElementById('save-tags').value = '';
+  document.getElementById('save-status-msg').textContent = '';
+  document.getElementById('save-submit').disabled = false;
+  document.getElementById('save-submit').textContent = 'Save to Notion';
+  document.getElementById('save-submit').style.background = '';
+  document.getElementById('pick-want').className = 'status-pick-btn active-want';
+  document.getElementById('pick-visited').className = 'status-pick-btn';
+  document.getElementById('save-overlay').classList.add('open');
+  setTimeout(() => document.getElementById('save-note').focus(), 200);
 }
 
+function pickStatus(val) {
+  _saveStatus = val;
+  document.getElementById('pick-want').className = val === 'Want to Visit' ? 'status-pick-btn active-want' : 'status-pick-btn';
+  document.getElementById('pick-visited').className = val === 'Visited' ? 'status-pick-btn active-visited' : 'status-pick-btn';
+}
+
+function closeSaveModal() { document.getElementById('save-overlay').classList.remove('open'); }
+function handleOverlayClick(e) { if (e.target === document.getElementById('save-overlay')) closeSaveModal(); }
+
+async function submitSave() {
+  const gp = _discoverPlaces[_saveIndex]; if (!gp) return;
+  const btn = document.getElementById('save-submit');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  document.getElementById('save-status-msg').textContent = '';
+  let city = '', country = '', neighborhood = '';
+  for (const comp of (gp.addressComponents || [])) {
+    const types = comp.types || [];
+    if (types.includes('locality')) city = comp.longText || '';
+    else if (types.includes('country')) country = comp.longText || '';
+    else if (types.includes('neighborhood') || types.includes('sublocality_level_1')) neighborhood = comp.longText || '';
+  }
+  const rawTags = document.getElementById('save-tags').value.trim();
+  const tags = rawTags ? rawTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+  const payload = {
+    name: gp.displayName?.text || 'Unknown', status: _saveStatus,
+    notes: document.getElementById('save-note').value.trim(), tags,
+    google_place_id: gp.id, lat: gp.location?.latitude ?? null, lng: gp.location?.longitude ?? null,
+    address: gp.formattedAddress || '', city, country, neighborhood,
+    category: googleTypeToCategory(gp.primaryType),
+    google_maps_url: gp.googleMapsUri || '', rating_external: gp.rating ?? null,
+  };
+  try {
+    const resp = await fetch(WORKER_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const result = await resp.json();
+    if (result.ok) {
+      btn.textContent = 'Saved!'; btn.style.background = '#2e7d32';
+      document.getElementById('save-status-msg').textContent = 'Added to Notion. Will appear on the map after the nightly sync.';
+      document.getElementById('save-status-msg').style.color = '#2e7d32';
+      setTimeout(closeSaveModal, 2200);
+    } else { throw new Error(result.error || 'Unknown error'); }
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Save to Notion';
+    document.getElementById('save-status-msg').textContent = 'Save failed: ' + e.message;
+    document.getElementById('save-status-msg').style.color = '#c00';
+  }
+}
+
+function closeDetail() { document.getElementById('detail').classList.remove('open'); }
 function esc(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 </script>
 </body>
