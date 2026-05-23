@@ -54,11 +54,11 @@ function todayISO() {
 
 // ── GitHub Actions trigger ────────────────────────────────────────────────────
 
-async function triggerGitHubRefresh(githubPat) {
-  if (!githubPat) return; // secret not set — skip silently
+async function triggerGitHubWorkflow(githubPat, workflow) {
+  if (!githubPat) return;
   try {
     await fetch(
-      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${GITHUB_WORKFLOW}/dispatches`,
+      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflow}/dispatches`,
       {
         method: 'POST',
         headers: {
@@ -70,9 +70,13 @@ async function triggerGitHubRefresh(githubPat) {
       }
     );
   } catch (e) {
-    // Non-fatal — Notion write succeeded, refresh will happen on next hourly run
-    console.error('GitHub dispatch failed:', e.message);
+    console.error(`GitHub dispatch failed (${workflow}):`, e.message);
   }
+}
+
+function triggerGitHubRefresh(githubPat) {
+  triggerGitHubWorkflow(githubPat, 'update_places.yml');
+  triggerGitHubWorkflow(githubPat, 'enrich_places.yml');
 }
 
 // ── /save handler (Discover → new Place) ─────────────────────────────────────
