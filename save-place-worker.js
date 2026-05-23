@@ -217,23 +217,10 @@ export default {
     } else if (path === '/check-in') {
       return handleCheckIn(data, env, ctx);
     } else if (path === '/test-trigger') {
-      // Debug endpoint — test GitHub workflow dispatch directly
       const pat = env.GITHUB_PAT;
       if (!pat) return json({ ok: false, error: 'GITHUB_PAT secret not found' }, 500);
-      const resp = await fetch(
-        `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${GITHUB_WORKFLOW}/dispatches`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${pat}`,
-            'Accept':        'application/vnd.github+json',
-            'Content-Type':  'application/json',
-          },
-          body: JSON.stringify({ ref: GITHUB_BRANCH }),
-        }
-      );
-      const text = await resp.text();
-      return json({ ok: resp.ok, status: resp.status, body: text });
+      await triggerGitHubWorkflow(pat, GITHUB_WORKFLOW);
+      return json({ ok: true, message: 'Trigger sent' });
     } else {
       return json({ ok: false, error: `Unknown endpoint: ${path}` }, 404);
     }
