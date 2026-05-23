@@ -74,15 +74,19 @@ async function triggerGitHubWorkflow(githubPat, workflow) {
   }
 }
 
-function triggerGitHubRefresh(githubPat) {
-  triggerGitHubWorkflow(githubPat, 'update_places.yml');
-  // Delay enrich by 30s so Notion has time to make the new record queryable
-  setTimeout(() => triggerGitHubWorkflow(githubPat, 'enrich_places.yml'), 30000);
+function triggerGitHubRefresh(githubPat, ctx) {
+  // Immediate places.json refresh
+  ctx.waitUntil(triggerGitHubWorkflow(githubPat, 'update_places.yml'));
+  // Enrich 30s later — ctx.waitUntil keeps the Worker alive after response is sent
+  ctx.waitUntil(
+    new Promise(resolve => setTimeout(resolve, 30000))
+      .then(() => triggerGitHubWorkflow(githubPat, 'enrich_places.yml'))
+  );
 }
 
 // ── /save handler (Discover → new Place) ─────────────────────────────────────
 
-async function handleSave(data, env) {
+async function handleSave(data, env, ctx) {
   if (!data.name) {
     return json({ ok: false, error: 'name is required' }, 400);
   }
@@ -128,14 +132,14 @@ async function handleSave(data, env) {
   }
 
   // Fire-and-forget GitHub refresh
-  triggerGitHubRefresh(env.GITHUB_PAT);
+  triggerGitHubRefresh(env.GITHUB_PAT, ctx);
 
   return json({ ok: true, notion_id: result.id });
 }
 
 // ── /check-in handler (existing Place → new Visit record) ────────────────────
 
-async function handleCheckIn(data, env) {
+async function handleCheckIn(data, env, ctx) {
   if (!data.notion_id) {
     return json({ ok: false, error: 'notion_id of Place is required' }, 400);
   }
@@ -179,7 +183,7 @@ async function handleCheckIn(data, env) {
   }
 
   // Fire-and-forget GitHub refresh
-  triggerGitHubRefresh(env.GITHUB_PAT);
+  triggerGitHubRefresh(env.GITHUB_PAT, ctx);
 
   return json({ ok: true, visit_id: result.id });
 }
@@ -187,7 +191,7 @@ async function handleCheckIn(data, env) {
 // ── Main fetch handler ────────────────────────────────────────────────────────
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get('Origin') || '';
 
     if (request.method === 'OPTIONS') {
@@ -213,9 +217,9 @@ export default {
     const path = url.pathname;
 
     if (path === '/save') {
-      return handleSave(data, env);
+      return handleSave(data, env, ctx);
     } else if (path === '/check-in') {
-      return handleCheckIn(data, env);
+      return handleCheckIn(data, env, ctx);
     } else {
       return json({ ok: false, error: `Unknown endpoint: ${path}` }, 404);
     }
