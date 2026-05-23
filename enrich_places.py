@@ -42,8 +42,10 @@ CATEGORY_MAP = {
     "bar_and_grill": "Restaurant",
     # Bars
     "bar": "Bar", "night_club": "Bar", "cocktail_bar": "Bar",
-    "wine_bar": "Bar", "pub": "Bar", "brewery": "Bar",
+    "wine_bar": "Bar", "pub": "Bar", "irish_pub": "Bar",
+    "brewery": "Bar", "microbrewery": "Bar",
     "tapas_bar": "Bar", "sports_bar": "Bar",
+    "karaoke_bar": "Bar", "rooftop_bar": "Bar",
     # Cafes
     "cafe": "Cafe", "coffee_shop": "Cafe", "bakery": "Cafe",
     "tea_house": "Cafe", "dessert_shop": "Cafe", "ice_cream_shop": "Cafe",
@@ -89,7 +91,8 @@ CATEGORY_PRIORITY = [
     "breakfast_restaurant", "diner", "buffet_restaurant",
     "restaurant", "food", "meal_takeaway", "meal_delivery", "food_court",
     "bar_and_grill", "tapas_bar", "sports_bar",
-    "cocktail_bar", "wine_bar", "brewery", "pub", "bar", "night_club",
+    "cocktail_bar", "wine_bar", "irish_pub", "brewery", "microbrewery",
+    "pub", "bar", "night_club", "karaoke_bar", "rooftop_bar",
     "tea_house", "dessert_shop", "ice_cream_shop", "donut_shop",
     "juice_bar", "bagel_shop", "coffee_shop", "cafe", "bakery",
     "resort_hotel", "boutique_hotel", "bed_and_breakfast",

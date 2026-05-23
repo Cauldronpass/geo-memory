@@ -216,11 +216,6 @@ export default {
       return handleSave(data, env, ctx);
     } else if (path === '/check-in') {
       return handleCheckIn(data, env, ctx);
-    } else if (path === '/test-trigger') {
-      const pat = env.GITHUB_PAT;
-      if (!pat) return json({ ok: false, error: 'GITHUB_PAT secret not found' }, 500);
-      await triggerGitHubWorkflow(pat, GITHUB_WORKFLOW);
-      return json({ ok: true, message: 'Trigger sent' });
     } else {
       return json({ ok: false, error: `Unknown endpoint: ${path}` }, 404);
     }
