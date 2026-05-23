@@ -352,6 +352,55 @@ def patch_notion_page(page_id, enriched):
     resp.raise_for_status()
 
 
+def fetch_enriched_without_summary():
+    """Fetch Enriched records that have no AI Summary yet (Discover saves skip enrichment)."""
+    pages = []
+    cursor = None
+    while True:
+        body = {
+            "page_size": 100,
+            "filter": {
+                "and": [
+                    {"property": "Enrichment Status", "select": {"equals": "Enriched"}},
+                    {"property": "AI Summary", "rich_text": {"is_empty": True}},
+                ]
+            }
+        }
+        if cursor:
+            body["start_cursor"] = cursor
+        resp = requests.post(
+            f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
+            headers=notion_headers(),
+            json=body,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        pages.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+        time.sleep(0.3)
+    return pages
+
+
+def patch_ai_summary(page_id, ai_summary, ai_tag, existing_tags):
+    """Patch only the AI Summary (and optionally one AI tag if none exist)."""
+    props = {}
+    if ai_summary:
+        props["AI Summary"] = {"rich_text": [{"text": {"content": ai_summary}}]}
+    if ai_tag and not existing_tags:
+        # Only write tag if there are no existing tags — don't clobber user-set tags
+        props["Tags Raw"] = {"multi_select": [{"name": ai_tag}]}
+    if not props:
+        return
+    resp = requests.patch(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=notion_headers(),
+        json={"properties": props},
+    )
+    resp.raise_for_status()
+
+
 def mark_failed(page_id):
     """Mark a page as Needs Review if enrichment failed."""
     requests.patch(
@@ -416,6 +465,34 @@ def main():
         time.sleep(0.5)  # be polite to the API
 
     print(f"\nDone: {enriched_count} enriched, {failed_count} failed/needs review")
+
+    # ── Second pass: AI summary for Discover saves (Enriched but no summary) ──
+    if ANTHROPIC_API_KEY:
+        print("\nFetching Enriched records with blank AI Summary (Discover saves)…")
+        summary_pages = fetch_enriched_without_summary()
+        print(f"Found {len(summary_pages)} records needing AI summary")
+        summary_count = 0
+        for page in summary_pages:
+            props = page.get("properties", {})
+            name         = get_text(props.get("Name", {}))
+            category     = get_select(props.get("Category", {}))
+            neighborhood = get_text(props.get("Neighborhood", {}))
+            city         = get_text(props.get("City", {}))
+            country      = get_text(props.get("Country", {}))
+            address      = get_text(props.get("Address", {}))
+            page_id      = page["id"]
+            # Check for existing tags
+            existing_tags = [t["name"] for t in props.get("Tags Raw", {}).get("multi_select", [])]
+            print(f"  Summary: {name} ({city})")
+            try:
+                summary, tag = generate_summary_and_tag(name, category, neighborhood, city, country, address)
+                patch_ai_summary(page_id, summary, tag, existing_tags)
+                print(f"    ✓ Summary generated")
+                summary_count += 1
+            except Exception as e:
+                print(f"    ✗ Error: {e}")
+            time.sleep(0.5)
+        print(f"AI summaries added: {summary_count}")
 
 
 if __name__ == "__main__":

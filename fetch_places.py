@@ -51,6 +51,27 @@ def get_multi_select(prop):
     return [o.get("name", "") for o in prop.get("multi_select", [])]
 
 
+def get_rollup_number(prop):
+    """Extract a count/number from a Notion rollup property."""
+    if not prop:
+        return None
+    rollup = prop.get("rollup", {})
+    return rollup.get("number")
+
+
+def get_rollup_date(prop):
+    """Extract the start date string from a Notion rollup date property."""
+    if not prop:
+        return None
+    rollup = prop.get("rollup", {})
+    date_val = rollup.get("date")
+    if date_val:
+        raw = date_val.get("start", "")
+        # Return just YYYY-MM (e.g. "May 2026" displayed in UI)
+        return raw[:7] if raw else None
+    return None
+
+
 def fetch_all_pages():
     pages = []
     cursor = None
@@ -105,6 +126,9 @@ def main():
             "tags":            get_multi_select(props.get("Tags Raw")),
             "notion_id":       notion_id,
             "google_place_id": get_text(props.get("Google Place ID", {})),
+            # Rollup fields — populated once you add them to the Places DB in Notion
+            "visit_count":    get_rollup_number(props.get("Visit Count")),
+            "last_visited":   get_rollup_date(props.get("Last Visited")),
         })
 
     with open(OUT_PATH, "w") as f:

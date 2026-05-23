@@ -239,6 +239,8 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .btn-secondary { background: #f5f6fa; color: #1a1f2e; border: 1.5px solid #d0d4df; }
 .btn-save { background: #2e7d32; color: #fff; }
 .btn-save:active { background: #1b5e20; }
+.btn-checkin { background: #1565c0; color: #fff; }
+.btn-checkin:active { background: #0d47a1; }
 
 /* ── Save modal ──────────────────────────────────────────────────── */
 #save-overlay {
@@ -377,6 +379,104 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   min-height: 18px;
 }
 
+/* ── Check-in modal ──────────────────────────────────────────────── */
+#checkin-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 1500;
+  align-items: flex-end;
+  justify-content: center;
+}
+#checkin-overlay.open { display: flex; }
+#checkin-modal {
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 20px 20px 40px;
+  width: 100%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+#checkin-modal-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9aa3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 4px;
+}
+#checkin-modal-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a1f2e;
+  margin-bottom: 18px;
+  line-height: 1.3;
+}
+.occasion-picker {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.occasion-btn {
+  padding: 7px 13px;
+  border-radius: 20px;
+  border: 2px solid #e0e3ec;
+  background: #f5f6fa;
+  font-size: 12px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: all 0.12s;
+}
+.occasion-btn.active { border-color: #1a1f2e; background: #1a1f2e; color: #fff; }
+.sentiment-picker { display: flex; gap: 10px; margin-bottom: 20px; }
+.sentiment-btn {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  border: 2px solid #e0e3ec;
+  background: #f5f6fa;
+  font-size: 15px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  text-align: center;
+  -webkit-tap-highlight-color: transparent;
+  transition: all 0.12s;
+}
+.sentiment-btn.active-good { border-color: #2e7d32; background: #e8f5e9; color: #2e7d32; }
+.sentiment-btn.active-bad  { border-color: #c62828; background: #ffebee; color: #c62828; }
+#checkin-submit {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  background: #1565c0;
+  color: #fff;
+  border: none;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#checkin-submit:disabled { background: #9aa3b8; cursor: default; }
+#checkin-cancel {
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: #f5f6fa;
+  color: #1a1f2e;
+  border: 1.5px solid #d0d4df;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#checkin-status-msg { font-size: 13px; text-align: center; margin-top: 12px; min-height: 18px; }
+.visit-line { font-size: 12px; color: #3daa6e; font-weight: 600; margin-bottom: 10px; }
+
 /* ── Loading overlay ─────────────────────────────────────────────── */
 #loading {
   position: fixed; inset: 0;
@@ -481,6 +581,40 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   </div>
 </div>
 
+<div id="checkin-overlay" onclick="handleCheckInOverlayClick(event)">
+  <div id="checkin-modal">
+    <div id="checkin-modal-title">Check In</div>
+    <div id="checkin-modal-name"></div>
+
+    <div class="save-field-label">Date</div>
+    <input id="checkin-date" type="date" class="save-input" />
+
+    <div class="save-field-label">Occasion</div>
+    <div class="occasion-picker">
+      <button class="occasion-btn active" id="occ-solo"          onclick="pickOccasion('Solo')">Solo</button>
+      <button class="occasion-btn"        id="occ-date"          onclick="pickOccasion('Date/Partner')">Date/Partner</button>
+      <button class="occasion-btn"        id="occ-friends"       onclick="pickOccasion('Friends')">Friends</button>
+      <button class="occasion-btn"        id="occ-family"        onclick="pickOccasion('Family')">Family</button>
+      <button class="occasion-btn"        id="occ-client"        onclick="pickOccasion('Client/Work')">Client/Work</button>
+    </div>
+
+    <div class="save-field-label">How was it?</div>
+    <div class="sentiment-picker">
+      <button class="sentiment-btn active-good" id="pick-good" onclick="pickSentiment('Good')">👍 Good</button>
+      <button class="sentiment-btn"             id="pick-bad"  onclick="pickSentiment('Bad')">👎 Bad</button>
+    </div>
+
+    <div class="save-field-label">Notes <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+    <textarea id="checkin-notes" class="save-textarea" placeholder="What do you want to remember about this visit?"></textarea>
+
+    <div class="save-actions">
+      <button id="checkin-cancel" onclick="closeCheckInModal()">Cancel</button>
+      <button id="checkin-submit" onclick="submitCheckIn()">Check In</button>
+    </div>
+    <div id="checkin-status-msg"></div>
+  </div>
+</div>
+
 <div id="loading">
   <div class="spinner"></div>
   <div>Loading your places…</div>
@@ -553,6 +687,8 @@ let currentMode = 'myplaces', activeStatus = 'all';
 let activeCategories = new Set(Object.keys(CATEGORY_COLORS));
 let _discoverPlaces = [], _discoverMyPlaces = [];
 let _saveIndex = -1, _saveStatus = 'Want to Visit';
+let _checkInNotionId = null, _checkInPlaceName = '';
+let _checkInOccasion = 'Solo', _checkInSentiment = 'Good';
 
 const map = L.map('map', { zoomControl: true }).setView([39.5, -95.0], 4);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -756,8 +892,13 @@ function showMyPlaceDetail(p) {
   if (p.rating) { const s = '★'.repeat(Math.round(p.rating)) + '☆'.repeat(5 - Math.round(p.rating)); html += `<div class="detail-row"><span class="detail-key">My rating</span><span class="detail-val">${s} ${p.rating}</span></div>`; }
   if (p.notes) html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(p.notes)}</span></div>`;
   if (p.tags && p.tags.length) html += `<div class="detail-row"><span class="detail-key">Tags</span><span class="detail-val">${p.tags.map(esc).join(', ')}</span></div>`;
+  if (p.visit_count) {
+    const last = p.last_visited ? ' · Last: ' + p.last_visited : '';
+    html += `<div class="detail-row"><span class="detail-key">Visits</span><span class="detail-val" style="color:#3daa6e;font-weight:600">${p.visit_count} visit${p.visit_count !== 1 ? 's' : ''}${esc(last)}</span></div>`;
+  }
   html += `<div class="detail-actions">`;
   if (p.lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
+  if (p.notion_id) html += `<button class="btn-action btn-checkin" onclick="openCheckInModal('${esc(p.notion_id)}','${esc(p.name)}')">Check In</button>`;
   if (p.notion_id) html += `<a href="https://www.notion.so/${p.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
   html += `</div>`;
   document.getElementById('detail-body').innerHTML = html;
@@ -845,7 +986,7 @@ async function submitSave() {
     google_maps_url: gp.googleMapsUri || '', rating_external: gp.rating ?? null,
   };
   try {
-    const resp = await fetch(WORKER_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const resp = await fetch(WORKER_URL + '/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const result = await resp.json();
     if (result.ok) {
       btn.textContent = 'Saved!'; btn.style.background = '#2e7d32';
@@ -857,6 +998,81 @@ async function submitSave() {
     btn.disabled = false; btn.textContent = 'Save to Notion';
     document.getElementById('save-status-msg').textContent = 'Save failed: ' + e.message;
     document.getElementById('save-status-msg').style.color = '#c00';
+  }
+}
+
+// ── Check-in functions ────────────────────────────────────────────────────────
+
+function openCheckInModal(notionId, placeName) {
+  _checkInNotionId = notionId;
+  _checkInPlaceName = placeName;
+  _checkInOccasion = 'Solo';
+  _checkInSentiment = 'Good';
+  document.getElementById('checkin-modal-name').textContent = placeName;
+  // Set date to today
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('checkin-date').value = today;
+  document.getElementById('checkin-notes').value = '';
+  document.getElementById('checkin-status-msg').textContent = '';
+  document.getElementById('checkin-submit').disabled = false;
+  document.getElementById('checkin-submit').textContent = 'Check In';
+  document.getElementById('checkin-submit').style.background = '';
+  // Reset occasion buttons
+  ['solo','date','friends','family','client'].forEach(id => {
+    document.getElementById('occ-' + id).classList.remove('active');
+  });
+  document.getElementById('occ-solo').classList.add('active');
+  // Reset sentiment
+  document.getElementById('pick-good').className = 'sentiment-btn active-good';
+  document.getElementById('pick-bad').className = 'sentiment-btn';
+  document.getElementById('checkin-overlay').classList.add('open');
+  setTimeout(() => document.getElementById('checkin-notes').focus(), 200);
+}
+
+function pickOccasion(val) {
+  _checkInOccasion = val;
+  const map = { 'Solo':'solo', 'Date/Partner':'date', 'Friends':'friends', 'Family':'family', 'Client/Work':'client' };
+  Object.values(map).forEach(id => document.getElementById('occ-' + id).classList.remove('active'));
+  document.getElementById('occ-' + map[val]).classList.add('active');
+}
+
+function pickSentiment(val) {
+  _checkInSentiment = val;
+  document.getElementById('pick-good').className = val === 'Good' ? 'sentiment-btn active-good' : 'sentiment-btn';
+  document.getElementById('pick-bad').className  = val === 'Bad'  ? 'sentiment-btn active-bad'  : 'sentiment-btn';
+}
+
+function closeCheckInModal() { document.getElementById('checkin-overlay').classList.remove('open'); }
+function handleCheckInOverlayClick(e) { if (e.target === document.getElementById('checkin-overlay')) closeCheckInModal(); }
+
+async function submitCheckIn() {
+  if (!_checkInNotionId) return;
+  const btn = document.getElementById('checkin-submit');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  document.getElementById('checkin-status-msg').textContent = '';
+  const payload = {
+    notion_id:  _checkInNotionId,
+    place_name: _checkInPlaceName,
+    date:       document.getElementById('checkin-date').value,
+    occasion:   _checkInOccasion,
+    sentiment:  _checkInSentiment,
+    notes:      document.getElementById('checkin-notes').value.trim(),
+  };
+  try {
+    const resp = await fetch(WORKER_URL + '/check-in', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      btn.textContent = 'Checked In!'; btn.style.background = '#1565c0';
+      document.getElementById('checkin-status-msg').textContent = 'Visit saved to Notion.';
+      document.getElementById('checkin-status-msg').style.color = '#1565c0';
+      setTimeout(closeCheckInModal, 1800);
+    } else { throw new Error(result.error || 'Unknown error'); }
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Check In';
+    document.getElementById('checkin-status-msg').textContent = 'Failed: ' + e.message;
+    document.getElementById('checkin-status-msg').style.color = '#c00';
   }
 }
 
