@@ -106,6 +106,10 @@ async function handleSave(data, env, ctx) {
   if (data.category)             props['Category']         = { select: { name: data.category } };
   if (data.google_maps_url)      props['Google Maps URL']  = { url: data.google_maps_url };
   if (data.rating_external != null) props['Rating External'] = { number: data.rating_external };
+  if (data.phone)                props['Phone']             = { phone_number: data.phone };
+  if (data.website)              props['Website']           = { url: data.website };
+  if (data.price_level != null)  props['Price Level']       = { number: data.price_level };
+  if (data.hours)                props['Hours']             = rt(data.hours);
 
   const notionResp = await fetch('https://api.notion.com/v1/pages', {
     method: 'POST',
