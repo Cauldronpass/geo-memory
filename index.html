@@ -601,19 +601,20 @@ function renderDiscoverResults(places, query) {
     const lat = gp.location?.latitude;
     const lng = gp.location?.longitude;
     const name = gp.displayName?.text || 'Unknown';
-    const category = googleTypeToCategory(gp.primaryType);
-    const color = CATEGORY_COLORS[category] || '#909090';
     const myPlace = _discoverMyPlaces[i];
     if (myPlace) matchCount++;
+
+    // Pin colors: gold = in your database, grey = not
+    const pinColor = myPlace ? '#f5c518' : '#8899aa';
+    const pinBorder = myPlace ? '#b8960a' : '#fff';
 
     // Map pin
     if (lat != null && lng != null) {
       bounds.push([lat, lng]);
-      const pinColor = myPlace ? '#f5c518' : color;
       const m = L.circleMarker([lat, lng], {
         radius: myPlace ? 11 : 9,
         fillColor: pinColor,
-        color: myPlace ? '#b8960a' : '#fff',
+        color: pinBorder,
         weight: myPlace ? 2.5 : 1.5,
         fillOpacity: 0.88,
         opacity: 1,
@@ -630,7 +631,7 @@ function renderDiscoverResults(places, query) {
       html: `
         <div class="discover-card${myPlace ? ' matched' : ''}" onclick="showDiscoverDetail(${i})">
           <div class="dc-dot-wrap">
-            <div class="dc-dot" style="background:${myPlace ? '#f5c518' : color}"></div>
+            <div class="dc-dot" style="background:${pinColor}"></div>
           </div>
           <div class="dc-body">
             <div class="dc-name">${esc(name)}</div>
