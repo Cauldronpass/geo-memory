@@ -1385,13 +1385,13 @@ async function fetchAddressOptions(lat, lng) {
       `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${GOOGLE_API_KEY}`
     );
     const data = await resp.json();
-    // Filter to street-level results (have street_number component)
-    const streetResults = (data.results || []).filter(r =>
-      r.address_components.some(c => c.types.includes('street_number'))
+    // Take up to 4 results, preferring street-level but falling back to anything
+    const results = data.results || [];
+    const withStreet = results.filter(r =>
+      r.address_components.some(c => c.types.includes('route'))
     ).slice(0, 4);
-
-    const options = streetResults.map(r => r.formatted_address);
-    if (!options.length) options.push(data.results?.[0]?.formatted_address || '');
+    const options = (withStreet.length ? withStreet : results.slice(0, 4))
+      .map(r => r.formatted_address).filter(Boolean);
 
     el.innerHTML = '';
     options.filter(Boolean).forEach(addr => {
