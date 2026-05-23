@@ -780,6 +780,7 @@ searchInput.addEventListener('input', () => {
     const div = document.createElement('div');
     div.className = 'search-result-item';
     div.innerHTML = `<span class="sri-name">${esc(p.name)}</span><span class="sri-meta">${esc([p.category, p.city].filter(Boolean).join(' · '))}</span>`;
+    div.addEventListener('mousedown', e => { e.preventDefault(); });
     div.addEventListener('click', () => {
       searchResultsEl.style.display = 'none'; searchInput.value = ''; searchInput.blur();
       if (p.lat != null) map.setView([p.lat, p.lng], 14, { animate: true });
@@ -789,7 +790,7 @@ searchInput.addEventListener('input', () => {
   }
   searchResultsEl.style.display = 'block';
 });
-searchInput.addEventListener('blur', () => { setTimeout(() => { searchResultsEl.style.display = 'none'; }, 150); });
+searchInput.addEventListener('blur', () => { setTimeout(() => { searchResultsEl.style.display = 'none'; }, 300); });
 
 function switchMode(mode) {
   currentMode = mode; closeDetail();
