@@ -1493,7 +1493,7 @@ async function fetchAddressOptions(lat, lng) {
     if (!addresses.length) {
       const msg = document.createElement('div');
       msg.style.cssText = 'color:#bbb;font-size:13px;padding:6px 0 8px';
-      msg.textContent = 'No addresses found nearby.';
+      msg.textContent = `No addresses found nearby. (status: ${data._debug?.status}, count: ${data._debug?.count})`;
       el.appendChild(msg);
     }
     const later = document.createElement('button');
