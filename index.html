@@ -497,18 +497,52 @@ const CATEGORY_COLORS = {
 };
 
 const GOOGLE_TYPE_MAP = {
+  // ── Restaurants (all cuisine types) ───────────────────────────────
   restaurant: 'Restaurant', food: 'Restaurant', meal_delivery: 'Restaurant',
-  meal_takeaway: 'Restaurant', hamburger_restaurant: 'Restaurant',
-  pizza_restaurant: 'Restaurant', seafood_restaurant: 'Restaurant',
-  sushi_restaurant: 'Restaurant', steak_house: 'Restaurant',
+  meal_takeaway: 'Restaurant', american_restaurant: 'Restaurant',
+  hamburger_restaurant: 'Restaurant', pizza_restaurant: 'Restaurant',
+  seafood_restaurant: 'Restaurant', sushi_restaurant: 'Restaurant',
+  steak_house: 'Restaurant', mexican_restaurant: 'Restaurant',
+  taco_restaurant: 'Restaurant', italian_restaurant: 'Restaurant',
+  chinese_restaurant: 'Restaurant', japanese_restaurant: 'Restaurant',
+  thai_restaurant: 'Restaurant', indian_restaurant: 'Restaurant',
+  french_restaurant: 'Restaurant', greek_restaurant: 'Restaurant',
+  korean_restaurant: 'Restaurant', vietnamese_restaurant: 'Restaurant',
+  mediterranean_restaurant: 'Restaurant', middle_eastern_restaurant: 'Restaurant',
+  spanish_restaurant: 'Restaurant', ramen_restaurant: 'Restaurant',
+  bbq_restaurant: 'Restaurant', sandwich_shop: 'Restaurant',
+  fast_food_restaurant: 'Restaurant', brunch_restaurant: 'Restaurant',
+  breakfast_restaurant: 'Restaurant', diner: 'Restaurant',
+  buffet_restaurant: 'Restaurant', fine_dining_restaurant: 'Restaurant',
+  food_court: 'Restaurant', bar_and_grill: 'Restaurant',
+  // ── Bars ──────────────────────────────────────────────────────────
   bar: 'Bar', night_club: 'Bar', cocktail_bar: 'Bar', wine_bar: 'Bar',
-  pub: 'Bar', bar_and_grill: 'Bar',
-  cafe: 'Cafe', coffee_shop: 'Cafe', bakery: 'Cafe',
+  pub: 'Bar', brewery: 'Bar', tapas_bar: 'Bar', sports_bar: 'Bar',
+  // ── Cafes ─────────────────────────────────────────────────────────
+  cafe: 'Cafe', coffee_shop: 'Cafe', bakery: 'Cafe', tea_house: 'Cafe',
+  dessert_shop: 'Cafe', ice_cream_shop: 'Cafe', donut_shop: 'Cafe',
+  juice_bar: 'Cafe', bagel_shop: 'Cafe',
+  // ── Hotels ────────────────────────────────────────────────────────
   lodging: 'Hotel', hotel: 'Hotel', motel: 'Hotel', inn: 'Hotel',
+  bed_and_breakfast: 'Hotel', resort_hotel: 'Hotel', hostel: 'Hotel',
+  extended_stay_hotel: 'Hotel', boutique_hotel: 'Hotel',
+  // ── Shops ─────────────────────────────────────────────────────────
   store: 'Shop', shopping_mall: 'Shop', clothing_store: 'Shop',
+  grocery_store: 'Shop', supermarket: 'Shop', convenience_store: 'Shop',
+  liquor_store: 'Shop', book_store: 'Shop', gift_shop: 'Shop',
+  jewelry_store: 'Shop', shoe_store: 'Shop', department_store: 'Shop',
+  electronics_store: 'Shop', furniture_store: 'Shop', florist: 'Shop',
+  pharmacy: 'Shop', drug_store: 'Shop',
+  // ── Attractions ───────────────────────────────────────────────────
   tourist_attraction: 'Attraction', museum: 'Attraction',
   park: 'Attraction', amusement_park: 'Attraction', art_gallery: 'Attraction',
-  event_venue: 'Venue', convention_center: 'Venue',
+  zoo: 'Attraction', aquarium: 'Attraction', national_park: 'Attraction',
+  botanical_garden: 'Attraction', historic_site: 'Attraction',
+  monument: 'Attraction', stadium: 'Attraction', theater: 'Attraction',
+  movie_theater: 'Attraction', bowling_alley: 'Attraction',
+  // ── Venues ────────────────────────────────────────────────────────
+  event_venue: 'Venue', convention_center: 'Venue', banquet_hall: 'Venue',
+  concert_hall: 'Venue', comedy_club: 'Venue', jazz_club: 'Venue',
 };
 
 function googleTypeToCategory(t) { return GOOGLE_TYPE_MAP[t] || 'Other'; }
