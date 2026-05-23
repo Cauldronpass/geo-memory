@@ -423,8 +423,7 @@ def main():
     print(f"Found {len(pages)} records to enrich")
 
     if not pages:
-        print("Nothing to do.")
-        return
+        print("No New records to enrich — checking for missing AI summaries…")
 
     enriched_count = 0
     failed_count = 0
