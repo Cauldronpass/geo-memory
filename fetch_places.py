@@ -126,7 +126,8 @@ def main():
             "tags":            get_multi_select(props.get("Tags Raw")),
             "notion_id":       notion_id,
             "google_place_id": get_text(props.get("Google Place ID", {})),
-            # Rollup fields — populated once you add them to the Places DB in Notion
+            "ai_summary":      get_text(props.get("AI Summary", {})),
+            # Rollup fields
             "visit_count":    get_rollup_number(props.get("Visit Count")),
             "last_visited":   get_rollup_date(props.get("Last Visited")),
         })
