@@ -140,16 +140,20 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 #discover-hint { font-size: 11px; color: #9aa3b8; margin-top: 5px; }
 
 /* ── Map ─────────────────────────────────────────────────────────── */
-#map { z-index: 0; flex-shrink: 0; }
-#map.myplaces-mode { flex: 1; }
-#map.discover-mode { height: 38vh; }
+#map { z-index: 0; flex: 1; }
 
-/* ── Discover results ────────────────────────────────────────────── */
+/* ── Discover results — fixed bottom sheet ───────────────────────── */
 #discover-results {
   display: none;
-  flex: 1;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 42vh;
+  background: #f5f6fa;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  z-index: 800;
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -3px 16px rgba(0,0,0,0.12);
 }
 .discover-card {
   display: flex;
@@ -525,8 +529,12 @@ function switchMode(mode) {
     setTimeout(() => document.getElementById('discover-input').focus(), 100);
   }
 
-  void mapEl.offsetHeight; // force browser layout recalc before Leaflet measures
-  map.invalidateSize(false);
+  // Double rAF: first frame applies styles, second frame Leaflet measures the new size
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      map.invalidateSize(false);
+    });
+  });
 }
 
 // ── Discover: Google Places search ───────────────────────────────────────────
@@ -603,7 +611,7 @@ function renderDiscoverResults(places, query) {
       bounds.push([lat, lng]);
       const pinColor = myPlace ? '#f5c518' : color;
       const m = L.circleMarker([lat, lng], {
-        radius: myPlace ? 9 : 7,
+        radius: myPlace ? 11 : 9,
         fillColor: pinColor,
         color: myPlace ? '#b8960a' : '#fff',
         weight: myPlace ? 2.5 : 1.5,
