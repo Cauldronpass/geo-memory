@@ -65,6 +65,7 @@ async function triggerGitHubWorkflow(githubPat, workflow) {
           'Authorization': `Bearer ${githubPat}`,
           'Accept':        'application/vnd.github+json',
           'Content-Type':  'application/json',
+          'User-Agent':    'geo-memory-worker',
         },
         body: JSON.stringify({ ref: GITHUB_BRANCH }),
       }
