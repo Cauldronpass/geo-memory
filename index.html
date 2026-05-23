@@ -926,11 +926,46 @@ function showMyPlaceDetail(p) {
   }
   html += `<div class="detail-tab-panel active" data-panel="overview">${overview}</div>`;
 
-  // ── Info panel (stub — tomorrow) ──────────────────────────────────
-  html += `<div class="detail-tab-panel" data-panel="info"><div class="detail-stub">Phone, hours &amp; website — coming soon</div></div>`;
+  // ── Info panel ────────────────────────────────────────────────────
+  let info = '';
+  if (p.phone) info += `<div class="detail-row"><span class="detail-key">Phone</span><span class="detail-val"><a href="tel:${esc(p.phone)}" style="color:#4a90d9;text-decoration:none">${esc(p.phone)}</a></span></div>`;
+  if (p.website) {
+    let domain = p.website;
+    try { domain = new URL(p.website).hostname.replace(/^www\./, ''); } catch(e) {}
+    info += `<div class="detail-row"><span class="detail-key">Website</span><span class="detail-val"><a href="${esc(p.website)}" target="_blank" rel="noopener" style="color:#4a90d9;text-decoration:none">${esc(domain)}</a></span></div>`;
+  }
+  if (p.price_level != null) info += `<div class="detail-row"><span class="detail-key">Price</span><span class="detail-val">${'$'.repeat(p.price_level)}</span></div>`;
+  if (p.rating_external != null) {
+    const gs = '★'.repeat(Math.round(p.rating_external)) + '☆'.repeat(5 - Math.round(p.rating_external));
+    info += `<div class="detail-row"><span class="detail-key">Google</span><span class="detail-val">${gs} ${p.rating_external.toFixed(1)}</span></div>`;
+  }
+  if (p.hours) {
+    const todayName = new Date().toLocaleDateString('en-US', {weekday: 'long'});
+    const hourLines = p.hours.split('\n');
+    const todayLine = hourLines.find(l => l.startsWith(todayName));
+    if (todayLine) info += `<div class="detail-row"><span class="detail-key">Today</span><span class="detail-val" style="color:#3daa6e;font-weight:500">${esc(todayLine.replace(todayName + ': ', ''))}</span></div>`;
+    info += `<div class="detail-row"><span class="detail-key">All hours</span><span class="detail-val"><details><summary style="color:#9aa3b8;font-size:12px;cursor:pointer;list-style:none">See all ▾</summary><div style="margin-top:6px;font-size:12px;color:#555;line-height:1.7">${hourLines.map(esc).join('<br>')}</div></details></span></div>`;
+  }
+  if (!info) info = '<div class="detail-stub">No enrichment data yet</div>';
+  html += `<div class="detail-tab-panel" data-panel="info">${info}</div>`;
 
-  // ── Visits panel (stub — tomorrow) ───────────────────────────────
-  html += `<div class="detail-tab-panel" data-panel="visits"><div class="detail-stub">Visit history — coming soon</div></div>`;
+  // ── Visits panel ─────────────────────────────────────────────────
+  let visitsHtml = '';
+  const hasSnap = p.last_visit_date || p.last_visit_sentiment || p.last_visit_occasion || p.last_visit_notes;
+  if (hasSnap) {
+    if (p.last_visit_sentiment) {
+      const vibe = p.last_visit_sentiment === '👍' ? '<span style="font-size:18px">👍</span> Good' : p.last_visit_sentiment === '👎' ? '<span style="font-size:18px">👎</span> Bad' : esc(p.last_visit_sentiment);
+      visitsHtml += `<div class="detail-row"><span class="detail-key">Last vibe</span><span class="detail-val">${vibe}</span></div>`;
+    }
+    if (p.last_visit_date) visitsHtml += `<div class="detail-row"><span class="detail-key">Date</span><span class="detail-val">${esc(p.last_visit_date)}</span></div>`;
+    if (p.last_visit_occasion) visitsHtml += `<div class="detail-row"><span class="detail-key">Occasion</span><span class="detail-val">${esc(p.last_visit_occasion)}</span></div>`;
+    if (p.last_visit_notes) visitsHtml += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(p.last_visit_notes)}</span></div>`;
+  } else if (p.visit_count) {
+    visitsHtml = '<div class="detail-stub">Visited but no detail recorded</div>';
+  } else {
+    visitsHtml = '<div class="detail-stub">Not visited yet</div>';
+  }
+  html += `<div class="detail-tab-panel" data-panel="visits">${visitsHtml}</div>`;
 
   // ── Action buttons (always visible, outside tabs) ─────────────────
   html += `<div class="detail-actions">`;
