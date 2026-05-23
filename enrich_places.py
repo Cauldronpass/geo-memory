@@ -296,8 +296,15 @@ def generate_summary_and_tag(name, category, neighborhood, city, country, addres
             },
         )
         resp.raise_for_status()
-        import json as json_lib
+        import json as json_lib, re as re_lib
         text = resp.json()["content"][0]["text"].strip()
+        # Strip markdown code fences if Claude wrapped the JSON
+        text = re_lib.sub(r'^```[a-z]*\s*', '', text)
+        text = re_lib.sub(r'\s*```$', '', text.strip()).strip()
+        # Fallback: extract first {...} block
+        if not text.startswith('{'):
+            m = re_lib.search(r'\{.*\}', text, re_lib.DOTALL)
+            text = m.group(0) if m else text
         data = json_lib.loads(text)
         return data.get("summary", ""), data.get("tag", "")
     except Exception as e:
