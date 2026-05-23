@@ -758,7 +758,7 @@ function showDiscoverDetail(i) {
     const zoom = 15;
     const sheetH = window.innerHeight * 0.42; // matches #discover-results height
     const pt = map.project([lat, lng], zoom);
-    const adjusted = map.unproject([pt.x, pt.y - sheetH / 2], zoom);
+    const adjusted = map.unproject([pt.x, pt.y + sheetH / 2], zoom);
     map.setView(adjusted, zoom, { animate: true });
   }
 }
