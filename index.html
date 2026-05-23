@@ -1343,7 +1343,7 @@ function openDropPin() {
     fetchNearbyForPin(_dropPinLat, _dropPinLng);
   }, () => {
     document.getElementById('droppin-location-hint').textContent = 'Could not get location — check permissions.';
-  }, { enableHighAccuracy: true, timeout: 10000 });
+  }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 });
 }
 
 async function fetchNearbyForPin(lat, lng) {
