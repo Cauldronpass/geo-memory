@@ -76,7 +76,8 @@ async function triggerGitHubWorkflow(githubPat, workflow) {
 
 function triggerGitHubRefresh(githubPat) {
   triggerGitHubWorkflow(githubPat, 'update_places.yml');
-  triggerGitHubWorkflow(githubPat, 'enrich_places.yml');
+  // Delay enrich by 15s so Notion has time to make the new record queryable
+  setTimeout(() => triggerGitHubWorkflow(githubPat, 'enrich_places.yml'), 15000);
 }
 
 // ── /save handler (Discover → new Place) ─────────────────────────────────────
