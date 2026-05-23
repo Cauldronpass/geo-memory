@@ -84,6 +84,19 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .status-btn { padding: 4px 11px; border-radius: 20px; border: 1.5px solid #d0d4df; background: #fff; color: #444; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
 .status-btn.active { background: #1a1f2e; color: #fff; border-color: #1a1f2e; }
 .cat-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.status-option { padding: 9px 12px; font-size: 13px; color: #555; cursor: pointer; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+.status-option:active { background: #f5f6fa; }
+.status-option.active-opt { font-weight: 700; color: #1a1f2e; }
+#locate-btn {
+  position: fixed; right: 14px; bottom: 96px; z-index: 500;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: #fff; border: 2px solid rgba(0,0,0,0.2);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: #1a1f2e; -webkit-tap-highlight-color: transparent;
+}
+#locate-btn:active { background: #f0f2f7; }
+#locate-btn.locating { opacity: 0.45; }
 
 /* Local search dropdown */
 #search-results {
@@ -553,7 +566,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .tag-dropdown-btn.filtered { background: #1a1f2e; color: #fff; border-color: #1a1f2e; }
 .tag-dropdown-panel {
-  display: none; position: absolute; top: calc(100% + 6px); right: 0;
+  display: none; position: absolute; top: calc(100% + 6px); left: 0;
   background: #fff; border-radius: 12px;
   box-shadow: 0 4px 24px rgba(0,0,0,0.16); z-index: 600;
   min-width: 200px; max-height: 260px; overflow-y: auto;
@@ -596,30 +609,32 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
     </div>
     <div id="filters">
       <div class="filter-row">
-        <span class="filter-label">Status</span>
-        <button class="status-btn active" data-status="all">All</button>
-        <button class="status-btn" data-status="Visited">Visited</button>
-        <button class="status-btn" data-status="Want to Visit">Want to Visit</button>
-        <div style="margin-left:auto;display:flex;gap:6px;flex-shrink:0">
-          <div class="tag-dropdown-wrap">
-            <button class="tag-dropdown-btn" id="cat-dropdown-btn" onclick="toggleCatDropdown(event)">Category ▾</button>
-            <div class="tag-dropdown-panel" id="cat-dropdown-panel">
-              <div class="tag-ddl-actions">
-                <button class="tag-ddl-action" onclick="catSelectAll()">Select all</button>
-                <button class="tag-ddl-action" onclick="catDeselectAll()">Deselect all</button>
-              </div>
-              <div id="cat-checkbox-list"></div>
-            </div>
+        <div class="tag-dropdown-wrap">
+          <button class="tag-dropdown-btn" id="status-dropdown-btn" onclick="toggleStatusDropdown(event)">All ▾</button>
+          <div class="tag-dropdown-panel" id="status-dropdown-panel">
+            <div class="status-option active-opt" data-val="all" onclick="pickStatusDd('all')">All</div>
+            <div class="status-option" data-val="Visited" onclick="pickStatusDd('Visited')">Visited</div>
+            <div class="status-option" data-val="Want to Visit" onclick="pickStatusDd('Want to Visit')">Want to Visit</div>
           </div>
-          <div class="tag-dropdown-wrap" id="tag-dropdown-wrap" style="display:none">
-            <button class="tag-dropdown-btn" id="tag-dropdown-btn" onclick="toggleTagDropdown(event)">All tags ▾</button>
-            <div class="tag-dropdown-panel" id="tag-dropdown-panel">
-              <div class="tag-ddl-actions">
-                <button class="tag-ddl-action" onclick="tagSelectAll()">Select all</button>
-                <button class="tag-ddl-action" onclick="tagDeselectAll()">Deselect all</button>
-              </div>
-              <div id="tag-checkbox-list"></div>
+        </div>
+        <div class="tag-dropdown-wrap">
+          <button class="tag-dropdown-btn" id="cat-dropdown-btn" onclick="toggleCatDropdown(event)">Category ▾</button>
+          <div class="tag-dropdown-panel" id="cat-dropdown-panel">
+            <div class="tag-ddl-actions">
+              <button class="tag-ddl-action" onclick="catSelectAll()">Select all</button>
+              <button class="tag-ddl-action" onclick="catDeselectAll()">Deselect all</button>
             </div>
+            <div id="cat-checkbox-list"></div>
+          </div>
+        </div>
+        <div class="tag-dropdown-wrap" id="tag-dropdown-wrap" style="display:none">
+          <button class="tag-dropdown-btn" id="tag-dropdown-btn" onclick="toggleTagDropdown(event)">All tags ▾</button>
+          <div class="tag-dropdown-panel" id="tag-dropdown-panel">
+            <div class="tag-ddl-actions">
+              <button class="tag-ddl-action" onclick="tagSelectAll()">Select all</button>
+              <button class="tag-ddl-action" onclick="tagDeselectAll()">Deselect all</button>
+            </div>
+            <div id="tag-checkbox-list"></div>
           </div>
         </div>
       </div>
@@ -636,6 +651,12 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 
   <div id="map"></div>
   <div id="discover-results"></div>
+  <button id="locate-btn" onclick="locateMe()">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/>
+      <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
+    </svg>
+  </button>
 
 </div>
 
@@ -974,9 +995,30 @@ function buildCategoryFilters() {
   updateCatDropdownLabel();
 }
 
+function toggleStatusDropdown(e) {
+  e.stopPropagation();
+  document.getElementById('status-dropdown-panel').classList.toggle('open');
+  document.getElementById('cat-dropdown-panel').classList.remove('open');
+  document.getElementById('tag-dropdown-panel').classList.remove('open');
+}
+
+function pickStatusDd(val) {
+  activeStatus = val;
+  const labels = { 'all': 'All', 'Visited': 'Visited', 'Want to Visit': 'Want to Visit' };
+  const btn = document.getElementById('status-dropdown-btn');
+  btn.textContent = labels[val] + ' ▾';
+  btn.classList.toggle('filtered', val !== 'all');
+  document.querySelectorAll('.status-option').forEach(el => {
+    el.classList.toggle('active-opt', el.dataset.val === val);
+  });
+  document.getElementById('status-dropdown-panel').classList.remove('open');
+  applyFilters();
+}
+
 function toggleCatDropdown(e) {
   e.stopPropagation();
   document.getElementById('cat-dropdown-panel').classList.toggle('open');
+  document.getElementById('status-dropdown-panel').classList.remove('open');
   document.getElementById('tag-dropdown-panel').classList.remove('open');
 }
 
@@ -1038,6 +1080,7 @@ function buildTagFilters() {
 function toggleTagDropdown(e) {
   e.stopPropagation();
   document.getElementById('tag-dropdown-panel').classList.toggle('open');
+  document.getElementById('status-dropdown-panel').classList.remove('open');
   document.getElementById('cat-dropdown-panel').classList.remove('open');
 }
 
@@ -1067,7 +1110,7 @@ function updateTagDropdownLabel() {
 
 // Close dropdowns when clicking outside
 document.addEventListener('click', (e) => {
-  ['cat-dropdown-panel', 'tag-dropdown-panel'].forEach(id => {
+  ['status-dropdown-panel', 'cat-dropdown-panel', 'tag-dropdown-panel'].forEach(id => {
     const panel = document.getElementById(id);
     if (panel && panel.classList.contains('open')) {
       const wrap = panel.closest('.tag-dropdown-wrap');
@@ -1111,14 +1154,6 @@ function applyFilters() {
   document.getElementById('count').textContent = `${shown} of ${allPlaces.filter(p => p.lat != null).length} places`;
 }
 
-document.querySelectorAll('.status-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.status-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    activeStatus = btn.dataset.status;
-    applyFilters();
-  });
-});
 
 const searchInput = document.getElementById('search-input');
 const searchResultsEl = document.getElementById('search-results');
@@ -1787,6 +1822,25 @@ async function submitDropPin() {
 function closeDetail() { document.getElementById('detail').classList.remove('open'); }
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+let _locateMarker = null;
+function locateMe() {
+  if (!navigator.geolocation) return;
+  const btn = document.getElementById('locate-btn');
+  btn.classList.add('locating');
+  navigator.geolocation.getCurrentPosition(pos => {
+    btn.classList.remove('locating');
+    const lat = pos.coords.latitude, lng = pos.coords.longitude;
+    map.flyTo([lat, lng], 15, { animate: true, duration: 1.2 });
+    if (_locateMarker) _locateMarker.remove();
+    _locateMarker = L.circleMarker([lat, lng], {
+      radius: 9, fillColor: '#4a90d9', color: '#fff', weight: 2.5, fillOpacity: 0.95
+    }).addTo(map);
+    setTimeout(() => { if (_locateMarker) { _locateMarker.remove(); _locateMarker = null; } }, 4000);
+  }, () => {
+    btn.classList.remove('locating');
+  }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 30000 });
 }
 </script>
 </body>
