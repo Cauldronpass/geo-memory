@@ -75,10 +75,8 @@ async function triggerGitHubWorkflow(githubPat, workflow) {
 }
 
 function triggerGitHubRefresh(githubPat, ctx) {
-  // Trigger both immediately — GitHub Actions takes 30-60s to spin up,
-  // which gives Notion enough time to make the new record queryable
+  // update_places.yml now runs enrich first, then fetch — one trigger does everything
   ctx.waitUntil(triggerGitHubWorkflow(githubPat, 'update_places.yml'));
-  ctx.waitUntil(triggerGitHubWorkflow(githubPat, 'enrich_places.yml'));
 }
 
 // ── /save handler (Discover → new Place) ─────────────────────────────────────

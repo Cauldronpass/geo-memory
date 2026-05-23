@@ -24,6 +24,13 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
+      - name: Enrich new places and generate AI summaries
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python enrich_places.py
+
       - name: Fetch places from Notion
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
