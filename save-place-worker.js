@@ -200,14 +200,14 @@ async function handleGeocode(data, env) {
     return json({ ok: false, error: 'lat and lng are required' }, 400);
   }
   const resp = await fetch(
-    `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${env.GOOGLE_PLACES_API_KEY}`
+    `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${env.GOOGLE_PLACES_API_KEY}`,
+    { headers: { 'Referer': 'https://cauldronpass.github.io/' } }
   );
   const result = await resp.json();
-  const results = (result.results || [])
-    .filter(r => r.address_components.some(c => c.types.includes('route')))
-    .slice(0, 5)
-    .map(r => r.formatted_address);
-  return json({ ok: true, addresses: results });
+  const all = result.results || [];
+  const withRoute = all.filter(r => r.address_components.some(c => c.types.includes('route')));
+  const addresses = (withRoute.length ? withRoute : all).slice(0, 5).map(r => r.formatted_address).filter(Boolean);
+  return json({ ok: true, addresses });
 }
 
 // ── Main fetch handler ────────────────────────────────────────────────────────
