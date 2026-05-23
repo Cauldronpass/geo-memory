@@ -695,6 +695,44 @@ function googleTypeToCategory(t) { return GOOGLE_TYPE_MAP[t] || 'Other'; }
 
 let allPlaces = [], myPlacesByGoogleId = new Map();
 let myPlacesMarkers = [], discoverMarkers = [];
+let _pollTimer = null;
+
+function refreshPlaces(data) {
+  allPlaces = data;
+  myPlacesByGoogleId.clear();
+  for (const p of allPlaces) {
+    if (p.google_place_id) myPlacesByGoogleId.set(p.google_place_id, p);
+  }
+  for (const { marker } of myPlacesMarkers) marker.remove();
+  myPlacesMarkers = [];
+  buildMyPlacesMarkers();
+  if (currentMode === 'myplaces') applyFilters();
+  // Refresh discover overlays if active
+  if (currentMode === 'discover' && _discoverPlaces.length) {
+    _discoverMyPlaces = _discoverPlaces.map(gp => myPlacesByGoogleId.get(gp.id) || null);
+  }
+}
+
+function startPollingForPlace(googlePlaceId) {
+  if (_pollTimer) clearTimeout(_pollTimer);
+  const deadline = Date.now() + 2 * 60 * 1000;
+  function poll() {
+    fetch('places.json?' + Date.now())
+      .then(r => r.json())
+      .then(data => {
+        const arrived = googlePlaceId
+          ? data.some(p => p.google_place_id === googlePlaceId)
+          : data.length > allPlaces.length;
+        if (arrived) {
+          refreshPlaces(data);
+        } else if (Date.now() < deadline) {
+          _pollTimer = setTimeout(poll, 12000);
+        }
+      })
+      .catch(() => { if (Date.now() < deadline) _pollTimer = setTimeout(poll, 12000); });
+  }
+  _pollTimer = setTimeout(poll, 15000);
+}
 let currentMode = 'myplaces', activeStatus = 'all';
 let activeCategories = new Set(Object.keys(CATEGORY_COLORS));
 let _discoverPlaces = [], _discoverMyPlaces = [];
@@ -836,7 +874,7 @@ async function runDiscover() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_API_KEY,
-        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.primaryType,places.addressComponents,places.googleMapsUri',
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.primaryType,places.addressComponents,places.googleMapsUri,places.nationalPhoneNumber,places.websiteUri,places.priceLevel,places.currentOpeningHours',
       },
       body: JSON.stringify({ textQuery: query, maxResultCount: 20 }),
     });
@@ -1050,6 +1088,12 @@ async function submitSave() {
   }
   const rawTags = document.getElementById('save-tags').value.trim();
   const tags = rawTags ? rawTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+  const priceLevelMap = {
+    PRICE_LEVEL_FREE: 0, PRICE_LEVEL_INEXPENSIVE: 1,
+    PRICE_LEVEL_MODERATE: 2, PRICE_LEVEL_EXPENSIVE: 3, PRICE_LEVEL_VERY_EXPENSIVE: 4,
+  };
+  const price_level = gp.priceLevel ? (priceLevelMap[gp.priceLevel] ?? null) : null;
+  const hours = gp.currentOpeningHours?.weekdayDescriptions?.join('\n') || '';
   const payload = {
     name: gp.displayName?.text || 'Unknown', status: _saveStatus,
     notes: document.getElementById('save-note').value.trim(), tags,
@@ -1057,14 +1101,17 @@ async function submitSave() {
     address: gp.formattedAddress || '', city, country, neighborhood,
     category: googleTypeToCategory(gp.primaryType),
     google_maps_url: gp.googleMapsUri || '', rating_external: gp.rating ?? null,
+    phone: gp.nationalPhoneNumber || '', website: gp.websiteUri || '',
+    price_level, hours,
   };
   try {
     const resp = await fetch(WORKER_URL + '/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const result = await resp.json();
     if (result.ok) {
       btn.textContent = 'Saved!'; btn.style.background = '#2e7d32';
-      document.getElementById('save-status-msg').textContent = 'Added to Notion. Will appear on the map after the nightly sync.';
+      document.getElementById('save-status-msg').textContent = 'Added to Notion. Map will refresh automatically in 1–2 minutes.';
       document.getElementById('save-status-msg').style.color = '#2e7d32';
+      startPollingForPlace(payload.google_place_id);
       setTimeout(closeSaveModal, 2200);
     } else { throw new Error(result.error || 'Unknown error'); }
   } catch (e) {
