@@ -717,7 +717,7 @@ function startPollingForPlace(googlePlaceId) {
   if (_pollTimer) clearTimeout(_pollTimer);
   const deadline = Date.now() + 2 * 60 * 1000;
   function poll() {
-    fetch('places.json?' + Date.now())
+    fetch('places.json?' + Date.now(), { cache: 'no-store' })
       .then(r => r.json())
       .then(data => {
         const arrived = googlePlaceId
