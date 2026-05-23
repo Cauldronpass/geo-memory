@@ -511,20 +511,22 @@ function switchMode(mode) {
     myUI.style.display = '';
     discoverUI.style.display = 'none';
     discoverResultsEl.style.display = 'none';
-    mapEl.className = 'myplaces-mode';
+    mapEl.style.flex = '1';
+    mapEl.style.height = '';
     clearDiscoverMarkers();
-    applyFilters(); // restores my places markers
+    applyFilters();
   } else {
     myUI.style.display = 'none';
     discoverUI.style.display = 'block';
-    mapEl.className = 'discover-mode';
-    // Hide my places markers while in discover mode
+    mapEl.style.flex = '';
+    mapEl.style.height = '38vh';
     for (const { marker } of myPlacesMarkers) marker.remove();
     document.getElementById('count').textContent = 'Google Places search';
     setTimeout(() => document.getElementById('discover-input').focus(), 100);
   }
 
-  setTimeout(() => map.invalidateSize(), 150);
+  void mapEl.offsetHeight; // force browser layout recalc before Leaflet measures
+  map.invalidateSize(false);
 }
 
 // ── Discover: Google Places search ───────────────────────────────────────────
