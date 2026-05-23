@@ -421,9 +421,10 @@ def mark_failed(page_id):
 
 
 def prune_expired_temp_pins():
-    """Archive Notion records where Temporary=true and Expires < today."""
+    """Archive Notion records where Temporary=true and Expires < now."""
     import datetime
-    today = datetime.date.today().isoformat()
+    now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+    today = now  # use full datetime so 2h pins expire at the right hour
     pages = []
     cursor = None
     while True:

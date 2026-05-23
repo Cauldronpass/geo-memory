@@ -1543,7 +1543,7 @@ function calcExpires(dur) {
   else if (dur === '8h') d.setHours(d.getHours() + 8);
   else if (dur === 'eod') d.setHours(23, 59, 0, 0);
   else { d.setDate(d.getDate() + 1); d.setHours(23, 59, 0, 0); }
-  return d.toISOString().slice(0, 10);
+  return d.toISOString().slice(0, 16); // full datetime so Notion prune catches the right hour
 }
 
 function closeDropPin() { document.getElementById('droppin-overlay').classList.remove('open'); }
