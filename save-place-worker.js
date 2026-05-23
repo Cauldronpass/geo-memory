@@ -87,11 +87,13 @@ async function handleSave(data, env, ctx) {
     return json({ ok: false, error: 'name is required' }, 400);
   }
 
+  const enrichmentStatus = data.enrichment_status || 'Enriched';
+
   const props = {
     'Name':              { title:  [{ text: { content: data.name } }] },
     'Status':            { select: { name: data.status || 'Want to Visit' } },
-    'Enrichment Status': { select: { name: 'Enriched' } },
-    'Source':            { select: { name: 'Discover' } },
+    'Enrichment Status': { select: { name: enrichmentStatus } },
+    'Source':            { select: { name: data.source || 'Discover' } },
   };
 
   if (data.notes)                props['Notes Raw']       = rt(data.notes);
@@ -110,6 +112,8 @@ async function handleSave(data, env, ctx) {
   if (data.website)              props['Website']           = { url: data.website };
   if (data.price_level != null)  props['Price Level']       = { number: data.price_level };
   if (data.hours)                props['Hours']             = rt(data.hours);
+  if (data.temporary)            props['Temporary']          = { checkbox: true };
+  if (data.expires)              props['Expires']            = { date: { start: data.expires } };
 
   const notionResp = await fetch('https://api.notion.com/v1/pages', {
     method: 'POST',

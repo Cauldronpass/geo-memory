@@ -504,6 +504,41 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Drop Pin modal ──────────────────────────────────────────────── */
+#droppin-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.5); z-index: 1500;
+  align-items: flex-end; justify-content: center;
+}
+#droppin-overlay.open { display: flex; }
+#droppin-modal {
+  background: #fff; border-radius: 20px 20px 0 0;
+  padding: 20px 20px 40px; width: 100%;
+  max-width: 500px; max-height: 90vh; overflow-y: auto;
+}
+#droppin-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+#droppin-modal-title { font-size: 11px; font-weight: 700; color: #9aa3b8; text-transform: uppercase; letter-spacing: 0.6px; }
+#droppin-close { background: #f0f2f7; border: none; border-radius: 50%; width: 28px; height: 28px; font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #666; }
+#droppin-location-hint { font-size: 12px; color: #888; margin-bottom: 16px; min-height: 16px; }
+.pin-type-tile { border: 2px solid #e0e3ec; border-radius: 12px; margin-bottom: 10px; overflow: hidden; transition: border-color 0.15s; -webkit-tap-highlight-color: transparent; }
+.pin-type-tile.selected { border-color: #1a1f2e; }
+.pin-type-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; background: #f5f6fa; user-select: none; }
+.pin-type-tile.selected .pin-type-header { background: #fff; }
+.pin-type-icon { font-size: 20px; flex-shrink: 0; }
+.pin-type-text { flex: 1; }
+.pin-type-name { font-size: 14px; font-weight: 700; color: #1a1f2e; }
+.pin-type-desc { font-size: 11px; color: #9aa3b8; margin-top: 1px; }
+.pin-type-arrow { color: #9aa3b8; font-size: 16px; transition: transform 0.15s; }
+.pin-type-tile.selected .pin-type-arrow { transform: rotate(90deg); }
+.pin-type-form { display: none; padding: 14px 16px; border-top: 1px solid #e0e3ec; background: #fff; }
+.pin-type-tile.selected .pin-type-form { display: block; }
+.duration-picker { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+.duration-btn { padding: 7px 13px; border-radius: 20px; border: 2px solid #e0e3ec; background: #f5f6fa; font-size: 12px; font-weight: 600; color: #666; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.duration-btn.active { border-color: #1a1f2e; background: #1a1f2e; color: #fff; }
+#droppin-submit { width: 100%; padding: 12px; border-radius: 10px; background: #1a1f2e; color: #fff; border: none; font-size: 14px; font-weight: 700; cursor: pointer; margin-top: 6px; -webkit-tap-highlight-color: transparent; }
+#droppin-submit:disabled { background: #9aa3b8; cursor: default; }
+#droppin-status-msg { font-size: 13px; text-align: center; margin-top: 10px; min-height: 16px; }
+
 @media (min-width: 600px) {
   #detail { max-width: 440px; left: auto; right: 20px; bottom: 20px; border-radius: 16px; }
   #save-overlay { align-items: center; }
@@ -522,6 +557,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
     <div id="mode-toggle">
       <button class="mode-btn active" data-mode="myplaces" onclick="switchMode('myplaces')">My Places</button>
       <button class="mode-btn" data-mode="discover" onclick="switchMode('discover')">Discover</button>
+      <button class="mode-btn" onclick="openDropPin()">+ Drop Pin</button>
     </div>
   </div>
 
@@ -626,6 +662,81 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   </div>
 </div>
 
+<div id="droppin-overlay" onclick="handleDropPinOverlayClick(event)">
+  <div id="droppin-modal">
+    <div id="droppin-header">
+      <div id="droppin-modal-title">Drop a Pin</div>
+      <button id="droppin-close" onclick="closeDropPin()">✕</button>
+    </div>
+    <div id="droppin-location-hint">Getting your location…</div>
+
+    <div class="pin-type-tile" id="tile-place" onclick="selectPinType('place')">
+      <div class="pin-type-header">
+        <div class="pin-type-icon">📍</div>
+        <div class="pin-type-text">
+          <div class="pin-type-name">Place</div>
+          <div class="pin-type-desc">Business I want to save</div>
+        </div>
+        <div class="pin-type-arrow">›</div>
+      </div>
+      <div class="pin-type-form">
+        <div class="save-field-label">Name</div>
+        <input id="pin-place-name" class="save-input" type="text" placeholder="Loading nearby place…" style="margin-bottom:14px" onclick="event.stopPropagation()" />
+        <div class="save-field-label">Status</div>
+        <div class="status-picker" style="margin-bottom:14px">
+          <button class="status-pick-btn active-want" id="pin-pick-want" onclick="pickPinStatus('Want to Visit');event.stopPropagation()">Want to Visit</button>
+          <button class="status-pick-btn" id="pin-pick-visited" onclick="pickPinStatus('Visited');event.stopPropagation()">Visited</button>
+        </div>
+        <div class="save-field-label">Note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+        <textarea id="pin-place-note" class="save-textarea" placeholder="What do you want to remember?" style="min-height:56px;margin-bottom:0" onclick="event.stopPropagation()"></textarea>
+      </div>
+    </div>
+
+    <div class="pin-type-tile" id="tile-personal" onclick="selectPinType('personal')">
+      <div class="pin-type-header">
+        <div class="pin-type-icon">🏠</div>
+        <div class="pin-type-text">
+          <div class="pin-type-name">Personal</div>
+          <div class="pin-type-desc">Home, friend, landmark</div>
+        </div>
+        <div class="pin-type-arrow">›</div>
+      </div>
+      <div class="pin-type-form">
+        <div class="save-field-label">Name</div>
+        <input id="pin-personal-name" class="save-input" type="text" placeholder="e.g. Mom's house, Dave's place" style="margin-bottom:14px" onclick="event.stopPropagation()" />
+        <div class="save-field-label">Note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+        <textarea id="pin-personal-note" class="save-textarea" placeholder="What do you want to remember?" style="min-height:56px;margin-bottom:0" onclick="event.stopPropagation()"></textarea>
+      </div>
+    </div>
+
+    <div class="pin-type-tile" id="tile-temp" onclick="selectPinType('temp')">
+      <div class="pin-type-header">
+        <div class="pin-type-icon">⏱</div>
+        <div class="pin-type-text">
+          <div class="pin-type-name">Temp</div>
+          <div class="pin-type-desc">Parking, trailhead — auto-deleted</div>
+        </div>
+        <div class="pin-type-arrow">›</div>
+      </div>
+      <div class="pin-type-form">
+        <div class="save-field-label">Label <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+        <input id="pin-temp-name" class="save-input" type="text" placeholder="e.g. My car, Trail parking" style="margin-bottom:14px" onclick="event.stopPropagation()" />
+        <div class="save-field-label">Delete after</div>
+        <div class="duration-picker">
+          <button class="duration-btn active" id="dur-2h" onclick="pickDuration('2h');event.stopPropagation()">2 hrs</button>
+          <button class="duration-btn" id="dur-4h" onclick="pickDuration('4h');event.stopPropagation()">4 hrs</button>
+          <button class="duration-btn" id="dur-8h" onclick="pickDuration('8h');event.stopPropagation()">8 hrs</button>
+          <button class="duration-btn" id="dur-eod" onclick="pickDuration('eod');event.stopPropagation()">End of day</button>
+          <button class="duration-btn" id="dur-tomorrow" onclick="pickDuration('tomorrow');event.stopPropagation()">Tomorrow</button>
+        </div>
+      </div>
+    </div>
+
+    <button id="droppin-submit" disabled onclick="submitDropPin()">Select a type above</button>
+    <div id="droppin-status-msg"></div>
+  </div>
+</div>
+
 <div id="loading">
   <div class="spinner"></div>
   <div>Loading your places…</div>
@@ -638,7 +749,7 @@ const WORKER_URL     = 'https://geo-memory-save.weissdavid01.workers.dev';
 const CATEGORY_COLORS = {
   'Restaurant': '#e05c3a', 'Bar': '#4a90d9', 'Cafe': '#e8a020',
   'Hotel': '#3daa6e', 'Shop': '#e87030', 'Attraction': '#2db08e',
-  'Venue': '#9b59b6', 'House': '#f1c40f', 'Other': '#909090',
+  'Venue': '#9b59b6', 'House': '#f1c40f', 'Temp': '#e040fb', 'Other': '#909090',
 };
 
 const GOOGLE_TYPE_MAP = {
@@ -788,9 +899,12 @@ function buildMyPlacesMarkers() {
   for (const p of allPlaces) {
     if (p.lat == null || p.lng == null) continue;
     const color = CATEGORY_COLORS[p.category] || '#909090';
+    const isTemp = p.category === 'Temp';
     const m = L.circleMarker([p.lat, p.lng], {
-      radius: 7, fillColor: color, color: '#fff', weight: 1.5,
-      fillOpacity: p.status === 'Visited' ? 0.92 : 0.45, opacity: 1,
+      radius: 7, fillColor: color,
+      color: isTemp ? color : '#fff', weight: isTemp ? 2 : 1.5,
+      fillOpacity: isTemp ? 0.5 : (p.status === 'Visited' ? 0.92 : 0.45),
+      opacity: 1, dashArray: isTemp ? '5,3' : null,
     });
     m.on('click', e => { L.DomEvent.stopPropagation(e); showMyPlaceDetail(p); });
     myPlacesMarkers.push({ marker: m, place: p });
@@ -1196,6 +1310,151 @@ async function submitCheckIn() {
     btn.disabled = false; btn.textContent = 'Check In';
     document.getElementById('checkin-status-msg').textContent = 'Failed: ' + e.message;
     document.getElementById('checkin-status-msg').style.color = '#c00';
+  }
+}
+
+// ── Drop Pin ───────────────────────────────────────────────────────────────────
+let _dropPinLat = null, _dropPinLng = null, _dropPinType = null;
+let _dropPinStatus = 'Want to Visit', _dropPinDuration = '2h', _nearbyPlace = null;
+
+function openDropPin() {
+  _dropPinLat = null; _dropPinLng = null; _dropPinType = null; _nearbyPlace = null;
+  _dropPinStatus = 'Want to Visit'; _dropPinDuration = '2h';
+  document.getElementById('droppin-location-hint').textContent = 'Getting your location…';
+  const btn = document.getElementById('droppin-submit');
+  btn.disabled = true; btn.textContent = 'Select a type above'; btn.style.background = '';
+  document.getElementById('droppin-status-msg').textContent = '';
+  ['place','personal','temp'].forEach(t => document.getElementById('tile-' + t).classList.remove('selected'));
+  ['pin-place-name','pin-place-note','pin-personal-name','pin-personal-note','pin-temp-name'].forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('pin-place-name').placeholder = 'Loading nearby place…';
+  document.querySelectorAll('.duration-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('dur-2h').classList.add('active');
+  document.getElementById('pin-pick-want').className = 'status-pick-btn active-want';
+  document.getElementById('pin-pick-visited').className = 'status-pick-btn';
+  document.getElementById('droppin-overlay').classList.add('open');
+  if (!navigator.geolocation) {
+    document.getElementById('droppin-location-hint').textContent = 'Geolocation not supported on this device.';
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(pos => {
+    _dropPinLat = pos.coords.latitude; _dropPinLng = pos.coords.longitude;
+    const acc = Math.round(pos.coords.accuracy);
+    document.getElementById('droppin-location-hint').textContent = `${_dropPinLat.toFixed(5)}, ${_dropPinLng.toFixed(5)} · ±${acc}m`;
+    fetchNearbyForPin(_dropPinLat, _dropPinLng);
+  }, () => {
+    document.getElementById('droppin-location-hint').textContent = 'Could not get location — check permissions.';
+  }, { enableHighAccuracy: true, timeout: 10000 });
+}
+
+async function fetchNearbyForPin(lat, lng) {
+  try {
+    const resp = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_API_KEY,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.rating,places.primaryType,places.addressComponents,places.googleMapsUri' },
+      body: JSON.stringify({ locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius: 50.0 } }, maxResultCount: 1 }),
+    });
+    const data = await resp.json();
+    if (data.places?.length) {
+      _nearbyPlace = data.places[0];
+      document.getElementById('pin-place-name').value = _nearbyPlace.displayName?.text || '';
+      document.getElementById('pin-place-name').placeholder = 'Place name';
+    } else {
+      document.getElementById('pin-place-name').placeholder = 'No business nearby — type name';
+    }
+  } catch(e) { document.getElementById('pin-place-name').placeholder = 'Type the place name'; }
+}
+
+function selectPinType(type) {
+  _dropPinType = type;
+  ['place','personal','temp'].forEach(t => document.getElementById('tile-' + t).classList.toggle('selected', t === type));
+  const btn = document.getElementById('droppin-submit');
+  btn.disabled = false; btn.textContent = 'Save Pin';
+}
+
+function pickPinStatus(val) {
+  _dropPinStatus = val;
+  document.getElementById('pin-pick-want').className = val === 'Want to Visit' ? 'status-pick-btn active-want' : 'status-pick-btn';
+  document.getElementById('pin-pick-visited').className = val === 'Visited' ? 'status-pick-btn active-visited' : 'status-pick-btn';
+}
+
+function pickDuration(val) {
+  _dropPinDuration = val;
+  ['2h','4h','8h','eod','tomorrow'].forEach(d => document.getElementById('dur-' + d).classList.toggle('active', d === val));
+}
+
+function calcExpires(dur) {
+  const d = new Date();
+  if (dur === '2h') d.setHours(d.getHours() + 2);
+  else if (dur === '4h') d.setHours(d.getHours() + 4);
+  else if (dur === '8h') d.setHours(d.getHours() + 8);
+  else if (dur === 'eod') d.setHours(23, 59, 0, 0);
+  else { d.setDate(d.getDate() + 1); d.setHours(23, 59, 0, 0); }
+  return d.toISOString().slice(0, 10);
+}
+
+function closeDropPin() { document.getElementById('droppin-overlay').classList.remove('open'); }
+function handleDropPinOverlayClick(e) { if (e.target === document.getElementById('droppin-overlay')) closeDropPin(); }
+
+async function submitDropPin() {
+  if (!_dropPinType) return;
+  if (!_dropPinLat || !_dropPinLng) {
+    document.getElementById('droppin-status-msg').textContent = 'Still getting location…';
+    document.getElementById('droppin-status-msg').style.color = '#c00'; return;
+  }
+  const btn = document.getElementById('droppin-submit');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  document.getElementById('droppin-status-msg').textContent = '';
+  const priceLevelMap = { PRICE_LEVEL_FREE: 0, PRICE_LEVEL_INEXPENSIVE: 1, PRICE_LEVEL_MODERATE: 2, PRICE_LEVEL_EXPENSIVE: 3, PRICE_LEVEL_VERY_EXPENSIVE: 4 };
+  let payload = { lat: _dropPinLat, lng: _dropPinLng, source: 'Drop Pin' };
+
+  if (_dropPinType === 'place') {
+    const name = document.getElementById('pin-place-name').value.trim();
+    if (!name) { btn.disabled = false; btn.textContent = 'Save Pin'; document.getElementById('droppin-status-msg').textContent = 'Enter a name.'; document.getElementById('droppin-status-msg').style.color = '#c00'; return; }
+    const gp = _nearbyPlace;
+    let city = '', country = '', neighborhood = '';
+    for (const comp of (gp?.addressComponents || [])) {
+      const types = comp.types || [];
+      if (types.includes('locality')) city = comp.longText || '';
+      else if (types.includes('country')) country = comp.longText || '';
+      else if (types.includes('neighborhood') || types.includes('sublocality_level_1')) neighborhood = comp.longText || '';
+    }
+    Object.assign(payload, {
+      name, status: _dropPinStatus,
+      notes: document.getElementById('pin-place-note').value.trim(),
+      google_place_id: gp?.id || '', address: gp?.formattedAddress || '',
+      city, country, neighborhood,
+      category: gp ? googleTypeToCategory(gp.primaryType) : 'Other',
+      google_maps_url: gp?.googleMapsUri || '', rating_external: gp?.rating ?? null,
+      phone: gp?.nationalPhoneNumber || '', website: gp?.websiteUri || '',
+      price_level: gp?.priceLevel ? (priceLevelMap[gp.priceLevel] ?? null) : null,
+      hours: gp?.currentOpeningHours?.weekdayDescriptions?.join('\n') || '',
+      enrichment_status: gp ? 'Enriched' : 'New',
+    });
+  } else if (_dropPinType === 'personal') {
+    const name = document.getElementById('pin-personal-name').value.trim();
+    if (!name) { btn.disabled = false; btn.textContent = 'Save Pin'; document.getElementById('droppin-status-msg').textContent = 'Enter a name.'; document.getElementById('droppin-status-msg').style.color = '#c00'; return; }
+    Object.assign(payload, { name, status: 'Visited', notes: document.getElementById('pin-personal-note').value.trim(), category: 'House', enrichment_status: 'Enriched' });
+  } else {
+    const label = document.getElementById('pin-temp-name').value.trim();
+    Object.assign(payload, { name: label || 'Temp Pin', status: 'Want to Visit', category: 'Temp', temporary: true, expires: calcExpires(_dropPinDuration), enrichment_status: 'Enriched' });
+  }
+
+  try {
+    const resp = await fetch(WORKER_URL + '/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const result = await resp.json();
+    if (result.ok) {
+      btn.textContent = 'Saved!'; btn.style.background = '#2e7d32';
+      const msg = _dropPinType === 'temp' ? `Temp pin saved — auto-deletes ${payload.expires}.` : 'Pin saved. Map will refresh automatically.';
+      document.getElementById('droppin-status-msg').textContent = msg;
+      document.getElementById('droppin-status-msg').style.color = '#2e7d32';
+      if (_dropPinType !== 'temp') startPollingForPlace(payload.google_place_id || null);
+      setTimeout(closeDropPin, 2200);
+    } else { throw new Error(result.error || 'Unknown error'); }
+  } catch(e) {
+    btn.disabled = false; btn.textContent = 'Save Pin';
+    document.getElementById('droppin-status-msg').textContent = 'Failed: ' + e.message;
+    document.getElementById('droppin-status-msg').style.color = '#c00';
   }
 }
 

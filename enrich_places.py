@@ -420,6 +420,58 @@ def mark_failed(page_id):
     )
 
 
+def prune_expired_temp_pins():
+    """Archive Notion records where Temporary=true and Expires < today."""
+    import datetime
+    today = datetime.date.today().isoformat()
+    pages = []
+    cursor = None
+    while True:
+        body = {
+            "page_size": 100,
+            "filter": {
+                "and": [
+                    {"property": "Temporary", "checkbox": {"equals": True}},
+                    {"property": "Expires", "date": {"before": today}},
+                ]
+            }
+        }
+        if cursor:
+            body["start_cursor"] = cursor
+        resp = requests.post(
+            f"https://api.notion.com/v1/databases/{DATABASE_ID}/query",
+            headers=notion_headers(),
+            json=body,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        pages.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+        time.sleep(0.3)
+
+    if not pages:
+        print("No expired temp pins to prune")
+        return
+
+    print(f"Pruning {len(pages)} expired temp pin(s)…")
+    for page in pages:
+        page_id = page["id"]
+        name = get_text(page.get("properties", {}).get("Name", {}))
+        try:
+            resp = requests.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                headers=notion_headers(),
+                json={"archived": True},
+            )
+            resp.raise_for_status()
+            print(f"  Archived: {name}")
+        except Exception as e:
+            print(f"  Failed to archive {name}: {e}")
+        time.sleep(0.3)
+
+
 def main():
     if not NOTION_TOKEN:
         print("ERROR: Set NOTION_TOKEN environment variable.")
@@ -427,6 +479,10 @@ def main():
     if not GOOGLE_PLACES_KEY:
         print("ERROR: Set GOOGLE_PLACES_API_KEY environment variable.")
         sys.exit(1)
+
+    # ── Prune expired temp pins first ──────────────────────────────────────────
+    print("Checking for expired temp pins…")
+    prune_expired_temp_pins()
 
     print("Fetching New records from Notion…")
     pages = fetch_new_places()
