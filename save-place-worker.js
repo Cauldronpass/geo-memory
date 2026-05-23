@@ -192,6 +192,24 @@ async function handleCheckIn(data, env, ctx) {
   return json({ ok: true, visit_id: result.id });
 }
 
+// ── /geocode handler (reverse geocode lat/lng → address options) ──────────────
+
+async function handleGeocode(data, env) {
+  const { lat, lng } = data;
+  if (lat == null || lng == null) {
+    return json({ ok: false, error: 'lat and lng are required' }, 400);
+  }
+  const resp = await fetch(
+    `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${env.GOOGLE_PLACES_API_KEY}`
+  );
+  const result = await resp.json();
+  const results = (result.results || [])
+    .filter(r => r.address_components.some(c => c.types.includes('route')))
+    .slice(0, 5)
+    .map(r => r.formatted_address);
+  return json({ ok: true, addresses: results });
+}
+
 // ── Main fetch handler ────────────────────────────────────────────────────────
 
 export default {
@@ -224,6 +242,8 @@ export default {
       return handleSave(data, env, ctx);
     } else if (path === '/check-in') {
       return handleCheckIn(data, env, ctx);
+    } else if (path === '/geocode') {
+      return handleGeocode(data, env);
     } else {
       return json({ ok: false, error: `Unknown endpoint: ${path}` }, 404);
     }

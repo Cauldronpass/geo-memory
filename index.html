@@ -686,7 +686,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
       </div>
       <div class="pin-type-form">
         <div class="save-field-label">Nearby Places</div>
-        <div id="place-options-list" style="margin-bottom:14px">
+        <div id="place-options-list" style="margin-bottom:14px;max-height:280px;overflow-y:auto;-webkit-overflow-scrolling:touch">
           <div style="color:#bbb;font-size:13px;padding:6px 0">Getting your location…</div>
         </div>
         <div id="place-search-section" style="display:none;margin-bottom:14px" onclick="event.stopPropagation()">
@@ -717,8 +717,10 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
         <div class="pin-type-arrow">›</div>
       </div>
       <div class="pin-type-form">
-        <div class="save-field-label">Address <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
-        <input id="pin-personal-address" class="save-input" type="text" placeholder="e.g. 123 Main St, Chicago" style="margin-bottom:14px" onclick="event.stopPropagation()" />
+        <div class="save-field-label">Address <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(tap to select)</span></div>
+        <div id="personal-addr-options" style="margin-bottom:14px;max-height:200px;overflow-y:auto;-webkit-overflow-scrolling:touch">
+          <div style="color:#bbb;font-size:13px;padding:6px 0">Getting your location…</div>
+        </div>
         <div class="save-field-label">Name</div>
         <input id="pin-personal-name" class="save-input" type="text" placeholder="e.g. Mom's house, Dave's place" style="margin-bottom:14px" onclick="event.stopPropagation()" />
         <div class="save-field-label">Note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
@@ -1348,6 +1350,7 @@ function openDropPin() {
   document.getElementById('place-options-list').innerHTML = '<div style="color:#bbb;font-size:13px;padding:6px 0">Getting your location…</div>';
   document.getElementById('place-search-section').style.display = 'none';
   document.getElementById('place-search-results').innerHTML = '';
+  document.getElementById('personal-addr-options').innerHTML = '<div style="color:#bbb;font-size:13px;padding:6px 0">Getting your location…</div>';
   _dropPinAddress = null;
   document.querySelectorAll('.duration-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('dur-2h').classList.add('active');
@@ -1363,6 +1366,7 @@ function openDropPin() {
     const acc = Math.round(pos.coords.accuracy);
     document.getElementById('droppin-location-hint').textContent = `${_dropPinLat.toFixed(5)}, ${_dropPinLng.toFixed(5)} · ±${acc}m`;
     fetchNearbyForPin(_dropPinLat, _dropPinLng);
+    if (_dropPinType === 'personal') fetchAddressOptions(_dropPinLat, _dropPinLng);
   }, () => {
     document.getElementById('droppin-location-hint').textContent = 'Could not get location — check permissions.';
   }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 });
@@ -1376,7 +1380,7 @@ async function fetchNearbyForPin(lat, lng) {
     const resp = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_API_KEY, 'X-Goog-FieldMask': PLACE_FIELDMASK },
-      body: JSON.stringify({ locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius: 200.0 } }, maxResultCount: 5 }),
+      body: JSON.stringify({ locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius: 200.0 } }, maxResultCount: 10 }),
     });
     const data = await resp.json();
     _nearbyPlaces = data.places || [];
@@ -1468,11 +1472,57 @@ async function searchPlaceByName() {
   }
 }
 
+async function fetchAddressOptions(lat, lng) {
+  const el = document.getElementById('personal-addr-options');
+  try {
+    const resp = await fetch(WORKER_URL + '/geocode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lng }),
+    });
+    const data = await resp.json();
+    const addresses = data.addresses || [];
+    el.innerHTML = '';
+    addresses.forEach(addr => {
+      const btn = document.createElement('button');
+      btn.className = 'addr-option';
+      btn.textContent = addr;
+      btn.onclick = (e) => { e.stopPropagation(); selectPersonalAddress(addr, btn); };
+      el.appendChild(btn);
+    });
+    if (!addresses.length) {
+      const msg = document.createElement('div');
+      msg.style.cssText = 'color:#bbb;font-size:13px;padding:6px 0 8px';
+      msg.textContent = 'No addresses found nearby.';
+      el.appendChild(msg);
+    }
+    const later = document.createElement('button');
+    later.className = 'addr-option addr-later';
+    later.textContent = 'Enter myself later';
+    later.onclick = (e) => { e.stopPropagation(); selectPersonalAddress(null, later); };
+    el.appendChild(later);
+  } catch(e) {
+    el.innerHTML = '';
+    const later = document.createElement('button');
+    later.className = 'addr-option addr-later';
+    later.textContent = 'Enter myself later';
+    later.onclick = (ev) => { ev.stopPropagation(); selectPersonalAddress(null, later); };
+    el.appendChild(later);
+  }
+}
+
+function selectPersonalAddress(address, btn) {
+  _dropPinAddress = address;
+  document.querySelectorAll('#personal-addr-options .addr-option').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+}
+
 function selectPinType(type) {
   _dropPinType = type;
   ['place','personal','temp'].forEach(t => document.getElementById('tile-' + t).classList.toggle('selected', t === type));
   const btn = document.getElementById('droppin-submit');
   btn.disabled = false; btn.textContent = 'Save Pin';
+  if (type === 'personal' && _dropPinLat) fetchAddressOptions(_dropPinLat, _dropPinLng);
 }
 
 function pickPinStatus(val) {
@@ -1538,7 +1588,7 @@ async function submitDropPin() {
   } else if (_dropPinType === 'personal') {
     const name = document.getElementById('pin-personal-name').value.trim();
     if (!name) { btn.disabled = false; btn.textContent = 'Save Pin'; document.getElementById('droppin-status-msg').textContent = 'Enter a name.'; document.getElementById('droppin-status-msg').style.color = '#c00'; return; }
-    Object.assign(payload, { name, status: 'Visited', notes: document.getElementById('pin-personal-note').value.trim(), category: 'House', enrichment_status: 'Enriched', address: document.getElementById('pin-personal-address').value.trim() });
+    Object.assign(payload, { name, status: 'Visited', notes: document.getElementById('pin-personal-note').value.trim(), category: 'House', enrichment_status: 'Enriched', address: _dropPinAddress || '' });
   } else {
     const label = document.getElementById('pin-temp-name').value.trim();
     Object.assign(payload, { name: label || 'Temp Pin', status: 'Want to Visit', category: 'Temp', temporary: true, expires: calcExpires(_dropPinDuration), enrichment_status: 'Enriched' });
