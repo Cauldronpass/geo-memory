@@ -233,6 +233,14 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   margin-bottom: 7px;
 }
 
+/* ── Detail tabs ─────────────────────────────────────────────────── */
+.detail-tabs { display: flex; border-bottom: 1.5px solid #e8eaf0; margin-bottom: 14px; margin-top: 2px; }
+.detail-tab { flex: 1; padding: 8px 0; font-size: 12px; font-weight: 600; text-align: center; color: #9aa3b8; border: none; background: none; cursor: pointer; border-bottom: 2.5px solid transparent; margin-bottom: -1.5px; -webkit-tap-highlight-color: transparent; transition: color 0.15s; }
+.detail-tab.active { color: #1a1f2e; border-bottom-color: #1a1f2e; }
+.detail-tab-panel { display: none; }
+.detail-tab-panel.active { display: block; }
+.detail-stub { padding: 24px 0; text-align: center; color: #b0b8cc; font-size: 13px; }
+
 .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 .btn-action { padding: 9px 18px; border-radius: 9px; text-decoration: none; font-size: 13px; font-weight: 600; border: none; cursor: pointer; display: inline-block; -webkit-tap-highlight-color: transparent; }
 .btn-primary { background: #1a1f2e; color: #fff; }
@@ -889,23 +897,48 @@ function renderDiscoverResults(places, query) {
 
 function clearDiscoverMarkers() { for (const m of discoverMarkers) m.remove(); discoverMarkers = []; }
 
+function switchDetailTab(tab) {
+  document.querySelectorAll('.detail-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.detail-tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === tab));
+}
+
 function showMyPlaceDetail(p) {
   document.getElementById('detail-name').textContent = p.name;
   document.getElementById('detail-meta').textContent = [p.category, p.city, p.country].filter(Boolean).join(' · ');
+
+  // ── Tab bar ───────────────────────────────────────────────────────
+  let html = `<div class="detail-tabs">
+    <button class="detail-tab active" data-tab="overview" onclick="switchDetailTab('overview')">Overview</button>
+    <button class="detail-tab" data-tab="info" onclick="switchDetailTab('info')">Info</button>
+    <button class="detail-tab" data-tab="visits" onclick="switchDetailTab('visits')">Visits</button>
+  </div>`;
+
+  // ── Overview panel ────────────────────────────────────────────────
   const sc = p.status === 'Visited' ? 'pill-visited' : 'pill-want';
-  let html = `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="pill ${sc}">${esc(p.status || '—')}</span></span></div>`;
-  if (p.rating) { const s = '★'.repeat(Math.round(p.rating)) + '☆'.repeat(5 - Math.round(p.rating)); html += `<div class="detail-row"><span class="detail-key">My rating</span><span class="detail-val">${s} ${p.rating}</span></div>`; }
-  if (p.notes) html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(p.notes)}</span></div>`;
-  if (p.tags && p.tags.length) html += `<div class="detail-row"><span class="detail-key">Tags</span><span class="detail-val">${p.tags.map(esc).join(', ')}</span></div>`;
+  let overview = `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="pill ${sc}">${esc(p.status || '—')}</span></span></div>`;
+  if (p.rating) { const s = '★'.repeat(Math.round(p.rating)) + '☆'.repeat(5 - Math.round(p.rating)); overview += `<div class="detail-row"><span class="detail-key">My rating</span><span class="detail-val">${s} ${p.rating}</span></div>`; }
+  if (p.ai_summary) overview += `<div class="detail-row"><span class="detail-key">Summary</span><span class="detail-val">${esc(p.ai_summary)}</span></div>`;
+  if (p.notes) overview += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(p.notes)}</span></div>`;
+  if (p.tags && p.tags.length) overview += `<div class="detail-row"><span class="detail-key">Tags</span><span class="detail-val">${p.tags.map(esc).join(', ')}</span></div>`;
   if (p.visit_count) {
     const last = p.last_visited ? ' · Last: ' + p.last_visited : '';
-    html += `<div class="detail-row"><span class="detail-key">Visits</span><span class="detail-val" style="color:#3daa6e;font-weight:600">${p.visit_count} visit${p.visit_count !== 1 ? 's' : ''}${esc(last)}</span></div>`;
+    overview += `<div class="detail-row"><span class="detail-key">Visits</span><span class="detail-val" style="color:#3daa6e;font-weight:600">${p.visit_count} visit${p.visit_count !== 1 ? 's' : ''}${esc(last)}</span></div>`;
   }
+  html += `<div class="detail-tab-panel active" data-panel="overview">${overview}</div>`;
+
+  // ── Info panel (stub — tomorrow) ──────────────────────────────────
+  html += `<div class="detail-tab-panel" data-panel="info"><div class="detail-stub">Phone, hours &amp; website — coming soon</div></div>`;
+
+  // ── Visits panel (stub — tomorrow) ───────────────────────────────
+  html += `<div class="detail-tab-panel" data-panel="visits"><div class="detail-stub">Visit history — coming soon</div></div>`;
+
+  // ── Action buttons (always visible, outside tabs) ─────────────────
   html += `<div class="detail-actions">`;
   if (p.lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
   if (p.notion_id) html += `<button class="btn-action btn-checkin" onclick="openCheckInModal('${esc(p.notion_id)}','${esc(p.name)}')">Check In</button>`;
   if (p.notion_id) html += `<a href="https://www.notion.so/${p.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
   html += `</div>`;
+
   document.getElementById('detail-body').innerHTML = html;
   document.getElementById('detail').classList.add('open');
 }
