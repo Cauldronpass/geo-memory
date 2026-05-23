@@ -13,9 +13,10 @@
  *   GITHUB_PAT          — GitHub personal access token with repo + workflow scope
  */
 
-const ALLOWED_ORIGIN    = 'https://cauldronpass.github.io';
+const ALLOWED_ORIGIN     = 'https://cauldronpass.github.io';
 const PLACES_DATABASE_ID = '3edc903daeaa41eaa82f93fb0ec55e60';
-const NOTION_VERSION    = '2022-06-28';
+const VISITS_DATABASE_ID = 'ecd8cdc617e74c78b090afc5092cbdee';
+const NOTION_VERSION     = '2022-06-28';
 const GITHUB_OWNER      = 'Cauldronpass';
 const GITHUB_REPO       = 'geo-memory';
 const GITHUB_WORKFLOW   = 'update_places.yml';
@@ -133,24 +134,24 @@ async function handleCheckIn(data, env) {
   if (!data.notion_id) {
     return json({ ok: false, error: 'notion_id of Place is required' }, 400);
   }
-  if (!env.VISITS_DATABASE_ID) {
-    return json({ ok: false, error: 'VISITS_DATABASE_ID secret not configured' }, 500);
-  }
 
   const dateVisited = data.date || todayISO();
-  const visitName   = `${data.place_name || 'Visit'} — ${dateVisited}`;
+  const visitName   = `${data.place_name || 'Visit'} · ${dateVisited}`;
 
+  // Match the existing Visits DB schema
   const props = {
-    'Name': { title: [{ text: { content: visitName } }] },
-    'Place': {
-      relation: [{ id: data.notion_id }],
-    },
+    'Name':         { title: [{ text: { content: visitName } }] },
+    'Place':        { relation: [{ id: data.notion_id }] },
     'Date Visited': { date: { start: dateVisited } },
+    'Source':       { select: { name: 'App' } },
   };
 
-  if (data.occasion)   props['Occasion']  = { select: { name: data.occasion } };
-  if (data.sentiment)  props['Sentiment'] = { select: { name: data.sentiment } };
-  if (data.notes)      props['Notes']     = rt(data.notes);
+  if (data.occasion)              props['Occasion']   = { select: { name: data.occasion } };
+  if (data.notes)                 props['Notes']      = rt(data.notes);
+  if (data.companions)            props['Companions'] = rt(data.companions);
+  // Thumbs up/down → Rating select (change Rating property type to Select in Notion)
+  if (data.sentiment === 'Good')  props['Rating'] = { select: { name: '👍' } };
+  if (data.sentiment === 'Bad')   props['Rating'] = { select: { name: '👎' } };
 
   const notionResp = await fetch('https://api.notion.com/v1/pages', {
     method: 'POST',
@@ -160,7 +161,7 @@ async function handleCheckIn(data, env) {
       'Notion-Version': NOTION_VERSION,
     },
     body: JSON.stringify({
-      parent:     { database_id: env.VISITS_DATABASE_ID },
+      parent:     { database_id: VISITS_DATABASE_ID },
       properties: props,
     }),
   });

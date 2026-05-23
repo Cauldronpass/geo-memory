@@ -604,6 +604,9 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
       <button class="sentiment-btn"             id="pick-bad"  onclick="pickSentiment('Bad')">👎 Bad</button>
     </div>
 
+    <div class="save-field-label">Who were you with? <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+    <input id="checkin-companions" class="save-input" type="text" placeholder="e.g. Sarah, the team…" style="margin-bottom:20px" />
+
     <div class="save-field-label">Notes <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
     <textarea id="checkin-notes" class="save-textarea" placeholder="What do you want to remember about this visit?"></textarea>
 
@@ -1009,10 +1012,12 @@ function openCheckInModal(notionId, placeName) {
   _checkInOccasion = 'Solo';
   _checkInSentiment = 'Good';
   document.getElementById('checkin-modal-name').textContent = placeName;
-  // Set date to today
-  const today = new Date().toISOString().slice(0, 10);
+  // Set date to today in local time (not UTC)
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
   document.getElementById('checkin-date').value = today;
   document.getElementById('checkin-notes').value = '';
+  document.getElementById('checkin-companions').value = '';
   document.getElementById('checkin-status-msg').textContent = '';
   document.getElementById('checkin-submit').disabled = false;
   document.getElementById('checkin-submit').textContent = 'Check In';
@@ -1051,12 +1056,13 @@ async function submitCheckIn() {
   btn.disabled = true; btn.textContent = 'Saving…';
   document.getElementById('checkin-status-msg').textContent = '';
   const payload = {
-    notion_id:  _checkInNotionId,
-    place_name: _checkInPlaceName,
-    date:       document.getElementById('checkin-date').value,
-    occasion:   _checkInOccasion,
-    sentiment:  _checkInSentiment,
-    notes:      document.getElementById('checkin-notes').value.trim(),
+    notion_id:   _checkInNotionId,
+    place_name:  _checkInPlaceName,
+    date:        document.getElementById('checkin-date').value,
+    occasion:    _checkInOccasion,
+    sentiment:   _checkInSentiment,
+    companions:  document.getElementById('checkin-companions').value.trim(),
+    notes:       document.getElementById('checkin-notes').value.trim(),
   };
   try {
     const resp = await fetch(WORKER_URL + '/check-in', {
