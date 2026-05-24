@@ -186,6 +186,21 @@ async function handleCheckIn(data, env, ctx) {
     return json({ ok: false, error: result.message || 'Notion error' }, 500);
   }
 
+  // Update Place status to Visited (fire-and-forget)
+  ctx.waitUntil(
+    fetch(`https://api.notion.com/v1/pages/${data.notion_id}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization':  `Bearer ${env.NOTION_TOKEN}`,
+        'Content-Type':   'application/json',
+        'Notion-Version': NOTION_VERSION,
+      },
+      body: JSON.stringify({
+        properties: { 'Status': { select: { name: 'Visited' } } },
+      }),
+    }).catch(e => console.error('Place status update failed:', e.message))
+  );
+
   // Fire-and-forget GitHub refresh
   triggerGitHubRefresh(env.GITHUB_PAT, ctx);
 
