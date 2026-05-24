@@ -1348,7 +1348,7 @@ function showMyPlaceDetail(p) {
   // ── Action buttons (always visible, outside tabs) ─────────────────
   html += `<div class="detail-actions">`;
   if (p.lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
-  if (p.notion_id) html += `<button class="btn-action btn-checkin" onclick="openCheckInModal('${esc(p.notion_id)}','${esc(p.name)}')">Check In</button>`;
+  if (p.notion_id) html += `<button class="btn-action btn-checkin" data-notion-id="${esc(p.notion_id)}" data-place-name="${esc(p.name)}">Check In</button>`;
   if (p.notion_id) html += `<a href="https://www.notion.so/${p.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
   html += `</div>`;
 
@@ -1462,6 +1462,14 @@ async function submitSave() {
 }
 
 // ── Check-in functions ────────────────────────────────────────────────────────
+
+// Delegated handler for Check In button — avoids inline onclick quoting issues
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.btn-checkin');
+  if (btn && btn.dataset.notionId) {
+    openCheckInModal(btn.dataset.notionId, btn.dataset.placeName || '');
+  }
+});
 
 function openCheckInModal(notionId, placeName) {
   _checkInNotionId = notionId;
