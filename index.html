@@ -1359,25 +1359,30 @@ function showMyPlaceDetail(p) {
 function showDiscoverDetail(i) {
   const gp = _discoverPlaces[i], myPlace = _discoverMyPlaces[i];
   if (!gp) return;
+  const lat = gp.location?.latitude, lng = gp.location?.longitude;
+
+  // If already in the user's list, show the full My Places detail panel
+  if (myPlace) {
+    showMyPlaceDetail(myPlace);
+    // Fly map to Google Places coordinates (may be more accurate than stored lat/lng)
+    if (lat != null && lng != null) {
+      const zoom = 15, sheetH = window.innerHeight * 0.42;
+      const pt = map.project([lat, lng], zoom);
+      map.setView(map.unproject([pt.x, pt.y + sheetH / 2], zoom), zoom, { animate: true });
+    }
+    return;
+  }
+
+  // Not in list — show Discover-style panel with Save button
   const name = gp.displayName?.text || 'Unknown';
   const category = googleTypeToCategory(gp.primaryType);
-  const lat = gp.location?.latitude, lng = gp.location?.longitude;
   document.getElementById('detail-name').textContent = name;
   document.getElementById('detail-meta').textContent = gp.formattedAddress || '';
   let html = `<div class="detail-row"><span class="detail-key">Type</span><span class="detail-val">${esc(category)}</span></div>`;
   if (gp.rating) { const s = '★'.repeat(Math.round(gp.rating)) + '☆'.repeat(5 - Math.round(gp.rating)); html += `<div class="detail-row"><span class="detail-key">Google</span><span class="detail-val">${s} ${gp.rating.toFixed(1)}</span></div>`; }
-  if (myPlace) {
-    const sc = myPlace.status === 'Visited' ? 'pill-visited' : 'pill-want';
-    html += `<div class="in-list-box" style="margin-top:12px"><div class="in-list-label">★ In your list</div>`;
-    html += `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="pill ${sc}">${esc(myPlace.status || '—')}</span></span></div>`;
-    if (myPlace.rating) { const s = '★'.repeat(Math.round(myPlace.rating)) + '☆'.repeat(5 - Math.round(myPlace.rating)); html += `<div class="detail-row"><span class="detail-key">My rating</span><span class="detail-val">${s} ${myPlace.rating}</span></div>`; }
-    if (myPlace.notes) html += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(myPlace.notes)}</span></div>`;
-    html += `</div>`;
-  }
   html += `<div class="detail-actions">`;
   if (lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_id=${esc(gp.id)}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
-  if (myPlace && myPlace.notion_id) html += `<a href="https://www.notion.so/${myPlace.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
-  if (!myPlace) html += `<button class="btn-action btn-save" onclick="openSaveModal(${i})">+ Save to Notion</button>`;
+  html += `<button class="btn-action btn-save" onclick="openSaveModal(${i})">+ Save to Notion</button>`;
   html += `</div>`;
   document.getElementById('detail-body').innerHTML = html;
   document.getElementById('detail').classList.add('open');
