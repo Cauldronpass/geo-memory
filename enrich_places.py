@@ -69,6 +69,10 @@ CATEGORY_MAP = {
     "historic_site": "Attraction", "monument": "Attraction",
     "stadium": "Attraction", "theater": "Attraction",
     "movie_theater": "Attraction", "bowling_alley": "Attraction",
+    # Fitness
+    "gym": "Fitness", "fitness_center": "Fitness", "yoga_studio": "Fitness",
+    "sports_club": "Fitness", "golf_course": "Fitness", "tennis_court": "Fitness",
+    "swimming_pool": "Fitness", "rock_climbing_gym": "Fitness", "pilates_studio": "Fitness",
     # Venues
     "event_venue": "Venue", "convention_center": "Venue",
     "banquet_hall": "Venue", "concert_hall": "Venue",
