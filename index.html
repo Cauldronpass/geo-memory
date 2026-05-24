@@ -1560,7 +1560,7 @@ async function submitCheckIn() {
 let _dropPinLat = null, _dropPinLng = null, _dropPinType = null;
 let _dropPinStatus = 'Want to Visit', _dropPinDuration = '2h';
 let _nearbyPlace = null, _nearbyPlaces = [];
-let _dropPinAddress = null;
+let _dropPinAddress = null, _geocodeCity = '', _geocodeCountry = '', _geocodeNeighborhood = '';
 
 function openDropPin() {
   _dropPinLat = null; _dropPinLng = null; _dropPinType = null; _nearbyPlace = null;
@@ -1575,7 +1575,7 @@ function openDropPin() {
   document.getElementById('place-search-section').style.display = 'none';
   document.getElementById('place-search-results').innerHTML = '';
   document.getElementById('personal-addr-options').innerHTML = '<div style="color:#bbb;font-size:13px;padding:6px 0">Getting your location…</div>';
-  _dropPinAddress = null;
+  _dropPinAddress = null; _geocodeCity = ''; _geocodeCountry = ''; _geocodeNeighborhood = '';
   document.querySelectorAll('.duration-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('dur-2h').classList.add('active');
   document.getElementById('pin-pick-want').className = 'status-pick-btn active-want';
@@ -1706,6 +1706,7 @@ async function fetchAddressOptions(lat, lng) {
     });
     const data = await resp.json();
     const addresses = data.addresses || [];
+    _geocodeCity = data.city || ''; _geocodeCountry = data.country || ''; _geocodeNeighborhood = data.neighborhood || '';
     el.innerHTML = '';
     addresses.forEach(addr => {
       const btn = document.createElement('button');
@@ -1803,7 +1804,7 @@ async function submitDropPin() {
       google_place_id: gp?.id || '', address: gp?.formattedAddress || '',
       city, country, neighborhood,
       category: gp ? googleTypeToCategory(gp.primaryType) : 'Other',
-      google_maps_url: gp?.googleMapsUri || '', rating_external: gp?.rating ?? null,
+      google_maps_url: gp?.googleMapsUri || `https://www.google.com/maps?q=${_dropPinLat},${_dropPinLng}`, rating_external: gp?.rating ?? null,
       phone: gp?.nationalPhoneNumber || '', website: gp?.websiteUri || '',
       price_level: gp?.priceLevel ? (priceLevelMap[gp.priceLevel] ?? null) : null,
       hours: gp?.currentOpeningHours?.weekdayDescriptions?.join('\n') || '',
@@ -1812,7 +1813,12 @@ async function submitDropPin() {
   } else if (_dropPinType === 'personal') {
     const name = document.getElementById('pin-personal-name').value.trim();
     if (!name) { btn.disabled = false; btn.textContent = 'Save Pin'; document.getElementById('droppin-status-msg').textContent = 'Enter a name.'; document.getElementById('droppin-status-msg').style.color = '#c00'; return; }
-    Object.assign(payload, { name, status: 'Visited', notes: document.getElementById('pin-personal-note').value.trim(), category: 'House', enrichment_status: 'Enriched', address: _dropPinAddress || '' });
+    Object.assign(payload, {
+      name, status: 'Visited', notes: document.getElementById('pin-personal-note').value.trim(),
+      category: 'House', enrichment_status: 'Enriched', address: _dropPinAddress || '',
+      city: _geocodeCity, country: _geocodeCountry, neighborhood: _geocodeNeighborhood,
+      google_maps_url: `https://www.google.com/maps?q=${_dropPinLat},${_dropPinLng}`,
+    });
   } else {
     const label = document.getElementById('pin-temp-name').value.trim();
     Object.assign(payload, { name: label || 'Temp Pin', status: 'Want to Visit', category: 'Temp', temporary: true, expires: calcExpires(_dropPinDuration), enrichment_status: 'Enriched' });

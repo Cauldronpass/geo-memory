@@ -222,7 +222,20 @@ async function handleGeocode(data, env) {
   const all = result.results || [];
   const withRoute = all.filter(r => r.address_components.some(c => c.types.includes('route')));
   const addresses = (withRoute.length ? withRoute : all).slice(0, 5).map(r => r.formatted_address).filter(Boolean);
-  return json({ ok: true, addresses });
+
+  // Extract structured city/country/neighborhood from the best result
+  const primary = (withRoute.length ? withRoute : all)[0] || null;
+  let city = '', country = '', neighborhood = '';
+  if (primary) {
+    for (const comp of primary.address_components) {
+      const types = comp.types || [];
+      if (types.includes('locality'))                                        city         = comp.long_name || '';
+      else if (types.includes('country'))                                    country      = comp.long_name || '';
+      else if (types.includes('neighborhood') || types.includes('sublocality_level_1')) neighborhood = comp.long_name || '';
+    }
+  }
+
+  return json({ ok: true, addresses, city, country, neighborhood });
 }
 
 // ── Main fetch handler ────────────────────────────────────────────────────────
