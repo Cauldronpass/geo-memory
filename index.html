@@ -1386,6 +1386,7 @@ function showDiscoverDetail(i) {
   if (gp.rating) { const s = '★'.repeat(Math.round(gp.rating)) + '☆'.repeat(5 - Math.round(gp.rating)); html += `<div class="detail-row"><span class="detail-key">Google</span><span class="detail-val">${s} ${gp.rating.toFixed(1)}</span></div>`; }
   html += `<div class="detail-actions">`;
   if (lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_id=${esc(gp.id)}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
+  if (gp.websiteUri) html += `<a href="${esc(gp.websiteUri)}" target="_blank" rel="noopener" class="btn-action btn-secondary">🌐 Website</a>`;
   html += `<button class="btn-action btn-save" onclick="openSaveModal(${i})">+ Save to Notion</button>`;
   html += `</div>`;
   document.getElementById('detail-body').innerHTML = html;
