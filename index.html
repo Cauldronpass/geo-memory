@@ -1788,6 +1788,16 @@ async function submitDropPin() {
 
   if (_dropPinType === 'place') {
     const gp = _nearbyPlace;
+    // Duplicate check — if place already in database, offer check-in instead
+    if (gp?.id && myPlacesByGoogleId.has(gp.id)) {
+      const existing = myPlacesByGoogleId.get(gp.id);
+      btn.disabled = false; btn.textContent = 'Save Pin';
+      if (confirm(`"${existing.name}" is already in your database.\n\nCheck in instead?`)) {
+        closeDropPin();
+        openCheckInModal(existing.notion_id, existing.name);
+      }
+      return;
+    }
     // Derive name: from selected Google place, or from search input as fallback
     const name = gp?.displayName?.text || document.getElementById('pin-place-search').value.trim();
     if (!name) { btn.disabled = false; btn.textContent = 'Save Pin'; document.getElementById('droppin-status-msg').textContent = 'Select a place or search by name.'; document.getElementById('droppin-status-msg').style.color = '#c00'; return; }
