@@ -62,6 +62,10 @@ def get_url(prop):
     if not prop:
         return ""
     return prop.get("url") or ""
+def get_checkbox(prop):
+    if not prop:
+        return False
+    return bool(prop.get("checkbox", False))
 
 
 def get_rollup_number(prop):
@@ -212,6 +216,7 @@ def main():
             "hours":           get_text(props.get("Hours", {})),
             "price_level":     get_number(props.get("Price Level")),
             "rating_external": get_number(props.get("Rating External")),
+          "flagged":         get_checkbox(props.get("Flagged")),
             # Last visit snapshot — populated below if visits exist
             "last_visit_date":      "",
             "last_visit_sentiment": "",
