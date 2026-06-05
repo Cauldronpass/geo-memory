@@ -207,6 +207,41 @@ async function handleCheckIn(data, env, ctx) {
   return json({ ok: true, visit_id: result.id });
 }
 
+// ── /flag handler (toggle Flagged checkbox on a Place) ───────────────────────
+
+async function handleFlag(data, env, ctx) {
+  if (!data.notion_id) {
+    return json({ ok: false, error: 'notion_id is required' }, 400);
+  }
+
+  // Default to flagging (true); pass flagged: false to unflag
+  const flagged = data.flagged !== false;
+
+  const notionResp = await fetch(`https://api.notion.com/v1/pages/${data.notion_id}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization':  `Bearer ${env.NOTION_TOKEN}`,
+      'Content-Type':   'application/json',
+      'Notion-Version': NOTION_VERSION,
+    },
+    body: JSON.stringify({
+      properties: { 'Flagged': { checkbox: flagged } },
+    }),
+  });
+
+  const result = await notionResp.json();
+
+  if (!result.id) {
+    console.error('Notion /flag error:', JSON.stringify(result));
+    return json({ ok: false, error: result.message || 'Notion error' }, 500);
+  }
+
+  // Refresh places.json so the flag state propagates to the map
+  triggerGitHubRefresh(env.GITHUB_PAT, ctx);
+
+  return json({ ok: true, notion_id: data.notion_id, flagged });
+}
+
 // ── /geocode handler (reverse geocode lat/lng → address options) ──────────────
 
 async function handleGeocode(data, env) {
@@ -270,6 +305,8 @@ export default {
       return handleSave(data, env, ctx);
     } else if (path === '/check-in') {
       return handleCheckIn(data, env, ctx);
+    } else if (path === '/flag') {
+      return handleFlag(data, env, ctx);
     } else if (path === '/geocode') {
       return handleGeocode(data, env);
     } else {

@@ -62,6 +62,8 @@ def get_url(prop):
     if not prop:
         return ""
     return prop.get("url") or ""
+
+
 def get_checkbox(prop):
     if not prop:
         return False
@@ -216,7 +218,8 @@ def main():
             "hours":           get_text(props.get("Hours", {})),
             "price_level":     get_number(props.get("Price Level")),
             "rating_external": get_number(props.get("Rating External")),
-          "flagged":         get_checkbox(props.get("Flagged")),
+            # Flagged
+            "flagged":         get_checkbox(props.get("Flagged")),
             # Last visit snapshot — populated below if visits exist
             "last_visit_date":      "",
             "last_visit_sentiment": "",
@@ -245,6 +248,13 @@ def main():
         json.dump(places, f, ensure_ascii=False, separators=(",", ":"))
 
     print(f"Wrote {len(places)} places to places.json  ({skipped} skipped — no coordinates)")
+
+    # Write flagged_places.json — only places with flagged == True
+    flagged = [p for p in places if p.get("flagged")]
+    flagged_path = os.path.join(os.path.dirname(__file__), "flagged_places.json")
+    with open(flagged_path, "w") as f:
+        json.dump(flagged, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"Wrote {len(flagged)} flagged places to flagged_places.json")
 
 
 if __name__ == "__main__":
