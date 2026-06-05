@@ -249,8 +249,12 @@ def main():
 
     print(f"Wrote {len(places)} places to places.json  ({skipped} skipped — no coordinates)")
 
-    # Write flagged_places.json — only places with flagged == True
-    flagged = [p for p in places if p.get("flagged")]
+    # Write flagged_places.json — only flagged places, minimal fields for Shortcut display
+    flagged = [
+        {"name": p["name"], "city": p["city"], "notion_id": p["notion_id"],
+         "lat": p["lat"], "lng": p["lng"]}
+        for p in places if p.get("flagged")
+    ]
     flagged_path = os.path.join(os.path.dirname(__file__), "flagged_places.json")
     with open(flagged_path, "w") as f:
         json.dump(flagged, f, ensure_ascii=False, separators=(",", ":"))
