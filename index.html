@@ -262,6 +262,9 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .btn-save:active { background: #1b5e20; }
 .btn-checkin { background: #1565c0; color: #fff; }
 .btn-checkin:active { background: #0d47a1; }
+.btn-flag { background: #f5f6fa; color: #1a1f2e; border: 1.5px solid #d0d4df; }
+.btn-flag.flagged { background: #fff8e1; color: #e6a800; border-color: #f5c518; }
+.btn-flag:active { opacity: 0.75; }
 
 /* ── Save modal ──────────────────────────────────────────────────── */
 #save-overlay {
@@ -637,6 +640,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
             <div id="tag-checkbox-list"></div>
           </div>
         </div>
+        <button class="tag-dropdown-btn" id="flag-filter-btn" onclick="toggleFlagFilter()">★ Flagged</button>
       </div>
     </div>
   </div>
@@ -934,6 +938,8 @@ let currentMode = 'myplaces', activeStatus = 'all';
 let activeCategories = new Set(Object.keys(CATEGORY_COLORS));
 let activeTags = new Set(), allTagsList = [];
 let allCatsList = [];
+let showFlaggedOnly = false;
+const markerById = new Map(); // notion_id → { marker, place } — used for deep-link auto-open
 let _discoverPlaces = [], _discoverMyPlaces = [];
 let _saveIndex = -1, _saveStatus = 'Want to Visit';
 let _checkInNotionId = null, _checkInPlaceName = '';
@@ -958,6 +964,15 @@ fetch('places.json')
     buildTagFilters();
     buildMyPlacesMarkers();
     applyFilters();
+    // Deep-link: ?place=<notion_id> — fly to place and open detail panel
+    const deepId = new URLSearchParams(window.location.search).get('place');
+    if (deepId) {
+      const entry = markerById.get(deepId);
+      if (entry) {
+        map.flyTo([entry.place.lat, entry.place.lng], 16);
+        setTimeout(() => showMyPlaceDetail(entry.place), 800);
+      }
+    }
   })
   .catch(err => {
     document.getElementById('loading').innerHTML =
@@ -1112,6 +1127,14 @@ function updateTagDropdownLabel() {
   }
 }
 
+function toggleFlagFilter() {
+  showFlaggedOnly = !showFlaggedOnly;
+  const btn = document.getElementById('flag-filter-btn');
+  btn.classList.toggle('filtered', showFlaggedOnly);
+  btn.textContent = showFlaggedOnly ? '★ Flagged ✕' : '★ Flagged';
+  applyFilters();
+}
+
 // Close dropdowns when clicking outside
 document.addEventListener('click', (e) => {
   ['status-dropdown-panel', 'cat-dropdown-panel', 'tag-dropdown-panel'].forEach(id => {
@@ -1136,6 +1159,7 @@ function buildMyPlacesMarkers() {
     });
     m.on('click', e => { L.DomEvent.stopPropagation(e); showMyPlaceDetail(p); });
     myPlacesMarkers.push({ marker: m, place: p });
+    if (p.notion_id) markerById.set(p.notion_id, { marker: m, place: p });
   }
 }
 
@@ -1152,7 +1176,8 @@ function applyFilters() {
     }
     const ok = (activeStatus === 'all' || place.status === activeStatus)
              && activeCategories.has(place.category)
-             && tagOk;
+             && tagOk
+             && (!showFlaggedOnly || place.flagged);
     if (ok) { marker.addTo(map); shown++; } else { marker.remove(); }
   }
   document.getElementById('count').textContent = `${shown} of ${allPlaces.filter(p => p.lat != null).length} places`;
@@ -1353,6 +1378,7 @@ function showMyPlaceDetail(p) {
   html += `<div class="detail-actions">`;
   if (p.lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
   if (p.notion_id) html += `<button class="btn-action btn-checkin" data-notion-id="${esc(p.notion_id)}" data-place-name="${esc(p.name)}">Check In</button>`;
+  if (p.notion_id) html += `<button class="btn-action btn-flag${p.flagged ? ' flagged' : ''}" data-notion-id="${esc(p.notion_id)}">${p.flagged ? '★ Flagged' : '☆ Flag'}</button>`;
   if (p.notion_id) html += `<a href="https://www.notion.so/${p.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
   html += `</div>`;
 
@@ -1480,6 +1506,40 @@ document.addEventListener('click', function(e) {
     openCheckInModal(btn.dataset.notionId, btn.dataset.placeName || '');
   }
 });
+
+// Delegated handler for Flag button
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.btn-flag');
+  if (btn && btn.dataset.notionId) toggleFlag(btn, btn.dataset.notionId);
+});
+
+async function toggleFlag(btn, notionId) {
+  const entry = markerById.get(notionId);
+  if (!entry) return;
+  const newFlagged = !entry.place.flagged;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const resp = await fetch(WORKER_URL + '/flag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notion_id: notionId, flagged: newFlagged }),
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      entry.place.flagged = newFlagged;
+      btn.textContent = newFlagged ? '★ Flagged' : '☆ Flag';
+      btn.classList.toggle('flagged', newFlagged);
+      // If filter is active and we just unflagged, re-apply to hide it
+      if (showFlaggedOnly && !newFlagged) applyFilters();
+    } else {
+      btn.textContent = 'Error';
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+  }
+  btn.disabled = false;
+}
 
 function openCheckInModal(notionId, placeName) {
   _checkInNotionId = notionId;
