@@ -162,9 +162,8 @@ async function handleCheckIn(data, env, ctx) {
   if (data.occasion)              props['Occasion']   = { select: { name: data.occasion } };
   if (data.notes)                 props['Notes']      = rt(data.notes);
   if (data.companions)            props['Companions'] = rt(data.companions);
-  // Thumbs up/down → Rating select (change Rating property type to Select in Notion)
-  if (data.sentiment === 'Good')  props['Rating'] = { select: { name: '👍' } };
-  if (data.sentiment === 'Bad')   props['Rating'] = { select: { name: '👎' } };
+  if (data.rating != null)        props['Rating']     = { number: Number(data.rating) };
+  if (data.notable)               props['Notable']    = { checkbox: true };
 
   const notionResp = await fetch('https://api.notion.com/v1/pages', {
     method: 'POST',
