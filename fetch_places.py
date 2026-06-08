@@ -158,8 +158,7 @@ def build_last_visit_map(visits):
         if date_prop and date_prop.get("date"):
             date_val = date_prop["date"].get("start", "")
 
-        rating_sel = props.get("Rating", {}).get("select")
-        sentiment = rating_sel.get("name", "") if rating_sel else ""
+        rating_val = props.get("Rating", {}).get("number")
 
         occasion_sel = props.get("Occasion", {}).get("select")
         occasion = occasion_sel.get("name", "") if occasion_sel else ""
@@ -168,10 +167,10 @@ def build_last_visit_map(visits):
         notes = "".join(t.get("plain_text", "") for t in notes_items)
 
         seen[place_id] = {
-            "last_visit_date":      date_val,
-            "last_visit_sentiment": sentiment,
-            "last_visit_occasion":  occasion,
-            "last_visit_notes":     notes,
+            "last_visit_date":    date_val,
+            "last_visit_rating":  rating_val,
+            "last_visit_occasion": occasion,
+            "last_visit_notes":   notes,
         }
     return seen
 
@@ -221,10 +220,10 @@ def main():
             # Flagged
             "flagged":         get_checkbox(props.get("Flagged")),
             # Last visit snapshot — populated below if visits exist
-            "last_visit_date":      "",
-            "last_visit_sentiment": "",
-            "last_visit_occasion":  "",
-            "last_visit_notes":     "",
+            "last_visit_date":     "",
+            "last_visit_rating":   None,
+            "last_visit_occasion": "",
+            "last_visit_notes":    "",
         })
 
     # Only query the Visits DB if at least one place has visits
@@ -237,10 +236,10 @@ def main():
         for place in places:
             snap = last_visit_map.get(place["notion_id"], {})
             if snap:
-                place["last_visit_date"]      = snap.get("last_visit_date", "")
-                place["last_visit_sentiment"] = snap.get("last_visit_sentiment", "")
-                place["last_visit_occasion"]  = snap.get("last_visit_occasion", "")
-                place["last_visit_notes"]     = snap.get("last_visit_notes", "")
+                place["last_visit_date"]     = snap.get("last_visit_date", "")
+                place["last_visit_rating"]   = snap.get("last_visit_rating")
+                place["last_visit_occasion"] = snap.get("last_visit_occasion", "")
+                place["last_visit_notes"]    = snap.get("last_visit_notes", "")
     else:
         print("No visited places — skipping Visits DB fetch")
 

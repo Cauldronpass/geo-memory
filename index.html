@@ -457,23 +457,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   transition: all 0.12s;
 }
 .occasion-btn.active { border-color: #1a1f2e; background: #1a1f2e; color: #fff; }
-.sentiment-picker { display: flex; gap: 10px; margin-bottom: 20px; }
-.sentiment-btn {
-  flex: 1;
-  padding: 12px;
-  border-radius: 10px;
-  border: 2px solid #e0e3ec;
-  background: #f5f6fa;
-  font-size: 15px;
-  font-weight: 600;
-  color: #666;
-  cursor: pointer;
-  text-align: center;
-  -webkit-tap-highlight-color: transparent;
-  transition: all 0.12s;
-}
-.sentiment-btn.active-good { border-color: #2e7d32; background: #e8f5e9; color: #2e7d32; }
-.sentiment-btn.active-bad  { border-color: #c62828; background: #ffebee; color: #c62828; }
+.rating-picker { display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap; }
 #checkin-submit {
   flex: 1;
   padding: 12px;
@@ -714,10 +698,15 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
       <button class="occasion-btn"        id="occ-client"        onclick="pickOccasion('Client/Work')">Client/Work</button>
     </div>
 
-    <div class="save-field-label">How was it?</div>
-    <div class="sentiment-picker">
-      <button class="sentiment-btn active-good" id="pick-good" onclick="pickSentiment('Good')">👍 Good</button>
-      <button class="sentiment-btn"             id="pick-bad"  onclick="pickSentiment('Bad')">👎 Bad</button>
+    <div class="save-field-label">Rating <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+    <div class="rating-picker" id="checkin-rating-picker">
+      <button class="occasion-btn" onclick="pickRating(1)">1</button>
+      <button class="occasion-btn" onclick="pickRating(2)">2</button>
+      <button class="occasion-btn" onclick="pickRating(3)">3</button>
+      <button class="occasion-btn" onclick="pickRating(4)">4</button>
+      <button class="occasion-btn" onclick="pickRating(5)">5</button>
+      <button class="occasion-btn" onclick="pickRating(6)">6</button>
+      <button class="occasion-btn" onclick="pickRating(7)">7</button>
     </div>
 
     <div class="save-field-label">Who were you with? <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
@@ -943,7 +932,7 @@ const markerById = new Map(); // notion_id → { marker, place } — used for de
 let _discoverPlaces = [], _discoverMyPlaces = [];
 let _saveIndex = -1, _saveStatus = 'Want to Visit';
 let _checkInNotionId = null, _checkInPlaceName = '';
-let _checkInOccasion = 'Solo', _checkInSentiment = 'Good';
+let _checkInOccasion = 'Solo', _checkInRating = null;
 
 const map = L.map('map', { zoomControl: true }).setView([39.5, -95.0], 4);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1358,11 +1347,10 @@ function showMyPlaceDetail(p) {
 
   // ── Visits panel ─────────────────────────────────────────────────
   let visitsHtml = '';
-  const hasSnap = p.last_visit_date || p.last_visit_sentiment || p.last_visit_occasion || p.last_visit_notes;
+  const hasSnap = p.last_visit_date || p.last_visit_rating != null || p.last_visit_occasion || p.last_visit_notes;
   if (hasSnap) {
-    if (p.last_visit_sentiment) {
-      const vibe = p.last_visit_sentiment === '👍' ? '<span style="font-size:18px">👍</span> Good' : p.last_visit_sentiment === '👎' ? '<span style="font-size:18px">👎</span> Bad' : esc(p.last_visit_sentiment);
-      visitsHtml += `<div class="detail-row"><span class="detail-key">Last vibe</span><span class="detail-val">${vibe}</span></div>`;
+    if (p.last_visit_rating != null) {
+      visitsHtml += `<div class="detail-row"><span class="detail-key">Rating</span><span class="detail-val">${p.last_visit_rating} / 7</span></div>`;
     }
     if (p.last_visit_date) visitsHtml += `<div class="detail-row"><span class="detail-key">Date</span><span class="detail-val">${esc(p.last_visit_date)}</span></div>`;
     if (p.last_visit_occasion) visitsHtml += `<div class="detail-row"><span class="detail-key">Occasion</span><span class="detail-val">${esc(p.last_visit_occasion)}</span></div>`;
@@ -1562,9 +1550,9 @@ function openCheckInModal(notionId, placeName) {
     document.getElementById('occ-' + id).classList.remove('active');
   });
   document.getElementById('occ-solo').classList.add('active');
-  // Reset sentiment
-  document.getElementById('pick-good').className = 'sentiment-btn active-good';
-  document.getElementById('pick-bad').className = 'sentiment-btn';
+  // Reset rating
+  _checkInRating = null;
+  document.querySelectorAll('#checkin-rating-picker .occasion-btn').forEach(btn => btn.classList.remove('active'));
   document.getElementById('checkin-overlay').classList.add('open');
   setTimeout(() => document.getElementById('checkin-notes').focus(), 200);
 }
@@ -1576,10 +1564,11 @@ function pickOccasion(val) {
   document.getElementById('occ-' + map[val]).classList.add('active');
 }
 
-function pickSentiment(val) {
-  _checkInSentiment = val;
-  document.getElementById('pick-good').className = val === 'Good' ? 'sentiment-btn active-good' : 'sentiment-btn';
-  document.getElementById('pick-bad').className  = val === 'Bad'  ? 'sentiment-btn active-bad'  : 'sentiment-btn';
+function pickRating(val) {
+  _checkInRating = val;
+  document.querySelectorAll('#checkin-rating-picker .occasion-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', i + 1 === val);
+  });
 }
 
 function closeCheckInModal() { document.getElementById('checkin-overlay').classList.remove('open'); }
@@ -1595,7 +1584,7 @@ async function submitCheckIn() {
     place_name:  _checkInPlaceName,
     date:        document.getElementById('checkin-date').value,
     occasion:    _checkInOccasion,
-    sentiment:   _checkInSentiment,
+    rating:      _checkInRating,
     companions:  document.getElementById('checkin-companions').value.trim(),
     notes:       document.getElementById('checkin-notes').value.trim(),
   };
