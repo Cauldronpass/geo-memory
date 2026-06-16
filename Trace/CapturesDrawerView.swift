@@ -7,6 +7,7 @@ struct CapturesDrawerView: View {
     @State private var actionCapture: Capture?
     @State private var showingVisitPicker = false
     @State private var showingActions = false
+    @State private var showingCreateVisit = false
 
     var groupedCaptures: [(key: String, value: [Capture])] {
         let grouped = Dictionary(grouping: notion.captures) { capture in
@@ -82,7 +83,10 @@ struct CapturesDrawerView: View {
                         }
                     }
                 }
-                Button("Create new visit — coming soon") { }
+                Button("Create new visit") {
+                    selectedCapture = capture
+                    showingCreateVisit = true
+                }
                 Button("Dismiss from queue", role: .destructive) {
                     Task { try? await notion.dismissCapture(capture.id) }
                 }
@@ -101,6 +105,13 @@ struct CapturesDrawerView: View {
             if let capture = selectedCapture {
                 VisitPickerView(capture: capture, isShowing: $showingVisitPicker)
                     .environment(notion)
+            }
+        }
+        .sheet(isPresented: $showingCreateVisit) {
+            if let capture = selectedCapture {
+                CreateVisitFromCaptureView(capture: capture, isShowing: $showingCreateVisit)
+                    .environment(notion)
+                    .environment(LocationManager.shared)
             }
         }
         .task {
@@ -202,6 +213,111 @@ struct VisitPickerView: View {
                     Button("Cancel") { isShowing = false }
                 }
             }
+        }
+    }
+}
+struct CreateVisitFromCaptureView: View {
+    let capture: Capture
+    @Binding var isShowing: Bool
+    @Environment(NotionService.self) private var notion
+    @State private var rating: Int? = nil
+    @State private var notes: String = ""
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    private var place: Place? {
+        guard let id = capture.placeID else { return nil }
+        return notion.places.first { $0.id == id }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    HStack {
+                        Text("Place")
+                        Spacer()
+                        Text(capture.placeName ?? "No place")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Date")
+                        Spacer()
+                        Text(Date(), style: .date)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("Capture note") {
+                    Text(capture.notes.isEmpty ? "(no note)" : capture.notes)
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                }
+
+                Section("Rating (optional)") {
+                    StarRatingPicker(rating: $rating)
+                }
+
+                Section("Visit notes (optional)") {
+                    TextField("Add notes…", text: $notes, axis: .vertical)
+                        .lineLimit(3...6)
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage).foregroundStyle(.red).font(.caption)
+                    }
+                }
+
+                Section {
+                    Button {
+                        Task { await save() }
+                    } label: {
+                        if isSaving {
+                            HStack { Spacer(); ProgressView(); Spacer() }
+                        } else {
+                            Text("Create Visit & Link Note")
+                                .frame(maxWidth: .infinity)
+                                .bold()
+                        }
+                    }
+                    .disabled(isSaving || place == nil)
+                }
+
+                if place == nil {
+                    Section {
+                        Text("This capture has no place attached. Link it to an existing visit instead.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("New Visit")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { isShowing = false }
+                }
+            }
+        }
+    }
+
+    private func save() async {
+        guard let place else { return }
+        isSaving = true
+        do {
+            let visitID = try await notion.checkIn(
+                place: place,
+                rating: rating,
+                notes: notes.isEmpty ? nil : notes
+            )
+            try await notion.linkCapture(capture.id, toVisit: visitID)
+            await notion.fetchPlaces()
+            await notion.fetchVisits()
+            isShowing = false
+        } catch {
+            errorMessage = error.localizedDescription
+            isSaving = false
         }
     }
 }
