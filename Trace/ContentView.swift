@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var showingAddPlace = false
     @State private var showingAddCapture = false
     @State private var showingDrawer = false
+    @State private var showingAddPhoto = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -43,7 +44,7 @@ struct ContentView: View {
                 Button("Check In") { showingCheckIn = true }
                 Button("Add Place") { showingAddPlace = true }
                 Button("Add Note") { showingAddCapture = true }
-                Button("Add Photo") { }
+                Button("Add Photo") { showingAddPhoto = true }
                 Button("Cancel", role: .cancel) { }
             }
         }
@@ -59,6 +60,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingAddCapture) {
             AddCaptureView()
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
+        }
+        .sheet(isPresented: $showingAddPhoto) {
+            AddPhotoView()
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
         }
@@ -103,3 +109,4 @@ struct ContentView: View {
 #Preview {
     ContentView()
 }
+
