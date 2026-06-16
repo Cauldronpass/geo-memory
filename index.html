@@ -1,0 +1,1930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Geo Memory</title>
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Geo Memory">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f6fa; }
+#app { display: flex; flex-direction: column; height: 100%; }
+
+/* ── Header ─────────────────────────────────────────────────────── */
+#header {
+  background: #1a1f2e;
+  color: #fff;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 10px;
+}
+#header-left { min-width: 0; }
+#header-title { font-size: 16px; font-weight: 700; letter-spacing: -0.3px; }
+#count { font-size: 11px; color: #9aa3b8; margin-top: 1px; }
+
+#mode-toggle {
+  display: flex;
+  background: rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 2px;
+  flex-shrink: 0;
+}
+.mode-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+  color: rgba(255,255,255,0.55);
+  transition: all 0.15s;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.mode-btn.active { background: #fff; color: #1a1f2e; }
+
+/* ── My Places UI ────────────────────────────────────────────────── */
+#myplaces-ui { flex-shrink: 0; }
+
+#search-row {
+  padding: 8px 14px 4px;
+  background: #fff;
+  border-bottom: 1px solid #e8eaf0;
+  position: relative;
+}
+#search-input {
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: 20px;
+  border: 1.5px solid #d0d4df;
+  font-size: 13px;
+  outline: none;
+  background: #f5f6fa;
+  color: #222;
+}
+#search-input:focus { border-color: #1a1f2e; background: #fff; }
+
+#filters {
+  background: #fff;
+  border-bottom: 1px solid #e8eaf0;
+  padding: 8px 14px;
+}
+.filter-row { display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
+.filter-label { font-size: 10px; font-weight: 700; color: #9aa3b8; letter-spacing: 0.6px; text-transform: uppercase; margin-right: 2px; white-space: nowrap; }
+.status-btn { padding: 4px 11px; border-radius: 20px; border: 1.5px solid #d0d4df; background: #fff; color: #444; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
+.status-btn.active { background: #1a1f2e; color: #fff; border-color: #1a1f2e; }
+.cat-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.status-option { padding: 9px 12px; font-size: 13px; color: #555; cursor: pointer; border-radius: 7px; -webkit-tap-highlight-color: transparent; }
+.status-option:active { background: #f5f6fa; }
+.status-option.active-opt { font-weight: 700; color: #1a1f2e; }
+#locate-btn {
+  position: fixed; right: 14px; bottom: 96px; z-index: 500;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: #fff; border: 2px solid rgba(0,0,0,0.2);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: #1a1f2e; -webkit-tap-highlight-color: transparent;
+}
+#locate-btn:active { background: #f0f2f7; }
+#locate-btn.locating { opacity: 0.45; }
+
+/* Local search dropdown */
+#search-results {
+  position: absolute;
+  left: 0; right: 0; top: 100%;
+  background: #fff;
+  border-radius: 0 0 12px 12px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+  z-index: 500;
+  max-height: 240px;
+  overflow-y: auto;
+  display: none;
+}
+.search-result-item { padding: 10px 16px; font-size: 13px; border-bottom: 1px solid #f0f2f7; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+.search-result-item:last-child { border-bottom: none; }
+.search-result-item:active { background: #f5f6fa; }
+.sri-name { font-weight: 600; color: #1a1f2e; }
+.sri-meta { font-size: 11px; color: #9aa3b8; }
+
+/* ── Discover UI ─────────────────────────────────────────────────── */
+#discover-ui {
+  display: none;
+  flex-shrink: 0;
+  background: #fff;
+  border-bottom: 1px solid #e8eaf0;
+  padding: 10px 14px 8px;
+}
+#discover-row { display: flex; gap: 8px; align-items: center; }
+#discover-input {
+  flex: 1;
+  padding: 8px 14px;
+  border-radius: 20px;
+  border: 1.5px solid #d0d4df;
+  font-size: 13px;
+  outline: none;
+  background: #f5f6fa;
+  color: #222;
+}
+#discover-input:focus { border-color: #1a1f2e; background: #fff; }
+#discover-btn {
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: #1a1f2e;
+  color: #fff;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+#discover-btn:active { background: #2d3550; }
+#discover-hint { font-size: 11px; color: #9aa3b8; margin-top: 5px; }
+
+/* ── Map ─────────────────────────────────────────────────────────── */
+#map { z-index: 0; flex: 1; }
+
+/* ── Discover results — fixed bottom sheet ───────────────────────── */
+#discover-results {
+  display: none;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 42vh;
+  background: #f5f6fa;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  z-index: 800;
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -3px 16px rgba(0,0,0,0.12);
+}
+.discover-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid #eef0f5;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.discover-card:active { background: #f7f8fc; }
+.discover-card.matched { border-left: 3px solid #f5c518; }
+.dc-dot-wrap { flex-shrink: 0; padding-top: 3px; }
+.dc-dot { width: 11px; height: 11px; border-radius: 50%; }
+.dc-body { flex: 1; min-width: 0; }
+.dc-name { font-size: 14px; font-weight: 600; color: #1a1f2e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dc-addr { font-size: 11px; color: #9aa3b8; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dc-badge { display: inline-flex; align-items: center; gap: 3px; margin-top: 5px; padding: 2px 8px; border-radius: 10px; background: #fff8e1; color: #c48f00; font-size: 10px; font-weight: 700; }
+.dc-right { flex-shrink: 0; text-align: right; padding-top: 1px; }
+.dc-grating { font-size: 12px; font-weight: 600; color: #444; }
+.dc-grating-lbl { font-size: 10px; color: #aaa; }
+
+#discover-empty { padding: 48px 24px; text-align: center; color: #9aa3b8; font-size: 14px; line-height: 1.5; }
+#discover-loading { padding: 36px; display: flex; justify-content: center; }
+
+/* ── Detail panel ────────────────────────────────────────────────── */
+#detail {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: #fff;
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.15);
+  padding: 16px 18px 36px;
+  transform: translateY(100%);
+  transition: transform 0.25s ease;
+  z-index: 1000;
+  max-height: 62vh;
+  overflow-y: auto;
+}
+#detail.open { transform: translateY(0); }
+#detail-close {
+  position: absolute;
+  top: 12px; right: 14px;
+  background: #f0f2f7;
+  border: none;
+  border-radius: 50%;
+  width: 28px; height: 28px;
+  font-size: 15px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: #666;
+  flex-shrink: 0;
+}
+#detail-name { font-size: 17px; font-weight: 700; color: #1a1f2e; margin-bottom: 3px; padding-right: 36px; line-height: 1.3; }
+#detail-meta { font-size: 12px; color: #888; margin-bottom: 14px; }
+.detail-row { display: flex; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+.detail-key { color: #9aa3b8; width: 84px; flex-shrink: 0; font-size: 12px; padding-top: 1px; }
+.detail-val { color: #333; flex: 1; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.pill-visited { background: #e8f5e9; color: #2e7d32; }
+.pill-want { background: #fff3e0; color: #e65100; }
+
+.in-list-box {
+  background: #fffbee;
+  border: 1.5px solid #ffe082;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.in-list-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #c48f00;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 7px;
+}
+
+/* ── Detail tabs ─────────────────────────────────────────────────── */
+.detail-tabs { display: flex; border-bottom: 1.5px solid #e8eaf0; margin-bottom: 14px; margin-top: 2px; }
+.detail-tab { flex: 1; padding: 8px 0; font-size: 12px; font-weight: 600; text-align: center; color: #9aa3b8; border: none; background: none; cursor: pointer; border-bottom: 2.5px solid transparent; margin-bottom: -1.5px; -webkit-tap-highlight-color: transparent; transition: color 0.15s; }
+.detail-tab.active { color: #1a1f2e; border-bottom-color: #1a1f2e; }
+.detail-tab-panel { display: none; }
+.detail-tab-panel.active { display: block; }
+.detail-stub { padding: 24px 0; text-align: center; color: #b0b8cc; font-size: 13px; }
+
+.detail-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.btn-action { padding: 9px 18px; border-radius: 9px; text-decoration: none; font-size: 13px; font-weight: 600; border: none; cursor: pointer; display: inline-block; -webkit-tap-highlight-color: transparent; }
+.btn-primary { background: #1a1f2e; color: #fff; }
+.btn-secondary { background: #f5f6fa; color: #1a1f2e; border: 1.5px solid #d0d4df; }
+.btn-save { background: #2e7d32; color: #fff; }
+.btn-save:active { background: #1b5e20; }
+.btn-checkin { background: #1565c0; color: #fff; }
+.btn-checkin:active { background: #0d47a1; }
+.btn-flag { background: #f5f6fa; color: #1a1f2e; border: 1.5px solid #d0d4df; }
+.btn-flag.flagged { background: #fff8e1; color: #e6a800; border-color: #f5c518; }
+.btn-flag:active { opacity: 0.75; }
+
+/* ── Save modal ──────────────────────────────────────────────────── */
+#save-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 1500;
+  align-items: flex-end;
+  justify-content: center;
+}
+#save-overlay.open { display: flex; }
+#save-modal {
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 20px 20px 40px;
+  width: 100%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+#save-modal-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9aa3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 4px;
+}
+#save-modal-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a1f2e;
+  margin-bottom: 2px;
+  line-height: 1.3;
+}
+#save-modal-addr {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 20px;
+}
+.save-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9aa3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+.status-picker {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.status-pick-btn {
+  flex: 1;
+  padding: 10px;
+  border-radius: 10px;
+  border: 2px solid #e0e3ec;
+  background: #f5f6fa;
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  text-align: center;
+  -webkit-tap-highlight-color: transparent;
+  transition: all 0.12s;
+}
+.status-pick-btn.active-want {
+  border-color: #e65100;
+  background: #fff3e0;
+  color: #e65100;
+}
+.status-pick-btn.active-visited {
+  border-color: #2e7d32;
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+.save-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1.5px solid #d0d4df;
+  font-size: 13px;
+  font-family: inherit;
+  color: #222;
+  background: #f5f6fa;
+  resize: none;
+  outline: none;
+  margin-bottom: 20px;
+  min-height: 72px;
+}
+.save-textarea:focus { border-color: #1a1f2e; background: #fff; }
+.save-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1.5px solid #d0d4df;
+  font-size: 13px;
+  font-family: inherit;
+  color: #222;
+  background: #f5f6fa;
+  outline: none;
+  margin-bottom: 20px;
+}
+.save-input:focus { border-color: #1a1f2e; background: #fff; }
+.save-actions { display: flex; gap: 10px; }
+#save-submit {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  background: #1a1f2e;
+  color: #fff;
+  border: none;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#save-submit:disabled { background: #9aa3b8; cursor: default; }
+#save-cancel {
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: #f5f6fa;
+  color: #1a1f2e;
+  border: 1.5px solid #d0d4df;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#save-status-msg {
+  font-size: 13px;
+  text-align: center;
+  margin-top: 12px;
+  min-height: 18px;
+}
+
+/* ── Check-in modal ──────────────────────────────────────────────── */
+#checkin-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 1500;
+  align-items: flex-end;
+  justify-content: center;
+}
+#checkin-overlay.open { display: flex; }
+#checkin-modal {
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 20px 20px 40px;
+  width: 100%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+#checkin-modal-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9aa3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 4px;
+}
+#checkin-modal-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a1f2e;
+  margin-bottom: 18px;
+  line-height: 1.3;
+}
+.occasion-picker {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.occasion-btn {
+  padding: 7px 13px;
+  border-radius: 20px;
+  border: 2px solid #e0e3ec;
+  background: #f5f6fa;
+  font-size: 12px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: all 0.12s;
+}
+.occasion-btn.active { border-color: #1a1f2e; background: #1a1f2e; color: #fff; }
+.rating-picker { display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap; }
+#checkin-submit {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  background: #1565c0;
+  color: #fff;
+  border: none;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#checkin-submit:disabled { background: #9aa3b8; cursor: default; }
+#checkin-cancel {
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: #f5f6fa;
+  color: #1a1f2e;
+  border: 1.5px solid #d0d4df;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#checkin-status-msg { font-size: 13px; text-align: center; margin-top: 12px; min-height: 18px; }
+.visit-line { font-size: 12px; color: #3daa6e; font-weight: 600; margin-bottom: 10px; }
+
+/* ── Loading overlay ─────────────────────────────────────────────── */
+#loading {
+  position: fixed; inset: 0;
+  background: rgba(255,255,255,0.92);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  z-index: 2000;
+  gap: 12px;
+  font-size: 14px; color: #666;
+}
+.spinner {
+  width: 32px; height: 32px;
+  border: 3px solid #e0e3ec;
+  border-top-color: #1a1f2e;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Drop Pin modal ──────────────────────────────────────────────── */
+#droppin-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.5); z-index: 1500;
+  align-items: flex-end; justify-content: center;
+}
+#droppin-overlay.open { display: flex; }
+#droppin-modal {
+  background: #fff; border-radius: 20px 20px 0 0;
+  padding: 20px 20px 40px; width: 100%;
+  max-width: 500px; max-height: 90vh; overflow-y: auto;
+}
+#droppin-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+#droppin-modal-title { font-size: 11px; font-weight: 700; color: #9aa3b8; text-transform: uppercase; letter-spacing: 0.6px; }
+#droppin-close { background: #f0f2f7; border: none; border-radius: 50%; width: 28px; height: 28px; font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #666; }
+#droppin-location-hint { font-size: 12px; color: #888; margin-bottom: 16px; min-height: 16px; }
+.pin-type-tile { border: 2px solid #e0e3ec; border-radius: 12px; margin-bottom: 10px; overflow: hidden; transition: border-color 0.15s; -webkit-tap-highlight-color: transparent; }
+.pin-type-tile.selected { border-color: #1a1f2e; }
+.pin-type-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; background: #f5f6fa; user-select: none; }
+.pin-type-tile.selected .pin-type-header { background: #fff; }
+.pin-type-icon { font-size: 20px; flex-shrink: 0; }
+.pin-type-text { flex: 1; }
+.pin-type-name { font-size: 14px; font-weight: 700; color: #1a1f2e; }
+.pin-type-desc { font-size: 11px; color: #9aa3b8; margin-top: 1px; }
+.pin-type-arrow { color: #9aa3b8; font-size: 16px; transition: transform 0.15s; }
+.pin-type-tile.selected .pin-type-arrow { transform: rotate(90deg); }
+.pin-type-form { display: none; padding: 14px 16px; border-top: 1px solid #e0e3ec; background: #fff; }
+.pin-type-tile.selected .pin-type-form { display: block; }
+.duration-picker { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+.duration-btn { padding: 7px 13px; border-radius: 20px; border: 2px solid #e0e3ec; background: #f5f6fa; font-size: 12px; font-weight: 600; color: #666; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.duration-btn.active { border-color: #1a1f2e; background: #1a1f2e; color: #fff; }
+.addr-option { display: block; width: 100%; text-align: left; padding: 9px 12px; margin-bottom: 6px; border-radius: 8px; border: 1.5px solid #e0e3ec; background: #f5f6fa; font-size: 13px; color: #1a1f2e; cursor: pointer; -webkit-tap-highlight-color: transparent; line-height: 1.3; }
+.addr-option:last-child { margin-bottom: 0; }
+.addr-option.selected { border-color: #1a1f2e; background: #1a1f2e; color: #fff; }
+.addr-option.addr-later { color: #9aa3b8; border-style: dashed; background: #fff; }
+.addr-option.addr-later.selected { border-style: solid; border-color: #1a1f2e; background: #1a1f2e; color: #fff; }
+#droppin-submit { width: 100%; padding: 12px; border-radius: 10px; background: #1a1f2e; color: #fff; border: none; font-size: 14px; font-weight: 700; cursor: pointer; margin-top: 6px; -webkit-tap-highlight-color: transparent; }
+#droppin-submit:disabled { background: #9aa3b8; cursor: default; }
+#droppin-status-msg { font-size: 13px; text-align: center; margin-top: 10px; min-height: 16px; }
+
+/* ── Tag dropdown ────────────────────────────────────────────────── */
+.tag-dropdown-wrap { position: relative; }
+.tag-dropdown-btn {
+  padding: 4px 11px; border-radius: 20px; border: 1.5px solid #d0d4df;
+  background: #fff; color: #444; font-size: 12px; font-weight: 500;
+  cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent;
+}
+.tag-dropdown-btn.filtered { background: #1a1f2e; color: #fff; border-color: #1a1f2e; }
+.tag-dropdown-panel {
+  display: none; position: absolute; top: calc(100% + 6px); left: 0;
+  background: #fff; border-radius: 12px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.16); z-index: 600;
+  min-width: 200px; max-height: 260px; overflow-y: auto;
+  padding: 8px 6px 6px; border: 1px solid #e8eaf0;
+}
+.tag-dropdown-panel.open { display: block; }
+.tag-ddl-actions { display: flex; gap: 6px; padding: 0 4px 6px; border-bottom: 1px solid #f0f2f7; margin-bottom: 4px; }
+.tag-ddl-action { font-size: 11px; font-weight: 600; color: #4a90d9; background: none; border: none; cursor: pointer; padding: 3px 6px; border-radius: 6px; -webkit-tap-highlight-color: transparent; }
+.tag-ddl-action:active { background: #f0f2f7; }
+.tag-checkbox-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; font-size: 12px; color: #333; cursor: pointer; border-radius: 7px; -webkit-tap-highlight-color: transparent; user-select: none; }
+.tag-checkbox-item:active { background: #f5f6fa; }
+.tag-checkbox-item input[type=checkbox] { width: 15px; height: 15px; accent-color: #1a1f2e; flex-shrink: 0; cursor: pointer; }
+
+@media (min-width: 600px) {
+  #detail { max-width: 440px; left: auto; right: 20px; bottom: 20px; border-radius: 16px; }
+  #save-overlay { align-items: center; }
+  #save-modal { border-radius: 20px; margin: 20px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="header">
+    <div id="header-left">
+      <div id="header-title">Geo Memory</div>
+      <div id="count">Loading…</div>
+    </div>
+    <div id="mode-toggle">
+      <button class="mode-btn active" data-mode="myplaces" onclick="switchMode('myplaces')">My Places</button>
+      <button class="mode-btn" data-mode="discover" onclick="switchMode('discover')">Discover</button>
+      <button class="mode-btn" onclick="openDropPin()">+ Drop Pin</button>
+    </div>
+  </div>
+
+  <div id="myplaces-ui">
+    <div id="search-row">
+      <input id="search-input" type="search" placeholder="Search my places…" autocomplete="off" />
+      <div id="search-results"></div>
+    </div>
+    <div id="filters">
+      <div class="filter-row">
+        <div class="tag-dropdown-wrap">
+          <button class="tag-dropdown-btn" id="status-dropdown-btn" onclick="toggleStatusDropdown(event)">All ▾</button>
+          <div class="tag-dropdown-panel" id="status-dropdown-panel">
+            <div class="status-option active-opt" data-val="all" onclick="pickStatusDd('all')">All</div>
+            <div class="status-option" data-val="Visited" onclick="pickStatusDd('Visited')">Visited</div>
+            <div class="status-option" data-val="Want to Visit" onclick="pickStatusDd('Want to Visit')">Want to Visit</div>
+          </div>
+        </div>
+        <div class="tag-dropdown-wrap">
+          <button class="tag-dropdown-btn" id="cat-dropdown-btn" onclick="toggleCatDropdown(event)">Category ▾</button>
+          <div class="tag-dropdown-panel" id="cat-dropdown-panel">
+            <div class="tag-ddl-actions">
+              <button class="tag-ddl-action" onclick="catSelectAll()">Select all</button>
+              <button class="tag-ddl-action" onclick="catDeselectAll()">Deselect all</button>
+            </div>
+            <div id="cat-checkbox-list"></div>
+          </div>
+        </div>
+        <div class="tag-dropdown-wrap" id="tag-dropdown-wrap" style="display:none">
+          <button class="tag-dropdown-btn" id="tag-dropdown-btn" onclick="toggleTagDropdown(event)">All tags ▾</button>
+          <div class="tag-dropdown-panel" id="tag-dropdown-panel">
+            <div class="tag-ddl-actions">
+              <button class="tag-ddl-action" onclick="tagSelectAll()">Select all</button>
+              <button class="tag-ddl-action" onclick="tagDeselectAll()">Deselect all</button>
+            </div>
+            <div id="tag-checkbox-list"></div>
+          </div>
+        </div>
+        <button class="tag-dropdown-btn" id="flag-filter-btn" onclick="toggleFlagFilter()">★ Flagged</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="discover-ui">
+    <div id="discover-row">
+      <input id="discover-input" type="search" placeholder="e.g. ramen in Tokyo, bars in Chicago" autocomplete="off" />
+      <button id="discover-btn" onclick="runDiscover()">Search</button>
+    </div>
+    <div id="discover-hint">Searches Google Places · tap any result to save it to Notion</div>
+  </div>
+
+  <div id="map"></div>
+  <div id="discover-results"></div>
+  <button id="locate-btn" onclick="locateMe()">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/>
+      <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
+    </svg>
+  </button>
+
+</div>
+
+<div id="detail">
+  <button id="detail-close" onclick="closeDetail()">✕</button>
+  <div id="detail-name"></div>
+  <div id="detail-meta"></div>
+  <div id="detail-body"></div>
+</div>
+
+<div id="save-overlay" onclick="handleOverlayClick(event)">
+  <div id="save-modal">
+    <div id="save-modal-title">Save to Notion</div>
+    <div id="save-modal-name"></div>
+    <div id="save-modal-addr"></div>
+
+    <div class="save-field-label">Status</div>
+    <div class="status-picker">
+      <button class="status-pick-btn active-want" id="pick-want" onclick="pickStatus('Want to Visit')">Want to Visit</button>
+      <button class="status-pick-btn" id="pick-visited" onclick="pickStatus('Visited')">Visited</button>
+    </div>
+
+    <div class="save-field-label">Note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+    <textarea id="save-note" class="save-textarea" placeholder="What do you want to remember about this place?"></textarea>
+
+    <div class="save-field-label">Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional, comma-separated)</span></div>
+    <input id="save-tags" class="save-input" type="text" placeholder="e.g. date night, Italian, client dinner" />
+
+    <div class="save-actions">
+      <button id="save-cancel" onclick="closeSaveModal()">Cancel</button>
+      <button id="save-submit" onclick="submitSave()">Save to Notion</button>
+    </div>
+    <div id="save-status-msg"></div>
+  </div>
+</div>
+
+<div id="checkin-overlay" onclick="handleCheckInOverlayClick(event)">
+  <div id="checkin-modal">
+    <div id="checkin-modal-title">Check In</div>
+    <div id="checkin-modal-name"></div>
+
+    <div class="save-field-label">Date</div>
+    <input id="checkin-date" type="date" class="save-input" />
+
+    <div class="save-field-label">Occasion</div>
+    <div class="occasion-picker">
+      <button class="occasion-btn active" id="occ-solo"          onclick="pickOccasion('Solo')">Solo</button>
+      <button class="occasion-btn"        id="occ-date"          onclick="pickOccasion('Date/Partner')">Date/Partner</button>
+      <button class="occasion-btn"        id="occ-friends"       onclick="pickOccasion('Friends')">Friends</button>
+      <button class="occasion-btn"        id="occ-family"        onclick="pickOccasion('Family')">Family</button>
+      <button class="occasion-btn"        id="occ-client"        onclick="pickOccasion('Client/Work')">Client/Work</button>
+    </div>
+
+    <div class="save-field-label">Rating <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+    <div class="rating-picker" id="checkin-rating-picker">
+      <button class="occasion-btn" onclick="pickRating(1)">1</button>
+      <button class="occasion-btn" onclick="pickRating(2)">2</button>
+      <button class="occasion-btn" onclick="pickRating(3)">3</button>
+      <button class="occasion-btn" onclick="pickRating(4)">4</button>
+      <button class="occasion-btn" onclick="pickRating(5)">5</button>
+      <button class="occasion-btn" onclick="pickRating(6)">6</button>
+      <button class="occasion-btn" onclick="pickRating(7)">7</button>
+    </div>
+
+    <div class="save-field-label">Who were you with? <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+    <input id="checkin-companions" class="save-input" type="text" placeholder="e.g. Sarah, the team…" style="margin-bottom:20px" />
+
+    <div class="save-field-label">Notes <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+    <textarea id="checkin-notes" class="save-textarea" placeholder="What do you want to remember about this visit?"></textarea>
+
+    <div class="save-actions">
+      <button id="checkin-cancel" onclick="closeCheckInModal()">Cancel</button>
+      <button id="checkin-submit" onclick="submitCheckIn()">Check In</button>
+    </div>
+    <div id="checkin-status-msg"></div>
+  </div>
+</div>
+
+<div id="droppin-overlay" onclick="handleDropPinOverlayClick(event)">
+  <div id="droppin-modal">
+    <div id="droppin-header">
+      <div id="droppin-modal-title">Drop a Pin</div>
+      <button id="droppin-close" onclick="closeDropPin()">✕</button>
+    </div>
+    <div id="droppin-location-hint">Getting your location…</div>
+
+    <div class="pin-type-tile" id="tile-place" onclick="selectPinType('place')">
+      <div class="pin-type-header">
+        <div class="pin-type-icon">📍</div>
+        <div class="pin-type-text">
+          <div class="pin-type-name">Place</div>
+          <div class="pin-type-desc">Business I want to save</div>
+        </div>
+        <div class="pin-type-arrow">›</div>
+      </div>
+      <div class="pin-type-form">
+        <div class="save-field-label">Nearby Places</div>
+        <div id="place-options-list" style="margin-bottom:14px;max-height:280px;overflow-y:auto;-webkit-overflow-scrolling:touch">
+          <div style="color:#bbb;font-size:13px;padding:6px 0">Getting your location…</div>
+        </div>
+        <div id="place-search-section" style="display:none;margin-bottom:14px" onclick="event.stopPropagation()">
+          <div class="save-field-label">Search by name</div>
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <input id="pin-place-search" class="save-input" type="text" placeholder="Type business name…" style="flex:1;margin-bottom:0" onclick="event.stopPropagation()" />
+            <button onclick="searchPlaceByName();event.stopPropagation()" style="padding:10px 14px;border-radius:10px;border:none;background:#1a1f2e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent">Search</button>
+          </div>
+          <div id="place-search-results"></div>
+        </div>
+        <div class="save-field-label">Status</div>
+        <div class="status-picker" style="margin-bottom:14px">
+          <button class="status-pick-btn active-want" id="pin-pick-want" onclick="pickPinStatus('Want to Visit');event.stopPropagation()">Want to Visit</button>
+          <button class="status-pick-btn" id="pin-pick-visited" onclick="pickPinStatus('Visited');event.stopPropagation()">Visited</button>
+        </div>
+        <div class="save-field-label">Note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+        <textarea id="pin-place-note" class="save-textarea" placeholder="What do you want to remember?" style="min-height:56px;margin-bottom:0" onclick="event.stopPropagation()"></textarea>
+      </div>
+    </div>
+
+    <div class="pin-type-tile" id="tile-personal" onclick="selectPinType('personal')">
+      <div class="pin-type-header">
+        <div class="pin-type-icon">🏠</div>
+        <div class="pin-type-text">
+          <div class="pin-type-name">Personal</div>
+          <div class="pin-type-desc">Home, friend, landmark</div>
+        </div>
+        <div class="pin-type-arrow">›</div>
+      </div>
+      <div class="pin-type-form">
+        <div class="save-field-label">Address <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(tap to select)</span></div>
+        <div id="personal-addr-options" style="margin-bottom:14px;max-height:200px;overflow-y:auto;-webkit-overflow-scrolling:touch">
+          <div style="color:#bbb;font-size:13px;padding:6px 0">Getting your location…</div>
+        </div>
+        <div class="save-field-label">Name</div>
+        <input id="pin-personal-name" class="save-input" type="text" placeholder="e.g. Mom's house, Dave's place" style="margin-bottom:14px" onclick="event.stopPropagation()" />
+        <div class="save-field-label">Note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+        <textarea id="pin-personal-note" class="save-textarea" placeholder="What do you want to remember?" style="min-height:56px;margin-bottom:0" onclick="event.stopPropagation()"></textarea>
+      </div>
+    </div>
+
+    <div class="pin-type-tile" id="tile-temp" onclick="selectPinType('temp')">
+      <div class="pin-type-header">
+        <div class="pin-type-icon">⏱</div>
+        <div class="pin-type-text">
+          <div class="pin-type-name">Temp</div>
+          <div class="pin-type-desc">Parking, trailhead — auto-deleted</div>
+        </div>
+        <div class="pin-type-arrow">›</div>
+      </div>
+      <div class="pin-type-form">
+        <div class="save-field-label">Label <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#bbb">(optional)</span></div>
+        <input id="pin-temp-name" class="save-input" type="text" placeholder="e.g. My car, Trail parking" style="margin-bottom:14px" onclick="event.stopPropagation()" />
+        <div class="save-field-label">Delete after</div>
+        <div class="duration-picker">
+          <button class="duration-btn active" id="dur-2h" onclick="pickDuration('2h');event.stopPropagation()">2 hrs</button>
+          <button class="duration-btn" id="dur-4h" onclick="pickDuration('4h');event.stopPropagation()">4 hrs</button>
+          <button class="duration-btn" id="dur-8h" onclick="pickDuration('8h');event.stopPropagation()">8 hrs</button>
+          <button class="duration-btn" id="dur-eod" onclick="pickDuration('eod');event.stopPropagation()">End of day</button>
+          <button class="duration-btn" id="dur-tomorrow" onclick="pickDuration('tomorrow');event.stopPropagation()">Tomorrow</button>
+        </div>
+      </div>
+    </div>
+
+    <button id="droppin-submit" disabled onclick="submitDropPin()">Select a type above</button>
+    <div id="droppin-status-msg"></div>
+  </div>
+</div>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div>Loading your places…</div>
+</div>
+
+<script>
+const GOOGLE_API_KEY = 'AIzaSyCEoi34yEEg9Ka7BtDJMJm9iRTM46CodN8';
+const WORKER_URL     = 'https://geo-memory-save.weissdavid01.workers.dev';
+
+const CATEGORY_COLORS = {
+  'Restaurant': '#e05c3a', 'Bar': '#4a90d9', 'Cafe': '#e8a020',
+  'Hotel': '#3daa6e', 'Shop': '#e87030', 'Attraction': '#2db08e',
+  'Venue': '#9b59b6', 'House': '#f1c40f', 'Fitness': '#26a69a', 'Temp': '#e040fb', 'Other': '#909090',
+};
+
+const GOOGLE_TYPE_MAP = {
+  // ── Restaurants (all cuisine types) ───────────────────────────────
+  restaurant: 'Restaurant', food: 'Restaurant', meal_delivery: 'Restaurant',
+  meal_takeaway: 'Restaurant', american_restaurant: 'Restaurant',
+  hamburger_restaurant: 'Restaurant', pizza_restaurant: 'Restaurant',
+  seafood_restaurant: 'Restaurant', sushi_restaurant: 'Restaurant',
+  steak_house: 'Restaurant', mexican_restaurant: 'Restaurant',
+  taco_restaurant: 'Restaurant', italian_restaurant: 'Restaurant',
+  chinese_restaurant: 'Restaurant', japanese_restaurant: 'Restaurant',
+  thai_restaurant: 'Restaurant', indian_restaurant: 'Restaurant',
+  french_restaurant: 'Restaurant', greek_restaurant: 'Restaurant',
+  korean_restaurant: 'Restaurant', vietnamese_restaurant: 'Restaurant',
+  mediterranean_restaurant: 'Restaurant', middle_eastern_restaurant: 'Restaurant',
+  spanish_restaurant: 'Restaurant', ramen_restaurant: 'Restaurant',
+  bbq_restaurant: 'Restaurant', sandwich_shop: 'Restaurant',
+  fast_food_restaurant: 'Restaurant', brunch_restaurant: 'Restaurant',
+  breakfast_restaurant: 'Restaurant', diner: 'Restaurant',
+  buffet_restaurant: 'Restaurant', fine_dining_restaurant: 'Restaurant',
+  food_court: 'Restaurant', bar_and_grill: 'Restaurant',
+  // ── Bars ──────────────────────────────────────────────────────────
+  bar: 'Bar', night_club: 'Bar', cocktail_bar: 'Bar', wine_bar: 'Bar',
+  pub: 'Bar', irish_pub: 'Bar', brewery: 'Bar', microbrewery: 'Bar',
+  tapas_bar: 'Bar', sports_bar: 'Bar', karaoke_bar: 'Bar', rooftop_bar: 'Bar',
+  // ── Cafes ─────────────────────────────────────────────────────────
+  cafe: 'Cafe', coffee_shop: 'Cafe', bakery: 'Cafe', tea_house: 'Cafe',
+  dessert_shop: 'Cafe', ice_cream_shop: 'Cafe', donut_shop: 'Cafe',
+  juice_bar: 'Cafe', bagel_shop: 'Cafe',
+  // ── Hotels ────────────────────────────────────────────────────────
+  lodging: 'Hotel', hotel: 'Hotel', motel: 'Hotel', inn: 'Hotel',
+  bed_and_breakfast: 'Hotel', resort_hotel: 'Hotel', hostel: 'Hotel',
+  extended_stay_hotel: 'Hotel', boutique_hotel: 'Hotel',
+  // ── Shops ─────────────────────────────────────────────────────────
+  store: 'Shop', shopping_mall: 'Shop', clothing_store: 'Shop',
+  grocery_store: 'Shop', supermarket: 'Shop', convenience_store: 'Shop',
+  liquor_store: 'Shop', book_store: 'Shop', gift_shop: 'Shop',
+  jewelry_store: 'Shop', shoe_store: 'Shop', department_store: 'Shop',
+  electronics_store: 'Shop', furniture_store: 'Shop', florist: 'Shop',
+  pharmacy: 'Shop', drug_store: 'Shop',
+  // ── Attractions ───────────────────────────────────────────────────
+  tourist_attraction: 'Attraction', museum: 'Attraction',
+  park: 'Attraction', amusement_park: 'Attraction', art_gallery: 'Attraction',
+  zoo: 'Attraction', aquarium: 'Attraction', national_park: 'Attraction',
+  botanical_garden: 'Attraction', historic_site: 'Attraction',
+  monument: 'Attraction', stadium: 'Attraction', theater: 'Attraction',
+  movie_theater: 'Attraction', bowling_alley: 'Attraction',
+  // ── Fitness ───────────────────────────────────────────────────────
+  gym: 'Fitness', fitness_center: 'Fitness', yoga_studio: 'Fitness',
+  sports_club: 'Fitness', golf_course: 'Fitness', tennis_court: 'Fitness',
+  swimming_pool: 'Fitness', rock_climbing_gym: 'Fitness', pilates_studio: 'Fitness',
+  // ── Venues ────────────────────────────────────────────────────────
+  event_venue: 'Venue', convention_center: 'Venue', banquet_hall: 'Venue',
+  concert_hall: 'Venue', comedy_club: 'Venue', jazz_club: 'Venue',
+};
+
+function googleTypeToCategory(t) { return GOOGLE_TYPE_MAP[t] || 'Other'; }
+
+let allPlaces = [], myPlacesByGoogleId = new Map();
+let myPlacesMarkers = [], discoverMarkers = [];
+let _pollTimer = null;
+
+function refreshPlaces(data) {
+  allPlaces = data;
+  myPlacesByGoogleId.clear();
+  for (const p of allPlaces) {
+    if (p.google_place_id) myPlacesByGoogleId.set(p.google_place_id, p);
+  }
+  for (const { marker } of myPlacesMarkers) marker.remove();
+  myPlacesMarkers = [];
+  buildMyPlacesMarkers();
+  if (currentMode === 'myplaces') applyFilters();
+  // Refresh discover overlays if active
+  if (currentMode === 'discover' && _discoverPlaces.length) {
+    _discoverMyPlaces = _discoverPlaces.map(gp => myPlacesByGoogleId.get(gp.id) || null);
+  }
+}
+
+function startPollingForPlace(googlePlaceId) {
+  if (_pollTimer) clearTimeout(_pollTimer);
+  const deadline = Date.now() + 2 * 60 * 1000;
+  function poll() {
+    fetch('places.json?' + Date.now(), { cache: 'no-store' })
+      .then(r => r.json())
+      .then(data => {
+        const arrived = googlePlaceId
+          ? data.some(p => p.google_place_id === googlePlaceId)
+          : data.length > allPlaces.length;
+        if (arrived) {
+          refreshPlaces(data);
+        } else if (Date.now() < deadline) {
+          _pollTimer = setTimeout(poll, 12000);
+        }
+      })
+      .catch(() => { if (Date.now() < deadline) _pollTimer = setTimeout(poll, 12000); });
+  }
+  _pollTimer = setTimeout(poll, 15000);
+}
+let currentMode = 'myplaces', activeStatus = 'all';
+let activeCategories = new Set(Object.keys(CATEGORY_COLORS));
+let activeTags = new Set(), allTagsList = [];
+let allCatsList = [];
+let showFlaggedOnly = false;
+const markerById = new Map(); // notion_id → { marker, place } — used for deep-link auto-open
+let _discoverPlaces = [], _discoverMyPlaces = [];
+let _saveIndex = -1, _saveStatus = 'Want to Visit';
+let _checkInNotionId = null, _checkInPlaceName = '';
+let _checkInOccasion = 'Solo', _checkInRating = null;
+
+const map = L.map('map', { zoomControl: true }).setView([39.5, -95.0], 4);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  maxZoom: 19,
+}).addTo(map);
+map.on('click', closeDetail);
+
+fetch('places.json')
+  .then(r => r.json())
+  .then(data => {
+    allPlaces = data;
+    for (const p of allPlaces) {
+      if (p.google_place_id) myPlacesByGoogleId.set(p.google_place_id, p);
+    }
+    document.getElementById('loading').style.display = 'none';
+    buildCategoryFilters();
+    buildTagFilters();
+    buildMyPlacesMarkers();
+    applyFilters();
+    // Deep-link: ?place=<notion_id> — fly to place and open detail panel
+    const deepId = new URLSearchParams(window.location.search).get('place');
+    if (deepId) {
+      const entry = markerById.get(deepId);
+      if (entry) {
+        map.flyTo([entry.place.lat, entry.place.lng], 16);
+        setTimeout(() => showMyPlaceDetail(entry.place), 800);
+      }
+    }
+  })
+  .catch(err => {
+    document.getElementById('loading').innerHTML =
+      `<div style="color:#c00;text-align:center;padding:24px">Failed to load places.<br><small>${err.message}</small></div>`;
+  });
+
+// Auto-refresh every 5 minutes
+setInterval(() => {
+  fetch('places.json?' + Date.now(), { cache: 'no-store' })
+    .then(r => r.json())
+    .then(data => refreshPlaces(data))
+    .catch(() => {});
+}, 5 * 60 * 1000);
+
+function buildCategoryFilters() {
+  const counts = {};
+  for (const p of allPlaces) counts[p.category] = (counts[p.category] || 0) + 1;
+  allCatsList = Object.keys(CATEGORY_COLORS).filter(c => counts[c]);
+  activeCategories = new Set(allCatsList);
+  const listEl = document.getElementById('cat-checkbox-list');
+  listEl.innerHTML = '';
+  for (const [cat, color] of Object.entries(CATEGORY_COLORS)) {
+    if (!counts[cat]) continue;
+    const label = document.createElement('label');
+    label.className = 'tag-checkbox-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true; cb.dataset.cat = cat;
+    cb.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (cb.checked) activeCategories.add(cat); else activeCategories.delete(cat);
+      updateCatDropdownLabel(); applyFilters();
+    });
+    const dot = document.createElement('span');
+    dot.className = 'cat-dot'; dot.style.background = color;
+    label.appendChild(cb); label.appendChild(dot);
+    label.appendChild(document.createTextNode(` ${cat} (${counts[cat]})`));
+    listEl.appendChild(label);
+  }
+  updateCatDropdownLabel();
+}
+
+function toggleStatusDropdown(e) {
+  e.stopPropagation();
+  document.getElementById('status-dropdown-panel').classList.toggle('open');
+  document.getElementById('cat-dropdown-panel').classList.remove('open');
+  document.getElementById('tag-dropdown-panel').classList.remove('open');
+}
+
+function pickStatusDd(val) {
+  activeStatus = val;
+  const labels = { 'all': 'All', 'Visited': 'Visited', 'Want to Visit': 'Want to Visit' };
+  const btn = document.getElementById('status-dropdown-btn');
+  btn.textContent = labels[val] + ' ▾';
+  btn.classList.toggle('filtered', val !== 'all');
+  document.querySelectorAll('.status-option').forEach(el => {
+    el.classList.toggle('active-opt', el.dataset.val === val);
+  });
+  document.getElementById('status-dropdown-panel').classList.remove('open');
+  applyFilters();
+}
+
+function toggleCatDropdown(e) {
+  e.stopPropagation();
+  document.getElementById('cat-dropdown-panel').classList.toggle('open');
+  document.getElementById('status-dropdown-panel').classList.remove('open');
+  document.getElementById('tag-dropdown-panel').classList.remove('open');
+}
+
+function catSelectAll() {
+  activeCategories = new Set(allCatsList);
+  document.querySelectorAll('#cat-checkbox-list input[type=checkbox]').forEach(cb => cb.checked = true);
+  updateCatDropdownLabel(); applyFilters();
+}
+
+function catDeselectAll() {
+  activeCategories.clear();
+  document.querySelectorAll('#cat-checkbox-list input[type=checkbox]').forEach(cb => cb.checked = false);
+  updateCatDropdownLabel(); applyFilters();
+}
+
+function updateCatDropdownLabel() {
+  const btn = document.getElementById('cat-dropdown-btn');
+  if (!btn) return;
+  const total = allCatsList.length;
+  if (activeCategories.size >= total) {
+    btn.textContent = 'Category ▾'; btn.classList.remove('filtered');
+  } else if (activeCategories.size === 0) {
+    btn.textContent = 'No category ▾'; btn.classList.add('filtered');
+  } else {
+    btn.textContent = `${activeCategories.size} of ${total} ▾`; btn.classList.add('filtered');
+  }
+}
+
+function buildTagFilters() {
+  const tagCounts = {};
+  for (const p of allPlaces) {
+    if (p.tags && p.tags.length) {
+      for (const t of p.tags) tagCounts[t] = (tagCounts[t] || 0) + 1;
+    }
+  }
+  allTagsList = Object.keys(tagCounts).sort();
+  if (!allTagsList.length) return;
+  activeTags = new Set(allTagsList);
+  document.getElementById('tag-dropdown-wrap').style.display = '';
+  const listEl = document.getElementById('tag-checkbox-list');
+  listEl.innerHTML = '';
+  for (const tag of allTagsList) {
+    const label = document.createElement('label');
+    label.className = 'tag-checkbox-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true; cb.dataset.tag = tag;
+    cb.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (cb.checked) activeTags.add(tag); else activeTags.delete(tag);
+      updateTagDropdownLabel(); applyFilters();
+    });
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(` ${tag} (${tagCounts[tag]})`));
+    listEl.appendChild(label);
+  }
+  updateTagDropdownLabel();
+}
+
+function toggleTagDropdown(e) {
+  e.stopPropagation();
+  document.getElementById('tag-dropdown-panel').classList.toggle('open');
+  document.getElementById('status-dropdown-panel').classList.remove('open');
+  document.getElementById('cat-dropdown-panel').classList.remove('open');
+}
+
+function tagSelectAll() {
+  activeTags = new Set(allTagsList);
+  document.querySelectorAll('#tag-checkbox-list input[type=checkbox]').forEach(cb => cb.checked = true);
+  updateTagDropdownLabel(); applyFilters();
+}
+
+function tagDeselectAll() {
+  activeTags.clear();
+  document.querySelectorAll('#tag-checkbox-list input[type=checkbox]').forEach(cb => cb.checked = false);
+  updateTagDropdownLabel(); applyFilters();
+}
+
+function updateTagDropdownLabel() {
+  const btn = document.getElementById('tag-dropdown-btn');
+  if (!btn) return;
+  if (activeTags.size === allTagsList.length) {
+    btn.textContent = 'All tags ▾'; btn.classList.remove('filtered');
+  } else if (activeTags.size === 0) {
+    btn.textContent = 'No tags ▾'; btn.classList.add('filtered');
+  } else {
+    btn.textContent = `${activeTags.size} of ${allTagsList.length} tags ▾`; btn.classList.add('filtered');
+  }
+}
+
+function toggleFlagFilter() {
+  showFlaggedOnly = !showFlaggedOnly;
+  const btn = document.getElementById('flag-filter-btn');
+  btn.classList.toggle('filtered', showFlaggedOnly);
+  btn.textContent = showFlaggedOnly ? '★ Flagged ✕' : '★ Flagged';
+  applyFilters();
+}
+
+// Close dropdowns when clicking outside
+document.addEventListener('click', (e) => {
+  ['status-dropdown-panel', 'cat-dropdown-panel', 'tag-dropdown-panel'].forEach(id => {
+    const panel = document.getElementById(id);
+    if (panel && panel.classList.contains('open')) {
+      const wrap = panel.closest('.tag-dropdown-wrap');
+      if (wrap && !wrap.contains(e.target)) panel.classList.remove('open');
+    }
+  });
+});
+
+function buildMyPlacesMarkers() {
+  for (const p of allPlaces) {
+    if (p.lat == null || p.lng == null) continue;
+    const color = CATEGORY_COLORS[p.category] || '#909090';
+    const isTemp = p.category === 'Temp';
+    const m = L.circleMarker([p.lat, p.lng], {
+      radius: 7, fillColor: color,
+      color: isTemp ? color : '#fff', weight: isTemp ? 2 : 1.5,
+      fillOpacity: isTemp ? 0.5 : (p.status === 'Visited' ? 0.92 : 0.45),
+      opacity: 1, dashArray: isTemp ? '5,3' : null,
+    });
+    m.on('click', e => { L.DomEvent.stopPropagation(e); showMyPlaceDetail(p); });
+    myPlacesMarkers.push({ marker: m, place: p });
+    if (p.notion_id) markerById.set(p.notion_id, { marker: m, place: p });
+  }
+}
+
+function applyFilters() {
+  let shown = 0;
+  const tagFilterActive = allTagsList.length > 0 && activeTags.size < allTagsList.length;
+  for (const { marker, place } of myPlacesMarkers) {
+    let tagOk = true;
+    if (tagFilterActive) {
+      // Tagless places always show; tagged places need at least one active tag
+      if (place.tags && place.tags.length) {
+        tagOk = place.tags.some(t => activeTags.has(t));
+      }
+    }
+    const ok = (activeStatus === 'all' || place.status === activeStatus)
+             && activeCategories.has(place.category)
+             && tagOk
+             && (!showFlaggedOnly || place.flagged);
+    if (ok) { marker.addTo(map); shown++; } else { marker.remove(); }
+  }
+  document.getElementById('count').textContent = `${shown} of ${allPlaces.filter(p => p.lat != null).length} places`;
+}
+
+
+const searchInput = document.getElementById('search-input');
+const searchResultsEl = document.getElementById('search-results');
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim().toLowerCase();
+  searchResultsEl.innerHTML = '';
+  if (!q) { searchResultsEl.style.display = 'none'; return; }
+  const matches = allPlaces.filter(p => p.name && p.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { searchResultsEl.style.display = 'none'; return; }
+  for (const p of matches) {
+    const div = document.createElement('div');
+    div.className = 'search-result-item';
+    div.innerHTML = `<span class="sri-name">${esc(p.name)}</span><span class="sri-meta">${esc([p.category, p.city].filter(Boolean).join(' · '))}</span>`;
+    div.addEventListener('mousedown', e => { e.preventDefault(); });
+    div.addEventListener('click', () => {
+      searchResultsEl.style.display = 'none'; searchInput.value = ''; searchInput.blur();
+      if (p.lat != null) map.setView([p.lat, p.lng], 14, { animate: true });
+      showMyPlaceDetail(p);
+    });
+    searchResultsEl.appendChild(div);
+  }
+  searchResultsEl.style.display = 'block';
+});
+searchInput.addEventListener('blur', () => { setTimeout(() => { searchResultsEl.style.display = 'none'; }, 300); });
+
+function switchMode(mode) {
+  currentMode = mode; closeDetail();
+  document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.mode === mode));
+  const myUI = document.getElementById('myplaces-ui');
+  const discoverUI = document.getElementById('discover-ui');
+  const resultsEl = document.getElementById('discover-results');
+  const mapEl = document.getElementById('map');
+  if (mode === 'myplaces') {
+    myUI.style.display = ''; discoverUI.style.display = 'none'; resultsEl.style.display = 'none';
+    mapEl.style.flex = '1'; mapEl.style.height = '';
+    clearDiscoverMarkers(); applyFilters();
+  } else {
+    myUI.style.display = 'none'; discoverUI.style.display = 'block';
+    mapEl.style.flex = ''; mapEl.style.height = '38vh';
+    for (const { marker } of myPlacesMarkers) marker.remove();
+    document.getElementById('count').textContent = 'Google Places search';
+    setTimeout(() => document.getElementById('discover-input').focus(), 100);
+  }
+  requestAnimationFrame(() => { requestAnimationFrame(() => { map.invalidateSize(false); }); });
+}
+
+async function runDiscover() {
+  const query = document.getElementById('discover-input').value.trim();
+  if (!query) return;
+  document.getElementById('discover-input').blur();
+  const resultsEl = document.getElementById('discover-results');
+  resultsEl.style.display = 'block';
+  resultsEl.innerHTML = '<div id="discover-loading"><div class="spinner"></div></div>';
+  document.getElementById('count').textContent = 'Searching…';
+  clearDiscoverMarkers();
+  try {
+    const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_API_KEY,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.primaryType,places.addressComponents,places.googleMapsUri,places.nationalPhoneNumber,places.websiteUri,places.priceLevel,places.currentOpeningHours',
+      },
+      body: JSON.stringify({ textQuery: query, maxResultCount: 20 }),
+    });
+    if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error?.message || `API error ${resp.status}`); }
+    const data = await resp.json();
+    renderDiscoverResults(data.places || [], query);
+  } catch (e) {
+    resultsEl.innerHTML = `<div id="discover-empty">Search failed: ${esc(e.message)}</div>`;
+    document.getElementById('count').textContent = 'Error';
+  }
+}
+
+document.getElementById('discover-input').addEventListener('keydown', e => { if (e.key === 'Enter') runDiscover(); });
+
+function renderDiscoverResults(places, query) {
+  const resultsEl = document.getElementById('discover-results');
+  if (!places.length) {
+    resultsEl.innerHTML = `<div id="discover-empty">No results for "<strong>${esc(query)}</strong>".</div>`;
+    document.getElementById('count').textContent = '0 results'; return;
+  }
+  _discoverPlaces = places;
+  _discoverMyPlaces = places.map(gp => myPlacesByGoogleId.get(gp.id) || null);
+  let matchCount = 0;
+  const bounds = [], matched = [], unmatched = [];
+  places.forEach((gp, i) => {
+    const lat = gp.location?.latitude, lng = gp.location?.longitude;
+    const name = gp.displayName?.text || 'Unknown';
+    const myPlace = _discoverMyPlaces[i];
+    if (myPlace) matchCount++;
+    const pinColor = myPlace ? '#f5c518' : '#8899aa';
+    const pinBorder = myPlace ? '#b8960a' : '#fff';
+    if (lat != null && lng != null) {
+      bounds.push([lat, lng]);
+      const m = L.circleMarker([lat, lng], {
+        radius: myPlace ? 11 : 9, fillColor: pinColor, color: pinBorder,
+        weight: myPlace ? 2.5 : 1.5, fillOpacity: 0.88, opacity: 1,
+      });
+      m.on('click', e => { L.DomEvent.stopPropagation(e); showDiscoverDetail(i); });
+      m.addTo(map); discoverMarkers.push(m);
+    }
+    const card = { matched: !!myPlace, html: `
+      <div class="discover-card${myPlace ? ' matched' : ''}" onclick="showDiscoverDetail(${i})">
+        <div class="dc-dot-wrap"><div class="dc-dot" style="background:${pinColor}"></div></div>
+        <div class="dc-body">
+          <div class="dc-name">${esc(name)}</div>
+          <div class="dc-addr">${esc(gp.formattedAddress || '')}</div>
+          ${myPlace ? `<div class="dc-badge">★ In your list</div>` : ''}
+        </div>
+        <div class="dc-right">${gp.rating ? `<div class="dc-grating">${gp.rating.toFixed(1)}</div><div class="dc-grating-lbl">Google</div>` : ''}</div>
+      </div>` };
+    if (myPlace) matched.push(card); else unmatched.push(card);
+  });
+  resultsEl.innerHTML = [...matched, ...unmatched].map(c => c.html).join('');
+  const matchLabel = matchCount > 0 ? ` · <strong style="color:#c48f00">${matchCount} in your list</strong>` : '';
+  document.getElementById('count').innerHTML = `${places.length} results${matchLabel}`;
+  if (bounds.length) map.fitBounds(bounds, { padding: [20, 20], maxZoom: 14, animate: true });
+}
+
+function clearDiscoverMarkers() { for (const m of discoverMarkers) m.remove(); discoverMarkers = []; }
+
+function switchDetailTab(tab) {
+  document.querySelectorAll('.detail-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.detail-tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === tab));
+}
+
+function showMyPlaceDetail(p) {
+  document.getElementById('detail-name').textContent = p.name;
+  document.getElementById('detail-meta').textContent = [p.category, p.city, p.country].filter(Boolean).join(' · ');
+
+  // ── Tab bar ───────────────────────────────────────────────────────
+  let html = `<div class="detail-tabs">
+    <button class="detail-tab active" data-tab="overview" onclick="switchDetailTab('overview')">Overview</button>
+    <button class="detail-tab" data-tab="info" onclick="switchDetailTab('info')">Info</button>
+    <button class="detail-tab" data-tab="visits" onclick="switchDetailTab('visits')">Visits</button>
+  </div>`;
+
+  // ── Overview panel ────────────────────────────────────────────────
+  const sc = p.status === 'Visited' ? 'pill-visited' : 'pill-want';
+  let overview = `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="pill ${sc}">${esc(p.status || '—')}</span></span></div>`;
+  if (p.rating) { const s = '★'.repeat(Math.round(p.rating)) + '☆'.repeat(5 - Math.round(p.rating)); overview += `<div class="detail-row"><span class="detail-key">My rating</span><span class="detail-val">${s} ${p.rating}</span></div>`; }
+  if (p.ai_summary) overview += `<div class="detail-row"><span class="detail-key">Summary</span><span class="detail-val">${esc(p.ai_summary)}</span></div>`;
+  if (p.notes) overview += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(p.notes)}</span></div>`;
+  if (p.tags && p.tags.length) overview += `<div class="detail-row"><span class="detail-key">Tags</span><span class="detail-val">${p.tags.map(esc).join(', ')}</span></div>`;
+  if (p.visit_count) {
+    const last = p.last_visited ? ' · Last: ' + p.last_visited : '';
+    overview += `<div class="detail-row"><span class="detail-key">Visits</span><span class="detail-val" style="color:#3daa6e;font-weight:600">${p.visit_count} visit${p.visit_count !== 1 ? 's' : ''}${esc(last)}</span></div>`;
+  }
+  html += `<div class="detail-tab-panel active" data-panel="overview">${overview}</div>`;
+
+  // ── Info panel ────────────────────────────────────────────────────
+  let info = '';
+  if (p.phone) info += `<div class="detail-row"><span class="detail-key">Phone</span><span class="detail-val"><a href="tel:${esc(p.phone)}" style="color:#4a90d9;text-decoration:none">${esc(p.phone)}</a></span></div>`;
+  if (p.website) {
+    let domain = p.website;
+    try { domain = new URL(p.website).hostname.replace(/^www\./, ''); } catch(e) {}
+    info += `<div class="detail-row"><span class="detail-key">Website</span><span class="detail-val"><a href="${esc(p.website)}" target="_blank" rel="noopener" style="color:#4a90d9;text-decoration:none">${esc(domain)}</a></span></div>`;
+  }
+  if (p.price_level != null) info += `<div class="detail-row"><span class="detail-key">Price</span><span class="detail-val">${'$'.repeat(p.price_level)}</span></div>`;
+  if (p.rating_external != null) {
+    const gs = '★'.repeat(Math.round(p.rating_external)) + '☆'.repeat(5 - Math.round(p.rating_external));
+    info += `<div class="detail-row"><span class="detail-key">Google</span><span class="detail-val">${gs} ${p.rating_external.toFixed(1)}</span></div>`;
+  }
+  if (p.hours) {
+    const todayName = new Date().toLocaleDateString('en-US', {weekday: 'long'});
+    const hourLines = p.hours.split('\n');
+    const todayLine = hourLines.find(l => l.startsWith(todayName));
+    if (todayLine) info += `<div class="detail-row"><span class="detail-key">Today</span><span class="detail-val" style="color:#3daa6e;font-weight:500">${esc(todayLine.replace(todayName + ': ', ''))}</span></div>`;
+    info += `<div class="detail-row"><span class="detail-key">All hours</span><span class="detail-val"><details><summary style="color:#9aa3b8;font-size:12px;cursor:pointer;list-style:none">See all ▾</summary><div style="margin-top:6px;font-size:12px;color:#555;line-height:1.7">${hourLines.map(esc).join('<br>')}</div></details></span></div>`;
+  }
+  if (!info) info = '<div class="detail-stub">No enrichment data yet</div>';
+  html += `<div class="detail-tab-panel" data-panel="info">${info}</div>`;
+
+  // ── Visits panel ─────────────────────────────────────────────────
+  let visitsHtml = '';
+  const hasSnap = p.last_visit_date || p.last_visit_rating != null || p.last_visit_occasion || p.last_visit_notes;
+  if (hasSnap) {
+    if (p.last_visit_rating != null) {
+      visitsHtml += `<div class="detail-row"><span class="detail-key">Rating</span><span class="detail-val">${p.last_visit_rating} / 7</span></div>`;
+    }
+    if (p.last_visit_date) visitsHtml += `<div class="detail-row"><span class="detail-key">Date</span><span class="detail-val">${esc(p.last_visit_date)}</span></div>`;
+    if (p.last_visit_occasion) visitsHtml += `<div class="detail-row"><span class="detail-key">Occasion</span><span class="detail-val">${esc(p.last_visit_occasion)}</span></div>`;
+    if (p.last_visit_notes) visitsHtml += `<div class="detail-row"><span class="detail-key">Notes</span><span class="detail-val">${esc(p.last_visit_notes)}</span></div>`;
+  } else if (p.visit_count) {
+    visitsHtml = '<div class="detail-stub">Visited but no detail recorded</div>';
+  } else {
+    visitsHtml = '<div class="detail-stub">Not visited yet</div>';
+  }
+  html += `<div class="detail-tab-panel" data-panel="visits">${visitsHtml}</div>`;
+
+  // ── Action buttons (always visible, outside tabs) ─────────────────
+  html += `<div class="detail-actions">`;
+  if (p.lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
+  if (p.notion_id) html += `<button class="btn-action btn-checkin" data-notion-id="${esc(p.notion_id)}" data-place-name="${esc(p.name)}">Check In</button>`;
+  if (p.notion_id) html += `<button class="btn-action btn-flag${p.flagged ? ' flagged' : ''}" data-notion-id="${esc(p.notion_id)}">${p.flagged ? '★ Flagged' : '☆ Flag'}</button>`;
+  if (p.notion_id) html += `<a href="https://www.notion.so/${p.notion_id}" target="_blank" class="btn-action btn-secondary">Open in Notion</a>`;
+  html += `</div>`;
+
+  document.getElementById('detail-body').innerHTML = html;
+  document.getElementById('detail').classList.add('open');
+}
+
+function showDiscoverDetail(i) {
+  const gp = _discoverPlaces[i], myPlace = _discoverMyPlaces[i];
+  if (!gp) return;
+  const lat = gp.location?.latitude, lng = gp.location?.longitude;
+
+  // If already in the user's list, show the full My Places detail panel
+  if (myPlace) {
+    showMyPlaceDetail(myPlace);
+    // Fly map to Google Places coordinates (may be more accurate than stored lat/lng)
+    if (lat != null && lng != null) {
+      const zoom = 15, sheetH = window.innerHeight * 0.42;
+      const pt = map.project([lat, lng], zoom);
+      map.setView(map.unproject([pt.x, pt.y + sheetH / 2], zoom), zoom, { animate: true });
+    }
+    return;
+  }
+
+  // Not in list — show Discover-style panel with Save button
+  const name = gp.displayName?.text || 'Unknown';
+  const category = googleTypeToCategory(gp.primaryType);
+  document.getElementById('detail-name').textContent = name;
+  document.getElementById('detail-meta').textContent = gp.formattedAddress || '';
+  let html = `<div class="detail-row"><span class="detail-key">Type</span><span class="detail-val">${esc(category)}</span></div>`;
+  if (gp.rating) { const s = '★'.repeat(Math.round(gp.rating)) + '☆'.repeat(5 - Math.round(gp.rating)); html += `<div class="detail-row"><span class="detail-key">Google</span><span class="detail-val">${s} ${gp.rating.toFixed(1)}</span></div>`; }
+  html += `<div class="detail-actions">`;
+  if (lat != null) html += `<a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_id=${esc(gp.id)}&travelmode=driving" target="_blank" class="btn-action btn-primary">Directions</a>`;
+  if (gp.websiteUri) html += `<a href="${esc(gp.websiteUri)}" target="_blank" rel="noopener" class="btn-action btn-secondary">🌐 Website</a>`;
+  html += `<button class="btn-action btn-save" onclick="openSaveModal(${i})">+ Save to Notion</button>`;
+  html += `</div>`;
+  document.getElementById('detail-body').innerHTML = html;
+  document.getElementById('detail').classList.add('open');
+  if (lat != null && lng != null) {
+    const zoom = 15, sheetH = window.innerHeight * 0.42;
+    const pt = map.project([lat, lng], zoom);
+    map.setView(map.unproject([pt.x, pt.y + sheetH / 2], zoom), zoom, { animate: true });
+  }
+}
+
+function openSaveModal(i) {
+  const gp = _discoverPlaces[i]; if (!gp) return;
+  _saveIndex = i; _saveStatus = 'Want to Visit';
+  document.getElementById('save-modal-name').textContent = gp.displayName?.text || 'Unknown';
+  document.getElementById('save-modal-addr').textContent = gp.formattedAddress || '';
+  document.getElementById('save-note').value = '';
+  document.getElementById('save-tags').value = '';
+  document.getElementById('save-status-msg').textContent = '';
+  document.getElementById('save-submit').disabled = false;
+  document.getElementById('save-submit').textContent = 'Save to Notion';
+  document.getElementById('save-submit').style.background = '';
+  document.getElementById('pick-want').className = 'status-pick-btn active-want';
+  document.getElementById('pick-visited').className = 'status-pick-btn';
+  document.getElementById('save-overlay').classList.add('open');
+  setTimeout(() => document.getElementById('save-note').focus(), 200);
+}
+
+function pickStatus(val) {
+  _saveStatus = val;
+  document.getElementById('pick-want').className = val === 'Want to Visit' ? 'status-pick-btn active-want' : 'status-pick-btn';
+  document.getElementById('pick-visited').className = val === 'Visited' ? 'status-pick-btn active-visited' : 'status-pick-btn';
+}
+
+function closeSaveModal() { document.getElementById('save-overlay').classList.remove('open'); }
+function handleOverlayClick(e) { if (e.target === document.getElementById('save-overlay')) closeSaveModal(); }
+
+async function submitSave() {
+  const gp = _discoverPlaces[_saveIndex]; if (!gp) return;
+  const btn = document.getElementById('save-submit');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  document.getElementById('save-status-msg').textContent = '';
+  let city = '', country = '', neighborhood = '';
+  for (const comp of (gp.addressComponents || [])) {
+    const types = comp.types || [];
+    if (types.includes('locality')) city = comp.longText || '';
+    else if (types.includes('country')) country = comp.longText || '';
+    else if (types.includes('neighborhood') || types.includes('sublocality_level_1')) neighborhood = comp.longText || '';
+  }
+  const rawTags = document.getElementById('save-tags').value.trim();
+  const tags = rawTags ? rawTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+  const priceLevelMap = {
+    PRICE_LEVEL_FREE: 0, PRICE_LEVEL_INEXPENSIVE: 1,
+    PRICE_LEVEL_MODERATE: 2, PRICE_LEVEL_EXPENSIVE: 3, PRICE_LEVEL_VERY_EXPENSIVE: 4,
+  };
+  const price_level = gp.priceLevel ? (priceLevelMap[gp.priceLevel] ?? null) : null;
+  const hours = gp.currentOpeningHours?.weekdayDescriptions?.join('\n') || '';
+  const payload = {
+    name: gp.displayName?.text || 'Unknown', status: _saveStatus,
+    notes: document.getElementById('save-note').value.trim(), tags,
+    google_place_id: gp.id, lat: gp.location?.latitude ?? null, lng: gp.location?.longitude ?? null,
+    address: gp.formattedAddress || '', city, country, neighborhood,
+    category: googleTypeToCategory(gp.primaryType),
+    google_maps_url: gp.googleMapsUri || '', rating_external: gp.rating ?? null,
+    phone: gp.nationalPhoneNumber || '', website: gp.websiteUri || '',
+    price_level, hours,
+  };
+  try {
+    const resp = await fetch(WORKER_URL + '/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const result = await resp.json();
+    if (result.ok) {
+      btn.textContent = 'Saved!'; btn.style.background = '#2e7d32';
+      document.getElementById('save-status-msg').textContent = 'Added to Notion. Map will refresh automatically in 1–2 minutes.';
+      document.getElementById('save-status-msg').style.color = '#2e7d32';
+      startPollingForPlace(payload.google_place_id);
+      setTimeout(closeSaveModal, 2200);
+    } else { throw new Error(result.error || 'Unknown error'); }
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Save to Notion';
+    document.getElementById('save-status-msg').textContent = 'Save failed: ' + e.message;
+    document.getElementById('save-status-msg').style.color = '#c00';
+  }
+}
+
+// ── Check-in functions ────────────────────────────────────────────────────────
+
+// Delegated handler for Check In button — avoids inline onclick quoting issues
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.btn-checkin');
+  if (btn && btn.dataset.notionId) {
+    openCheckInModal(btn.dataset.notionId, btn.dataset.placeName || '');
+  }
+});
+
+// Delegated handler for Flag button
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.btn-flag');
+  if (btn && btn.dataset.notionId) toggleFlag(btn, btn.dataset.notionId);
+});
+
+async function toggleFlag(btn, notionId) {
+  const entry = markerById.get(notionId);
+  if (!entry) return;
+  const newFlagged = !entry.place.flagged;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const resp = await fetch(WORKER_URL + '/flag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notion_id: notionId, flagged: newFlagged }),
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      entry.place.flagged = newFlagged;
+      btn.textContent = newFlagged ? '★ Flagged' : '☆ Flag';
+      btn.classList.toggle('flagged', newFlagged);
+      // If filter is active and we just unflagged, re-apply to hide it
+      if (showFlaggedOnly && !newFlagged) applyFilters();
+    } else {
+      btn.textContent = 'Error';
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+  }
+  btn.disabled = false;
+}
+
+function openCheckInModal(notionId, placeName) {
+  _checkInNotionId = notionId;
+  _checkInPlaceName = placeName;
+  _checkInOccasion = 'Solo';
+  _checkInSentiment = 'Good';
+  document.getElementById('checkin-modal-name').textContent = placeName;
+  // Set date to today in local time (not UTC)
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  document.getElementById('checkin-date').value = today;
+  document.getElementById('checkin-notes').value = '';
+  document.getElementById('checkin-companions').value = '';
+  document.getElementById('checkin-status-msg').textContent = '';
+  document.getElementById('checkin-submit').disabled = false;
+  document.getElementById('checkin-submit').textContent = 'Check In';
+  document.getElementById('checkin-submit').style.background = '';
+  // Reset occasion buttons
+  ['solo','date','friends','family','client'].forEach(id => {
+    document.getElementById('occ-' + id).classList.remove('active');
+  });
+  document.getElementById('occ-solo').classList.add('active');
+  // Reset rating
+  _checkInRating = null;
+  document.querySelectorAll('#checkin-rating-picker .occasion-btn').forEach(btn => btn.classList.remove('active'));
+  document.getElementById('checkin-overlay').classList.add('open');
+  setTimeout(() => document.getElementById('checkin-notes').focus(), 200);
+}
+
+function pickOccasion(val) {
+  _checkInOccasion = val;
+  const map = { 'Solo':'solo', 'Date/Partner':'date', 'Friends':'friends', 'Family':'family', 'Client/Work':'client' };
+  Object.values(map).forEach(id => document.getElementById('occ-' + id).classList.remove('active'));
+  document.getElementById('occ-' + map[val]).classList.add('active');
+}
+
+function pickRating(val) {
+  _checkInRating = val;
+  document.querySelectorAll('#checkin-rating-picker .occasion-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', i + 1 === val);
+  });
+}
+
+function closeCheckInModal() { document.getElementById('checkin-overlay').classList.remove('open'); }
+function handleCheckInOverlayClick(e) { if (e.target === document.getElementById('checkin-overlay')) closeCheckInModal(); }
+
+async function submitCheckIn() {
+  if (!_checkInNotionId) return;
+  const btn = document.getElementById('checkin-submit');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  document.getElementById('checkin-status-msg').textContent = '';
+  const payload = {
+    notion_id:   _checkInNotionId,
+    place_name:  _checkInPlaceName,
+    date:        document.getElementById('checkin-date').value,
+    occasion:    _checkInOccasion,
+    rating:      _checkInRating,
+    companions:  document.getElementById('checkin-companions').value.trim(),
+    notes:       document.getElementById('checkin-notes').value.trim(),
+  };
+  try {
+    const resp = await fetch(WORKER_URL + '/check-in', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      btn.textContent = 'Checked In!'; btn.style.background = '#1565c0';
+      document.getElementById('checkin-status-msg').textContent = 'Visit saved to Notion.';
+      document.getElementById('checkin-status-msg').style.color = '#1565c0';
+      setTimeout(closeCheckInModal, 1800);
+    } else { throw new Error(result.error || 'Unknown error'); }
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Check In';
+    document.getElementById('checkin-status-msg').textContent = 'Failed: ' + e.message;
+    document.getElementById('checkin-status-msg').style.color = '#c00';
+  }
+}
+
+// ── Drop Pin ───────────────────────────────────────────────────────────────────
+let _dropPinLat = null, _dropPinLng = null, _dropPinType = null;
+let _dropPinStatus = 'Want to Visit', _dropPinDuration = '2h';
+let _nearbyPlace = null, _nearbyPlaces = [];
+let _dropPinAddress = null, _geocodeCity = '', _geocodeCountry = '', _geocodeNeighborhood = '';
+
+function openDropPin() {
+  _dropPinLat = null; _dropPinLng = null; _dropPinType = null; _nearbyPlace = null;
+  _dropPinStatus = 'Want to Visit'; _dropPinDuration = '2h';
+  document.getElementById('droppin-location-hint').textContent = 'Getting your location…';
+  const btn = document.getElementById('droppin-submit');
+  btn.disabled = true; btn.textContent = 'Select a type above'; btn.style.background = '';
+  document.getElementById('droppin-status-msg').textContent = '';
+  ['place','personal','temp'].forEach(t => document.getElementById('tile-' + t).classList.remove('selected'));
+  ['pin-place-note','pin-place-search','pin-personal-name','pin-personal-note','pin-personal-address','pin-temp-name'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
+  document.getElementById('place-options-list').innerHTML = '<div style="color:#bbb;font-size:13px;padding:6px 0">Getting your location…</div>';
+  document.getElementById('place-search-section').style.display = 'none';
+  document.getElementById('place-search-results').innerHTML = '';
+  document.getElementById('personal-addr-options').innerHTML = '<div style="color:#bbb;font-size:13px;padding:6px 0">Getting your location…</div>';
+  _dropPinAddress = null; _geocodeCity = ''; _geocodeCountry = ''; _geocodeNeighborhood = '';
+  document.querySelectorAll('.duration-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('dur-2h').classList.add('active');
+  document.getElementById('pin-pick-want').className = 'status-pick-btn active-want';
+  document.getElementById('pin-pick-visited').className = 'status-pick-btn';
+  document.getElementById('droppin-overlay').classList.add('open');
+  if (!navigator.geolocation) {
+    document.getElementById('droppin-location-hint').textContent = 'Geolocation not supported on this device.';
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(pos => {
+    _dropPinLat = pos.coords.latitude; _dropPinLng = pos.coords.longitude;
+    const acc = Math.round(pos.coords.accuracy);
+    document.getElementById('droppin-location-hint').textContent = `${_dropPinLat.toFixed(5)}, ${_dropPinLng.toFixed(5)} · ±${acc}m`;
+    fetchNearbyForPin(_dropPinLat, _dropPinLng);
+    if (_dropPinType === 'personal') fetchAddressOptions(_dropPinLat, _dropPinLng);
+  }, () => {
+    document.getElementById('droppin-location-hint').textContent = 'Could not get location — check permissions.';
+  }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 });
+}
+
+const PLACE_FIELDMASK = 'places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.priceLevel,places.currentOpeningHours,places.rating,places.primaryType,places.addressComponents,places.googleMapsUri';
+
+async function fetchNearbyForPin(lat, lng) {
+  const el = document.getElementById('place-options-list');
+  try {
+    const resp = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_API_KEY, 'X-Goog-FieldMask': PLACE_FIELDMASK },
+      body: JSON.stringify({ locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius: 200.0 } }, maxResultCount: 10 }),
+    });
+    const data = await resp.json();
+    _nearbyPlaces = data.places || [];
+    renderPlaceOptions(_nearbyPlaces);
+  } catch(e) {
+    el.innerHTML = '<div style="color:#bbb;font-size:13px;padding:6px 0">Could not load nearby places.</div>';
+    renderNoneOfAbove(el);
+  }
+}
+
+function renderPlaceOptions(places) {
+  const el = document.getElementById('place-options-list');
+  el.innerHTML = '';
+  places.forEach((p, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'addr-option';
+    const name = p.displayName?.text || 'Unknown';
+    const sub = (p.formattedAddress || '').split(',')[0];
+    btn.innerHTML = `<strong>${name}</strong>${sub ? `<br><span style="font-size:11px;color:#9aa3b8">${sub}</span>` : ''}`;
+    btn.onclick = (e) => { e.stopPropagation(); selectNearbyPlace(i, btn); };
+    el.appendChild(btn);
+  });
+  if (!places.length) {
+    const msg = document.createElement('div');
+    msg.style.cssText = 'color:#bbb;font-size:13px;padding:6px 0 8px';
+    msg.textContent = 'No businesses found nearby.';
+    el.appendChild(msg);
+  }
+  renderNoneOfAbove(el);
+}
+
+function renderNoneOfAbove(el) {
+  const btn = document.createElement('button');
+  btn.className = 'addr-option addr-later';
+  btn.textContent = 'None of the above — search by name';
+  btn.onclick = (e) => { e.stopPropagation(); showPlaceSearch(btn); };
+  el.appendChild(btn);
+}
+
+function selectNearbyPlace(idx, btn) {
+  _nearbyPlace = _nearbyPlaces[idx];
+  document.querySelectorAll('#place-options-list .addr-option, #place-search-results .addr-option').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  document.getElementById('place-search-section').style.display = 'none';
+}
+
+function showPlaceSearch(btn) {
+  _nearbyPlace = null;
+  document.querySelectorAll('#place-options-list .addr-option').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  document.getElementById('place-search-section').style.display = 'block';
+  document.getElementById('pin-place-search').focus();
+}
+
+async function searchPlaceByName() {
+  const query = document.getElementById('pin-place-search').value.trim();
+  if (!query) return;
+  const resultsEl = document.getElementById('place-search-results');
+  resultsEl.innerHTML = '<div style="color:#bbb;font-size:13px;padding:6px 0">Searching…</div>';
+  try {
+    const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_API_KEY, 'X-Goog-FieldMask': PLACE_FIELDMASK },
+      body: JSON.stringify({ textQuery: query, locationBias: { circle: { center: { latitude: _dropPinLat, longitude: _dropPinLng }, radius: 5000.0 } }, pageSize: 5 }),
+    });
+    const data = await resp.json();
+    const places = data.places || [];
+    resultsEl.innerHTML = '';
+    if (!places.length) {
+      resultsEl.innerHTML = '<div style="color:#bbb;font-size:13px;padding:6px 0">No results — will save and enrich later.</div>';
+      return;
+    }
+    places.forEach(p => {
+      const btn = document.createElement('button');
+      btn.className = 'addr-option';
+      const name = p.displayName?.text || 'Unknown';
+      const addr = p.formattedAddress || '';
+      btn.innerHTML = `<strong>${name}</strong>${addr ? `<br><span style="font-size:11px;color:#9aa3b8">${addr}</span>` : ''}`;
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        _nearbyPlace = p;
+        resultsEl.querySelectorAll('.addr-option').forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+      };
+      resultsEl.appendChild(btn);
+    });
+  } catch(e) {
+    resultsEl.innerHTML = '<div style="color:#c00;font-size:13px;padding:6px 0">Search failed.</div>';
+  }
+}
+
+async function fetchAddressOptions(lat, lng) {
+  const el = document.getElementById('personal-addr-options');
+  try {
+    const resp = await fetch(WORKER_URL + '/geocode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lng }),
+    });
+    const data = await resp.json();
+    const addresses = data.addresses || [];
+    _geocodeCity = data.city || ''; _geocodeCountry = data.country || ''; _geocodeNeighborhood = data.neighborhood || '';
+    el.innerHTML = '';
+    addresses.forEach(addr => {
+      const btn = document.createElement('button');
+      btn.className = 'addr-option';
+      btn.textContent = addr;
+      btn.onclick = (e) => { e.stopPropagation(); selectPersonalAddress(addr, btn); };
+      el.appendChild(btn);
+    });
+    if (!addresses.length) {
+      const msg = document.createElement('div');
+      msg.style.cssText = 'color:#bbb;font-size:13px;padding:6px 0 8px';
+      msg.textContent = 'No addresses found nearby.';
+      el.appendChild(msg);
+    }
+    const later = document.createElement('button');
+    later.className = 'addr-option addr-later';
+    later.textContent = 'Enter myself later';
+    later.onclick = (e) => { e.stopPropagation(); selectPersonalAddress(null, later); };
+    el.appendChild(later);
+  } catch(e) {
+    el.innerHTML = '';
+    const later = document.createElement('button');
+    later.className = 'addr-option addr-later';
+    later.textContent = 'Enter myself later';
+    later.onclick = (ev) => { ev.stopPropagation(); selectPersonalAddress(null, later); };
+    el.appendChild(later);
+  }
+}
+
+function selectPersonalAddress(address, btn) {
+  _dropPinAddress = address;
+  document.querySelectorAll('#personal-addr-options .addr-option').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+}
+
+function selectPinType(type) {
+  _dropPinType = type;
+  ['place','personal','temp'].forEach(t => document.getElementById('tile-' + t).classList.toggle('selected', t === type));
+  const btn = document.getElementById('droppin-submit');
+  btn.disabled = false; btn.textContent = 'Save Pin';
+  if (type === 'personal' && _dropPinLat) fetchAddressOptions(_dropPinLat, _dropPinLng);
+}
+
+function pickPinStatus(val) {
+  _dropPinStatus = val;
+  document.getElementById('pin-pick-want').className = val === 'Want to Visit' ? 'status-pick-btn active-want' : 'status-pick-btn';
+  document.getElementById('pin-pick-visited').className = val === 'Visited' ? 'status-pick-btn active-visited' : 'status-pick-btn';
+}
+
+function pickDuration(val) {
+  _dropPinDuration = val;
+  ['2h','4h','8h','eod','tomorrow'].forEach(d => document.getElementById('dur-' + d).classList.toggle('active', d === val));
+}
+
+function calcExpires(dur) {
+  const d = new Date();
+  if (dur === '2h') d.setHours(d.getHours() + 2);
+  else if (dur === '4h') d.setHours(d.getHours() + 4);
+  else if (dur === '8h') d.setHours(d.getHours() + 8);
+  else if (dur === 'eod') d.setHours(23, 59, 0, 0);
+  else { d.setDate(d.getDate() + 1); d.setHours(23, 59, 0, 0); }
+  return d.toISOString().slice(0, 16); // full datetime so Notion prune catches the right hour
+}
+
+function closeDropPin() { document.getElementById('droppin-overlay').classList.remove('open'); }
+function handleDropPinOverlayClick(e) { if (e.target === document.getElementById('droppin-overlay')) closeDropPin(); }
+
+async function submitDropPin() {
+  if (!_dropPinType) return;
+  if (!_dropPinLat || !_dropPinLng) {
+    document.getElementById('droppin-status-msg').textContent = 'Still getting location…';
+    document.getElementById('droppin-status-msg').style.color = '#c00'; return;
+  }
+  const btn = document.getElementById('droppin-submit');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  document.getElementById('droppin-status-msg').textContent = '';
+  const priceLevelMap = { PRICE_LEVEL_FREE: 0, PRICE_LEVEL_INEXPENSIVE: 1, PRICE_LEVEL_MODERATE: 2, PRICE_LEVEL_EXPENSIVE: 3, PRICE_LEVEL_VERY_EXPENSIVE: 4 };
+  let payload = { lat: _dropPinLat, lng: _dropPinLng, source: 'Drop Pin' };
+
+  if (_dropPinType === 'place') {
+    const gp = _nearbyPlace;
+    // Duplicate check — if place already in database, offer check-in instead
+    if (gp?.id && myPlacesByGoogleId.has(gp.id)) {
+      const existing = myPlacesByGoogleId.get(gp.id);
+      btn.disabled = false; btn.textContent = 'Save Pin';
+      if (confirm(`"${existing.name}" is already in your database.\n\nCheck in instead?`)) {
+        closeDropPin();
+        openCheckInModal(existing.notion_id, existing.name);
+      }
+      return;
+    }
+    // Derive name: from selected Google place, or from search input as fallback
+    const name = gp?.displayName?.text || document.getElementById('pin-place-search').value.trim();
+    if (!name) { btn.disabled = false; btn.textContent = 'Save Pin'; document.getElementById('droppin-status-msg').textContent = 'Select a place or search by name.'; document.getElementById('droppin-status-msg').style.color = '#c00'; return; }
+    let city = '', country = '', neighborhood = '';
+    for (const comp of (gp?.addressComponents || [])) {
+      const types = comp.types || [];
+      if (types.includes('locality')) city = comp.longText || '';
+      else if (types.includes('country')) country = comp.longText || '';
+      else if (types.includes('neighborhood') || types.includes('sublocality_level_1')) neighborhood = comp.longText || '';
+    }
+    Object.assign(payload, {
+      name, status: _dropPinStatus,
+      notes: document.getElementById('pin-place-note').value.trim(),
+      google_place_id: gp?.id || '', address: gp?.formattedAddress || '',
+      city, country, neighborhood,
+      category: gp ? googleTypeToCategory(gp.primaryType) : 'Other',
+      google_maps_url: gp?.googleMapsUri || `https://www.google.com/maps?q=${_dropPinLat},${_dropPinLng}`, rating_external: gp?.rating ?? null,
+      phone: gp?.nationalPhoneNumber || '', website: gp?.websiteUri || '',
+      price_level: gp?.priceLevel ? (priceLevelMap[gp.priceLevel] ?? null) : null,
+      hours: gp?.currentOpeningHours?.weekdayDescriptions?.join('\n') || '',
+      enrichment_status: gp ? 'Enriched' : 'New',
+    });
+  } else if (_dropPinType === 'personal') {
+    const name = document.getElementById('pin-personal-name').value.trim();
+    if (!name) { btn.disabled = false; btn.textContent = 'Save Pin'; document.getElementById('droppin-status-msg').textContent = 'Enter a name.'; document.getElementById('droppin-status-msg').style.color = '#c00'; return; }
+    Object.assign(payload, {
+      name, status: 'Visited', notes: document.getElementById('pin-personal-note').value.trim(),
+      category: 'House', enrichment_status: 'Enriched', address: _dropPinAddress || '',
+      city: _geocodeCity, country: _geocodeCountry, neighborhood: _geocodeNeighborhood,
+      google_maps_url: `https://www.google.com/maps?q=${_dropPinLat},${_dropPinLng}`,
+    });
+  } else {
+    const label = document.getElementById('pin-temp-name').value.trim();
+    Object.assign(payload, { name: label || 'Temp Pin', status: 'Want to Visit', category: 'Temp', temporary: true, expires: calcExpires(_dropPinDuration), enrichment_status: 'Enriched' });
+  }
+
+  try {
+    const resp = await fetch(WORKER_URL + '/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const result = await resp.json();
+    if (result.ok) {
+      btn.textContent = 'Saved!'; btn.style.background = '#2e7d32';
+      const msg = _dropPinType === 'temp' ? `Temp pin saved — auto-deletes ${payload.expires}.` : 'Pin saved. Map will refresh automatically.';
+      document.getElementById('droppin-status-msg').textContent = msg;
+      document.getElementById('droppin-status-msg').style.color = '#2e7d32';
+      if (_dropPinType !== 'temp') startPollingForPlace(payload.google_place_id || null);
+      setTimeout(closeDropPin, 2200);
+    } else { throw new Error(result.error || 'Unknown error'); }
+  } catch(e) {
+    btn.disabled = false; btn.textContent = 'Save Pin';
+    document.getElementById('droppin-status-msg').textContent = 'Failed: ' + e.message;
+    document.getElementById('droppin-status-msg').style.color = '#c00';
+  }
+}
+
+function closeDetail() { document.getElementById('detail').classList.remove('open'); }
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+let _locateMarker = null;
+function locateMe() {
+  if (!navigator.geolocation) return;
+  const btn = document.getElementById('locate-btn');
+  btn.classList.add('locating');
+  navigator.geolocation.getCurrentPosition(pos => {
+    btn.classList.remove('locating');
+    const lat = pos.coords.latitude, lng = pos.coords.longitude;
+    map.flyTo([lat, lng], 15, { animate: true, duration: 1.2 });
+    if (_locateMarker) _locateMarker.remove();
+    _locateMarker = L.circleMarker([lat, lng], {
+      radius: 9, fillColor: '#4a90d9', color: '#fff', weight: 2.5, fillOpacity: 0.95
+    }).addTo(map);
+    setTimeout(() => { if (_locateMarker) { _locateMarker.remove(); _locateMarker = null; } }, 4000);
+  }, () => {
+    btn.classList.remove('locating');
+  }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 30000 });
+}
+</script>
+</body>
+</html>

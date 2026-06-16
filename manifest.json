@@ -1,0 +1,13 @@
+{
+  "name": "Geo Memory",
+  "short_name": "Geo Memory",
+  "description": "Personal place memory map",
+  "start_url": "/geo-memory/",
+  "display": "standalone",
+  "background_color": "#1a1f2e",
+  "theme_color": "#1a73e8",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
