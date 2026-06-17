@@ -34,12 +34,9 @@ struct FlaggedView: View {
                 } else {
                     List {
                         ForEach(flagged) { place in
-                            Button {
+                            FlaggedPlaceRow(place: place) {
                                 selectedPlace = place
-                            } label: {
-                                FlaggedPlaceRow(place: place)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                     .searchable(text: $searchText, prompt: "Search flagged")
@@ -57,21 +54,30 @@ struct FlaggedView: View {
 
 struct FlaggedPlaceRow: View {
     let place: Place
+    let onTap: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(place.name)
-                .font(.body)
-            HStack {
-                Text(place.city)
-                if !place.category.isEmpty {
-                    Text("·")
-                    Text(place.category)
+        VStack(alignment: .leading, spacing: 8) {
+            // Info area — tap opens detail
+            VStack(alignment: .leading, spacing: 4) {
+                Text(place.name)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                HStack {
+                    Text(place.city)
+                    if !place.category.isEmpty {
+                        Text("·")
+                        Text(place.category)
+                    }
                 }
+                .font(.caption)
+                .foregroundColor(.secondary)
             }
-            .font(.caption)
-            .foregroundColor(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { onTap() }
 
+            // Action links — independent tap targets
             HStack(spacing: 16) {
                 if let mapsURL = place.googleMapsURL, let url = URL(string: mapsURL) {
                     Link(destination: url) {

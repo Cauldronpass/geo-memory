@@ -23,49 +23,47 @@ struct CapturesDrawerView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Pending")
-                    .font(.title2.bold())
-                Spacer()
-                Button("Done") {
-                    withAnimation(.easeInOut(duration: 0.3)) { isShowing = false }
-                }
-                .bold()
-            }
-            .padding()
-            .background(Color(UIColor.systemBackground))
-
-            Divider()
-
-            if notion.captures.isEmpty {
-                VStack {
-                    Spacer()
-                    Image(systemName: "tray")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
-                    Text("No pending notes")
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 8)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-            } else {
-                List {
-                    ForEach(groupedCaptures, id: \.key) { group in
-                        Section(group.key) {
-                            ForEach(group.value) { capture in
-                                CaptureRow(capture: capture) {
-                                    actionCapture = capture
-                                    showingActions = true
-                                } onDismiss: {
-                                    Task { try? await notion.dismissCapture(capture.id) }
+        NavigationStack {
+            Group {
+                if notion.captures.isEmpty {
+                    VStack {
+                        Spacer()
+                        Image(systemName: "tray")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                        Text("No pending notes")
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 8)
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+                } else {
+                    List {
+                        ForEach(groupedCaptures, id: \.key) { group in
+                            Section(group.key) {
+                                ForEach(group.value) { capture in
+                                    CaptureRow(capture: capture) {
+                                        actionCapture = capture
+                                        showingActions = true
+                                    } onDismiss: {
+                                        Task { try? await notion.dismissCapture(capture.id) }
+                                    }
                                 }
                             }
                         }
                     }
+                    .listStyle(.insetGrouped)
                 }
-                .listStyle(.insetGrouped)
+            }
+            .navigationTitle("Pending")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        withAnimation(.easeInOut(duration: 0.3)) { isShowing = false }
+                    }
+                    .bold()
+                }
             }
         }
         .confirmationDialog("What would you like to do?", isPresented: $showingActions, titleVisibility: .visible) {
@@ -103,8 +101,10 @@ struct CapturesDrawerView: View {
         )
         .sheet(isPresented: $showingVisitPicker) {
             if let capture = selectedCapture {
-                VisitPickerView(capture: capture, isShowing: $showingVisitPicker)
-                    .environment(notion)
+                VisitPickerView(capture: capture, isShowing: $showingVisitPicker) {
+                    showingCreateVisit = true
+                }
+                .environment(notion)
             }
         }
         .sheet(isPresented: $showingCreateVisit) {
@@ -145,6 +145,7 @@ struct CaptureRow: View {
 struct VisitPickerView: View {
     let capture: Capture
     @Binding var isShowing: Bool
+    var onCreateVisit: (() -> Void)? = nil
     @Environment(NotionService.self) private var notion
     @State private var searchText = ""
 
@@ -163,14 +164,21 @@ struct VisitPickerView: View {
         NavigationStack {
             Group {
                 if relevantVisits.isEmpty {
-                    VStack(spacing: 12) {
+                    VStack(spacing: 16) {
                         Spacer()
                         Text(searchText.isEmpty
                             ? (capture.placeID != nil ? "No check-ins for this place yet" : "No visits found")
                             : "No matching visits")
                             .foregroundStyle(.secondary)
+                        if searchText.isEmpty && capture.placeID != nil {
+                            Button("Create New Visit") {
+                                isShowing = false
+                                onCreateVisit?()
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
                         Button("Close") { isShowing = false }
-                            .padding(.top, 4)
+                            .foregroundStyle(.secondary)
                         Spacer()
                     }
                 } else {
@@ -216,6 +224,7 @@ struct VisitPickerView: View {
         }
     }
 }
+
 struct CreateVisitFromCaptureView: View {
     let capture: Capture
     @Binding var isShowing: Bool

@@ -18,7 +18,8 @@ class NotionService {
     private let baseURL = "https://api.notion.com/v1"
 
     var token: String {
-        UserDefaults.standard.string(forKey: "notion_token") ?? ""
+        get { UserDefaults.standard.string(forKey: "notion_token") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "notion_token") }
     }
 
     private var headers: [String: String] {
@@ -180,7 +181,7 @@ class NotionService {
         }
     }
 
-    func saveCapture(notes: String, placeID: String?, placeName: String?, lat: Double?, lon: Double?) async throws {
+    func saveCapture(notes: String, placeID: String?, placeName: String?, lat: Double?, lon: Double?, photoURL: String? = nil) async throws {
         var props: [String: Any] = [
             "Name": ["title": [["text": ["content": placeName ?? "Capture"]]]],
             "Notes": ["rich_text": [["text": ["content": notes]]]],
@@ -190,6 +191,7 @@ class NotionService {
         if let lat { props["GPS Lat"] = ["number": lat] }
         if let lon { props["GPS Lon"] = ["number": lon] }
         if let placeID { props["Place"] = ["relation": [["id": placeID]]] }
+        if let photoURL { props["Photo URL"] = ["url": photoURL] }
         let body: [String: Any] = [
             "parent": ["database_id": capturesDBID],
             "properties": props
@@ -198,8 +200,26 @@ class NotionService {
     }
 
     func linkCapture(_ captureID: String, toVisit visitID: String) async throws {
+        // Mark capture as linked
         let props: [String: Any] = ["Status": ["select": ["name": "Linked"]]]
         _ = try await patch("\(baseURL)/pages/\(captureID)", body: ["properties": props])
+
+        // Append capture notes to the visit's Notes field
+        if let capture = captures.first(where: { $0.id == captureID }), !capture.notes.isEmpty {
+            let visitData = try await get("\(baseURL)/pages/\(visitID)")
+            let visitResult = try JSONSerialization.jsonObject(with: visitData) as! [String: Any]
+            let visitProps = visitResult["properties"] as? [String: Any] ?? [:]
+            let existing = richText(visitProps["Notes"]) ?? ""
+            let appended = existing.isEmpty ? capture.notes : "\(existing)\n\(capture.notes)"
+            let updateBody: [String: Any] = [
+                "properties": ["Notes": ["rich_text": [["text": ["content": String(appended.prefix(2000))]]]]]
+            ]
+            _ = try await patch("\(baseURL)/pages/\(visitID)", body: updateBody)
+            if let idx = visits.firstIndex(where: { $0.id == visitID }) {
+                visits[idx].notes = appended
+            }
+        }
+
         captures.removeAll { $0.id == captureID }
     }
 
@@ -208,19 +228,13 @@ class NotionService {
         _ = try await patch("\(baseURL)/pages/\(captureID)", body: ["properties": props])
         captures.removeAll { $0.id == captureID }
     }
+
     func deleteCapture(_ captureID: String) async throws {
         let body: [String: Any] = ["archived": true]
         _ = try await patch("\(baseURL)/pages/\(captureID)", body: body)
         captures.removeAll { $0.id == captureID }
     }
-    private func post(_ urlString: String, body: [String: Any]) async throws -> Data {
-        var request = URLRequest(url: URL(string: urlString)!)
-        request.httpMethod = "POST"
-        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await URLSession.shared.data(for: request)
-        return data
-    }
+
     func appendToPlaceNotes(placeID: String, text: String) async throws {
         let data = try await get("\(baseURL)/pages/\(placeID)")
         let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -238,6 +252,16 @@ class NotionService {
         ]
         _ = try await patch("\(baseURL)/pages/\(placeID)", body: body)
     }
+
+    private func post(_ urlString: String, body: [String: Any]) async throws -> Data {
+        var request = URLRequest(url: URL(string: urlString)!)
+        request.httpMethod = "POST"
+        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return data
+    }
+
     private func patch(_ urlString: String, body: [String: Any]) async throws -> Data {
         var request = URLRequest(url: URL(string: urlString)!)
         request.httpMethod = "PATCH"
@@ -246,6 +270,7 @@ class NotionService {
         let (data, _) = try await URLSession.shared.data(for: request)
         return data
     }
+
     private func get(_ urlString: String) async throws -> Data {
         var request = URLRequest(url: URL(string: urlString)!)
         request.httpMethod = "GET"
@@ -253,6 +278,7 @@ class NotionService {
         let (data, _) = try await URLSession.shared.data(for: request)
         return data
     }
+
     private func parsePage(_ page: [String: Any]) -> Place? {
         guard let id = page["id"] as? String,
               let props = page["properties"] as? [String: Any] else { return nil }
@@ -362,3 +388,4 @@ class NotionService {
         return ISO8601DateFormatter().date(from: s)
     }
 }
+

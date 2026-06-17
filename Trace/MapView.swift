@@ -12,6 +12,7 @@ struct MapView: View {
     @State private var mapPosition: MapCameraPosition = .automatic
     @State private var currentRegion: MKCoordinateRegion? = nil
     @State private var resultsExpanded = true
+    @FocusState private var searchFocused: Bool
 
     private var availableCategories: [String] {
         Array(Set(notionService.places.compactMap {
@@ -81,7 +82,11 @@ struct MapView: View {
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Search places...", text: $searchText)
-                    if !searchText.isEmpty {
+                        .focused($searchFocused)
+                    if searchFocused {
+                        Button("Done") { searchFocused = false }
+                            .font(.subheadline)
+                    } else if !searchText.isEmpty {
                         Button { searchText = "" } label: {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                         }
@@ -249,7 +254,7 @@ struct MapView: View {
                             .overlay(RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 0.5))
                     }
                     .padding(.trailing, 16)
-                    .padding(.bottom, isFiltering ? 360 : 100)
+                    .padding(.bottom, isFiltering ? (resultsExpanded ? 360 : 120) : 100)
                 }
             }
         }

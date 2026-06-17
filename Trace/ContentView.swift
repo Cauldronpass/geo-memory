@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(NotionService.self) private var notion
     @State private var showingActionSheet = false
     @State private var selectedTab = 0
     @State private var showingCheckIn = false
@@ -8,6 +9,7 @@ struct ContentView: View {
     @State private var showingAddCapture = false
     @State private var showingDrawer = false
     @State private var showingAddPhoto = false
+    @State private var showingLeftDrawer = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -68,6 +70,7 @@ struct ContentView: View {
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
         }
+        // Right drawer — Captures
         .overlay {
             ZStack {
                 if showingDrawer {
@@ -89,6 +92,32 @@ struct ContentView: View {
             }
             .animation(.easeInOut(duration: 0.3), value: showingDrawer)
         }
+        // Left drawer — Settings
+        .overlay {
+            ZStack {
+                if showingLeftDrawer {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.3)) { showingLeftDrawer = false }
+                        }
+                    HStack(spacing: 0) {
+                        LeftDrawerView(isShowing: $showingLeftDrawer) {
+                            await notion.fetchPlaces()
+                            await notion.fetchVisits()
+                            await notion.fetchCaptures()
+                        }
+                        .frame(width: UIScreen.main.bounds.width * 0.85)
+                        .background(Color(UIColor.systemBackground))
+                        .ignoresSafeArea()
+                        Spacer()
+                    }
+                    .transition(.move(edge: .leading))
+                }
+            }
+            .animation(.easeInOut(duration: 0.3), value: showingLeftDrawer)
+        }
+        // Right edge swipe → opens Captures drawer
         .overlay(alignment: .trailing) {
             Rectangle()
                 .fill(Color.clear)
@@ -103,10 +132,24 @@ struct ContentView: View {
                         }
                 )
         }
+        // Left edge swipe → opens Settings drawer
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: 20)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 10, coordinateSpace: .local)
+                        .onEnded { value in
+                            if value.translation.width > 10 {
+                                withAnimation(.easeInOut(duration: 0.3)) { showingLeftDrawer = true }
+                            }
+                        }
+                )
+        }
     }
 }
 
 #Preview {
     ContentView()
 }
-

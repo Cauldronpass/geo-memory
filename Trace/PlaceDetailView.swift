@@ -8,6 +8,7 @@ struct PlaceDetailView: View {
 
     @State private var selectedTab = 0
     @State private var showingCheckIn = false
+    @State private var editingVisit: Visit? = nil
 
     private var placeVisits: [Visit] {
         notionService.visits
@@ -17,6 +18,7 @@ struct PlaceDetailView: View {
     private var livePlace: Place {
         notionService.places.first { $0.id == place.id } ?? place
     }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -50,6 +52,10 @@ struct PlaceDetailView: View {
             CheckInView()
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
+        }
+        .sheet(item: $editingVisit) { visit in
+            VisitEditSheet(visit: visit)
+                .environment(NotionService.shared)
         }
     }
 
@@ -197,22 +203,34 @@ struct PlaceDetailView: View {
             } else {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(placeVisits) { visit in
-                        VStack(alignment: .leading, spacing: 6) {
+                        Button {
+                            editingVisit = visit
+                        } label: {
                             HStack {
-                                Text(visit.date, style: .date)
-                                    .font(.subheadline.bold())
-                                Spacer()
-                                if let rating = visit.rating {
-                                    StarDisplay(rating: rating)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text(visit.date, style: .date)
+                                            .font(.subheadline.bold())
+                                        Spacer()
+                                        if let rating = visit.rating {
+                                            StarDisplay(rating: rating)
+                                        }
+                                    }
+                                    if let notes = visit.notes, !notes.isEmpty {
+                                        Text(notes)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.leading, 4)
                             }
-                            if let notes = visit.notes, !notes.isEmpty {
-                                Text(notes)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.vertical, 8)
+                        .buttonStyle(.plain)
                         Divider()
                     }
                 }
@@ -224,12 +242,15 @@ struct PlaceDetailView: View {
     // MARK: - Action bar
 
     private var actionBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Button {
                 let url = URL(string: "maps://?daddr=\(place.latitude),\(place.longitude)")!
                 UIApplication.shared.open(url)
             } label: {
                 Label("Directions", systemImage: "arrow.triangle.turn.up.right.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .minimumScaleFactor(0.8)
+                    .lineLimit(1)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -238,6 +259,9 @@ struct PlaceDetailView: View {
                 showingCheckIn = true
             } label: {
                 Label("Check In", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .minimumScaleFactor(0.8)
+                    .lineLimit(1)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -247,12 +271,101 @@ struct PlaceDetailView: View {
             } label: {
                 Image(systemName: livePlace.flagged ? "star.fill" : "star")
                     .font(.title3)
+                    .frame(width: 36)
             }
             .buttonStyle(.bordered)
             .tint(livePlace.flagged ? .yellow : .secondary)
         }
-        .padding()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(.bar)
+    }
+}
+
+// MARK: - Visit Edit Sheet
+
+struct VisitEditSheet: View {
+    let visit: Visit
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var rating: Int
+    @State private var notes: String
+    @State private var isSaving = false
+
+    init(visit: Visit) {
+        self.visit = visit
+        _rating = State(initialValue: visit.rating ?? 0)
+        _notes = State(initialValue: visit.notes ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Date") {
+                    Text(visit.date, style: .date)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Rating") {
+                    HStack(spacing: 6) {
+                        ForEach(1...7, id: \.self) { star in
+                            Button {
+                                rating = (rating == star) ? 0 : star
+                            } label: {
+                                Image(systemName: star <= rating ? "star.fill" : "star")
+                                    .foregroundStyle(star <= rating ? .yellow : .secondary)
+                                    .font(.title3)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if rating > 0 {
+                            Button { rating = 0 } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                                    .font(.callout)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.leading, 4)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                Section("Notes") {
+                    TextField("Add notes…", text: $notes, axis: .vertical)
+                        .lineLimit(3...8)
+                }
+                Section {
+                    Button {
+                        Task { await save() }
+                    } label: {
+                        if isSaving {
+                            HStack { Spacer(); ProgressView(); Spacer() }
+                        } else {
+                            Text("Save").frame(maxWidth: .infinity).bold()
+                        }
+                    }
+                    .disabled(isSaving)
+                }
+            }
+            .navigationTitle("Edit Visit")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func save() async {
+        isSaving = true
+        try? await notion.updateVisit(
+            visit,
+            rating: rating == 0 ? nil : rating,
+            notes: notes.isEmpty ? nil : notes
+        )
+        await notion.fetchVisits()
+        dismiss()
     }
 }
 

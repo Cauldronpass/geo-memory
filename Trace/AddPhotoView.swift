@@ -15,9 +15,6 @@ struct AddPhotoView: View {
     @State private var showingPlacePicker = false
     @State private var isSaving = false
     @State private var errorMessage: String?
-    @State private var showingPasswordEntry = false
-    @State private var nasPasswordInput = ""
-
     var cameraAvailable: Bool {
         UIImagePickerController.isSourceTypeAvailable(.camera)
     }
@@ -153,17 +150,7 @@ struct AddPhotoView: View {
                     .environment(notion)
                     .environment(locationManager)
             }
-            .alert("NAS Password", isPresented: $showingPasswordEntry) {
-                SecureField("DSM Password", text: $nasPasswordInput)
-                Button("Save & Upload") {
-                    NASService.shared.password = nasPasswordInput
-                    nasPasswordInput = ""
-                    Task { await save() }
-                }
-                Button("Cancel", role: .cancel) { isSaving = false }
-            } message: {
-                Text("Enter your DiskStation password once to enable NAS uploads.")
-            }
+
         }
     }
 
@@ -171,7 +158,8 @@ struct AddPhotoView: View {
         guard let image = capturedImage, let type = photoType else { return }
 
         if NASService.shared.password.isEmpty {
-            showingPasswordEntry = true
+            errorMessage = "NAS password not set — swipe right from the left edge to open Settings."
+            isSaving = false
             return
         }
 
@@ -186,13 +174,12 @@ struct AddPhotoView: View {
         do {
             nasURL = try await NASService.shared.upload(image, type: type)
         } catch {
-            errorMessage = "NAS upload failed (is Tailscale on?). Saved to Camera Roll only."
+            errorMessage = "NAS upload failed: \(error.localizedDescription). Saved to Camera Roll only."
         }
 
         // 3. Create Notion capture
         let coord = locationManager.location?.coordinate
-        var noteText = "\(type.emoji) \(notes.isEmpty ? type.label : notes)"
-        if let url = nasURL { noteText += "\nNAS: \(url)" }
+        let noteText = "\(type.emoji) \(notes.isEmpty ? type.label : notes)"
 
         do {
             try await notion.saveCapture(
@@ -200,7 +187,8 @@ struct AddPhotoView: View {
                 placeID: type == .place ? selectedPlace?.id : nil,
                 placeName: type == .place ? selectedPlace?.name : nil,
                 lat: coord?.latitude,
-                lon: coord?.longitude
+                lon: coord?.longitude,
+                photoURL: nasURL
             )
             await notion.fetchCaptures()
             if errorMessage == nil { dismiss() } else { isSaving = false }
