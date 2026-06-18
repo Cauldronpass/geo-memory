@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(NotionService.self) private var notion
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingActionSheet = false
     @State private var selectedTab = 0
     @State private var showingCheckIn = false
@@ -116,6 +117,15 @@ struct ContentView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: showingLeftDrawer)
+        }
+        // Re-fetch when app comes back to foreground (picks up Notion changes)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                Task {
+                    await notion.fetchPlaces()
+                    await notion.fetchVisits()
+                }
+            }
         }
         // Right edge swipe → opens Captures drawer
         .overlay(alignment: .trailing) {

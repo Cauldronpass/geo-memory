@@ -40,13 +40,10 @@ class NASService: NSObject {
         URLSession(configuration: .default, delegate: self, delegateQueue: nil)
     }()
 
-    func upload(_ image: UIImage, type: PhotoType) async throws -> String {
+    func upload(_ image: UIImage, filename: String) async throws -> String {
         guard let data = image.jpegData(compressionQuality: 0.85) else {
             throw NASError.encodingFailed
         }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
-        let filename = "\(type.rawValue)-\(formatter.string(from: Date())).jpg"
         let urlString = "https://\(nasIP):\(port)\(basePath)/\(filename)"
         guard let url = URL(string: urlString) else { throw NASError.invalidURL }
 
@@ -89,4 +86,3 @@ enum NASError: LocalizedError {
         }
     }
 }
-

@@ -6,8 +6,11 @@ struct LeftDrawerView: View {
 
     @State private var notionToken = ""
     @State private var nasPassword = ""
+    @State private var b2KeyID = ""
+    @State private var b2ApplicationKey = ""
     @State private var showToken = false
     @State private var showPassword = false
+    @State private var showB2Key = false
     @State private var saveState: SaveState = .idle
 
     enum SaveState { case idle, saving, saved }
@@ -36,7 +39,23 @@ struct LeftDrawerView: View {
                 } header: {
                     Label("NAS", systemImage: "externaldrive.fill.badge.wifi")
                 } footer: {
-                    Text("Your DiskStation Manager password. Used for photo uploads via Tailscale.")
+                    Text("Your DiskStation Manager password. Used for NAS backup uploads via Tailscale.")
+                }
+
+                Section {
+                    TextField("Key ID", text: $b2KeyID)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .font(.system(.body, design: .monospaced))
+                    credentialRow(
+                        text: $b2ApplicationKey,
+                        show: $showB2Key,
+                        placeholder: "Application key"
+                    )
+                } header: {
+                    Label("Backblaze B2", systemImage: "cloud.fill")
+                } footer: {
+                    Text("Used for public photo URLs. Key scoped to the trace-place-photos bucket.")
                 }
 
                 Section {
@@ -62,7 +81,7 @@ struct LeftDrawerView: View {
                 }
 
                 Section {
-                    Text("Trace 1.0 (3)")
+                    Text("Trace 1.0")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -85,6 +104,8 @@ struct LeftDrawerView: View {
         .onAppear {
             notionToken = UserDefaults.standard.string(forKey: "notion_token") ?? ""
             nasPassword = UserDefaults.standard.string(forKey: "nas_password") ?? ""
+            b2KeyID = UserDefaults.standard.string(forKey: "b2_key_id") ?? ""
+            b2ApplicationKey = UserDefaults.standard.string(forKey: "b2_application_key") ?? ""
         }
     }
 
@@ -112,6 +133,8 @@ struct LeftDrawerView: View {
         saveState = .saving
         UserDefaults.standard.set(notionToken, forKey: "notion_token")
         UserDefaults.standard.set(nasPassword, forKey: "nas_password")
+        UserDefaults.standard.set(b2KeyID, forKey: "b2_key_id")
+        UserDefaults.standard.set(b2ApplicationKey, forKey: "b2_application_key")
         await onSave()
         saveState = .saved
         try? await Task.sleep(nanoseconds: 1_200_000_000)

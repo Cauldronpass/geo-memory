@@ -62,7 +62,7 @@ class NotionService {
     }
 
     func fetchVisits() async {
-        isLoading = true
+        if visits.isEmpty { isLoading = true }
         do {
             var allVisits: [Visit] = []
             var cursor: String? = nil
@@ -112,10 +112,10 @@ class NotionService {
         }
     }
 
-    func checkIn(place: Place, rating: Int? = nil, notes: String? = nil) async throws -> String {
+    func checkIn(place: Place, rating: Int? = nil, notes: String? = nil, date: Date = Date()) async throws -> String {
         var props: [String: Any] = [
             "Name": ["title": [["text": ["content": place.name]]]],
-            "Date Visited": ["date": ["start": ISO8601DateFormatter().string(from: Date())]],
+            "Date Visited": ["date": ["start": ISO8601DateFormatter().string(from: date)]],
             "Place": ["relation": [["id": place.id]]]
         ]
         if let rating { props["Rating"] = ["number": rating] }
@@ -169,15 +169,19 @@ class NotionService {
         }
     }
 
-    func updateVisit(_ visit: Visit, rating: Int?, notes: String?) async throws {
+    func updateVisit(_ visit: Visit, rating: Int?, notes: String?, date: Date? = nil) async throws {
         var props: [String: Any] = [:]
         props["Rating"] = rating != nil ? ["number": rating!] : ["number": NSNull()]
         props["Notes"] = ["rich_text": [["text": ["content": notes ?? ""]]]]
+        if let date {
+            props["Date Visited"] = ["date": ["start": ISO8601DateFormatter().string(from: date)]]
+        }
         let body: [String: Any] = ["properties": props]
         _ = try await patch("\(baseURL)/pages/\(visit.id)", body: body)
         if let index = visits.firstIndex(where: { $0.id == visit.id }) {
             visits[index].rating = rating
             visits[index].notes = notes?.isEmpty == true ? nil : notes
+            if let date { visits[index].date = date }
         }
     }
 
@@ -199,24 +203,49 @@ class NotionService {
         _ = try await post("\(baseURL)/pages", body: body)
     }
 
-    func linkCapture(_ captureID: String, toVisit visitID: String) async throws {
+    func linkCapture(_ captureID: String, toVisit visitID: String, captureNotes: String = "", photoURL: String? = nil) async throws {
         // Mark capture as linked
-        let props: [String: Any] = ["Status": ["select": ["name": "Linked"]]]
-        _ = try await patch("\(baseURL)/pages/\(captureID)", body: ["properties": props])
+        _ = try await patch("\(baseURL)/pages/\(captureID)", body: ["properties": ["Status": ["select": ["name": "Linked"]]]])
 
-        // Append capture notes to the visit's Notes field
-        if let capture = captures.first(where: { $0.id == captureID }), !capture.notes.isEmpty {
+        // Fetch visit once if we need to update either field
+        let needsFetch = !captureNotes.isEmpty || photoURL != nil
+        var visitProps: [String: Any] = [:]
+        if needsFetch {
             let visitData = try await get("\(baseURL)/pages/\(visitID)")
             let visitResult = try JSONSerialization.jsonObject(with: visitData) as! [String: Any]
-            let visitProps = visitResult["properties"] as? [String: Any] ?? [:]
+            visitProps = visitResult["properties"] as? [String: Any] ?? [:]
+        }
+
+        // Append capture notes text to Notes field (no photo URL here)
+        if !captureNotes.isEmpty {
             let existing = richText(visitProps["Notes"]) ?? ""
-            let appended = existing.isEmpty ? capture.notes : "\(existing)\n\(capture.notes)"
-            let updateBody: [String: Any] = [
+            let appended = existing.isEmpty ? captureNotes : "\(existing)\n\(captureNotes)"
+            _ = try await patch("\(baseURL)/pages/\(visitID)", body: [
                 "properties": ["Notes": ["rich_text": [["text": ["content": String(appended.prefix(2000))]]]]]
-            ]
-            _ = try await patch("\(baseURL)/pages/\(visitID)", body: updateBody)
+            ])
             if let idx = visits.firstIndex(where: { $0.id == visitID }) {
                 visits[idx].notes = appended
+            }
+        }
+
+        // Append photo URL to "Photo URLs" as clickable rich_text links
+        if let url = photoURL {
+            let existingURLs = ((visitProps["Photo URLs"] as? [String: Any])?["rich_text"] as? [[String: Any]] ?? [])
+                .compactMap { ($0["text"] as? [String: Any])?["content"] as? String }
+                .filter { !$0.isEmpty && $0 != "\n" }
+            let allURLs = existingURLs + [url]
+
+            // Build rich_text array: each URL as a clickable link, separated by newlines
+            var rtArray: [[String: Any]] = []
+            for (i, u) in allURLs.enumerated() {
+                if i > 0 { rtArray.append(["type": "text", "text": ["content": "\n"]]) }
+                rtArray.append(["type": "text", "text": ["content": u, "link": ["url": u]]])
+            }
+            _ = try await patch("\(baseURL)/pages/\(visitID)", body: [
+                "properties": ["Photo URLs": ["rich_text": rtArray]]
+            ])
+            if let idx = visits.firstIndex(where: { $0.id == visitID }) {
+                visits[idx].photoURLs = allURLs
             }
         }
 
@@ -258,7 +287,11 @@ class NotionService {
         request.httpMethod = "POST"
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            throw NotionError.apiError(http.statusCode, msg)
+        }
         return data
     }
 
@@ -267,7 +300,11 @@ class NotionService {
         request.httpMethod = "PATCH"
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            throw NotionError.apiError(http.statusCode, msg)
+        }
         return data
     }
 
@@ -275,7 +312,11 @@ class NotionService {
         var request = URLRequest(url: URL(string: urlString)!)
         request.httpMethod = "GET"
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let msg = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            throw NotionError.apiError(http.statusCode, msg)
+        }
         return data
     }
 
@@ -321,13 +362,17 @@ class NotionService {
         formatter.formatOptions = [.withFullDate]
         formatter.timeZone = TimeZone.current
         let visitDate = formatter.date(from: dateStr) ?? Date()
+        let photoURLs = ((props["Photo URLs"] as? [String: Any])?["rich_text"] as? [[String: Any]] ?? [])
+            .compactMap { ($0["text"] as? [String: Any])?["content"] as? String }
+            .filter { !$0.isEmpty && $0 != "\n" }
         return Visit(
             id: id,
             placeID: ((props["Place"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String ?? "",
             placeName: name,
             date: visitDate,
             rating: (props["Rating"] as? [String: Any])?["number"] as? Int,
-            notes: richText(props["Notes"])
+            notes: richText(props["Notes"]),
+            photoURLs: photoURLs
         )
     }
 
@@ -345,7 +390,8 @@ class NotionService {
             timestamp: ISO8601DateFormatter().date(from: timestampStr) ?? Date(),
             placeID: ((props["Place"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String,
             placeName: title(props["Name"]),
-            status: select(props["Status"]) ?? "Unlinked"
+            status: select(props["Status"]) ?? "Unlinked",
+            photoURL: (props["Photo URL"] as? [String: Any])?["url"] as? String
         )
     }
 
@@ -389,3 +435,12 @@ class NotionService {
     }
 }
 
+enum NotionError: LocalizedError {
+    case apiError(Int, String)
+    var errorDescription: String? {
+        if case .apiError(let code, let msg) = self {
+            return "Notion error \(code): \(msg)"
+        }
+        return nil
+    }
+}

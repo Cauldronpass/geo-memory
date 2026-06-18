@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import CoreLocation
+import PhotosUI
 
 struct AddPhotoView: View {
     @Environment(NotionService.self) private var notion
@@ -10,11 +11,14 @@ struct AddPhotoView: View {
     @State private var photoType: PhotoType? = nil
     @State private var capturedImage: UIImage? = nil
     @State private var showingCamera = false
+    @State private var showingPhotoPicker = false
+    @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var notes = ""
     @State private var selectedPlace: Place? = nil
     @State private var showingPlacePicker = false
     @State private var isSaving = false
     @State private var errorMessage: String?
+
     var cameraAvailable: Bool {
         UIImagePickerController.isSourceTypeAvailable(.camera)
     }
@@ -28,7 +32,11 @@ struct AddPhotoView: View {
                             ForEach(PhotoType.allCases, id: \.self) { type in
                                 Button {
                                     photoType = type
-                                    if cameraAvailable { showingCamera = true }
+                                    if cameraAvailable {
+                                        showingCamera = true
+                                    } else {
+                                        showingPhotoPicker = true
+                                    }
                                 } label: {
                                     HStack {
                                         Text(type.emoji).font(.title2)
@@ -48,10 +56,13 @@ struct AddPhotoView: View {
                         }
                     }
                 } else if capturedImage == nil {
+                    // Shouldn't normally be visible — picker opens immediately
                     VStack(spacing: 20) {
                         Spacer()
-                        Image(systemName: "camera.fill").font(.system(size: 60)).foregroundStyle(.secondary)
-                        Text("Camera not available on this device").foregroundStyle(.secondary)
+                        Image(systemName: "photo").font(.system(size: 60)).foregroundStyle(.secondary)
+                        Text("No photo selected").foregroundStyle(.secondary)
+                        Button("Choose from Library") { showingPhotoPicker = true }
+                            .buttonStyle(.borderedProminent)
                         Spacer()
                     }
                 } else {
@@ -61,7 +72,10 @@ struct AddPhotoView: View {
                                 .resizable().scaledToFit()
                                 .frame(maxHeight: 260)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                            Button("Retake") { showingCamera = true }
+                            if cameraAvailable {
+                                Button("Retake") { showingCamera = true }
+                            }
+                            Button("Choose from Library") { showingPhotoPicker = true }
                         }
 
                         if photoType == .place {
@@ -145,12 +159,24 @@ struct AddPhotoView: View {
                 CameraView(image: $capturedImage, isPresented: $showingCamera)
                     .ignoresSafeArea()
             }
+            .photosPicker(isPresented: $showingPhotoPicker,
+                          selection: $selectedPhotoItem,
+                          matching: .images)
+            .onChange(of: selectedPhotoItem) { _, newItem in
+                guard let newItem else { return }
+                Task {
+                    if let data = try? await newItem.loadTransferable(type: Data.self),
+                       let image = UIImage(data: data) {
+                        capturedImage = image
+                    }
+                    selectedPhotoItem = nil
+                }
+            }
             .sheet(isPresented: $showingPlacePicker) {
                 PlacePickerView(selectedPlace: $selectedPlace)
                     .environment(notion)
                     .environment(locationManager)
             }
-
         }
     }
 
@@ -169,26 +195,44 @@ struct AddPhotoView: View {
         // 1. Save to Camera Roll
         UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
 
-        // 2. Upload to NAS
-        var nasURL: String? = nil
-        do {
-            nasURL = try await NASService.shared.upload(image, type: type)
-        } catch {
-            errorMessage = "NAS upload failed: \(error.localizedDescription). Saved to Camera Roll only."
+        // Generate shared filename so NAS and B2 use the same name
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        let filename = "\(type.rawValue)-\(formatter.string(from: Date())).jpg"
+
+        // 2. Upload to B2 (preferred — public HTTPS URL)
+        var photoURL: String? = nil
+        if !B2Service.shared.keyID.isEmpty {
+            do {
+                photoURL = try await B2Service.shared.upload(image, filename: filename)
+            } catch {
+                errorMessage = "B2 upload failed: \(error.localizedDescription)."
+            }
         }
 
-        // 3. Create Notion capture
+        // 3. Upload to NAS (backup — always attempt if password set)
+        if !NASService.shared.password.isEmpty {
+            do {
+                let nasURL = try await NASService.shared.upload(image, filename: filename)
+                if photoURL == nil { photoURL = nasURL }
+            } catch {
+                let nasMsg = "NAS backup failed: \(error.localizedDescription)."
+                errorMessage = errorMessage == nil ? nasMsg : "\(errorMessage!) \(nasMsg)"
+            }
+        }
+
+        // 4. Create Notion capture
+        // Pass only user-typed notes — auto-generated place name text never clutters visit Notes
         let coord = locationManager.location?.coordinate
-        let noteText = "\(type.emoji) \(notes.isEmpty ? type.label : notes)"
 
         do {
             try await notion.saveCapture(
-                notes: noteText,
+                notes: notes,
                 placeID: type == .place ? selectedPlace?.id : nil,
                 placeName: type == .place ? selectedPlace?.name : nil,
                 lat: coord?.latitude,
                 lon: coord?.longitude,
-                photoURL: nasURL
+                photoURL: photoURL
             )
             await notion.fetchCaptures()
             if errorMessage == nil { dismiss() } else { isSaving = false }
@@ -228,4 +272,3 @@ struct CameraView: UIViewControllerRepresentable {
         }
     }
 }
-

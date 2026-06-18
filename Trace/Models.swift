@@ -35,6 +35,7 @@ struct Visit: Identifiable, Codable {
     var date: Date
     var rating: Int?
     var notes: String?
+    var photoURLs: [String]
 }
 
 struct QueuedItem: Identifiable, Codable {
@@ -72,6 +73,7 @@ struct Capture: Identifiable, Codable {
     var placeID: String?
     var placeName: String?
     var status: String // "Unlinked", "Linked", "Archived"
+    var photoURL: String?
 }
 struct CheckInSession: Identifiable, Codable {
     let id: UUID

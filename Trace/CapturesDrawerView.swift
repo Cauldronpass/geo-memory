@@ -126,12 +126,36 @@ struct CaptureRow: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(capture.notes.isEmpty ? "(no note)" : capture.notes)
-                .lineLimit(2)
-            Text(capture.timestamp, style: .relative)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 10) {
+            if let urlString = capture.photoURL, let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable()
+                            .scaledToFill()
+                            .frame(width: 56, height: 56)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    case .failure:
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.secondary.opacity(0.2))
+                            .frame(width: 56, height: 56)
+                            .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                    default:
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.secondary.opacity(0.1))
+                            .frame(width: 56, height: 56)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(capture.notes.isEmpty ? "(no note)" : capture.notes)
+                    .lineLimit(2)
+                Text(capture.timestamp, style: .relative)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
         }
         .padding(.vertical, 2)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -148,6 +172,8 @@ struct VisitPickerView: View {
     var onCreateVisit: (() -> Void)? = nil
     @Environment(NotionService.self) private var notion
     @State private var searchText = ""
+    @State private var linkError: String?
+    @State private var isLinking = false
 
     var relevantVisits: [Visit] {
         let base = capture.placeID != nil
@@ -185,8 +211,14 @@ struct VisitPickerView: View {
                     List(relevantVisits) { visit in
                         Button {
                             Task {
-                                try? await notion.linkCapture(capture.id, toVisit: visit.id)
-                                isShowing = false
+                                isLinking = true
+                                do {
+                                    try await notion.linkCapture(capture.id, toVisit: visit.id, captureNotes: capture.photoURL != nil ? "" : capture.notes, photoURL: capture.photoURL)
+                                    isShowing = false
+                                } catch {
+                                    linkError = error.localizedDescription
+                                    isLinking = false
+                                }
                             }
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
@@ -219,6 +251,19 @@ struct VisitPickerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { isShowing = false }
+                }
+            }
+            .alert("Link Failed", isPresented: .constant(linkError != nil)) {
+                Button("OK") { linkError = nil }
+            } message: {
+                Text(linkError ?? "")
+            }
+            .overlay {
+                if isLinking {
+                    Color.black.opacity(0.2).ignoresSafeArea()
+                    ProgressView("Linking…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
         }
@@ -320,7 +365,7 @@ struct CreateVisitFromCaptureView: View {
                 rating: rating,
                 notes: notes.isEmpty ? nil : notes
             )
-            try await notion.linkCapture(capture.id, toVisit: visitID)
+            try await notion.linkCapture(capture.id, toVisit: visitID, captureNotes: capture.notes, photoURL: capture.photoURL)
             await notion.fetchPlaces()
             await notion.fetchVisits()
             isShowing = false

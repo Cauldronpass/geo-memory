@@ -46,6 +46,16 @@ struct PlaceDetailView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task {
+                            await notionService.fetchPlaces()
+                            await notionService.fetchVisits()
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
             }
         }
         .sheet(isPresented: $showingCheckIn) {
@@ -212,6 +222,11 @@ struct PlaceDetailView: View {
                                         Text(visit.date, style: .date)
                                             .font(.subheadline.bold())
                                         Spacer()
+                                        if !visit.photoURLs.isEmpty {
+                                            Label("\(visit.photoURLs.count)", systemImage: "photo")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
                                         if let rating = visit.rating {
                                             StarDisplay(rating: rating)
                                         }
@@ -237,6 +252,7 @@ struct PlaceDetailView: View {
                 .padding()
             }
         }
+        .refreshable { await notionService.fetchVisits() }
     }
 
     // MARK: - Action bar
@@ -299,12 +315,49 @@ struct VisitEditSheet: View {
         _notes = State(initialValue: visit.notes ?? "")
     }
 
+    private var livePhotoURLs: [String] {
+        notion.visits.first { $0.id == visit.id }?.photoURLs ?? visit.photoURLs
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section("Date") {
                     Text(visit.date, style: .date)
                         .foregroundStyle(.secondary)
+                }
+                if !livePhotoURLs.isEmpty {
+                    Section("Photos") {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 10) {
+                                ForEach(livePhotoURLs, id: \.self) { urlString in
+                                    if let url = URL(string: urlString) {
+                                        AsyncImage(url: url) { phase in
+                                            switch phase {
+                                            case .success(let image):
+                                                image.resizable()
+                                                    .scaledToFill()
+                                                    .frame(width: 130, height: 130)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                            case .failure:
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .fill(Color.secondary.opacity(0.15))
+                                                    .frame(width: 130, height: 130)
+                                                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                                            default:
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .fill(Color.secondary.opacity(0.1))
+                                                    .frame(width: 130, height: 130)
+                                                    .overlay(ProgressView())
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 6)
+                        }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                    }
                 }
                 Section("Rating") {
                     HStack(spacing: 6) {
@@ -347,13 +400,31 @@ struct VisitEditSheet: View {
                     .disabled(isSaving)
                 }
             }
+            .refreshable { await refreshFromNotion() }
             .navigationTitle("Edit Visit")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task { await refreshFromNotion() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(isSaving)
+                }
             }
+            .task { await refreshFromNotion() }
+        }
+    }
+
+    private func refreshFromNotion() async {
+        await notion.fetchVisits()
+        if let fresh = notion.visits.first(where: { $0.id == visit.id }) {
+            notes = fresh.notes ?? ""
+            rating = fresh.rating ?? 0
         }
     }
 

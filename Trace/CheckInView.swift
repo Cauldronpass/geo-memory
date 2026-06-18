@@ -10,9 +10,32 @@ struct CheckInView: View {
     @State private var selectedPlace: Place? = nil
     @State private var rating: Int? = nil
     @State private var notes: String = ""
+    @State private var checkInDate: Date = Date()
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
     @State private var showSuccess = false
+    @State private var searchText = ""
+    @State private var showPinnedOnly = false
+    @State private var selectedCategory: String? = nil
+    @State private var selectedTag: String? = nil
+
+    private var availableCategories: [String] {
+        Array(Set(notionService.places
+            .filter { $0.status != "Archived" && !$0.category.isEmpty }
+            .map { $0.category }
+        )).sorted()
+    }
+
+    private var availableTags: [String] {
+        Array(Set(notionService.places
+            .filter { $0.status != "Archived" }
+            .flatMap { $0.tags }
+        )).sorted()
+    }
+
+    private var hasActiveFilters: Bool {
+        showPinnedOnly || selectedCategory != nil || selectedTag != nil
+    }
 
     private var sortedPlaces: [Place] {
         notionService.places
@@ -22,6 +45,18 @@ struct CheckInView: View {
                 let d2 = locationManager.distance(to: $1) ?? .infinity
                 return d1 < d2
             }
+    }
+
+    private var filteredPlaces: [Place] {
+        sortedPlaces.filter {
+            (searchText.isEmpty ||
+             $0.name.localizedCaseInsensitiveContains(searchText) ||
+             $0.city.localizedCaseInsensitiveContains(searchText) ||
+             $0.category.localizedCaseInsensitiveContains(searchText))
+            && (!showPinnedOnly || $0.flagged)
+            && (selectedCategory == nil || $0.category == selectedCategory)
+            && (selectedTag == nil || $0.tags.contains(selectedTag!))
+        }
     }
 
     var body: some View {
@@ -37,15 +72,78 @@ struct CheckInView: View {
     // MARK: - Place list
 
     private var placeListView: some View {
-        List(sortedPlaces) { place in
-            Button {
-                selectedPlace = place
-                rating = nil
-                notes = ""
-            } label: {
-                CheckInPlaceRow(place: place, locationManager: locationManager)
+        List {
+            Section {
+                HStack {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search places", text: $searchText)
+                        .autocorrectionDisabled()
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        MapFilterChip(title: "Pinned", systemImage: "pin.fill", isActive: showPinnedOnly) {
+                            showPinnedOnly.toggle()
+                        }
+                        Menu {
+                            Button("All Categories") { selectedCategory = nil }
+                            Divider()
+                            ForEach(availableCategories, id: \.self) { cat in
+                                Button(cat) { selectedCategory = cat }
+                            }
+                        } label: {
+                            MapFilterChip(title: selectedCategory ?? "Category",
+                                          systemImage: "square.grid.2x2",
+                                          isActive: selectedCategory != nil,
+                                          showChevron: true) {}
+                        }
+                        if !availableTags.isEmpty {
+                            Menu {
+                                Button("All Tags") { selectedTag = nil }
+                                Divider()
+                                ForEach(availableTags, id: \.self) { tag in
+                                    Button(tag) { selectedTag = tag }
+                                }
+                            } label: {
+                                MapFilterChip(title: selectedTag ?? "Tag",
+                                              systemImage: "tag",
+                                              isActive: selectedTag != nil,
+                                              showChevron: true) {}
+                            }
+                        }
+                        if hasActiveFilters {
+                            Button {
+                                showPinnedOnly = false
+                                selectedCategory = nil
+                                selectedTag = nil
+                            } label: {
+                                Text("Clear")
+                                    .font(.subheadline)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
             }
-            .tint(.primary)
+            ForEach(filteredPlaces) { place in
+                Button {
+                    selectedPlace = place
+                    rating = nil
+                    notes = ""
+                    searchText = ""
+                } label: {
+                    CheckInPlaceRow(place: place, locationManager: locationManager)
+                }
+                .tint(.primary)
+            }
         }
         .navigationTitle("Check In")
         .navigationBarTitleDisplayMode(.inline)
@@ -72,6 +170,10 @@ struct CheckInView: View {
                     }
                 }
                 .padding(.vertical, 4)
+            }
+
+            Section("Date") {
+                DatePicker("Date", selection: $checkInDate, displayedComponents: .date)
             }
 
             Section("Rating (optional)") {
@@ -132,7 +234,8 @@ struct CheckInView: View {
             _ = try await notionService.checkIn(
                 place: place,
                 rating: rating,
-                notes: notes.isEmpty ? nil : notes
+                notes: notes.isEmpty ? nil : notes,
+                date: checkInDate
             )
             await notionService.fetchPlaces()
             await notionService.fetchVisits()
@@ -191,6 +294,14 @@ struct CheckInPlaceRow: View {
                 HStack(spacing: 6) {
                     if !place.category.isEmpty {
                         Text(place.category)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !place.city.isEmpty {
+                        Text("·")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Text(place.city)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

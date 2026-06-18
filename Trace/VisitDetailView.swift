@@ -8,6 +8,7 @@ struct VisitDetailView: View {
 
     @State private var rating: Int?
     @State private var notes: String
+    @State private var date: Date
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var showingPlace = false
@@ -16,10 +17,15 @@ struct VisitDetailView: View {
         self.visit = visit
         _rating = State(initialValue: visit.rating)
         _notes = State(initialValue: visit.notes ?? "")
+        _date = State(initialValue: visit.date)
     }
 
     var livePlace: Place? {
         notion.places.first { $0.id == visit.placeID }
+    }
+
+    var livePhotoURLs: [String] {
+        notion.visits.first { $0.id == visit.id }?.photoURLs ?? visit.photoURLs
     }
 
     var body: some View {
@@ -39,11 +45,40 @@ struct VisitDetailView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    HStack {
-                        Text("Date")
-                        Spacer()
-                        Text(visit.date, format: .dateTime.month(.wide).day().year())
-                            .foregroundStyle(.secondary)
+                    DatePicker("Date", selection: $date, displayedComponents: .date)
+                }
+
+                if !livePhotoURLs.isEmpty {
+                    Section("Photos") {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 10) {
+                                ForEach(livePhotoURLs, id: \.self) { urlString in
+                                    if let url = URL(string: urlString) {
+                                        AsyncImage(url: url) { phase in
+                                            switch phase {
+                                            case .success(let image):
+                                                image.resizable()
+                                                    .scaledToFill()
+                                                    .frame(width: 130, height: 130)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                            case .failure:
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .fill(Color.secondary.opacity(0.15))
+                                                    .frame(width: 130, height: 130)
+                                                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                                            default:
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .fill(Color.secondary.opacity(0.1))
+                                                    .frame(width: 130, height: 130)
+                                                    .overlay(ProgressView())
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 6)
+                        }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                     }
                 }
 
@@ -81,11 +116,20 @@ struct VisitDetailView: View {
                     }
                 }
             }
+            .refreshable { await refreshFromNotion() }
             .navigationTitle(visit.placeName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        Task { await refreshFromNotion() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isSaving ? "Saving…" : "Save") {
@@ -94,6 +138,7 @@ struct VisitDetailView: View {
                     .disabled(isSaving)
                 }
             }
+            .task { await refreshFromNotion() }
             .sheet(isPresented: $showingPlace) {
                 if let place = livePlace {
                     PlaceDetailView(place: place)
@@ -104,11 +149,20 @@ struct VisitDetailView: View {
         }
     }
 
+    private func refreshFromNotion() async {
+        await notion.fetchVisits()
+        if let fresh = notion.visits.first(where: { $0.id == visit.id }) {
+            notes = fresh.notes ?? ""
+            rating = fresh.rating
+            date = fresh.date
+        }
+    }
+
     func save() {
         isSaving = true
         Task {
             do {
-                try await notion.updateVisit(visit, rating: rating, notes: notes.isEmpty ? nil : notes)
+                try await notion.updateVisit(visit, rating: rating, notes: notes.isEmpty ? nil : notes, date: date)
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
