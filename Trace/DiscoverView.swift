@@ -454,6 +454,7 @@ struct DiscoverResultRow: View {
             // Row header
             Button {
                 if isInDatabase {
+                    if let coord = item.placemark.location?.coordinate { onExpand?(coord) }
                     showingExistingPlace = true
                 } else if !saved {
                     withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
@@ -644,8 +645,15 @@ struct DiscoverResultRow: View {
         .onAppear {
             if customName.isEmpty { customName = item.name ?? "" }
             // Resolve place ID by name once; all subsequent checks use ID so renames don't break the row.
+            // Two-pass: (1) exact match, (2) partial/contains match for cases like
+            // "Orangetheory" (Apple Maps) vs "Orangetheory Fitness" (Notion).
             if matchedPlaceID == nil, let name = item.name {
-                matchedPlaceID = notion.places.first { $0.name.lowercased() == name.lowercased() }?.id
+                let lower = name.lowercased()
+                matchedPlaceID = notion.places.first {
+                    $0.name.lowercased() == lower
+                }?.id ?? notion.places.first {
+                    $0.name.lowercased().contains(lower) || lower.contains($0.name.lowercased())
+                }?.id
             }
             if startExpanded && !isInDatabase && !saved {
                 expanded = true
