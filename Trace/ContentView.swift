@@ -45,6 +45,7 @@ struct ContentView: View {
             .confirmationDialog("What would you like to do?", isPresented: $showingActionSheet,
                 titleVisibility: .visible) {
                 Button("Check In") { showingCheckIn = true }
+                Button("Quick Pin") { Task { await quickPin() } }
                 Button("Add Place") { showingAddPlace = true }
                 Button("Add Note") { showingAddCapture = true }
                 Button("Add Photo") { showingAddPhoto = true }
@@ -157,6 +158,24 @@ struct ContentView: View {
                         }
                 )
         }
+    }
+}
+
+    // MARK: - Quick Pin
+
+    private func quickPin() async {
+        guard let coord = LocationManager.shared.location?.coordinate else { return }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        let timeStr = formatter.string(from: Date())
+        try? await notion.saveCapture(
+            notes: "Quick Pin",
+            placeID: nil,
+            placeName: "Pin · \(timeStr)",
+            lat: coord.latitude,
+            lon: coord.longitude,
+            photoURL: nil
+        )
     }
 }
 

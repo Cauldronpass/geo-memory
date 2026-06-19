@@ -9,7 +9,7 @@ struct MapView: View {
     @State private var selectedCategory: String? = nil
     @State private var selectedTag: String? = nil
     @State private var searchText = ""
-    @State private var mapPosition: MapCameraPosition = .automatic
+    @State private var mapPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var currentRegion: MKCoordinateRegion? = nil
     @State private var resultsExpanded = true
     @FocusState private var searchFocused: Bool

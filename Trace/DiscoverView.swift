@@ -78,6 +78,16 @@ struct DiscoverView: View {
             }
             .mapStyle(.standard)
             .ignoresSafeArea(edges: .bottom)
+            .onChange(of: selectedMapItem) { _, new in
+                if let new, let coord = new.placemark.location?.coordinate {
+                    withAnimation {
+                        mapPosition = .region(MKCoordinateRegion(
+                            center: coord,
+                            span: MKCoordinateSpan(latitudeDelta: 0.003, longitudeDelta: 0.003)
+                        ))
+                    }
+                }
+            }
             .onChange(of: selectedMapFeature) { _, feature in
                 guard let feature else { return }
                 Task {
@@ -201,7 +211,15 @@ struct DiscoverView: View {
                                                     item: item,
                                                     notion: notion,
                                                     locationManager: locationManager,
-                                                    selectedItem: selectedMapItem
+                                                    selectedItem: selectedMapItem,
+                                                    onExpand: { coord in
+                                                        withAnimation {
+                                                            mapPosition = .region(MKCoordinateRegion(
+                                                                center: coord,
+                                                                span: MKCoordinateSpan(latitudeDelta: 0.003, longitudeDelta: 0.003)
+                                                            ))
+                                                        }
+                                                    }
                                                 )
                                                 .padding(.horizontal, 16)
                                                 .id(item)
@@ -374,6 +392,7 @@ struct DiscoverResultRow: View {
     var selectedItem: MKMapItem? = nil
     var startExpanded: Bool = false
     var onSaved: (() -> Void)? = nil
+    var onExpand: ((CLLocationCoordinate2D) -> Void)? = nil
 
     @State private var expanded = false
     @State private var showingExistingPlace = false
@@ -438,6 +457,9 @@ struct DiscoverResultRow: View {
                     showingExistingPlace = true
                 } else if !saved {
                     withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+                    if !expanded, let coord = item.placemark.location?.coordinate {
+                        onExpand?(coord)
+                    }
                 }
             } label: {
                 HStack {

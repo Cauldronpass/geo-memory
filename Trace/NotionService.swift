@@ -187,19 +187,22 @@ class NotionService {
         }
     }
 
-    func updatePlace(_ place: Place, name: String, category: String, status: String) async throws {
-        let body: [String: Any] = [
-            "properties": [
-                "Name": ["title": [["text": ["content": name]]]],
-                "Category": ["select": ["name": category]],
-                "Status": ["select": ["name": status]]
-            ]
+    func updatePlace(_ place: Place, name: String, category: String, status: String, tags: [String]? = nil) async throws {
+        var props: [String: Any] = [
+            "Name": ["title": [["text": ["content": name]]]],
+            "Category": ["select": ["name": category]],
+            "Status": ["select": ["name": status]]
         ]
+        if let tags {
+            props["Tags"] = ["multi_select": tags.map { ["name": $0] }]
+        }
+        let body: [String: Any] = ["properties": props]
         _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
         if let index = places.firstIndex(where: { $0.id == place.id }) {
             places[index].name = name
             places[index].category = category
             places[index].status = status
+            if let tags { places[index].tags = tags }
         }
     }
 

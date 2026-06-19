@@ -10,6 +10,8 @@ struct PlaceDetailView: View {
     @State private var showingCheckIn = false
     @State private var editingVisit: Visit? = nil
     @State private var showingEditPlace = false
+    @State private var isEditingTags = false
+    @State private var newTagText = ""
 
     private var placeVisits: [Visit] {
         notionService.visits
@@ -81,6 +83,17 @@ struct PlaceDetailView: View {
         }
     }
 
+    // MARK: - Tag helpers
+
+    private func addTag() async {
+        let trimmed = newTagText.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !livePlace.tags.contains(trimmed) else { return }
+        let newTags = livePlace.tags + [trimmed]
+        try? await notionService.updatePlace(livePlace, name: livePlace.name, category: livePlace.category, status: livePlace.status, tags: newTags)
+        newTagText = ""
+        isEditingTags = false
+    }
+
     // MARK: - Header
 
     private var placeHeader: some View {
@@ -122,19 +135,57 @@ struct PlaceDetailView: View {
                         Text(summary)
                     }
                 }
-                if !place.tags.isEmpty {
-                    DetailRow(label: "Tags") {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                ForEach(place.tags, id: \.self) { tag in
-                                    Text(tag)
-                                        .font(.caption)
+                DetailRow(label: "Tags") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !livePlace.tags.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(livePlace.tags, id: \.self) { tag in
+                                        HStack(spacing: 4) {
+                                            Text(tag)
+                                                .font(.caption)
+                                            Button {
+                                                Task {
+                                                    let newTags = livePlace.tags.filter { $0 != tag }
+                                                    try? await notionService.updatePlace(livePlace, name: livePlace.name, category: livePlace.category, status: livePlace.status, tags: newTags)
+                                                }
+                                            } label: {
+                                                Image(systemName: "xmark")
+                                                    .font(.caption2.weight(.semibold))
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 4)
                                         .background(Color.secondary.opacity(0.15))
                                         .clipShape(Capsule())
+                                    }
                                 }
                             }
+                        }
+                        if isEditingTags {
+                            HStack(spacing: 8) {
+                                TextField("New tag", text: $newTagText)
+                                    .font(.subheadline)
+                                    .submitLabel(.done)
+                                    .onSubmit {
+                                        Task { await addTag() }
+                                    }
+                                Button("Add") { Task { await addTag() } }
+                                    .font(.subheadline)
+                                    .disabled(newTagText.trimmingCharacters(in: .whitespaces).isEmpty)
+                                Button("Cancel") { isEditingTags = false; newTagText = "" }
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Button {
+                                isEditingTags = true
+                            } label: {
+                                Label("Add tag", systemImage: "plus.circle")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -203,6 +254,24 @@ struct PlaceDetailView: View {
                         Text(hours)
                     }
                 }
+                Button {
+                    let notionID = livePlace.id.replacingOccurrences(of: "-", with: "")
+                    if let url = URL(string: "https://notion.so/\(notionID)") {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    DetailRow(label: "Notion") {
+                        HStack {
+                            Text("Open in Notion")
+                                .foregroundStyle(.blue)
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.caption)
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+                .tint(.primary)
             }
             .padding()
         }
