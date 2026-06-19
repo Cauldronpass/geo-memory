@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 struct ContentView: View {
     @Environment(NotionService.self) private var notion
@@ -159,7 +160,6 @@ struct ContentView: View {
                 )
         }
     }
-}
 
     // MARK: - Quick Pin
 
