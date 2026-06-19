@@ -129,10 +129,13 @@ class NotionService {
         return result["id"] as? String ?? ""
     }
 
+    /// Returns the new page ID.
+    @discardableResult
     func addPlace(name: String, address: String, city: String, category: String,
                   latitude: Double, longitude: Double, googlePlaceID: String?,
-                  phone: String?, website: String?, status: String = "Visited", expires: Date? = nil)
-        async throws {
+                  phone: String?, website: String?, status: String = "Visited",
+                  expires: Date? = nil, notes: String? = nil, flagged: Bool = false)
+        async throws -> String {
         var props: [String: Any] = [
             "Name": ["title": [["text": ["content": name]]]],
             "Address": ["rich_text": [["text": ["content": address]]]],
@@ -140,11 +143,13 @@ class NotionService {
             "Category": ["select": ["name": category]],
             "Latitude": ["number": latitude],
             "Longitude": ["number": longitude],
-            "Status": ["select": ["name": status]]
+            "Status": ["select": ["name": status]],
+            "Flagged": ["checkbox": flagged]
         ]
         if let googlePlaceID { props["Google Place ID"] = ["rich_text": [["text": ["content": googlePlaceID]]]] }
         if let phone { props["Phone"] = ["phone_number": phone] }
         if let website { props["Website"] = ["url": website] }
+        if let notes, !notes.isEmpty { props["Notes Raw"] = ["rich_text": [["text": ["content": notes]]]] }
         if let expires {
             let iso = ISO8601DateFormatter()
             props["Expires"] = ["date": ["start": iso.string(from: expires)]]
@@ -153,7 +158,49 @@ class NotionService {
             "parent": ["database_id": placesDBID],
             "properties": props
         ]
-        _ = try await post("\(baseURL)/pages", body: body)
+        let data = try await post("\(baseURL)/pages", body: body)
+        let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        return result["id"] as? String ?? ""
+    }
+
+    /// Appends a photo URL to the "Photo URLs" rich_text field on any page (visit or place).
+    func addPhotoToPage(_ pageID: String, photoURL: String) async throws {
+        // Fetch current Photo URLs
+        let pageData = try await get("\(baseURL)/pages/\(pageID)")
+        let pageResult = try JSONSerialization.jsonObject(with: pageData) as! [String: Any]
+        let props = pageResult["properties"] as? [String: Any] ?? [:]
+        let existingURLs = ((props["Photo URLs"] as? [String: Any])?["rich_text"] as? [[String: Any]] ?? [])
+            .compactMap { ($0["text"] as? [String: Any])?["content"] as? String }
+            .filter { !$0.isEmpty && $0 != "\n" }
+        let allURLs = existingURLs + [photoURL]
+        var rtArray: [[String: Any]] = []
+        for (i, u) in allURLs.enumerated() {
+            if i > 0 { rtArray.append(["type": "text", "text": ["content": "\n"]]) }
+            rtArray.append(["type": "text", "text": ["content": u, "link": ["url": u]]])
+        }
+        _ = try await patch("\(baseURL)/pages/\(pageID)", body: [
+            "properties": ["Photo URLs": ["rich_text": rtArray]]
+        ])
+        // Update local visit cache if applicable
+        if let idx = visits.firstIndex(where: { $0.id == pageID }) {
+            visits[idx].photoURLs = allURLs
+        }
+    }
+
+    func updatePlace(_ place: Place, name: String, category: String, status: String) async throws {
+        let body: [String: Any] = [
+            "properties": [
+                "Name": ["title": [["text": ["content": name]]]],
+                "Category": ["select": ["name": category]],
+                "Status": ["select": ["name": status]]
+            ]
+        ]
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
+        if let index = places.firstIndex(where: { $0.id == place.id }) {
+            places[index].name = name
+            places[index].category = category
+            places[index].status = status
+        }
     }
 
     func archivePlace(_ place: Place) async throws {

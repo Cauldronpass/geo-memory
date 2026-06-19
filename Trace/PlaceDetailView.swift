@@ -9,6 +9,7 @@ struct PlaceDetailView: View {
     @State private var selectedTab = 0
     @State private var showingCheckIn = false
     @State private var editingVisit: Visit? = nil
+    @State private var showingEditPlace = false
 
     private var placeVisits: [Visit] {
         notionService.visits
@@ -47,24 +48,35 @@ struct PlaceDetailView: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        Task {
-                            await notionService.fetchPlaces()
-                            await notionService.fetchVisits()
+                    HStack(spacing: 16) {
+                        Button {
+                            showingEditPlace = true
+                        } label: {
+                            Image(systemName: "pencil")
                         }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+                        Button {
+                            Task {
+                                await notionService.fetchPlaces()
+                                await notionService.fetchVisits()
+                            }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
                 }
             }
         }
         .sheet(isPresented: $showingCheckIn) {
-            CheckInView()
+            CheckInView(preselectedPlace: livePlace)
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
         }
         .sheet(item: $editingVisit) { visit in
             VisitEditSheet(visit: visit)
+                .environment(NotionService.shared)
+        }
+        .sheet(isPresented: $showingEditPlace) {
+            PlaceEditSheet(place: livePlace)
                 .environment(NotionService.shared)
         }
     }
@@ -437,6 +449,95 @@ struct VisitEditSheet: View {
         )
         await notion.fetchVisits()
         dismiss()
+    }
+}
+
+// MARK: - Place Edit Sheet
+
+private let placeEditCategories = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
+                                    "Attraction", "Venue", "House", "Fitness",
+                                    "Office", "Airport", "Medical", "Park", "Grocery"]
+
+struct PlaceEditSheet: View {
+    let place: Place
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String
+    @State private var category: String
+    @State private var status: String
+    @State private var isSaving = false
+    @State private var saveError: String?
+
+    init(place: Place) {
+        self.place = place
+        _name = State(initialValue: place.name)
+        _category = State(initialValue: place.category.isEmpty ? "Restaurant" : place.category)
+        _status = State(initialValue: place.status.isEmpty ? "Visited" : place.status)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Name") {
+                    TextField("Place name", text: $name)
+                }
+                Section {
+                    HStack {
+                        Text("Category")
+                        Spacer()
+                        Picker("Category", selection: $category) {
+                            ForEach(placeEditCategories, id: \.self) { Text($0).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    Picker("Status", selection: $status) {
+                        Text("Visited").tag("Visited")
+                        Text("Want to Visit").tag("Want to Visit")
+                    }
+                    .pickerStyle(.segmented)
+                }
+                if let err = saveError {
+                    Section { Text(err).foregroundStyle(.red).font(.caption) }
+                }
+                Section {
+                    Button {
+                        Task { await save() }
+                    } label: {
+                        if isSaving {
+                            HStack { Spacer(); ProgressView(); Spacer() }
+                        } else {
+                            Text("Save").frame(maxWidth: .infinity).bold()
+                        }
+                    }
+                    .disabled(isSaving || name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .navigationTitle("Edit Place")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func save() async {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        isSaving = true
+        saveError = nil
+        do {
+            try await notion.updatePlace(place, name: trimmed, category: category, status: status)
+            // updatePlace() already patches the local cache; skip fetchPlaces() here.
+            // Calling fetchPlaces() while PlaceDetailView is still on screen causes a brief
+            // array replacement that can destabilize the parent view.
+            dismiss()
+        } catch {
+            saveError = error.localizedDescription
+            isSaving = false
+        }
     }
 }
 

@@ -7,6 +7,8 @@ struct CheckInView: View {
     @Environment(LocationManager.self) private var locationManager
     @Environment(\.dismiss) private var dismiss
 
+    private let preselectedPlace: Place?
+
     @State private var selectedPlace: Place? = nil
     @State private var rating: Int? = nil
     @State private var notes: String = ""
@@ -18,6 +20,11 @@ struct CheckInView: View {
     @State private var showPinnedOnly = false
     @State private var selectedCategory: String? = nil
     @State private var selectedTag: String? = nil
+
+    init(preselectedPlace: Place? = nil) {
+        self.preselectedPlace = preselectedPlace
+        _selectedPlace = State(initialValue: preselectedPlace)
+    }
 
     private var availableCategories: [String] {
         Array(Set(notionService.places
@@ -208,7 +215,9 @@ struct CheckInView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("Back") { selectedPlace = nil }
+                Button(preselectedPlace != nil ? "Cancel" : "Back") {
+                    if preselectedPlace != nil { dismiss() } else { selectedPlace = nil }
+                }
             }
         }
         .alert("Error", isPresented: Binding(

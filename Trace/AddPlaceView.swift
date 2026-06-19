@@ -38,7 +38,8 @@ enum TempDuration: String, CaseIterable {
 }
 
 private let placeCategories = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
-                                "Attraction", "Venue", "House", "Fitness"]
+                                "Attraction", "Venue", "House", "Fitness",
+                                "Office", "Airport", "Medical", "Park", "Grocery"]
 
 // MARK: - Mode Card
 
@@ -75,97 +76,6 @@ private struct ModeCard: View {
     }
 }
 
-// MARK: - Search Result Row
-
-private struct SearchResultRow: View {
-    let item: MKMapItem
-    let isInDatabase: Bool
-    let distance: String?
-    let onSave: (MKMapItem, String, String) -> Void
-
-    @State private var expanded = false
-    @State private var category = "Restaurant"
-    @State private var status = "Visited"
-
-    var address: String {
-        [item.placemark.subThoroughfare, item.placemark.thoroughfare]
-            .compactMap { $0 }.joined(separator: " ")
-    }
-    var city: String { item.placemark.locality ?? "" }
-    var displayAddress: String {
-        [address, city].filter { !$0.isEmpty }.joined(separator: ", ")
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(item.name ?? "Unknown")
-                                .font(.body)
-                                .foregroundStyle(.primary)
-                            if isInDatabase {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(.yellow)
-                                    .font(.caption)
-                            }
-                        }
-                        HStack(spacing: 6) {
-                            if !displayAddress.isEmpty {
-                                Text(displayAddress)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            if let distance {
-                                Text("· \(distance)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    Spacer()
-                    Image(systemName: expanded ? "chevron.up.circle" : "plus.circle")
-                        .foregroundStyle(.blue)
-                        .font(.title3)
-                }
-            }
-
-            if expanded {
-                VStack(spacing: 10) {
-                    HStack {
-                        Text("Category")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Picker("Category", selection: $category) {
-                            ForEach(placeCategories, id: \.self) { Text($0).tag($0) }
-                        }
-                        .pickerStyle(.menu)
-                    }
-
-                    Picker("Status", selection: $status) {
-                        Text("Visited").tag("Visited")
-                        Text("Want to Visit").tag("Want to Visit")
-                    }
-                    .pickerStyle(.segmented)
-
-                    Button {
-                        onSave(item, category, status)
-                    } label: {
-                        Text("Save Place")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-        }
-        .padding(.vertical, 6)
-        Divider()
-    }
-}
 
 // MARK: - Location Map View
 
@@ -344,15 +254,13 @@ struct AddPlaceView: View {
             }
 
             ForEach(searchResults, id: \.self) { item in
-                SearchResultRow(
+                DiscoverResultRow(
                     item: item,
-                    isInDatabase: notion.places.contains {
-                        $0.name.lowercased() == (item.name ?? "").lowercased()
-                    },
-                    distance: formattedDistance(to: item.placemark.coordinate)
-                ) { item, category, status in
-                    saveSearch(item: item, category: category, status: status)
-                }
+                    notion: notion,
+                    locationManager: locationManager,
+                    onSaved: { dismiss() }
+                )
+                Divider()
             }
 
             if !searchResults.isEmpty {

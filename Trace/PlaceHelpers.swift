@@ -12,6 +12,11 @@ func placeColor(for category: String) -> Color {
     case "house": return .yellow
     case "temp": return .gray
     case "fitness": return .green
+    case "office": return .blue
+    case "airport": return .cyan
+    case "medical": return .mint
+    case "park": return Color(red: 0.2, green: 0.6, blue: 0.15)
+    case "grocery": return Color(red: 0.8, green: 0.45, blue: 0.0)
     default: return .gray
     }
 }
@@ -28,6 +33,11 @@ func placeIcon(for category: String) -> String {
     case "house": return "house"
     case "temp": return "clock"
     case "fitness": return "figure.run"
+    case "office": return "building.2"
+    case "airport": return "airplane"
+    case "medical": return "stethoscope"
+    case "park": return "leaf"
+    case "grocery": return "cart"
     default: return "mappin"
     }
 }
