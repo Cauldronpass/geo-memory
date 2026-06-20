@@ -124,6 +124,7 @@ struct VisitsView: View {
                 }
             }
             .navigationTitle("Visits")
+            .drawerToolbar()
             .sheet(item: $selectedVisit) { visit in
                 VisitDetailView(visit: visit)
                     .environment(NotionService.shared)

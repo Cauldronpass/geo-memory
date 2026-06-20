@@ -79,6 +79,8 @@ struct MapView: View {
 
             // Top overlay
             VStack(spacing: 8) {
+                DrawerButtons()
+
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Search places...", text: $searchText)

@@ -3,7 +3,6 @@ import SwiftUI
 struct PlacesView: View {
     @Environment(NotionService.self) private var notion
     @State private var searchText = ""
-    @State private var showingSettings = false
 
     var filtered: [Place] {
         if searchText.isEmpty { return notion.places }
@@ -52,16 +51,6 @@ struct PlacesView: View {
                 }
             }
             .navigationTitle("Places")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: { showingSettings = true }) {
-                        Image(systemName: "gear")
-                    }
-                }
-            }
-            .sheet(isPresented: $showingSettings) {
-                SettingsView()
-            }
             .refreshable {
                 await notion.fetchPlaces()
             }
@@ -75,8 +64,7 @@ struct PlaceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
-                Text(place.name)
-                    .font(.body)
+                Text(place.name).font(.body)
                 if place.flagged {
                     Image(systemName: "star.fill")
                         .font(.caption)

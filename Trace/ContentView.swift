@@ -12,12 +12,16 @@ struct ContentView: View {
     @State private var showingDrawer = false
     @State private var showingAddPhoto = false
     @State private var showingLeftDrawer = false
+    @State private var showingQuickPin = false
+    @State private var quickPinCoord = CLLocationCoordinate2D()
+    @State private var geofencePlace: Place? = nil
+    @State private var showingGeofenceCheckIn = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             TabView(selection: $selectedTab) {
                 MapView()
-                    .tabItem { Label("Map", systemImage: "map.fill") }
+                    .tabItem { Label("More", systemImage: "ellipsis.circle") }
                     .tag(0)
                 NearbyView()
                     .tabItem { Label("Nearby", systemImage: "location.fill") }
@@ -46,7 +50,7 @@ struct ContentView: View {
             .confirmationDialog("What would you like to do?", isPresented: $showingActionSheet,
                 titleVisibility: .visible) {
                 Button("Check In") { showingCheckIn = true }
-                Button("Quick Pin") { Task { await quickPin() } }
+                Button("Quick Pin") { quickPin() }
                 Button("Add Place") { showingAddPlace = true }
                 Button("Add Note") { showingAddCapture = true }
                 Button("Add Photo") { showingAddPhoto = true }
@@ -72,6 +76,12 @@ struct ContentView: View {
             AddPhotoView()
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
+        }
+        .sheet(isPresented: $showingQuickPin) {
+            QuickPinLabelSheet(coord: quickPinCoord)
+                .environment(NotionService.shared)
+                .presentationDetents([.height(340)])
+                .presentationDragIndicator(.visible)
         }
         // Right drawer — Captures
         .overlay {
@@ -120,7 +130,37 @@ struct ContentView: View {
             }
             .animation(.easeInOut(duration: 0.3), value: showingLeftDrawer)
         }
-        // Re-fetch when app comes back to foreground (picks up Notion changes)
+        // Home screen quick actions — cold launch (app was killed)
+        // onAppear fires when view is ready; delay lets app fully initialize
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                checkPendingShortcut()
+            }
+        }
+        // Home screen quick actions — foreground (app was suspended)
+        // performActionFor fires after scenePhase, so we use a notification
+        .onReceive(NotificationCenter.default.publisher(for: .traceShortcut)) { _ in
+            checkPendingShortcut()
+        }
+        // Geofence check-in notification tapped
+        .onReceive(NotificationCenter.default.publisher(for: .traceGeofenceCheckIn)) { _ in
+            checkPendingGeofence()
+        }
+        // Drawer buttons from child tabs
+        .onReceive(NotificationCenter.default.publisher(for: .traceOpenLeftDrawer)) { _ in
+            withAnimation(.easeInOut(duration: 0.3)) { showingLeftDrawer = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .traceOpenRightDrawer)) { _ in
+            withAnimation(.easeInOut(duration: 0.3)) { showingDrawer = true }
+        }
+        .sheet(isPresented: $showingGeofenceCheckIn) {
+            if let place = geofencePlace {
+                CheckInView(preselectedPlace: place)
+                    .environment(NotionService.shared)
+                    .environment(LocationManager.shared)
+            }
+        }
+        // Re-fetch when app returns to foreground
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 Task {
@@ -161,24 +201,103 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Shortcut handling
+
+    // Reads pending action from UserDefaults (written by AppDelegate), clears it, fires the action.
+    // Called from both onAppear (cold launch) and onReceive (foreground).
+    private func checkPendingShortcut() {
+        guard let action = UserDefaults.standard.string(forKey: "pendingShortcutAction") else { return }
+        UserDefaults.standard.removeObject(forKey: "pendingShortcutAction")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            handleShortcut(action)
+        }
+    }
+
+    private func handleShortcut(_ action: String) {
+        switch action {
+        case "quickpin": quickPin()
+        case "checkin":  showingCheckIn = true
+        case "addnote":  showingAddCapture = true
+        case "addphoto": showingAddPhoto = true
+        default: break
+        }
+    }
+
     // MARK: - Quick Pin
 
-    private func quickPin() async {
-        guard let coord = LocationManager.shared.location?.coordinate else { return }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        let timeStr = formatter.string(from: Date())
-        try? await notion.saveCapture(
-            notes: "Quick Pin",
-            placeID: nil,
-            placeName: "Pin · \(timeStr)",
-            lat: coord.latitude,
-            lon: coord.longitude,
-            photoURL: nil
-        )
+    private func quickPin() {
+        quickPinCoord = LocationManager.shared.location?.coordinate ?? CLLocationCoordinate2D()
+        showingQuickPin = true
+    }
+
+    // MARK: - Geofence check-in
+
+    private func checkPendingGeofence() {
+        guard let placeID = UserDefaults.standard.string(forKey: "pendingGeofencePlaceID") else { return }
+        UserDefaults.standard.removeObject(forKey: "pendingGeofencePlaceID")
+        guard let place = notion.places.first(where: { $0.id == placeID }) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            geofencePlace = place
+            showingGeofenceCheckIn = true
+        }
     }
 }
 
 #Preview {
     ContentView()
+}
+
+// MARK: - Shared drawer toolbar buttons
+// Applied to all NavigationStack-based tabs via .drawerToolbar()
+
+extension View {
+    func drawerToolbar() -> some View {
+        self.toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    NotificationCenter.default.post(name: .traceOpenLeftDrawer, object: nil)
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    NotificationCenter.default.post(name: .traceOpenRightDrawer, object: nil)
+                } label: {
+                    Image(systemName: "tray")
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Floating drawer buttons for ZStack-based tabs (no NavigationStack)
+
+struct DrawerButtons: View {
+    var body: some View {
+        HStack {
+            Button {
+                NotificationCenter.default.post(name: .traceOpenLeftDrawer, object: nil)
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .frame(width: 36, height: 36)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 0.5))
+            }
+            Spacer()
+            Button {
+                NotificationCenter.default.post(name: .traceOpenRightDrawer, object: nil)
+            } label: {
+                Image(systemName: "tray")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .frame(width: 36, height: 36)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 0.5))
+            }
+        }
+        .padding(.horizontal, 16)
+    }
 }

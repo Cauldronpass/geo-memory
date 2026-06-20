@@ -132,7 +132,7 @@ struct AddPlaceView: View {
 
     // Search
     @State private var searchText = ""
-    @State private var searchResults: [MKMapItem] = []
+    @State private var searchResults: [GooglePlace] = []
     @State private var isSearching = false
 
     // Personal
@@ -253,9 +253,9 @@ struct AddPlaceView: View {
                 ProgressView().padding()
             }
 
-            ForEach(searchResults, id: \.self) { item in
+            ForEach(searchResults) { item in
                 DiscoverResultRow(
-                    item: item,
+                    place: item,
                     notion: notion,
                     locationManager: locationManager,
                     onSaved: { dismiss() }
@@ -455,54 +455,21 @@ struct AddPlaceView: View {
         guard !searchText.isEmpty else { return }
         isSearching = true
         searchResults = []
-        let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = searchText
-        if let coord = locationManager.location?.coordinate {
-            request.region = MKCoordinateRegion(
-                center: coord,
-                latitudinalMeters: 10000,
-                longitudinalMeters: 10000
-            )
-        }
         Task {
-            let search = MKLocalSearch(request: request)
-            let response = try? await search.start()
-            let items = response?.mapItems ?? []
-            if let coord = locationManager.location?.coordinate {
-                let userLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
-                searchResults = items.sorted {
-                    let a = CLLocation(latitude: $0.placemark.coordinate.latitude,
-                                      longitude: $0.placemark.coordinate.longitude)
-                    let b = CLLocation(latitude: $1.placemark.coordinate.latitude,
-                                      longitude: $1.placemark.coordinate.longitude)
+            let results = (try? await GooglePlacesService.shared.textSearch(
+                query: searchText,
+                coordinate: locationManager.location?.coordinate
+            )) ?? []
+            if let userLoc = locationManager.location {
+                searchResults = results.sorted {
+                    let a = CLLocation(latitude: $0.latitude, longitude: $0.longitude)
+                    let b = CLLocation(latitude: $1.latitude, longitude: $1.longitude)
                     return a.distance(from: userLoc) < b.distance(from: userLoc)
                 }
             } else {
-                searchResults = items
+                searchResults = results
             }
             isSearching = false
-        }
-    }
-
-    func saveSearch(item: MKMapItem, category: String, status: String) {
-        guard !isSaving else { return }
-        isSaving = true
-        let name = item.name ?? "Unknown"
-        let coord = item.placemark.coordinate
-        let address = [item.placemark.subThoroughfare, item.placemark.thoroughfare]
-            .compactMap { $0 }.joined(separator: " ")
-        let city = item.placemark.locality ?? ""
-        let phone = item.phoneNumber
-        let website = item.url?.absoluteString
-        Task {
-            try? await notion.addPlace(
-                name: name, address: address, city: city, category: category,
-                latitude: coord.latitude, longitude: coord.longitude,
-                googlePlaceID: nil, phone: phone, website: website, status: status
-            )
-            await notion.fetchPlaces()
-            isSaving = false
-            dismiss()
         }
     }
 

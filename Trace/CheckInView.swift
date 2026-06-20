@@ -13,6 +13,7 @@ struct CheckInView: View {
     @State private var rating: Int? = nil
     @State private var notes: String = ""
     @State private var checkInDate: Date = Date()
+    @State private var personIDs: [String] = []
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
     @State private var showSuccess = false
@@ -192,6 +193,8 @@ struct CheckInView: View {
                     .lineLimit(3...6)
             }
 
+            PeoplePickerSection(selectedIDs: $personIDs)
+
             Section {
                 Button {
                     Task { await performCheckIn(place: place) }
@@ -244,7 +247,8 @@ struct CheckInView: View {
                 place: place,
                 rating: rating,
                 notes: notes.isEmpty ? nil : notes,
-                date: checkInDate
+                date: checkInDate,
+                people: personIDs.isEmpty ? nil : personIDs
             )
             await notionService.fetchPlaces()
             await notionService.fetchVisits()

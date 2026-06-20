@@ -10,6 +10,7 @@ struct PlaceDetailView: View {
     @State private var showingCheckIn = false
     @State private var editingVisit: Visit? = nil
     @State private var showingEditPlace = false
+    @State private var showingSpots = false
     @State private var isEditingTags = false
     @State private var newTagText = ""
 
@@ -81,6 +82,10 @@ struct PlaceDetailView: View {
             PlaceEditSheet(place: livePlace)
                 .environment(NotionService.shared)
         }
+        .sheet(isPresented: $showingSpots) {
+            SpotsMapView(source: .place(livePlace))
+                .environment(NotionService.shared)
+        }
     }
 
     // MARK: - Tag helpers
@@ -92,6 +97,12 @@ struct PlaceDetailView: View {
         try? await notionService.updatePlace(livePlace, name: livePlace.name, category: livePlace.category, status: livePlace.status, tags: newTags)
         newTagText = ""
         isEditingTags = false
+    }
+
+    private func addTagDirect(_ tag: String) async {
+        guard !livePlace.tags.contains(tag) else { return }
+        let newTags = livePlace.tags + [tag]
+        try? await notionService.updatePlace(livePlace, name: livePlace.name, category: livePlace.category, status: livePlace.status, tags: newTags)
     }
 
     // MARK: - Header
@@ -126,9 +137,33 @@ struct PlaceDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 DetailRow(label: "Status") {
-                    Text(place.status)
-                        .foregroundStyle(place.status == "Visited" ? .green : .orange)
+                    Text(livePlace.status)
+                        .foregroundStyle(livePlace.status == "Visited" ? .green : .orange)
                         .bold()
+                }
+                DetailRow(label: "Category") {
+                    Menu {
+                        ForEach(["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
+                                 "Attraction", "Venue", "House", "Fitness",
+                                 "Office", "Airport", "Medical", "Park", "Grocery"], id: \.self) { cat in
+                            Button(cat) {
+                                Task {
+                                    try? await notionService.updatePlace(livePlace, name: livePlace.name, category: cat, status: livePlace.status)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: placeIcon(for: livePlace.category))
+                                .foregroundStyle(placeColor(for: livePlace.category))
+                                .font(.subheadline)
+                            Text(livePlace.category.isEmpty ? "None" : livePlace.category)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tint(.primary)
                 }
                 if let summary = place.aiSummary, !summary.isEmpty {
                     DetailRow(label: "Summary") {
@@ -168,9 +203,7 @@ struct PlaceDetailView: View {
                                 TextField("New tag", text: $newTagText)
                                     .font(.subheadline)
                                     .submitLabel(.done)
-                                    .onSubmit {
-                                        Task { await addTag() }
-                                    }
+                                    .onSubmit { Task { await addTag() } }
                                 Button("Add") { Task { await addTag() } }
                                     .font(.subheadline)
                                     .disabled(newTagText.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -179,8 +212,25 @@ struct PlaceDetailView: View {
                                     .foregroundStyle(.secondary)
                             }
                         } else {
-                            Button {
-                                isEditingTags = true
+                            // Picker of all existing tags across places, filtered to ones not already on this place
+                            let availableTags = Array(Set(
+                                notionService.places.flatMap { $0.tags }
+                            ))
+                            .filter { !livePlace.tags.contains($0) }
+                            .sorted()
+
+                            Menu {
+                                ForEach(availableTags, id: \.self) { tag in
+                                    Button(tag) {
+                                        Task { await addTagDirect(tag) }
+                                    }
+                                }
+                                Divider()
+                                Button {
+                                    isEditingTags = true
+                                } label: {
+                                    Label("New tag…", systemImage: "plus")
+                                }
                             } label: {
                                 Label("Add tag", systemImage: "plus.circle")
                                     .font(.caption)
@@ -206,6 +256,26 @@ struct PlaceDetailView: View {
                     DetailRow(label: "Last visited") {
                         Text(last, style: .date)
                     }
+                }
+                DetailRow(label: "Frequent") {
+                    Toggle("", isOn: Binding(
+                        get: { livePlace.frequent },
+                        set: { _ in Task { try? await notionService.toggleFrequent(livePlace) } }
+                    ))
+                    .labelsHidden()
+                }
+                DetailRow(label: "Exclude from geofencing") {
+                    Toggle("", isOn: Binding(
+                        get: { livePlace.geofenceExcluded },
+                        set: { _ in Task { try? await notionService.toggleGeofenceExcluded(livePlace) } }
+                    ))
+                    .labelsHidden()
+                }
+                Button {
+                    showingSpots = true
+                } label: {
+                    Label("View Spots", systemImage: "map.fill")
+                        .font(.subheadline)
                 }
             }
             .padding()

@@ -22,6 +22,9 @@ struct Place: Identifiable, Codable {
     var lastVisited: Date?
     var tags: [String]
     var aiSummary: String?
+    var frequent: Bool = false        // Notion "Frequent" checkbox — wide geofence + Nearby priority
+    var dwellTime: Int? = nil         // Notion "Dwell Time" (minutes) — nil = use 3 min default
+    var geofenceExcluded: Bool = false // Notion "Geofence Excluded" checkbox — opt this place out entirely
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
@@ -36,6 +39,28 @@ struct Visit: Identifiable, Codable {
     var rating: Int?
     var notes: String?
     var photoURLs: [String]
+    var peopleIDs: [String]   // Notion relation IDs into the People DB
+}
+
+struct Person: Identifiable, Codable {
+    let id: String
+    var name: String
+}
+
+struct PersonDetail: Identifiable {
+    let id: String
+    var name: String
+    var city: String?
+    var companyContext: String?
+    var relationship: String?
+    var relationshipStrength: String?
+    var howWeMet: String?
+    var notes: String?
+    var tags: [String]
+    var birthday: Date?
+    var visitCount: Int?
+    var lastVisitDate: Date?
+    var lastInteractionDate: Date?
 }
 
 struct QueuedItem: Identifiable, Codable {

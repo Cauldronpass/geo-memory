@@ -36,6 +36,8 @@ struct NearbyView: View {
                 && (selectedTag == nil || $0.tags.contains(selectedTag!))
             }
             .sorted { a, b in
+                // Frequent places always appear above non-frequent
+                if a.frequent != b.frequent { return a.frequent }
                 let distA = locationManager.distance(to: a) ?? .infinity
                 let distB = locationManager.distance(to: b) ?? .infinity
                 return distA < distB
@@ -163,6 +165,7 @@ struct NearbyView: View {
                 }
             }
             .navigationTitle("Nearby")
+            .drawerToolbar()
         }
         .sheet(item: $selectedPlace) { place in
             PlaceDetailView(place: place)

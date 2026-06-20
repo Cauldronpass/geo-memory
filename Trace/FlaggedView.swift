@@ -43,6 +43,7 @@ struct FlaggedView: View {
                 }
             }
             .navigationTitle("Pinned")
+            .drawerToolbar()
         }
         .sheet(item: $selectedPlace) { place in
             PlaceDetailView(place: place)
