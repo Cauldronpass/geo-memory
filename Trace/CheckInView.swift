@@ -6,6 +6,7 @@ struct CheckInView: View {
     @Environment(NotionService.self) private var notionService
     @Environment(LocationManager.self) private var locationManager
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     private let preselectedPlace: Place?
 
@@ -194,6 +195,27 @@ struct CheckInView: View {
             }
 
             PeoplePickerSection(selectedIDs: $personIDs)
+
+            if place.category.lowercased() == "fitness" {
+                Section {
+                    Button {
+                        if let url = URL(string: "shortcuts://run-shortcut?name=Open%20WellHub") {
+                            openURL(url)
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: "figure.run.circle.fill")
+                                .foregroundStyle(.orange)
+                            Text("Open WellHub for class check-in")
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } footer: {
+                    Text("Tap before entering — WellHub check-in is required to avoid being charged.")
+                        .font(.caption)
+                }
+            }
 
             Section {
                 Button {

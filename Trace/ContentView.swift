@@ -20,8 +20,8 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             TabView(selection: $selectedTab) {
-                MapView()
-                    .tabItem { Label("More", systemImage: "ellipsis.circle") }
+                LifeView()
+                    .tabItem { Label("Life", systemImage: "waveform") }
                     .tag(0)
                 NearbyView()
                     .tabItem { Label("Nearby", systemImage: "location.fill") }

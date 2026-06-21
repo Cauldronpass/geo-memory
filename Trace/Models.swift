@@ -45,6 +45,7 @@ struct Visit: Identifiable, Codable {
 struct Person: Identifiable, Codable {
     let id: String
     var name: String
+    var relationship: String?
 }
 
 struct PersonDetail: Identifiable {
@@ -58,6 +59,10 @@ struct PersonDetail: Identifiable {
     var notes: String?
     var tags: [String]
     var birthday: Date?
+    var phone: String?
+    var email: String?
+    var address: String?
+    var photoURL: String?
     var visitCount: Int?
     var lastVisitDate: Date?
     var lastInteractionDate: Date?
@@ -100,6 +105,74 @@ struct Capture: Identifiable, Codable {
     var status: String // "Unlinked", "Linked", "Archived"
     var photoURL: String?
 }
+struct Workout: Identifiable, Codable {
+    let id: String
+    var name: String
+    var date: Date
+    var type: String           // "OrangeTheory", "Run", "Bike", "Hike", "Lift", "Other"
+    var duration: Int?         // minutes
+    var calories: Int?
+    var heartRateAvg: Int?
+    var heartRateMax: Int?
+    var splatPoints: Int?      // OTF only
+    var output: Int?           // OTF only — watts
+    var zone1: Int?            // minutes in Gray
+    var zone2: Int?            // minutes in Blue
+    var zone3: Int?            // minutes in Green
+    var zone4: Int?            // minutes in Orange
+    var zone5: Int?            // minutes in Red
+    var distance: Double?      // miles (treadmill)
+    var feel: Int?             // 1–7
+    var notes: String?
+    var placeID: String?
+    var visitID: String?
+    // OTF class detail
+    var classType: String?     // "Tread 50", "2G", "3G", "Strength 50", "Tornado"
+    var steps: Int?
+    var elevation: Double?     // feet
+    var treadPace: String?     // avg pace, e.g. "9:23"
+    // Rower
+    var hasRower: Bool?
+    var rowerDistance: Int?    // meters
+    var rowerWattsAvg: Int?
+    var rowerPace: String?     // 500m split, e.g. "2:17"
+    var rowerStrokeAvg: Int?
+
+    var isOTF: Bool { type == "OrangeTheory" }
+    var isCardio: Bool { ["Run", "Bike", "Hike"].contains(type) }
+}
+
+struct WorkoutDraft {
+    var name: String = ""
+    var type: String = "OrangeTheory"
+    var date: Date? = Date()
+    var duration: Int? = nil
+    var calories: Int? = nil
+    var heartRateAvg: Int? = nil
+    var heartRateMax: Int? = nil
+    var splatPoints: Int? = nil
+    var output: Int? = nil
+    var zone1: Int? = nil
+    var zone2: Int? = nil
+    var zone3: Int? = nil
+    var zone4: Int? = nil
+    var zone5: Int? = nil
+    var distance: Double? = nil
+    var feel: Int? = nil
+    var notes: String? = nil
+    var placeID: String? = nil
+    var visitID: String? = nil
+    var classType: String? = nil
+    var steps: Int? = nil
+    var elevation: Double? = nil
+    var treadPace: String? = nil
+    var hasRower: Bool? = nil
+    var rowerDistance: Int? = nil
+    var rowerWattsAvg: Int? = nil
+    var rowerPace: String? = nil
+    var rowerStrokeAvg: Int? = nil
+}
+
 struct CheckInSession: Identifiable, Codable {
     let id: UUID
     var placeID: String

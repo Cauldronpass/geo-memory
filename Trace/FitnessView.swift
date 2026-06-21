@@ -1,0 +1,520 @@
+import SwiftUI
+
+struct FitnessView: View {
+    @Environment(NotionService.self) private var notion
+    @State private var showWizard = false
+    @State private var isLoading = false
+    @State private var selectedWorkout: Workout? = nil
+    @State private var showAll = false
+
+    private var sortedWorkouts: [Workout] {
+        notion.workouts.sorted { $0.date > $1.date }
+    }
+
+    private var displayedWorkouts: [Workout] {
+        showAll ? sortedWorkouts : Array(sortedWorkouts.prefix(5))
+    }
+
+    // MARK: - Time-sliced helpers
+
+    private func workoutsIn(_ period: StatPeriod) -> [Workout] {
+        let cal = Calendar.current
+        let now = Date()
+        switch period {
+        case .week:
+            let start = cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now))!
+            return sortedWorkouts.filter { $0.date >= start }
+        case .month:
+            let start = cal.date(from: cal.dateComponents([.year, .month], from: now))!
+            return sortedWorkouts.filter { $0.date >= start }
+        case .allTime:
+            return sortedWorkouts
+        }
+    }
+
+    private func miles(_ workouts: [Workout]) -> Double {
+        workouts.compactMap { $0.distance }.reduce(0, +)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading && notion.workouts.isEmpty {
+                    ProgressView("Loading…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        statsSection
+                        workoutsSection
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle("Fitness")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showWizard = true } label: { Image(systemName: "plus") }
+                }
+            }
+            .task {
+                isLoading = true
+                await notion.fetchWorkouts()
+                isLoading = false
+            }
+            .refreshable { await notion.fetchWorkouts() }
+            .sheet(isPresented: $showWizard) {
+                WorkoutWizardView().environment(notion)
+            }
+            .sheet(item: $selectedWorkout) { w in
+                WorkoutDetailView(workout: w).environment(notion)
+            }
+        }
+        .drawerToolbar()
+    }
+
+    // MARK: - Stats
+
+    @ViewBuilder
+    private var statsSection: some View {
+        Section {
+            HStack(spacing: 0) {
+                ForEach(StatPeriod.allCases) { period in
+                    let ws = workoutsIn(period)
+                    let mi = miles(ws)
+                    VStack(spacing: 6) {
+                        Text(period.label)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                            .tracking(0.5)
+                        Text("\(ws.count)")
+                            .font(.title3.bold())
+                        Text("workouts")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if mi > 0 {
+                            Text(String(format: "%.1f mi", mi))
+                                .font(.caption.bold())
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("— mi")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    if period != .allTime {
+                        Divider().frame(height: 60)
+                    }
+                }
+            }
+            .padding(.vertical, 10)
+        }
+        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+    }
+
+    // MARK: - Workouts list
+
+    @ViewBuilder
+    private var workoutsSection: some View {
+        Section("Recent") {
+            if sortedWorkouts.isEmpty {
+                Text("No workouts logged yet")
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+            } else {
+                ForEach(displayedWorkouts) { w in
+                    Button { selectedWorkout = w } label: { WorkoutRow(workout: w) }
+                        .buttonStyle(.plain)
+                }
+                if sortedWorkouts.count > 5 {
+                    Button {
+                        withAnimation { showAll.toggle() }
+                    } label: {
+                        Text(showAll ? "Show less" : "Show all \(sortedWorkouts.count) workouts")
+                            .font(.subheadline)
+                            .foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Stat Period
+
+enum StatPeriod: String, CaseIterable, Identifiable {
+    case week, month, allTime
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .week: return "This Week"
+        case .month: return "This Month"
+        case .allTime: return "All Time"
+        }
+    }
+}
+
+// MARK: - Workout Row
+
+struct WorkoutRow: View {
+    let workout: Workout
+
+    private let feelEmoji = ["", "😴", "😕", "😐", "🙂", "😊", "💪", "🔥"]
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(typeColor.opacity(0.15))
+                    .frame(width: 44, height: 44)
+                Image(systemName: typeIcon)
+                    .font(.system(size: 20))
+                    .foregroundStyle(typeColor)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(workout.name.isEmpty ? workout.type : workout.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+
+                // Date · duration · miles
+                HStack(spacing: 5) {
+                    Text(workout.date.formatted(.dateTime.month(.abbreviated).day()))
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let dur = workout.duration {
+                        dot; Text("\(dur) min").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let dist = workout.distance {
+                        dot; Text(String(format: "%.2f mi", dist)).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                // Splats · feel
+                let hasSub = workout.splatPoints != nil || workout.feel != nil
+                if hasSub {
+                    HStack(spacing: 5) {
+                        if let splats = workout.splatPoints {
+                            Text("🔥 \(splats) splats").font(.caption).foregroundStyle(.orange)
+                        }
+                        if let feel = workout.feel, feel >= 1, feel <= 7 {
+                            if workout.splatPoints != nil { dot }
+                            Text("\(feelEmoji[feel]) \(feel)/7").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            Spacer()
+
+            // Right: day of week + calories
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(workout.date.formatted(.dateTime.weekday(.abbreviated)))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                if let cal = workout.calories {
+                    Text("\(cal) cal")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var dot: some View {
+        Text("·").font(.caption).foregroundStyle(.tertiary)
+    }
+
+    private var typeColor: Color {
+        switch workout.type {
+        case "OrangeTheory": return .orange
+        case "Run":          return .blue
+        case "Bike":         return .green
+        case "Hike":         return .brown
+        case "Lift":         return .purple
+        default:             return .gray
+        }
+    }
+
+    private var typeIcon: String {
+        switch workout.type {
+        case "OrangeTheory": return "flame.fill"
+        case "Run":          return "figure.run"
+        case "Bike":         return "figure.outdoor.cycle"
+        case "Hike":         return "figure.hiking"
+        case "Lift":         return "dumbbell.fill"
+        default:             return "figure.mixed.cardio"
+        }
+    }
+}
+
+// MARK: - Workout Detail View
+
+struct WorkoutDetailView: View {
+    let workout: Workout
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var editNotes: String = ""
+    @State private var editFeel: Int = 0
+    @State private var isSavingNotes = false
+    @State private var notesSaved = false
+    @State private var isSavingFeel = false
+    @State private var feelSaved = false
+
+    private let feelEmoji = ["", "😴", "😕", "😐", "🙂", "😊", "💪", "🔥"]
+
+    private var notesChanged: Bool { editNotes != (workout.notes ?? "") }
+    private var feelChanged: Bool { editFeel != (workout.feel ?? 0) && editFeel > 0 }
+
+    private var notionURL: URL? {
+        let clean = workout.id.replacingOccurrences(of: "-", with: "")
+        return URL(string: "https://www.notion.so/\(clean)")
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // Header
+                Section {
+                    HStack(spacing: 14) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(typeColor.opacity(0.15))
+                                .frame(width: 52, height: 52)
+                            Image(systemName: typeIcon)
+                                .font(.system(size: 24))
+                                .foregroundStyle(typeColor)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(workout.name.isEmpty ? workout.type : workout.name)
+                                .font(.headline)
+                            Text(workout.date.formatted(.dateTime.weekday(.wide).month(.wide).day().year()))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                // Core stats
+                Section("Summary") {
+                    if let dur = workout.duration    { row("Duration", "\(dur) min") }
+                    if let cal = workout.calories    { row("Calories", "\(cal) kcal") }
+                    if let ha  = workout.heartRateAvg { row("HR Avg", "\(ha) bpm") }
+                    if let hm  = workout.heartRateMax { row("HR Max", "\(hm) bpm") }
+
+                    // Feel — inline editable
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Feel").foregroundStyle(.secondary)
+                            Spacer()
+                            if editFeel > 0 {
+                                Text("\(feelEmoji[editFeel]) \(editFeel)/7")
+                                    .fontWeight(.medium)
+                            } else {
+                                Text("—").foregroundStyle(.tertiary)
+                            }
+                        }
+                        HStack(spacing: 6) {
+                            ForEach(1...7, id: \.self) { val in
+                                Button {
+                                    editFeel = val
+                                } label: {
+                                    Text(feelEmoji[val])
+                                        .font(.title3)
+                                        .padding(6)
+                                        .background(
+                                            editFeel == val
+                                                ? Color.orange.opacity(0.2)
+                                                : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: 8)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        if feelChanged {
+                            Button {
+                                Task { await saveFeel() }
+                            } label: {
+                                HStack {
+                                    if isSavingFeel { ProgressView().scaleEffect(0.8) }
+                                    else if feelSaved { Image(systemName: "checkmark").foregroundStyle(.green) }
+                                    Text(feelSaved ? "Saved" : "Save Rating")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .font(.subheadline)
+                            }
+                            .disabled(isSavingFeel)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                // OTF
+                if workout.isOTF {
+                    Section("OTF") {
+                        if let ct = workout.classType  { row("Class Type", ct) }
+                        if let sp = workout.splatPoints { row("Splat Points", "\(sp)") }
+                        if let op = workout.output      { row("Output", "\(op) W") }
+                    }
+
+                    let zones: [(String, Int?)] = [
+                        ("Gray (Z1)", workout.zone1), ("Blue (Z2)", workout.zone2),
+                        ("Green (Z3)", workout.zone3), ("Orange (Z4)", workout.zone4),
+                        ("Red (Z5)", workout.zone5)
+                    ]
+                    let allZones: [(String, Color, Int?)] = [
+                        ("Gray (Z1)",   .gray,   workout.zone1),
+                        ("Blue (Z2)",   .blue,   workout.zone2),
+                        ("Green (Z3)",  .green,  workout.zone3),
+                        ("Orange (Z4)", .orange, workout.zone4),
+                        ("Red (Z5)",    .red,    workout.zone5)
+                    ]
+                    let filledZones = allZones.filter { $0.2 != nil }
+                    let zoneTotal = filledZones.compactMap { $0.2 }.reduce(0, +)
+                    if !filledZones.isEmpty {
+                        Section("Zone Minutes") {
+                            ForEach(filledZones, id: \.0) { label, color, val in
+                                let mins = val!
+                                let pct = zoneTotal > 0 ? Int((Double(mins) / Double(zoneTotal) * 100).rounded()) : 0
+                                HStack {
+                                    Text(label)
+                                        .foregroundStyle(color)
+                                        .fontWeight(.medium)
+                                    Spacer()
+                                    Text("\(mins) min")
+                                        .fontWeight(.medium)
+                                    Text("· \(pct)%")
+                                        .foregroundStyle(.secondary)
+                                        .font(.subheadline)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Cardio
+                let hasCardio = workout.distance != nil || workout.steps != nil
+                    || workout.treadPace != nil || workout.elevation != nil
+                if hasCardio {
+                    Section("Treadmill / Cardio") {
+                        if let d = workout.distance  { row("Distance",  String(format: "%.2f mi", d)) }
+                        if let s = workout.steps     { row("Steps",     "\(s)") }
+                        if let p = workout.treadPace { row("Avg Pace",  "\(p) min/mi") }
+                        if let e = workout.elevation { row("Elevation", String(format: "%.0f ft", e)) }
+                    }
+                }
+
+                // Rower
+                if workout.hasRower == true {
+                    Section("Rower") {
+                        if let d = workout.rowerDistance  { row("Distance",    "\(d) m") }
+                        if let w = workout.rowerWattsAvg  { row("Avg Watts",   "\(w) W") }
+                        if let p = workout.rowerPace      { row("500m Pace",   p) }
+                        if let s = workout.rowerStrokeAvg { row("Stroke Rate", "\(s) spm") }
+                    }
+                }
+
+                // Notes — editable
+                Section("Notes") {
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: $editNotes)
+                            .frame(minHeight: 80)
+                        if editNotes.isEmpty {
+                            Text("Add a note…")
+                                .foregroundStyle(Color(.placeholderText))
+                                .padding(.top, 8).padding(.leading, 5)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    if notesChanged {
+                        Button {
+                            Task { await saveNotes() }
+                        } label: {
+                            HStack {
+                                if isSavingNotes { ProgressView().scaleEffect(0.8) }
+                                else if notesSaved { Image(systemName: "checkmark").foregroundStyle(.green) }
+                                Text(notesSaved ? "Saved" : "Save Notes")
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .disabled(isSavingNotes)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Workout")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if let url = notionURL {
+                        Link(destination: url) {
+                            Image(systemName: "arrow.up.right.square")
+                        }
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onAppear {
+                editNotes = workout.notes ?? ""
+                editFeel = workout.feel ?? 0
+            }
+        }
+    }
+
+    private func saveNotes() async {
+        isSavingNotes = true
+        try? await notion.updateWorkoutNotes(workout.id, notes: editNotes)
+        isSavingNotes = false
+        notesSaved = true
+        try? await Task.sleep(for: .seconds(1.5))
+        notesSaved = false
+    }
+
+    private func saveFeel() async {
+        isSavingFeel = true
+        try? await notion.updateWorkoutFeel(workout.id, feel: editFeel)
+        isSavingFeel = false
+        feelSaved = true
+        try? await Task.sleep(for: .seconds(1.5))
+        feelSaved = false
+    }
+
+    @ViewBuilder
+    private func row(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).fontWeight(.medium)
+        }
+    }
+
+    private var typeColor: Color {
+        switch workout.type {
+        case "OrangeTheory": return .orange
+        case "Run":  return .blue
+        case "Bike": return .green
+        case "Hike": return .brown
+        case "Lift": return .purple
+        default:     return .gray
+        }
+    }
+
+    private var typeIcon: String {
+        switch workout.type {
+        case "OrangeTheory": return "flame.fill"
+        case "Run":  return "figure.run"
+        case "Bike": return "figure.outdoor.cycle"
+        case "Hike": return "figure.hiking"
+        case "Lift": return "dumbbell.fill"
+        default:     return "figure.mixed.cardio"
+        }
+    }
+}

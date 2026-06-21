@@ -9,6 +9,7 @@ class NotionService {
     var visits: [Visit] = []
     var captures: [Capture] = []
     var people: [Person] = []
+    var workouts: [Workout] = []
     var personDetailCache: [String: PersonDetail] = [:]
     var isLoading = false
     var error: String?
@@ -17,6 +18,7 @@ class NotionService {
     private let visitsDBID = "ecd8cdc617e74c78b090afc5092cbdee"
     private let capturesDBID = "7e292efac9754d7f8e5fceef5e9dc0e2"
     private let peopleDBID = "50261ebf9c3c49bc926542e3ccfaa4aa"
+    private let workoutsDBID = "b7dab8c1a46542ab83c442e1b76f002a"
     private let notionVersion = "2022-06-28"
     private let baseURL = "https://api.notion.com/v1"
 
@@ -274,8 +276,163 @@ class NotionService {
             guard let id = page["id"] as? String,
                   let props = page["properties"] as? [String: Any],
                   let name = title(props["Name"]) else { return nil }
-            return Person(id: id, name: name)
+            let relationship = select(props["Relationship"])
+            return Person(id: id, name: name, relationship: relationship)
         }
+    }
+
+    // MARK: - Workouts
+
+    func fetchWorkouts() async {
+        do {
+            var all: [Workout] = []
+            var cursor: String? = nil
+            repeat {
+                var body: [String: Any] = [
+                    "sorts": [["property": "Date", "direction": "descending"]],
+                    "page_size": 100
+                ]
+                if let cursor { body["start_cursor"] = cursor }
+                let data = try await post("\(baseURL)/databases/\(workoutsDBID)/query", body: body)
+                let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+                let pages = result["results"] as? [[String: Any]] ?? []
+                all += pages.compactMap { parseWorkout($0) }
+                cursor = result["has_more"] as? Bool == true ? result["next_cursor"] as? String : nil
+            } while cursor != nil
+            workouts = all
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func logWorkout(_ w: WorkoutDraft) async throws -> String {
+        var props: [String: Any] = [
+            "Name": ["title": [["text": ["content": w.name]]]],
+            "Type": ["select": ["name": w.type]]
+        ]
+        if let d = w.date {
+            let fmt = ISO8601DateFormatter()
+            fmt.formatOptions = [.withFullDate]
+            props["Date"] = ["date": ["start": fmt.string(from: d)]]
+        }
+        func num(_ val: Int?, key: String) { if let v = val { props[key] = ["number": v] } }
+        func numD(_ val: Double?, key: String) { if let v = val { props[key] = ["number": v] } }
+        func txt(_ val: String?, key: String) { if let v = val, !v.isEmpty { props[key] = ["rich_text": [["text": ["content": v]]]] } }
+        func rel(_ id: String?, key: String) { if let id { props[key] = ["relation": [["id": id]]] } }
+
+        num(w.duration,     key: "Duration")
+        num(w.calories,     key: "Calories")
+        num(w.heartRateAvg, key: "Heart Rate Avg")
+        num(w.heartRateMax, key: "Heart Rate Max")
+        num(w.splatPoints,  key: "Splat Points")
+        num(w.output,       key: "Output")
+        num(w.zone1,        key: "Zone 1")
+        num(w.zone2,        key: "Zone 2")
+        num(w.zone3,        key: "Zone 3")
+        num(w.zone4,        key: "Zone 4")
+        num(w.zone5,        key: "Zone 5")
+        num(w.feel,         key: "Feel")
+        numD(w.distance,    key: "Distance")
+        txt(w.notes,        key: "Notes")
+        rel(w.placeID,      key: "Place")
+        rel(w.visitID,      key: "Visit")
+        if let ct = w.classType, !ct.isEmpty { props["Class Type"] = ["select": ["name": ct]] }
+        num(w.steps,          key: "Steps")
+        numD(w.elevation,     key: "Elevation")
+        txt(w.treadPace,      key: "Tread Pace")
+        if let hr = w.hasRower { props["Has Rower"] = ["checkbox": hr] }
+        num(w.rowerDistance,  key: "Rower Distance")
+        num(w.rowerWattsAvg,  key: "Rower Watts Avg")
+        txt(w.rowerPace,      key: "Rower Pace 500m")
+        num(w.rowerStrokeAvg, key: "Rower Stroke Avg")
+
+        let body: [String: Any] = [
+            "parent": ["database_id": workoutsDBID],
+            "properties": props
+        ]
+        let data = try await post("\(baseURL)/pages", body: body)
+        let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let id = result["id"] as? String ?? ""
+        await fetchWorkouts()
+        return id
+    }
+
+    func updateWorkoutFeel(_ pageID: String, feel: Int) async throws {
+        let body: [String: Any] = ["properties": ["Feel": ["number": feel]]]
+        _ = try await patch("\(baseURL)/pages/\(pageID)", body: body)
+        if let idx = workouts.firstIndex(where: { $0.id == pageID }) {
+            workouts[idx].feel = feel
+        }
+    }
+
+    func updateWorkoutNotes(_ pageID: String, notes: String) async throws {
+        let props: [String: Any] = notes.isEmpty
+            ? ["Notes": ["rich_text": []]]
+            : ["Notes": ["rich_text": [["text": ["content": notes]]]]]
+        let body: [String: Any] = ["properties": props]
+        _ = try await patch("\(baseURL)/pages/\(pageID)", body: body)
+        // Refresh local copy
+        if let idx = workouts.firstIndex(where: { $0.id == pageID }) {
+            workouts[idx].notes = notes.isEmpty ? nil : notes
+        }
+    }
+
+    private func parseWorkout(_ page: [String: Any]) -> Workout? {
+        guard let id = page["id"] as? String,
+              let props = page["properties"] as? [String: Any] else { return nil }
+
+        func num(_ prop: Any?) -> Int? {
+            guard let n = (prop as? [String: Any])?["number"] as? Double else { return nil }
+            return Int(n)
+        }
+        func numD(_ prop: Any?) -> Double? {
+            return (prop as? [String: Any])?["number"] as? Double
+        }
+
+        let df = ISO8601DateFormatter()
+        df.formatOptions = [.withFullDate]
+        let date: Date = {
+            guard let s = ((props["Date"] as? [String: Any])?["date"] as? [String: Any])?["start"] as? String
+            else { return Date() }
+            return df.date(from: s) ?? Date()
+        }()
+
+        let placeID = ((props["Place"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String
+        let visitID = ((props["Visit"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String
+
+        let hasRower = (props["Has Rower"] as? [String: Any])?["checkbox"] as? Bool
+
+        return Workout(
+            id: id,
+            name: title(props["Name"]) ?? "",
+            date: date,
+            type: select(props["Type"]) ?? "Other",
+            duration:     num(props["Duration"]),
+            calories:     num(props["Calories"]),
+            heartRateAvg: num(props["Heart Rate Avg"]),
+            heartRateMax: num(props["Heart Rate Max"]),
+            splatPoints:  num(props["Splat Points"]),
+            output:       num(props["Output"]),
+            zone1: num(props["Zone 1"]),
+            zone2: num(props["Zone 2"]),
+            zone3: num(props["Zone 3"]),
+            zone4: num(props["Zone 4"]),
+            zone5: num(props["Zone 5"]),
+            distance: numD(props["Distance"]),
+            feel:     num(props["Feel"]),
+            notes:    richText(props["Notes"]),
+            placeID:  placeID,
+            visitID:  visitID,
+            classType:      select(props["Class Type"]),
+            steps:          num(props["Steps"]),
+            elevation:      numD(props["Elevation"]),
+            treadPace:      richText(props["Tread Pace"]),
+            hasRower:       hasRower,
+            rowerDistance:  num(props["Rower Distance"]),
+            rowerWattsAvg:  num(props["Rower Watts Avg"]),
+            rowerPace:      richText(props["Rower Pace 500m"]),
+            rowerStrokeAvg: num(props["Rower Stroke Avg"])
+        )
     }
 
     func addPerson(name: String) async throws -> Person {
@@ -450,6 +607,13 @@ class NotionService {
         personDetailCache.removeValue(forKey: id)
     }
 
+    func updatePersonStatus(id: String, relationshipStrength: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: [
+            "properties": ["Relationship Strength": ["select": ["name": relationshipStrength]]]
+        ])
+        personDetailCache.removeValue(forKey: id)
+    }
+
     func appendPersonNotes(id: String, text: String) async throws {
         let data = try await get("\(baseURL)/pages/\(id)")
         let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -489,6 +653,19 @@ class NotionService {
         let tags = ((props["Tags"] as? [String: Any])?["multi_select"] as? [[String: Any]])?
             .compactMap { $0["name"] as? String } ?? []
 
+        let phone = (props["Phone"] as? [String: Any])?["phone_number"] as? String
+        let email = (props["Email"] as? [String: Any])?["email"] as? String
+        let address = richText(props["Address"])
+
+        // "Photo" is a Files & media property — supports both Notion-hosted and external URLs
+        let photoURL: String? = {
+            guard let files = (props["Photo"] as? [String: Any])?["files"] as? [[String: Any]],
+                  let first = files.first else { return nil }
+            if let ext = first["external"] as? [String: Any] { return ext["url"] as? String }
+            if let file = first["file"] as? [String: Any] { return file["url"] as? String }
+            return nil
+        }()
+
         return PersonDetail(
             id: id,
             name: title(props["Name"]) ?? "",
@@ -500,6 +677,10 @@ class NotionService {
             notes: richText(props["Notes"]),
             tags: tags,
             birthday: birthday,
+            phone: phone,
+            email: email,
+            address: address,
+            photoURL: photoURL,
             visitCount: visitCount,
             lastVisitDate: lastVisitDate,
             lastInteractionDate: lastInteractionDate
