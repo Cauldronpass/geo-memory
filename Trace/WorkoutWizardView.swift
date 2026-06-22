@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 // MARK: - Wizard
 
@@ -39,6 +40,12 @@ struct WorkoutWizardView: View {
     @State private var rowerWattsStr = ""
     @State private var rowerPaceStr = ""
     @State private var rowerStrokeStr = ""
+
+    // OT scan state
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var isScanning = false
+    @State private var scanComplete = false
+    @State private var scanError: String?
 
     private let workoutTypes = ["OrangeTheory", "Run", "Bike", "Hike", "Lift", "Other"]
     private let otfClassTypes = ["Tread 50", "2G", "3G", "Strength 50", "Tornado", "Other"]
@@ -132,6 +139,12 @@ struct WorkoutWizardView: View {
                 }
                 .onChange(of: draft.type) { _, newType in
                     autoName(newType)
+                    // Reset scan state when switching away from OTF
+                    if newType != "OrangeTheory" {
+                        scanComplete = false
+                        scanError = nil
+                        selectedPhoto = nil
+                    }
                 }
             } header: {
                 Text("Workout Type")
@@ -144,6 +157,63 @@ struct WorkoutWizardView: View {
 
             Section("Name") {
                 TextField("Workout name", text: $draft.name)
+            }
+
+            // OT scan section — only shown for OrangeTheory
+            if draft.type == "OrangeTheory" {
+                Section {
+                    if isScanning {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Reading stats…")
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 2)
+
+                    } else if scanComplete {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("Stats loaded — review in step 3")
+                            Spacer()
+                            PhotosPicker(
+                                selection: $selectedPhoto,
+                                matching: .images,
+                                photoLibrary: .shared()
+                            ) {
+                                Text("Re-scan")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        }
+
+                    } else {
+                        PhotosPicker(
+                            selection: $selectedPhoto,
+                            matching: .images,
+                            photoLibrary: .shared()
+                        ) {
+                            Label("Scan OT Stats Photo", systemImage: "camera.viewfinder")
+                        }
+                        if let err = scanError {
+                            Text(err)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                } header: {
+                    Text("Quick Scan")
+                } footer: {
+                    if !scanComplete && !isScanning {
+                        Text("Pick your end-of-class stats photo. Claude reads the numbers and pre-fills your metrics.")
+                            .font(.caption)
+                    }
+                }
+                .onChange(of: selectedPhoto) { _, item in
+                    guard let item else { return }
+                    Task { await performScan(item: item) }
+                }
             }
         }
     }
@@ -179,6 +249,14 @@ struct WorkoutWizardView: View {
 
     private var metricsStep: some View {
         Form {
+            if draft.type == "OrangeTheory" && scanComplete {
+                Section {
+                    Label("Pre-filled from scan — edit anything below", systemImage: "wand.and.stars")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Calories & Heart Rate") {
                 fieldRow("Calories", binding: $calStr, unit: "kcal")
                 fieldRow("HR Average", binding: $hrAvgStr, unit: "bpm")
@@ -299,6 +377,71 @@ struct WorkoutWizardView: View {
                 .padding(.bottom, 32)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - OT Scan
+
+    private func performScan(item: PhotosPickerItem) async {
+        isScanning = true
+        scanError = nil
+        scanComplete = false
+        defer { isScanning = false }
+
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data) else {
+                scanError = "Could not load photo."
+                return
+            }
+            let result = try await OTScanService.scan(image: image)
+            applyScanResult(result)
+            scanComplete = true
+        } catch {
+            scanError = error.localizedDescription
+        }
+    }
+
+    private func applyScanResult(_ result: OTScanResult) {
+        if let v = result.splatPoints    { splatsStr   = "\(v)" }
+        if let v = result.calories       { calStr       = "\(v)" }
+        if let v = result.durationMinutes { durationStr = "\(v)" }
+        if let v = result.avgHr          { hrAvgStr     = "\(v)" }
+        if let v = result.maxHr          { hrMaxStr     = "\(v)" }
+
+        // Parse class date if returned
+        if let dateStr = result.classDate {
+            let fmt = ISO8601DateFormatter()
+            fmt.formatOptions = [.withFullDate]
+            if let date = fmt.date(from: dateStr) {
+                draft.date = date
+                // Refresh auto-name with the scanned date
+                let df = DateFormatter()
+                df.dateFormat = "M/d"
+                draft.name = "OrangeTheory \(df.string(from: date))"
+            }
+        }
+
+        // Zone minutes
+        if let z = result.zones {
+            if let v = z.gray?.minutes   { z1Str = "\(v)" }
+            if let v = z.blue?.minutes   { z2Str = "\(v)" }
+            if let v = z.green?.minutes  { z3Str = "\(v)" }
+            if let v = z.orange?.minutes { z4Str = "\(v)" }
+            if let v = z.red?.minutes    { z5Str = "\(v)" }
+        }
+
+        // Treadmill fields
+        if let v = result.distanceMiles  { distanceStr  = String(format: "%.1f", v) }
+        if let v = result.steps          { stepsStr     = "\(v)" }
+        if let v = result.elevationFt    { elevationStr = String(format: "%.0f", v) }
+
+        // Convert avg speed (mph) → pace (min/mi) as "M:SS"
+        if let speed = result.avgSpeedMph, speed > 0 {
+            let pace = 60.0 / speed
+            let minutes = Int(pace)
+            let seconds = Int((pace - Double(minutes)) * 60)
+            treadPaceStr = String(format: "%d:%02d", minutes, seconds)
+        }
     }
 
     // MARK: - Save

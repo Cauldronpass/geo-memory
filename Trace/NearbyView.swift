@@ -14,6 +14,9 @@ struct NearbyView: View {
     @State private var dayNoteAction: DayNoteAction?
     @State private var showCalendar = false
     @State private var selectedBucketScope: String?
+    @State private var noteToDelete: DayNote? = nil
+    @State private var noteToMove: DayNote? = nil
+    @State private var showMoveNote = false
 
     private let bucketScopes = ["This Week", "Next Week", "This Month", "Next Month"]
     private let bucketAbbrevs = ["This Week": "TW", "Next Week": "NW", "This Month": "TM", "Next Month": "NM"]
@@ -105,6 +108,30 @@ struct NearbyView: View {
             .onChange(of: showCalendar) { _, new in onCalendarStateChange?(new) }
             .sheet(item: $dayNoteAction) { action in
                 DayNoteSheet(action: action).environment(notionService)
+            }
+            .sheet(isPresented: $showMoveNote) {
+                if let note = noteToMove {
+                    MoveDatePickerSheet(initialDate: Date()) { newDate in
+                        Task {
+                            try? await notionService.moveDayNote(id: note.id, toDate: newDate)
+                            await notionService.fetchDayNotes()
+                        }
+                    }
+                }
+            }
+            .confirmationDialog("Delete this note?", isPresented: Binding(
+                get: { noteToDelete != nil },
+                set: { if !$0 { noteToDelete = nil } }
+            ), titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    if let note = noteToDelete {
+                        Task {
+                            try? await notionService.deleteDayNote(id: note.id)
+                            noteToDelete = nil
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) { noteToDelete = nil }
             }
             .sheet(isPresented: Binding(
                 get: { selectedBucketScope != nil },
@@ -240,26 +267,13 @@ struct NearbyView: View {
 
     @ViewBuilder
     private var todayNoteSection: some View {
-        let todayNote = notionService.dayNotes.first { note in
+        let todayNotes = notionService.dayNotes.filter { note in
             guard let d = note.date else { return false }
             return Calendar.current.isDateInToday(d)
         }
 
         Section {
-            if let note = todayNote {
-                Button {
-                    dayNoteAction = .tapDate(Date(), note)
-                } label: {
-                    Text(note.body)
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                }
-                .buttonStyle(.plain)
-            } else {
+            if todayNotes.isEmpty {
                 Button {
                     dayNoteAction = .tapDate(Date(), nil)
                 } label: {
@@ -268,11 +282,89 @@ struct NearbyView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+            } else {
+                TabView {
+                    ForEach(todayNotes) { note in
+                        TodayNoteCard(note: note) {
+                            dayNoteAction = .tapDate(Date(), note)
+                        } onDelete: {
+                            noteToDelete = note
+                        } onMove: {
+                            noteToMove = note
+                            showMoveNote = true
+                        }
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: todayNotes.count > 1 ? .always : .never))
+                .frame(height: 110)
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
             }
         } header: {
-            Text("Today")
+            HStack {
+                Text("Today")
+                if todayNotes.count > 1 {
+                    Text("· \(todayNotes.count) notes")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    dayNoteAction = .tapDate(Date(), nil)
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption.weight(.semibold))
+                }
+            }
         }
+    }
+}
 
+// MARK: - Today note card
+
+struct TodayNoteCard: View {
+    let note: DayNote
+    let onTap: () -> Void
+    let onDelete: () -> Void
+    let onMove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(note.body)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { onTap() }
+
+            HStack {
+                Spacer()
+                Button {
+                    onMove()
+                } label: {
+                    Image(systemName: "calendar.badge.plus")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(6)
+                        .background(Color(.systemGray5), in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    onDelete()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundStyle(.red.opacity(0.8))
+                        .padding(6)
+                        .background(Color(.systemGray5), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 2)
     }
 }
 
