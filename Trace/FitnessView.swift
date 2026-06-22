@@ -1,11 +1,15 @@
 import SwiftUI
 
+// MARK: - Main Fitness View
+
 struct FitnessView: View {
     @Environment(NotionService.self) private var notion
     @State private var showWizard = false
+    @State private var showCalendar = false
     @State private var isLoading = false
     @State private var selectedWorkout: Workout? = nil
     @State private var showAll = false
+    @State private var selectedPeriod: StatPeriod? = nil
 
     private var sortedWorkouts: [Workout] {
         notion.workouts.sorted { $0.date > $1.date }
@@ -14,8 +18,6 @@ struct FitnessView: View {
     private var displayedWorkouts: [Workout] {
         showAll ? sortedWorkouts : Array(sortedWorkouts.prefix(5))
     }
-
-    // MARK: - Time-sliced helpers
 
     private func workoutsIn(_ period: StatPeriod) -> [Workout] {
         let cal = Calendar.current
@@ -42,6 +44,12 @@ struct FitnessView: View {
                 if isLoading && notion.workouts.isEmpty {
                     ProgressView("Loading…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if showCalendar {
+                    ScrollView {
+                        FitnessCalendarView(workouts: sortedWorkouts)
+                            .environment(notion)
+                            .padding(.vertical)
+                    }
                 } else {
                     List {
                         statsSection
@@ -56,6 +64,13 @@ struct FitnessView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Button { showWizard = true } label: { Image(systemName: "plus") }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        withAnimation { showCalendar.toggle() }
+                    } label: {
+                        Image(systemName: showCalendar ? "list.bullet" : "calendar")
+                    }
+                }
             }
             .task {
                 isLoading = true
@@ -68,6 +83,10 @@ struct FitnessView: View {
             }
             .sheet(item: $selectedWorkout) { w in
                 WorkoutDetailView(workout: w).environment(notion)
+            }
+            .sheet(item: $selectedPeriod) { period in
+                PeriodWorkoutListSheet(period: period, workouts: workoutsIn(period))
+                    .environment(notion)
             }
         }
         .drawerToolbar()
@@ -82,28 +101,33 @@ struct FitnessView: View {
                 ForEach(StatPeriod.allCases) { period in
                     let ws = workoutsIn(period)
                     let mi = miles(ws)
-                    VStack(spacing: 6) {
-                        Text(period.label)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
-                            .tracking(0.5)
-                        Text("\(ws.count)")
-                            .font(.title3.bold())
-                        Text("workouts")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        if mi > 0 {
-                            Text(String(format: "%.1f mi", mi))
-                                .font(.caption.bold())
-                                .foregroundStyle(.orange)
-                        } else {
-                            Text("— mi")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
+                    Button { selectedPeriod = period } label: {
+                        VStack(spacing: 6) {
+                            Text(period.label)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .textCase(.uppercase)
+                                .tracking(0.5)
+                            Text("\(ws.count)")
+                                .font(.title3.bold())
+                                .foregroundStyle(.primary)
+                            Text("workouts")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            if mi > 0 {
+                                Text(String(format: "%.1f mi", mi))
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.orange)
+                            } else {
+                                Text("— mi")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
                     }
-                    .frame(maxWidth: .infinity)
+                    .buttonStyle(.plain)
                     if period != .allTime {
                         Divider().frame(height: 60)
                     }
@@ -162,7 +186,6 @@ enum StatPeriod: String, CaseIterable, Identifiable {
 
 struct WorkoutRow: View {
     let workout: Workout
-
     private let feelEmoji = ["", "😴", "😕", "😐", "🙂", "😊", "💪", "🔥"]
 
     var body: some View {
@@ -175,13 +198,10 @@ struct WorkoutRow: View {
                     .font(.system(size: 20))
                     .foregroundStyle(typeColor)
             }
-
             VStack(alignment: .leading, spacing: 3) {
                 Text(workout.name.isEmpty ? workout.type : workout.name)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
-
-                // Date · duration · miles
                 HStack(spacing: 5) {
                     Text(workout.date.formatted(.dateTime.month(.abbreviated).day()))
                         .font(.caption).foregroundStyle(.secondary)
@@ -192,8 +212,6 @@ struct WorkoutRow: View {
                         dot; Text(String(format: "%.2f mi", dist)).font(.caption).foregroundStyle(.secondary)
                     }
                 }
-
-                // Splats · feel
                 let hasSub = workout.splatPoints != nil || workout.feel != nil
                 if hasSub {
                     HStack(spacing: 5) {
@@ -207,18 +225,12 @@ struct WorkoutRow: View {
                     }
                 }
             }
-
             Spacer()
-
-            // Right: day of week + calories
             VStack(alignment: .trailing, spacing: 4) {
                 Text(workout.date.formatted(.dateTime.weekday(.abbreviated)))
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
                 if let cal = workout.calories {
-                    Text("\(cal) cal")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text("\(cal) cal").font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
@@ -229,7 +241,7 @@ struct WorkoutRow: View {
         Text("·").font(.caption).foregroundStyle(.tertiary)
     }
 
-    private var typeColor: Color {
+    var typeColor: Color {
         switch workout.type {
         case "OrangeTheory": return .orange
         case "Run":          return .blue
@@ -240,7 +252,7 @@ struct WorkoutRow: View {
         }
     }
 
-    private var typeIcon: String {
+    var typeIcon: String {
         switch workout.type {
         case "OrangeTheory": return "flame.fill"
         case "Run":          return "figure.run"
@@ -248,6 +260,163 @@ struct WorkoutRow: View {
         case "Hike":         return "figure.hiking"
         case "Lift":         return "dumbbell.fill"
         default:             return "figure.mixed.cardio"
+        }
+    }
+}
+
+// MARK: - Period Workout List Sheet
+
+struct PeriodWorkoutListSheet: View {
+    let period: StatPeriod
+    let workouts: [Workout]
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedWorkout: Workout? = nil
+
+    private func miles() -> Double {
+        workouts.compactMap { $0.distance }.reduce(0, +)
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // Summary banner
+                Section {
+                    HStack(spacing: 24) {
+                        VStack(spacing: 2) {
+                            Text("\(workouts.count)").font(.title2.bold())
+                            Text("workouts").font(.caption).foregroundStyle(.secondary)
+                        }
+                        let mi = miles()
+                        if mi > 0 {
+                            VStack(spacing: 2) {
+                                Text(String(format: "%.1f", mi)).font(.title2.bold()).foregroundStyle(.orange)
+                                Text("miles").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        let cals = workouts.compactMap { $0.calories }.reduce(0, +)
+                        if cals > 0 {
+                            VStack(spacing: 2) {
+                                Text("\(cals)").font(.title2.bold())
+                                Text("kcal").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                }
+
+                // Workout rows
+                Section {
+                    if workouts.isEmpty {
+                        Text("No workouts in this period")
+                            .foregroundStyle(.secondary)
+                            .font(.subheadline)
+                    } else {
+                        ForEach(workouts) { w in
+                            Button { selectedWorkout = w } label: { WorkoutRow(workout: w) }
+                                .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle(period.label)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(item: $selectedWorkout) { w in
+                WorkoutDetailView(workout: w).environment(notion)
+            }
+        }
+    }
+}
+
+// MARK: - Fitness Calendar View (thin wrapper over CalendarGridView)
+
+struct FitnessCalendarView: View {
+    let workouts: [Workout]
+    @Environment(NotionService.self) private var notion
+    @State private var selectedWorkout: Workout?
+    @State private var multipleWorkouts: [Workout]?
+
+    private func workoutColor(_ w: Workout) -> Color {
+        switch w.type {
+        case "OrangeTheory": return .orange
+        case "Run":          return .blue
+        case "Bike":         return .green
+        case "Hike":         return .brown
+        case "Lift":         return .purple
+        default:             return .gray
+        }
+    }
+
+    private func workoutCellStat(_ w: Workout) -> String? {
+        if let s = w.splatPoints { return "\(s)🔥" }
+        if let d = w.distance    { return String(format: "%.1f", d) }
+        if let c = w.calories    { return "\(c)" }
+        return String(w.type.prefix(1))
+    }
+
+    private var entries: [CalendarEntry] {
+        workouts.map { w in
+            CalendarEntry(
+                id: w.id,
+                date: w.date,
+                color: workoutColor(w),
+                cellStat: workoutCellStat(w),
+                displayName: w.name.isEmpty ? w.type : w.name,
+                value: w.distance
+            )
+        }
+    }
+
+    private func monthStats(_ monthEntries: [CalendarEntry]) -> [(String, String)] {
+        let ids = Set(monthEntries.map { $0.id })
+        let ws = workouts.filter { ids.contains($0.id) }
+        let miles = ws.compactMap { $0.distance }.reduce(0, +)
+        let cals  = ws.compactMap { $0.calories  }.reduce(0, +)
+        var stats: [(String, String)] = [
+            ("\(ws.count)", "workouts"),
+            (miles > 0 ? String(format: "%.1f mi", miles) : "— mi", "distance")
+        ]
+        if cals > 0 { stats.append(("\(cals)", "calories")) }
+        return stats
+    }
+
+    var body: some View {
+        CalendarGridView(
+            entries: entries,
+            weekSecondary: { weekEntries in
+                let miles = weekEntries.compactMap { $0.value }.reduce(0, +)
+                return miles > 0 ? String(format: "%.1f", miles) : nil
+            },
+            monthStats: monthStats,
+            onSelect: { dayEntries in
+                if dayEntries.count == 1 {
+                    selectedWorkout = workouts.first { $0.id == dayEntries[0].id }
+                } else {
+                    multipleWorkouts = dayEntries.compactMap { e in workouts.first { $0.id == e.id } }
+                }
+            }
+        )
+        .sheet(item: $selectedWorkout) { w in
+            WorkoutDetailView(workout: w).environment(notion)
+        }
+        .confirmationDialog("Choose Workout", isPresented: Binding(
+            get: { multipleWorkouts != nil },
+            set: { if !$0 { multipleWorkouts = nil } }
+        ), titleVisibility: .visible) {
+            ForEach(multipleWorkouts ?? []) { w in
+                Button(w.name.isEmpty ? w.type : w.name) {
+                    selectedWorkout = w
+                    multipleWorkouts = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { multipleWorkouts = nil }
         }
     }
 }
@@ -265,9 +434,9 @@ struct WorkoutDetailView: View {
     @State private var notesSaved = false
     @State private var isSavingFeel = false
     @State private var feelSaved = false
+    @State private var isEditingNotes = false
 
     private let feelEmoji = ["", "😴", "😕", "😐", "🙂", "😊", "💪", "🔥"]
-
     private var notesChanged: Bool { editNotes != (workout.notes ?? "") }
     private var feelChanged: Bool { editFeel != (workout.feel ?? 0) && editFeel > 0 }
 
@@ -300,21 +469,20 @@ struct WorkoutDetailView: View {
                     .padding(.vertical, 4)
                 }
 
-                // Core stats
+                // Summary
                 Section("Summary") {
                     if let dur = workout.duration    { row("Duration", "\(dur) min") }
                     if let cal = workout.calories    { row("Calories", "\(cal) kcal") }
                     if let ha  = workout.heartRateAvg { row("HR Avg", "\(ha) bpm") }
                     if let hm  = workout.heartRateMax { row("HR Max", "\(hm) bpm") }
 
-                    // Feel — inline editable
+                    // Feel — editable
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Feel").foregroundStyle(.secondary)
                             Spacer()
                             if editFeel > 0 {
-                                Text("\(feelEmoji[editFeel]) \(editFeel)/7")
-                                    .fontWeight(.medium)
+                                Text("\(feelEmoji[editFeel]) \(editFeel)/7").fontWeight(.medium)
                             } else {
                                 Text("—").foregroundStyle(.tertiary)
                             }
@@ -328,9 +496,7 @@ struct WorkoutDetailView: View {
                                         .font(.title3)
                                         .padding(6)
                                         .background(
-                                            editFeel == val
-                                                ? Color.orange.opacity(0.2)
-                                                : Color.clear,
+                                            editFeel == val ? Color.orange.opacity(0.2) : Color.clear,
                                             in: RoundedRectangle(cornerRadius: 8)
                                         )
                                 }
@@ -338,16 +504,13 @@ struct WorkoutDetailView: View {
                             }
                         }
                         if feelChanged {
-                            Button {
-                                Task { await saveFeel() }
-                            } label: {
+                            Button { Task { await saveFeel() } } label: {
                                 HStack {
                                     if isSavingFeel { ProgressView().scaleEffect(0.8) }
                                     else if feelSaved { Image(systemName: "checkmark").foregroundStyle(.green) }
                                     Text(feelSaved ? "Saved" : "Save Rating")
                                 }
-                                .frame(maxWidth: .infinity)
-                                .font(.subheadline)
+                                .frame(maxWidth: .infinity).font(.subheadline)
                             }
                             .disabled(isSavingFeel)
                         }
@@ -358,16 +521,11 @@ struct WorkoutDetailView: View {
                 // OTF
                 if workout.isOTF {
                     Section("OTF") {
-                        if let ct = workout.classType  { row("Class Type", ct) }
-                        if let sp = workout.splatPoints { row("Splat Points", "\(sp)") }
-                        if let op = workout.output      { row("Output", "\(op) W") }
+                        if let ct = workout.classType   { row("Class Type", ct) }
+                        if let sp = workout.splatPoints  { row("Splat Points", "\(sp)") }
+                        if let op = workout.output       { row("Output", "\(op) W") }
                     }
 
-                    let zones: [(String, Int?)] = [
-                        ("Gray (Z1)", workout.zone1), ("Blue (Z2)", workout.zone2),
-                        ("Green (Z3)", workout.zone3), ("Orange (Z4)", workout.zone4),
-                        ("Red (Z5)", workout.zone5)
-                    ]
                     let allZones: [(String, Color, Int?)] = [
                         ("Gray (Z1)",   .gray,   workout.zone1),
                         ("Blue (Z2)",   .blue,   workout.zone2),
@@ -383,15 +541,10 @@ struct WorkoutDetailView: View {
                                 let mins = val!
                                 let pct = zoneTotal > 0 ? Int((Double(mins) / Double(zoneTotal) * 100).rounded()) : 0
                                 HStack {
-                                    Text(label)
-                                        .foregroundStyle(color)
-                                        .fontWeight(.medium)
+                                    Text(label).foregroundStyle(color).fontWeight(.medium)
                                     Spacer()
-                                    Text("\(mins) min")
-                                        .fontWeight(.medium)
-                                    Text("· \(pct)%")
-                                        .foregroundStyle(.secondary)
-                                        .font(.subheadline)
+                                    Text("\(mins) min").fontWeight(.medium)
+                                    Text("· \(pct)%").foregroundStyle(.secondary).font(.subheadline)
                                 }
                             }
                         }
@@ -420,31 +573,58 @@ struct WorkoutDetailView: View {
                     }
                 }
 
-                // Notes — editable
-                Section("Notes") {
-                    ZStack(alignment: .topLeading) {
-                        TextEditor(text: $editNotes)
-                            .frame(minHeight: 80)
-                        if editNotes.isEmpty {
-                            Text("Add a note…")
-                                .foregroundStyle(Color(.placeholderText))
-                                .padding(.top, 8).padding(.leading, 5)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    if notesChanged {
-                        Button {
-                            Task { await saveNotes() }
-                        } label: {
-                            HStack {
-                                if isSavingNotes { ProgressView().scaleEffect(0.8) }
-                                else if notesSaved { Image(systemName: "checkmark").foregroundStyle(.green) }
-                                Text(notesSaved ? "Saved" : "Save Notes")
+                // Notes
+                Section {
+                    if isEditingNotes {
+                        ZStack(alignment: .topLeading) {
+                            TextEditor(text: $editNotes)
+                                .frame(minHeight: 120)
+                                .scrollContentBackground(.hidden)
+                            if editNotes.isEmpty {
+                                Text("Add a note…")
+                                    .foregroundStyle(Color(.placeholderText))
+                                    .padding(.top, 8).padding(.leading, 5)
+                                    .allowsHitTesting(false)
                             }
-                            .frame(maxWidth: .infinity)
                         }
-                        .disabled(isSavingNotes)
+                        if notesChanged {
+                            Button { Task { await saveNotes() } } label: {
+                                HStack {
+                                    if isSavingNotes { ProgressView().scaleEffect(0.8) }
+                                    else if notesSaved { Image(systemName: "checkmark").foregroundStyle(.green) }
+                                    Text(notesSaved ? "Saved" : "Save Notes")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .disabled(isSavingNotes)
+                        }
+                        Button("Done Editing") {
+                            isEditingNotes = false
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                    } else {
+                        if editNotes.isEmpty {
+                            Text("No notes")
+                                .foregroundStyle(.tertiary)
+                                .italic()
+                        } else {
+                            Text(editNotes)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Button {
+                            isEditingNotes = true
+                        } label: {
+                            Label(editNotes.isEmpty ? "Add Note" : "Edit", systemImage: editNotes.isEmpty ? "plus" : "pencil")
+                                .font(.subheadline)
+                                .foregroundStyle(.orange)
+                        }
                     }
+                } header: {
+                    Text("Notes")
                 }
             }
             .listStyle(.insetGrouped)
@@ -465,6 +645,7 @@ struct WorkoutDetailView: View {
             .onAppear {
                 editNotes = workout.notes ?? ""
                 editFeel = workout.feel ?? 0
+                isEditingNotes = false
             }
         }
     }

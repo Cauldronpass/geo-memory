@@ -16,6 +16,10 @@ struct ContentView: View {
     @State private var quickPinCoord = CLLocationCoordinate2D()
     @State private var geofencePlace: Place? = nil
     @State private var showingGeofenceCheckIn = false
+    @State private var nearbyShowsCalendar = false
+    @State private var visitsShowsCalendar = false
+    @State private var showingQuickNoteFromURL = false
+    @State private var showingWorkoutFromURL = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -23,38 +27,40 @@ struct ContentView: View {
                 LifeView()
                     .tabItem { Label("Life", systemImage: "waveform") }
                     .tag(0)
-                NearbyView()
+                NearbyView(onCalendarStateChange: { nearbyShowsCalendar = $0 })
                     .tabItem { Label("Nearby", systemImage: "location.fill") }
                     .tag(1)
                 DiscoverView()
                     .tabItem { Label("Discover", systemImage: "magnifyingglass") }
                     .tag(2)
-                VisitsView()
+                VisitsView(onCalendarStateChange: { visitsShowsCalendar = $0 })
                     .tabItem { Label("Visits", systemImage: "clock.arrow.circlepath") }
                     .tag(3)
                 FlaggedView()
                     .tabItem { Label("Pinned", systemImage: "pin.fill") }
             }
 
-            Button(action: { showingActionSheet = true }) {
-                Image(systemName: "plus")
-                    .font(.title2.bold())
-                    .foregroundColor(.white)
-                    .frame(width: 56, height: 56)
-                    .background(Color.accentColor)
-                    .clipShape(Circle())
-                    .shadow(radius: 4)
-            }
-            .padding(.trailing, 20)
-            .padding(.bottom, 80)
-            .confirmationDialog("What would you like to do?", isPresented: $showingActionSheet,
-                titleVisibility: .visible) {
-                Button("Check In") { showingCheckIn = true }
-                Button("Quick Pin") { quickPin() }
-                Button("Add Place") { showingAddPlace = true }
-                Button("Add Note") { showingAddCapture = true }
-                Button("Add Photo") { showingAddPhoto = true }
-                Button("Cancel", role: .cancel) { }
+            if selectedTab != 0 && !(selectedTab == 1 && nearbyShowsCalendar) && !(selectedTab == 3 && visitsShowsCalendar) {
+                Button(action: { showingActionSheet = true }) {
+                    Image(systemName: "plus")
+                        .font(.title2.bold())
+                        .foregroundColor(.white)
+                        .frame(width: 56, height: 56)
+                        .background(Color.accentColor)
+                        .clipShape(Circle())
+                        .shadow(radius: 4)
+                }
+                .padding(.trailing, 20)
+                .padding(.bottom, 80)
+                .confirmationDialog("What would you like to do?", isPresented: $showingActionSheet,
+                    titleVisibility: .visible) {
+                    Button("Check In") { showingCheckIn = true }
+                    Button("Quick Pin") { quickPin() }
+                    Button("Add Place") { showingAddPlace = true }
+                    Button("Add Note") { showingAddCapture = true }
+                    Button("Add Photo") { showingAddPhoto = true }
+                    Button("Cancel", role: .cancel) { }
+                }
             }
         }
         .sheet(isPresented: $showingCheckIn) {
@@ -183,6 +189,24 @@ struct ContentView: View {
                             }
                         }
                 )
+        }
+        // URL scheme: trace://quicknote → open QuickNoteSheet (used by the home screen widget)
+        .onOpenURL { url in
+            guard url.scheme == "trace" else { return }
+            switch url.host {
+            case "quicknote": showingQuickNoteFromURL = true
+            case "checkin":   showingCheckIn = true
+            case "workout":   showingWorkoutFromURL = true
+            default: break
+            }
+        }
+        .sheet(isPresented: $showingQuickNoteFromURL) {
+            QuickNoteSheet()
+                .environment(NotionService.shared)
+        }
+        .sheet(isPresented: $showingWorkoutFromURL) {
+            WorkoutWizardView()
+                .environment(NotionService.shared)
         }
         // Left edge swipe → opens Settings drawer
         .overlay(alignment: .leading) {

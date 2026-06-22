@@ -118,6 +118,7 @@ class GooglePlacesService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
         request.setValue(fieldMask, forHTTPHeaderField: "X-Goog-FieldMask")
+        request.setValue("com.david.Trace", forHTTPHeaderField: "X-Ios-Bundle-Identifier")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, _) = try await URLSession.shared.data(for: request)

@@ -272,6 +272,8 @@ struct CheckInView: View {
                 date: checkInDate,
                 people: personIDs.isEmpty ? nil : personIDs
             )
+            // Cancel any pending dwell notification so it doesn't double-prompt
+            GeofenceManager.shared.cancelDwellNotificationForManualCheckIn(placeID: place.id)
             await notionService.fetchPlaces()
             await notionService.fetchVisits()
             withAnimation {

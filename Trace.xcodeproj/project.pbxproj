@@ -6,7 +6,43 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		638DB1C32FE7852600A0523F /* EventKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1C22FE7852600A0523F /* EventKit.framework */; };
+		638DB1CC2FE881FF00A0523F /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1CB2FE881FF00A0523F /* WidgetKit.framework */; };
+		638DB1CE2FE881FF00A0523F /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1CD2FE881FF00A0523F /* SwiftUI.framework */; };
+		638DB1DD2FE8820000A0523F /* TraceWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 638DB1CA2FE881FF00A0523F /* TraceWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		638DB1DB2FE8820000A0523F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 63DCBCAC2FDEF667009EBC1B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 638DB1C92FE881FF00A0523F;
+			remoteInfo = TraceWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		638DB1E22FE8820000A0523F /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				638DB1DD2FE8820000A0523F /* TraceWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		638DB1C22FE7852600A0523F /* EventKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = EventKit.framework; path = System/Library/Frameworks/EventKit.framework; sourceTree = SDKROOT; };
+		638DB1CA2FE881FF00A0523F /* TraceWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TraceWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		638DB1CB2FE881FF00A0523F /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		638DB1CD2FE881FF00A0523F /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		638DB1E42FE8836200A0523F /* TraceWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TraceWidgetExtension.entitlements; sourceTree = "<group>"; };
 		63DCBCB42FDEF667009EBC1B /* Trace.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Trace.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -18,9 +54,24 @@
 			);
 			target = 63DCBCB32FDEF667009EBC1B /* Trace */;
 		};
+		638DB1E12FE8820000A0523F /* Exceptions for "TraceWidget" folder in "TraceWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 638DB1C92FE881FF00A0523F /* TraceWidgetExtension */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		638DB1CF2FE881FF00A0523F /* TraceWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				638DB1E12FE8820000A0523F /* Exceptions for "TraceWidget" folder in "TraceWidgetExtension" target */,
+			);
+			path = TraceWidget;
+			sourceTree = "<group>";
+		};
 		63DCBCB62FDEF667009EBC1B /* Trace */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -32,20 +83,43 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		638DB1C72FE881FF00A0523F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				638DB1CE2FE881FF00A0523F /* SwiftUI.framework in Frameworks */,
+				638DB1CC2FE881FF00A0523F /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		63DCBCB12FDEF667009EBC1B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				638DB1C32FE7852600A0523F /* EventKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		638DB1C12FE7852500A0523F /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				638DB1C22FE7852600A0523F /* EventKit.framework */,
+				638DB1CB2FE881FF00A0523F /* WidgetKit.framework */,
+				638DB1CD2FE881FF00A0523F /* SwiftUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		63DCBCAB2FDEF667009EBC1B = {
 			isa = PBXGroup;
 			children = (
+				638DB1E42FE8836200A0523F /* TraceWidgetExtension.entitlements */,
 				63DCBCB62FDEF667009EBC1B /* Trace */,
+				638DB1CF2FE881FF00A0523F /* TraceWidget */,
+				638DB1C12FE7852500A0523F /* Frameworks */,
 				63DCBCB52FDEF667009EBC1B /* Products */,
 			);
 			sourceTree = "<group>";
@@ -54,6 +128,7 @@
 			isa = PBXGroup;
 			children = (
 				63DCBCB42FDEF667009EBC1B /* Trace.app */,
+				638DB1CA2FE881FF00A0523F /* TraceWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -61,6 +136,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		638DB1C92FE881FF00A0523F /* TraceWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 638DB1DE2FE8820000A0523F /* Build configuration list for PBXNativeTarget "TraceWidgetExtension" */;
+			buildPhases = (
+				638DB1C62FE881FF00A0523F /* Sources */,
+				638DB1C72FE881FF00A0523F /* Frameworks */,
+				638DB1C82FE881FF00A0523F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				638DB1CF2FE881FF00A0523F /* TraceWidget */,
+			);
+			name = TraceWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = TraceWidgetExtension;
+			productReference = 638DB1CA2FE881FF00A0523F /* TraceWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		63DCBCB32FDEF667009EBC1B /* Trace */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 63DCBCBF2FDEF669009EBC1B /* Build configuration list for PBXNativeTarget "Trace" */;
@@ -68,10 +165,12 @@
 				63DCBCB02FDEF667009EBC1B /* Sources */,
 				63DCBCB12FDEF667009EBC1B /* Frameworks */,
 				63DCBCB22FDEF667009EBC1B /* Resources */,
+				638DB1E22FE8820000A0523F /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				638DB1DC2FE8820000A0523F /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				63DCBCB62FDEF667009EBC1B /* Trace */,
@@ -93,6 +192,9 @@
 				LastSwiftUpdateCheck = 2650;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
+					638DB1C92FE881FF00A0523F = {
+						CreatedOnToolsVersion = 26.5;
+					};
 					63DCBCB32FDEF667009EBC1B = {
 						CreatedOnToolsVersion = 26.5;
 					};
@@ -113,11 +215,19 @@
 			projectRoot = "";
 			targets = (
 				63DCBCB32FDEF667009EBC1B /* Trace */,
+				638DB1C92FE881FF00A0523F /* TraceWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		638DB1C82FE881FF00A0523F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		63DCBCB22FDEF667009EBC1B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -128,6 +238,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		638DB1C62FE881FF00A0523F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		63DCBCB02FDEF667009EBC1B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -137,7 +254,77 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		638DB1DC2FE8820000A0523F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 638DB1C92FE881FF00A0523F /* TraceWidgetExtension */;
+			targetProxy = 638DB1DB2FE8820000A0523F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		638DB1DF2FE8820000A0523F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = TraceWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TraceWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = TraceWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Trace.TraceWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		638DB1E02FE8820000A0523F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = TraceWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TraceWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = TraceWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Trace.TraceWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		63DCBCBD2FDEF669009EBC1B /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -264,8 +451,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -304,8 +492,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -342,6 +531,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		638DB1DE2FE8820000A0523F /* Build configuration list for PBXNativeTarget "TraceWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				638DB1DF2FE8820000A0523F /* Debug */,
+				638DB1E02FE8820000A0523F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		63DCBCAF2FDEF667009EBC1B /* Build configuration list for PBXProject "Trace" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

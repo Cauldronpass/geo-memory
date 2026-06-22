@@ -33,6 +33,7 @@ struct DiscoverView: View {
     @State private var resultsExpanded = true
     @State private var mapPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @FocusState private var searchFocused: Bool
+    @State private var searchDebounceTask: Task<Void, Never>? = nil
 
     // Filters
     @State private var showPinnedOnly = false
@@ -65,9 +66,53 @@ struct DiscoverView: View {
             }
     }
 
+    // Local database places matching the current search text — updated on every keystroke.
+    private var matchingLocalPlaces: [Place] {
+        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+        let filtered = notion.places
+            .filter { $0.status != "Archived" }
+            .filter { !showPinnedOnly || $0.flagged }
+            .filter { selectedCategory == nil || $0.category == selectedCategory }
+            .filter { selectedTag == nil || $0.tags.contains(selectedTag!) }
+            .filter { place in
+                place.name.lowercased().contains(q) ||
+                place.city.lowercased().contains(q) ||
+                place.address.lowercased().contains(q) ||
+                place.tags.contains { $0.lowercased().contains(q) } ||
+                (place.notes?.lowercased().contains(q) ?? false)
+            }
+        // Sort by distance when location is available; fall back to alphabetical
+        if let userLoc = locationManager.location {
+            return filtered.sorted {
+                let d0 = userLoc.distance(from: CLLocation(latitude: $0.latitude, longitude: $0.longitude))
+                let d1 = userLoc.distance(from: CLLocation(latitude: $1.latitude, longitude: $1.longitude))
+                return d0 < d1
+            }
+        }
+        return filtered.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    // Google results — hidden when Saved filter is active, and deduplicated against local matches.
     private var filteredSearchResults: [GooglePlace] {
-        guard myPlacesOnly else { return searchResults }
-        return searchResults.filter { isInDatabase($0) }
+        guard !myPlacesOnly else { return [] }
+        return searchResults.filter { !isInDatabase($0) }
+    }
+
+    private var totalResultCount: Int { matchingLocalPlaces.count + filteredSearchResults.count }
+
+    /// Returns the Google result from the current search that matches a local Place, if any.
+    private func matchingGoogleResult(for place: Place) -> GooglePlace? {
+        // Prefer Google Place ID match
+        if let gpid = place.googlePlaceID,
+           let match = searchResults.first(where: { $0.id == gpid }) {
+            return match
+        }
+        // Fallback: same name + overlapping address city
+        return searchResults.first {
+            $0.name.lowercased() == place.name.lowercased() &&
+            $0.formattedAddress.lowercased().contains(place.city.lowercased())
+        }
     }
 
     var body: some View {
@@ -187,6 +232,24 @@ struct DiscoverView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+                .onChange(of: searchText) { _, newValue in
+                    // Cancel any pending debounce
+                    searchDebounceTask?.cancel()
+                    let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                    guard !trimmed.isEmpty, !myPlacesOnly else {
+                        if trimmed.isEmpty {
+                            searchResults = []
+                            hasSearched = false
+                        }
+                        return
+                    }
+                    // 0.6 s debounce — fires Google search as you type
+                    searchDebounceTask = Task {
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                        guard !Task.isCancelled else { return }
+                        await performSearch()
+                    }
+                }
 
                 // Filter chips
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -235,7 +298,7 @@ struct DiscoverView: View {
             .padding(.top, 12)
 
             // MARK: Results bottom sheet
-            if hasSearched {
+            if hasSearched || !matchingLocalPlaces.isEmpty {
                 VStack(spacing: 0) {
                     Spacer()
                     VStack(spacing: 0) {
@@ -248,9 +311,9 @@ struct DiscoverView: View {
                                     .frame(width: 36, height: 4)
                                     .padding(.top, 8)
                                 HStack {
-                                    Text(filteredSearchResults.isEmpty
+                                    Text(totalResultCount == 0
                                          ? "No results"
-                                         : "\(filteredSearchResults.count) place\(filteredSearchResults.count == 1 ? "" : "s") nearby")
+                                         : "\(totalResultCount) place\(totalResultCount == 1 ? "" : "s") found")
                                         .font(.subheadline.weight(.medium))
                                     Spacer()
                                     Image(systemName: resultsExpanded ? "chevron.down" : "chevron.up")
@@ -264,7 +327,7 @@ struct DiscoverView: View {
 
                         if resultsExpanded {
                             Divider()
-                            if filteredSearchResults.isEmpty {
+                            if totalResultCount == 0 {
                                 Text("No matching places")
                                     .font(.subheadline).foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity).padding(.vertical, 24)
@@ -272,24 +335,124 @@ struct DiscoverView: View {
                                 ScrollViewReader { proxy in
                                     ScrollView {
                                         LazyVStack(spacing: 0) {
-                                            ForEach(filteredSearchResults) { item in
-                                                DiscoverResultRow(
-                                                    place: item,
-                                                    notion: notion,
-                                                    locationManager: locationManager,
-                                                    selectedItem: selectedResult,
-                                                    onExpand: { coord in
+                                            // Saved (local database) results — always first
+                                            if !matchingLocalPlaces.isEmpty {
+                                                if !filteredSearchResults.isEmpty {
+                                                    HStack {
+                                                        Text("Saved")
+                                                            .font(.caption.weight(.semibold))
+                                                            .foregroundStyle(.secondary)
+                                                        Spacer()
+                                                    }
+                                                    .padding(.horizontal, 16)
+                                                    .padding(.top, 8)
+                                                    .padding(.bottom, 2)
+                                                }
+                                                ForEach(matchingLocalPlaces) { place in
+                                                    let gMatch = matchingGoogleResult(for: place)
+                                                    Button {
+                                                        activeSheet = .tracePlace(place)
                                                         withAnimation {
                                                             mapPosition = .region(MKCoordinateRegion(
-                                                                center: coord,
+                                                                center: place.coordinate,
                                                                 span: MKCoordinateSpan(latitudeDelta: 0.003, longitudeDelta: 0.003)
                                                             ))
                                                         }
+                                                    } label: {
+                                                        HStack(spacing: 12) {
+                                                            Image(systemName: placeIcon(for: place.category))
+                                                                .foregroundStyle(placeColor(for: place.category))
+                                                                .frame(width: 20)
+                                                            VStack(alignment: .leading, spacing: 2) {
+                                                                HStack(spacing: 4) {
+                                                                    Text(place.name)
+                                                                        .font(.body)
+                                                                        .foregroundStyle(.primary)
+                                                                    Image(systemName: "star.fill")
+                                                                        .foregroundStyle(.yellow)
+                                                                        .font(.caption2)
+                                                                }
+                                                                // Base subtitle: category · city
+                                                                let subtitle = [place.category, place.city]
+                                                                    .filter { !$0.isEmpty }
+                                                                    .joined(separator: " · ")
+                                                                // Distance always from local coordinates
+                                                                let distText: String? = {
+                                                                    guard let userLoc = locationManager.location else { return nil }
+                                                                    let meters = userLoc.distance(from: CLLocation(latitude: place.latitude, longitude: place.longitude))
+                                                                    return String(format: "%.1f mi", meters / 1609.344)
+                                                                }()
+                                                                HStack(spacing: 6) {
+                                                                    Text(subtitle)
+                                                                        .font(.caption)
+                                                                        .foregroundStyle(.secondary)
+                                                                    if let d = distText {
+                                                                        Text("· \(d)")
+                                                                            .font(.caption)
+                                                                            .foregroundStyle(.secondary)
+                                                                    }
+                                                                }
+                                                                // Rating + open status from Google match when available
+                                                                if let g = gMatch, g.rating != nil || g.openNow != nil {
+                                                                    HStack(spacing: 6) {
+                                                                        if let rating = g.rating {
+                                                                            Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                                                                                .font(.caption)
+                                                                                .foregroundStyle(.orange)
+                                                                        }
+                                                                        if let open = g.openNow {
+                                                                            Text(open ? "Open" : "Closed")
+                                                                                .font(.caption)
+                                                                                .foregroundStyle(open ? .green : .red)
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Spacer()
+                                                            Image(systemName: "chevron.right")
+                                                                .font(.caption2)
+                                                                .foregroundStyle(.tertiary)
+                                                        }
+                                                        .padding(.vertical, 10)
                                                     }
-                                                )
-                                                .padding(.horizontal, 16)
-                                                .id(item.id)
-                                                Divider().padding(.leading, 16)
+                                                    .buttonStyle(.plain)
+                                                    .padding(.horizontal, 16)
+                                                    Divider().padding(.leading, 16)
+                                                }
+                                            }
+
+                                            // Google Places results
+                                            if !filteredSearchResults.isEmpty {
+                                                if !matchingLocalPlaces.isEmpty {
+                                                    HStack {
+                                                        Text("Nearby")
+                                                            .font(.caption.weight(.semibold))
+                                                            .foregroundStyle(.secondary)
+                                                        Spacer()
+                                                    }
+                                                    .padding(.horizontal, 16)
+                                                    .padding(.top, 8)
+                                                    .padding(.bottom, 2)
+                                                }
+                                                ForEach(filteredSearchResults) { item in
+                                                    DiscoverResultRow(
+                                                        place: item,
+                                                        notion: notion,
+                                                        locationManager: locationManager,
+                                                        selectedItem: selectedResult,
+                                                        onExpand: { coord in
+                                                            withAnimation {
+                                                                mapPosition = .region(MKCoordinateRegion(
+                                                                    center: coord,
+                                                                    span: MKCoordinateSpan(latitudeDelta: 0.003, longitudeDelta: 0.003)
+                                                                ))
+                                                            }
+                                                        }
+                                                    )
+                                                    .padding(.horizontal, 16)
+                                                    .id(item.id)
+                                                    Divider().padding(.leading, 16)
+                                                }
                                             }
                                         }
                                     }
@@ -342,9 +505,17 @@ struct DiscoverView: View {
     }
 
     private func isInDatabase(_ place: GooglePlace) -> Bool {
-        notion.places.contains {
-            ($0.googlePlaceID != nil && $0.googlePlaceID == place.id) ||
-            $0.name.lowercased() == place.name.lowercased()
+        // Prefer Google Place ID match — exact and unambiguous.
+        if notion.places.contains(where: { $0.googlePlaceID == place.id }) {
+            return true
+        }
+        // Name-only fallback: only match if no Google Place ID is stored on the local record
+        // (i.e. a manually created place that was never enriched). Requires name + city to agree.
+        return notion.places.contains {
+            $0.googlePlaceID == nil &&
+            $0.name.lowercased() == place.name.lowercased() &&
+            !place.formattedAddress.isEmpty &&
+            place.formattedAddress.lowercased().contains($0.city.lowercased())
         }
     }
 
@@ -751,15 +922,17 @@ struct DiscoverResultRow: View {
         .onAppear {
             if customName.isEmpty { customName = place.name }
             if matchedPlaceID == nil {
-                // Pass 1: Google Place ID match
+                // Pass 1: Google Place ID match — exact, unambiguous
                 matchedPlaceID = notion.places.first { $0.googlePlaceID == place.id }?.id
-                // Pass 2: name match fallback
+                // Pass 2: name + city fallback — only for local records with no Google Place ID
                 if matchedPlaceID == nil {
                     let lower = place.name.lowercased()
+                    let addrLower = place.formattedAddress.lowercased()
                     matchedPlaceID = notion.places.first {
-                        $0.name.lowercased() == lower
-                    }?.id ?? notion.places.first {
-                        $0.name.lowercased().contains(lower) || lower.contains($0.name.lowercased())
+                        $0.googlePlaceID == nil &&
+                        $0.name.lowercased() == lower &&
+                        !addrLower.isEmpty &&
+                        addrLower.contains($0.city.lowercased())
                     }?.id
                 }
             }

@@ -10,6 +10,7 @@ class NotionService {
     var captures: [Capture] = []
     var people: [Person] = []
     var workouts: [Workout] = []
+    var dayNotes: [DayNote] = []
     var personDetailCache: [String: PersonDetail] = [:]
     var isLoading = false
     var error: String?
@@ -19,12 +20,31 @@ class NotionService {
     private let capturesDBID = "7e292efac9754d7f8e5fceef5e9dc0e2"
     private let peopleDBID = "50261ebf9c3c49bc926542e3ccfaa4aa"
     private let workoutsDBID = "b7dab8c1a46542ab83c442e1b76f002a"
+    private let dayNotesDBID = "da0768bf98ae4ab09e341a80131d4b52"
     private let notionVersion = "2022-06-28"
     private let baseURL = "https://api.notion.com/v1"
 
+    // Stored in the shared App Group suite so the TraceWidget extension can read it.
+    // App Group "group.com.david.trace" must be enabled on both targets in Xcode.
+    private var sharedDefaults: UserDefaults {
+        UserDefaults(suiteName: "group.com.david.trace") ?? .standard
+    }
+
     var token: String {
-        get { UserDefaults.standard.string(forKey: "notion_token") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "notion_token") }
+        get {
+            // Read from shared suite first
+            if let t = sharedDefaults.string(forKey: "notion_token"), !t.isEmpty {
+                return t
+            }
+            // One-time migration: pull from standard defaults (pre-App-Group installs)
+            if let legacy = UserDefaults.standard.string(forKey: "notion_token"), !legacy.isEmpty {
+                sharedDefaults.set(legacy, forKey: "notion_token")
+                UserDefaults.standard.removeObject(forKey: "notion_token")
+                return legacy
+            }
+            return ""
+        }
+        set { sharedDefaults.set(newValue, forKey: "notion_token") }
     }
 
     private var headers: [String: String] {
@@ -120,7 +140,7 @@ class NotionService {
     func checkIn(place: Place, rating: Int? = nil, notes: String? = nil, date: Date = Date(), people: [String]? = nil) async throws -> String {
         var props: [String: Any] = [
             "Name": ["title": [["text": ["content": place.name]]]],
-            "Date Visited": ["date": ["start": ISO8601DateFormatter().string(from: date)]],
+            "Date Visited": ["date": ["start": localDateString(from: date)]],
             "Place": ["relation": [["id": place.id]]]
         ]
         if let rating { props["Rating"] = ["number": rating] }
@@ -197,28 +217,91 @@ class NotionService {
         }
     }
 
-    func updatePlace(_ place: Place, name: String, category: String, status: String, tags: [String]? = nil) async throws {
+    func updatePlace(_ place: Place, name: String, category: String, status: String,
+                     tags: [String]? = nil, city: String? = nil, notes: String? = nil) async throws {
         var props: [String: Any] = [
             "Name": ["title": [["text": ["content": name]]]],
             "Category": ["select": ["name": category]],
             "Status": ["select": ["name": status]]
         ]
-        if let tags {
-            props["Tags"] = ["multi_select": tags.map { ["name": $0] }]
+        if let tags { props["Tags"] = ["multi_select": tags.map { ["name": $0] }] }
+        if let city { props["City"] = ["rich_text": [["text": ["content": city]]]] }
+        if let notes { props["Notes Raw"] = ["rich_text": [["text": ["content": notes]]]] }
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: ["properties": props])
+        if let i = places.firstIndex(where: { $0.id == place.id }) {
+            places[i].name = name
+            places[i].category = category
+            places[i].status = status
+            if let tags  { places[i].tags  = tags  }
+            if let city  { places[i].city  = city  }
+            if let notes { places[i].notes = notes }
         }
-        let body: [String: Any] = ["properties": props]
+    }
+
+    /// Re-enriches a place record using fresh Google Places data.
+    /// Updates name, address, city, coordinates, place ID, phone, website, hours, rating, and maps URL.
+    func enrichPlace(_ place: Place, from googlePlace: GooglePlace) async throws {
+        let mapsURL = "https://maps.google.com/?place_id=\(googlePlace.id)"
+        var props: [String: Any] = [
+            "Name":             ["title": [["text": ["content": googlePlace.name]]]],
+            "Address":          ["rich_text": [["text": ["content": googlePlace.formattedAddress]]]],
+            "City":             ["rich_text": [["text": ["content": googlePlace.city]]]],
+            "Latitude":         ["number": googlePlace.latitude],
+            "Longitude":        ["number": googlePlace.longitude],
+            "Google Place ID":  ["rich_text": [["text": ["content": googlePlace.id]]]],
+            "Google Maps URL":  ["url": mapsURL],
+            "Enrichment Status": ["select": ["name": "Enriched"]]
+        ]
+        if let phone = googlePlace.phone, !phone.isEmpty {
+            props["Phone"] = ["phone_number": phone]
+        }
+        if let website = googlePlace.website, !website.isEmpty {
+            props["Website"] = ["url": website]
+        }
+        if !googlePlace.weekdayDescriptions.isEmpty {
+            props["Hours"] = ["rich_text": [["text": ["content": googlePlace.weekdayDescriptions.joined(separator: "\n")]]]]
+        }
+        if let rating = googlePlace.rating {
+            props["Rating External"] = ["number": rating]
+        }
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: ["properties": props])
+        // Update local cache
+        if let i = places.firstIndex(where: { $0.id == place.id }) {
+            places[i].name           = googlePlace.name
+            places[i].address        = googlePlace.formattedAddress
+            places[i].city           = googlePlace.city
+            places[i].latitude       = googlePlace.latitude
+            places[i].longitude      = googlePlace.longitude
+            places[i].googlePlaceID  = googlePlace.id
+            places[i].googleMapsURL  = mapsURL
+            if let phone = googlePlace.phone, !phone.isEmpty { places[i].phone = phone }
+            if let website = googlePlace.website, !website.isEmpty { places[i].website = website }
+            if !googlePlace.weekdayDescriptions.isEmpty {
+                places[i].hours = googlePlace.weekdayDescriptions.joined(separator: "\n")
+            }
+            if let rating = googlePlace.rating { places[i].ratingExternal = rating }
+        }
+    }
+
+    func markPlaceForReview(_ place: Place) async throws {
+        let body: [String: Any] = ["properties": ["Enrichment Status": ["select": ["name": "Needs Review"]]]]
         _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
-        if let index = places.firstIndex(where: { $0.id == place.id }) {
-            places[index].name = name
-            places[index].category = category
-            places[index].status = status
-            if let tags { places[index].tags = tags }
-        }
     }
 
     func archivePlace(_ place: Place) async throws {
         let body: [String: Any] = ["properties": ["Status": ["select": ["name": "Archived"]]]]
         _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
+        if let i = places.firstIndex(where: { $0.id == place.id }) {
+            places[i].status = "Archived"
+        }
+    }
+
+    func clearReviewFlag(_ place: Place) async throws {
+        let body: [String: Any] = ["properties": ["Enrichment Status": ["select": ["name": "Enriched"]]]]
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
+        if let i = places.firstIndex(where: { $0.id == place.id }) {
+            places[i].enrichmentStatus = "Enriched"
+        }
     }
 
     func toggleFlagged(_ place: Place) async throws {
@@ -234,7 +317,7 @@ class NotionService {
         props["Rating"] = rating != nil ? ["number": rating!] : ["number": NSNull()]
         props["Notes"] = ["rich_text": [["text": ["content": notes ?? ""]]]]
         if let date {
-            props["Date Visited"] = ["date": ["start": ISO8601DateFormatter().string(from: date)]]
+            props["Date Visited"] = ["date": ["start": localDateString(from: date)]]
         }
         if let people {
             props["Companion"] = ["relation": people.map { ["id": $0] }]
@@ -311,9 +394,7 @@ class NotionService {
             "Type": ["select": ["name": w.type]]
         ]
         if let d = w.date {
-            let fmt = ISO8601DateFormatter()
-            fmt.formatOptions = [.withFullDate]
-            props["Date"] = ["date": ["start": fmt.string(from: d)]]
+            props["Date"] = ["date": ["start": localDateString(from: d)]]
         }
         func num(_ val: Int?, key: String) { if let v = val { props[key] = ["number": v] } }
         func numD(_ val: Double?, key: String) { if let v = val { props[key] = ["number": v] } }
@@ -389,12 +470,10 @@ class NotionService {
             return (prop as? [String: Any])?["number"] as? Double
         }
 
-        let df = ISO8601DateFormatter()
-        df.formatOptions = [.withFullDate]
         let date: Date = {
             guard let s = ((props["Date"] as? [String: Any])?["date"] as? [String: Any])?["start"] as? String
             else { return Date() }
-            return df.date(from: s) ?? Date()
+            return notionDate(from: s) ?? Date()
         }()
 
         let placeID = ((props["Place"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String
@@ -593,18 +672,58 @@ class NotionService {
         return detail
     }
 
-    func enrichPerson(id: String, relationship: String?, relationshipStrength: String?,
-                      companyContext: String?, city: String?, howWeMet: String?, tags: [String]) async throws {
+    func enrichPerson(id: String,
+                      relationship: String?,
+                      relationshipStrength: String?,
+                      companyContext: String?,
+                      city: String?,
+                      howWeMet: String?,
+                      tags: [String],
+                      phone: String? = nil,
+                      email: String? = nil,
+                      address: String? = nil,
+                      photoURL: String? = nil) async throws {
         var props: [String: Any] = [:]
-        if let r = relationship, !r.isEmpty { props["Relationship"] = ["select": ["name": r]] }
-        if let rs = relationshipStrength, !rs.isEmpty { props["Relationship Strength"] = ["select": ["name": rs]] }
-        if let cc = companyContext { props["Company/Context"] = ["rich_text": [["text": ["content": cc]]]] }
-        if let c = city { props["City"] = ["rich_text": [["text": ["content": c]]]] }
-        if let h = howWeMet { props["How We Met"] = ["rich_text": [["text": ["content": h]]]] }
+        if let r = relationship {
+            props["Relationship"] = r.isEmpty ? ["select": NSNull()] : ["select": ["name": r]]
+        }
+        if let rs = relationshipStrength, !rs.isEmpty {
+            props["Relationship Strength"] = ["select": ["name": rs]]
+        }
+        if let cc = companyContext {
+            props["Company/Context"] = ["rich_text": cc.isEmpty ? [] : [["text": ["content": cc]]]]
+        }
+        if let c = city {
+            props["City"] = ["rich_text": c.isEmpty ? [] : [["text": ["content": c]]]]
+        }
+        if let h = howWeMet {
+            props["How We Met"] = ["rich_text": h.isEmpty ? [] : [["text": ["content": h]]]]
+        }
+        if let ph = phone {
+            props["Phone"] = ph.isEmpty ? ["phone_number": NSNull()] : ["phone_number": ph]
+        }
+        if let em = email {
+            props["Email"] = em.isEmpty ? ["email": NSNull()] : ["email": em]
+        }
+        if let ad = address {
+            props["Address"] = ["rich_text": ad.isEmpty ? [] : [["text": ["content": ad]]]]
+        }
         props["Tags"] = ["multi_select": tags.map { ["name": $0] }]
+        if let url = photoURL {
+            props["Photo"] = ["files": [["type": "external", "name": "photo.jpg", "external": ["url": url]]]]
+        }
         guard !props.isEmpty else { return }
         _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
         personDetailCache.removeValue(forKey: id)
+    }
+
+    /// Links (or unlinks) a person to a Place via the "Home Place" relation property.
+    func linkPersonToPlace(personID: String, placeID: String?) async throws {
+        let relation: Any = placeID != nil ? [["id": placeID!]] : []
+        _ = try await patch("\(baseURL)/pages/\(personID)", body: [
+            "properties": ["Home Place": ["relation": relation]]
+        ])
+        personDetailCache.removeValue(forKey: personID)
     }
 
     func updatePersonStatus(id: String, relationshipStrength: String) async throws {
@@ -666,6 +785,9 @@ class NotionService {
             return nil
         }()
 
+        // Home Place relation (single linked place)
+        let homePlaceID = ((props["Home Place"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String
+
         return PersonDetail(
             id: id,
             name: title(props["Name"]) ?? "",
@@ -683,8 +805,170 @@ class NotionService {
             photoURL: photoURL,
             visitCount: visitCount,
             lastVisitDate: lastVisitDate,
-            lastInteractionDate: lastInteractionDate
+            lastInteractionDate: lastInteractionDate,
+            homePlaceID: homePlaceID
         )
+    }
+
+    // MARK: - Day Notes — computed index
+
+    /// Keyed by "YYYY-M-D" (same format as CalendarGridView.dateKey).
+    /// dayNotes is sorted descending (newest first), so the first entry for each key
+    /// is the most recent note — `if map[key] == nil` preserves that.
+    var dayNotesByDate: [String: DayNote] {
+        var map: [String: DayNote] = [:]
+        let cal = Calendar.current
+        for note in dayNotes {
+            guard let date = note.date else { continue }
+            let c = cal.dateComponents([.year, .month, .day], from: date)
+            guard let y = c.year, let m = c.month, let d = c.day else { continue }
+            let key = "\(y)-\(m)-\(d)"
+            if map[key] == nil { map[key] = note }  // keep newest per day
+        }
+        return map
+    }
+
+    // MARK: - Day Notes — fetch
+
+    func fetchDayNotes() async {
+        do {
+            var allNotes: [DayNote] = []
+            var cursor: String? = nil
+            repeat {
+                var body: [String: Any] = [
+                    "sorts": [["property": "Date", "direction": "descending"]],
+                    "page_size": 100
+                ]
+                if let cursor { body["start_cursor"] = cursor }
+                let data = try await post("\(baseURL)/databases/\(dayNotesDBID)/query", body: body)
+                let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+                let pages = result["results"] as? [[String: Any]] ?? []
+                allNotes += pages.compactMap { parseDayNote($0) }
+                cursor = result["has_more"] as? Bool == true ? result["next_cursor"] as? String : nil
+            } while cursor != nil
+            dayNotes = allNotes.filter { $0.status != "Archived" }
+        } catch {
+            self.error = error.localizedDescription
+        }
+        await autoArchiveOldDayNotes()
+    }
+
+    func autoArchiveOldDayNotes() async {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -90, to: Date())!
+        let toArchive = dayNotes.filter { note in
+            guard let date = note.date else { return false }  // bucket notes never auto-archived
+            return date < cutoff
+        }
+        guard !toArchive.isEmpty else { return }
+        for note in toArchive {
+            let props: [String: Any] = ["Status": ["select": ["name": "Archived"]]]
+            try? await patch("\(baseURL)/pages/\(note.id)", body: ["properties": props])
+        }
+        dayNotes.removeAll { note in toArchive.contains(where: { $0.id == note.id }) }
+    }
+
+    // MARK: - Day Notes — save / update / delete
+
+    @discardableResult
+    func saveDayNote(date: Date, noteBody: String) async throws -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withFullDate]
+        iso.timeZone = TimeZone.current
+        let props: [String: Any] = [
+            "Body": ["title": [["text": ["content": noteBody]]]],
+            "Date": ["date": ["start": iso.string(from: date)]]
+        ]
+        let body: [String: Any] = [
+            "parent": ["database_id": dayNotesDBID],
+            "properties": props
+        ]
+        let data = try await post("\(baseURL)/pages", body: body)
+        let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let id = result["id"] as? String ?? ""
+        let note = DayNote(id: id, date: date, scope: nil, body: noteBody)
+        dayNotes.insert(note, at: 0)
+        return id
+    }
+
+    @discardableResult
+    func saveBucketNote(scope: String, noteBody: String) async throws -> String {
+        let props: [String: Any] = [
+            "Body": ["title": [["text": ["content": noteBody]]]],
+            "Scope": ["select": ["name": scope]]
+        ]
+        let body: [String: Any] = [
+            "parent": ["database_id": dayNotesDBID],
+            "properties": props
+        ]
+        let data = try await post("\(baseURL)/pages", body: body)
+        let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let id = result["id"] as? String ?? ""
+        let note = DayNote(id: id, date: nil, scope: scope, body: noteBody)
+        dayNotes.append(note)
+        return id
+    }
+
+    func updateDayNote(id: String, noteBody: String) async throws {
+        let props: [String: Any] = [
+            "Body": ["title": [["text": ["content": noteBody]]]]
+        ]
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
+        if let idx = dayNotes.firstIndex(where: { $0.id == id }) {
+            dayNotes[idx].body = noteBody
+        }
+    }
+
+    func moveDayNote(id: String, toDate: Date) async throws {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withFullDate]
+        iso.timeZone = TimeZone.current
+        let props: [String: Any] = [
+            "Date":  ["date": ["start": iso.string(from: toDate)]],
+            "Scope": ["select": NSNull()]
+        ]
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
+        if let i = dayNotes.firstIndex(where: { $0.id == id }) {
+            dayNotes[i].date  = toDate
+            dayNotes[i].scope = nil
+        }
+    }
+
+    func moveDayNoteToBucket(id: String, scope: String) async throws {
+        let props: [String: Any] = [
+            "Scope": ["select": ["name": scope]],
+            "Date":  ["date": NSNull()]
+        ]
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
+        if let i = dayNotes.firstIndex(where: { $0.id == id }) {
+            dayNotes[i].scope = scope
+            dayNotes[i].date  = nil
+        }
+    }
+
+    func deleteDayNote(id: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["archived": true])
+        dayNotes.removeAll { $0.id == id }
+    }
+
+    // MARK: - Day Notes — parse
+
+    private func parseDayNote(_ page: [String: Any]) -> DayNote? {
+        guard let id = page["id"] as? String,
+              let props = page["properties"] as? [String: Any] else { return nil }
+        let body = title(props["Body"]) ?? ""
+        guard !body.isEmpty else { return nil }
+
+        let dateStr = (props["Date"] as? [String: Any]).flatMap {
+            ($0["date"] as? [String: Any])?["start"] as? String
+        }
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withFullDate]
+        fmt.timeZone = TimeZone.current
+        let date = dateStr.flatMap { fmt.date(from: $0) }
+        let scope  = select(props["Scope"])
+        let status = select(props["Status"])
+
+        return DayNote(id: id, date: date, scope: scope, body: body, status: status)
     }
 
     private func post(_ urlString: String, body: [String: Any]) async throws -> Data {
@@ -752,9 +1036,12 @@ class NotionService {
             lastVisited: dateProp((props["Last Visited"] as? [String: Any])?["rollup"]),
             tags: ((props["Tags Raw"] as? [String: Any])?["multi_select"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? [],
             aiSummary: richText(props["AI Summary"]),
+            notes: richText(props["Notes Raw"]),
             frequent: checkbox(props["Frequent"]),
             dwellTime: (props["Dwell Time"] as? [String: Any])?["number"] as? Int,
-            geofenceExcluded: checkbox(props["Geofence Excluded"])
+            geofenceRadius: (props["Geofence Radius"] as? [String: Any])?["number"] as? Int,
+            geofenceExcluded: checkbox(props["Geofence Excluded"]),
+            enrichmentStatus: selectProp(props["Enrichment Status"])
         )
     }
 
@@ -767,6 +1054,31 @@ class NotionService {
         _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
         if let index = places.firstIndex(where: { $0.id == place.id }) {
             places[index].frequent = !place.frequent
+        }
+        if GeofenceManager.shared.isMonitoring {
+            GeofenceManager.shared.startMonitoring(places: places)
+        }
+    }
+
+    // MARK: - Set Dwell Time
+
+    func setDwellTime(_ place: Place, minutes: Int?) async throws {
+        let value: Any = minutes.map { $0 as Any } ?? NSNull()
+        let body: [String: Any] = ["properties": ["Dwell Time": ["number": value]]]
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
+        if let index = places.firstIndex(where: { $0.id == place.id }) {
+            places[index].dwellTime = minutes
+        }
+    }
+
+    // MARK: - Set Geofence Radius
+
+    func setGeofenceRadius(_ place: Place, metres: Int?) async throws {
+        let value: Any = metres.map { $0 as Any } ?? NSNull()
+        let body: [String: Any] = ["properties": ["Geofence Radius": ["number": value]]]
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
+        if let index = places.firstIndex(where: { $0.id == place.id }) {
+            places[index].geofenceRadius = metres
         }
         if GeofenceManager.shared.isMonitoring {
             GeofenceManager.shared.startMonitoring(places: places)
@@ -796,10 +1108,7 @@ class NotionService {
         let dateStr = (props["Date Visited"] as? [String: Any]).flatMap {
             ($0["date"] as? [String: Any])?["start"] as? String
         } ?? ""
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate]
-        formatter.timeZone = TimeZone.current
-        let visitDate = formatter.date(from: dateStr) ?? Date()
+        let visitDate = notionDate(from: dateStr) ?? Date()
         let photoURLs = ((props["Photo URLs"] as? [String: Any])?["rich_text"] as? [[String: Any]] ?? [])
             .compactMap { ($0["text"] as? [String: Any])?["content"] as? String }
             .filter { !$0.isEmpty && $0 != "\n" }
@@ -856,6 +1165,10 @@ class NotionService {
         return s["name"] as? String
     }
 
+    private func selectProp(_ prop: Any?) -> String? {
+        ((prop as? [String: Any])?["select"] as? [String: Any])?["name"] as? String
+    }
+
     private func checkbox(_ prop: Any?) -> Bool {
         (prop as? [String: Any])?["checkbox"] as? Bool ?? false
     }
@@ -872,6 +1185,36 @@ class NotionService {
         guard let p = prop as? [String: Any],
               let d = p["date"] as? [String: Any],
               let s = d["start"] as? String else { return nil }
+        return notionDate(from: s)
+    }
+
+    /// Formats a Date as a local-timezone date-only string ("2026-06-18") for Notion date fields.
+    /// Using a UTC timestamp would cause Notion to truncate to the UTC date, shifting evening
+    /// entries (after midnight UTC / 7 pm CDT) to the next day.
+    private func localDateString(from date: Date) -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withFullDate]
+        f.timeZone = TimeZone.current
+        return f.string(from: date)
+    }
+
+    /// Parses a Notion date string. Handles both date-only ("2026-06-18") and full
+    /// ISO-8601 ("2026-06-18T22:00:00Z" / "2026-06-18T17:00:00.000-05:00").
+    /// Date-only strings use the local timezone so days never shift at UTC midnight.
+    /// Full timestamps carry their own offset and convert correctly via the system.
+    private func notionDate(from s: String) -> Date? {
+        if s.count == 10 {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withFullDate]
+            f.timeZone = TimeZone.current
+            return f.date(from: s)
+        }
+        let f1 = ISO8601DateFormatter()
+        f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f1.date(from: s) { return d }
+        let f2 = ISO8601DateFormatter()
+        f2.formatOptions = [.withInternetDateTime]
+        if let d = f2.date(from: s) { return d }
         return ISO8601DateFormatter().date(from: s)
     }
 }

@@ -76,7 +76,12 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
         let toMonitor = Array((frequent + nonFrequent).prefix(maxGeofences))
 
         for place in toMonitor {
-            let radius = place.frequent ? frequentRadius : defaultRadius
+            let radius: Double
+            if let custom = place.geofenceRadius, custom > 0 {
+                radius = Double(custom)
+            } else {
+                radius = place.frequent ? frequentRadius : defaultRadius
+            }
             let region = CLCircularRegion(
                 center: CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude),
                 radius: radius,
@@ -154,6 +159,11 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
             trigger: trigger
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    /// Call this after a manual check-in to prevent the dwell notification from firing redundantly.
+    func cancelDwellNotificationForManualCheckIn(placeID: String) {
+        cancelDwellNotification(placeID: placeID)
     }
 
     private func cancelDwellNotification(placeID: String) {

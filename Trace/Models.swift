@@ -22,9 +22,12 @@ struct Place: Identifiable, Codable {
     var lastVisited: Date?
     var tags: [String]
     var aiSummary: String?
+    var notes: String?
     var frequent: Bool = false        // Notion "Frequent" checkbox — wide geofence + Nearby priority
     var dwellTime: Int? = nil         // Notion "Dwell Time" (minutes) — nil = use 3 min default
+    var geofenceRadius: Int? = nil    // Notion "Geofence Radius" (metres) — nil = use default (50m / 200m for frequent)
     var geofenceExcluded: Bool = false // Notion "Geofence Excluded" checkbox — opt this place out entirely
+    var enrichmentStatus: String?      // Notion "Enrichment Status" select — e.g. "Enriched", "Needs Review"
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
@@ -66,6 +69,7 @@ struct PersonDetail: Identifiable {
     var visitCount: Int?
     var lastVisitDate: Date?
     var lastInteractionDate: Date?
+    var homePlaceID: String?         // Relation to Places DB ("Home Place" property)
 }
 
 struct QueuedItem: Identifiable, Codable {
@@ -171,6 +175,14 @@ struct WorkoutDraft {
     var rowerWattsAvg: Int? = nil
     var rowerPace: String? = nil
     var rowerStrokeAvg: Int? = nil
+}
+
+struct DayNote: Identifiable, Codable {
+    let id: String
+    var date: Date?      // nil for bucket notes
+    var scope: String?   // nil for date notes; "This Week" / "Next Week" / "This Month" / "Next Month"
+    var body: String
+    var status: String?  // "Archived" or nil (active)
 }
 
 struct CheckInSession: Identifiable, Codable {

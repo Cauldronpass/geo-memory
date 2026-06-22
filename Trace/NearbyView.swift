@@ -2,6 +2,8 @@ import SwiftUI
 import CoreLocation
 
 struct NearbyView: View {
+    var onCalendarStateChange: ((Bool) -> Void)? = nil
+
     @Environment(NotionService.self) private var notionService
     @Environment(LocationManager.self) private var locationManager
     @State private var searchText = ""
@@ -9,6 +11,12 @@ struct NearbyView: View {
     @State private var showPinnedOnly = false
     @State private var selectedCategory: String? = nil
     @State private var selectedTag: String? = nil
+    @State private var dayNoteAction: DayNoteAction?
+    @State private var showCalendar = false
+    @State private var selectedBucketScope: String?
+
+    private let bucketScopes = ["This Week", "Next Week", "This Month", "Next Month"]
+    private let bucketAbbrevs = ["This Week": "TW", "Next Week": "NW", "This Month": "TM", "Next Month": "NM"]
 
     private var availableCategories: [String] {
         Array(Set(notionService.places
@@ -46,25 +54,84 @@ struct NearbyView: View {
 
     var recentPlaces: [Place] {
         guard searchText.isEmpty else { return [] }
-        let recentNames = Array(
-            notionService.visits
-                .sorted { $0.date > $1.date }
-                .map { $0.placeName }
-                .reduce(into: [String]()) { result, name in
-                    if !result.contains(name) { result.append(name) }
-                }
-                .prefix(5)
-        )
-        return recentNames.compactMap { name in
-            notionService.places.first { $0.name == name }
+        let recentIDs = notionService.visits
+            .sorted { $0.date > $1.date }
+            .reduce(into: [String]()) { result, visit in
+                if !result.contains(visit.placeID) { result.append(visit.placeID) }
+            }
+            .prefix(5)
+        return recentIDs.compactMap { id in
+            notionService.places.first { $0.id == id }
         }
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // Filter chips
-                ScrollView(.horizontal, showsIndicators: false) {
+            Group {
+                if showCalendar {
+                    ScrollView {
+                        DayNotesCalendarView()
+                            .environment(notionService)
+                            .padding(.vertical)
+                    }
+                } else {
+                    listView
+                }
+            }
+            .navigationTitle(showCalendar ? "Notes" : "Nearby")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task {
+                            await notionService.fetchPlaces()
+                            await notionService.fetchVisits()
+                            await notionService.fetchDayNotes()
+                        }
+                    } label: { Image(systemName: "arrow.clockwise") }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        withAnimation { showCalendar.toggle() }
+                    } label: {
+                        Image(systemName: showCalendar ? "list.bullet" : "calendar")
+                    }
+                }
+            }
+            .sheet(item: $selectedPlace) { place in
+                PlaceDetailView(place: place)
+                    .environment(NotionService.shared)
+                    .environment(LocationManager.shared)
+            }
+            .onChange(of: showCalendar) { _, new in onCalendarStateChange?(new) }
+            .sheet(item: $dayNoteAction) { action in
+                DayNoteSheet(action: action).environment(notionService)
+            }
+            .sheet(isPresented: Binding(
+                get: { selectedBucketScope != nil },
+                set: { if !$0 { selectedBucketScope = nil } }
+            )) {
+                if let scope = selectedBucketScope {
+                    BucketNoteSheet(
+                        scope: scope,
+                        onEdit: { note in
+                            selectedBucketScope = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                dayNoteAction = .tapBucket(scope, note)
+                            }
+                        }
+                    )
+                    .environment(notionService)
+                }
+            }
+        }
+    }
+
+    // MARK: - List view
+
+    private var listView: some View {
+        VStack(spacing: 0) {
+            // Filter chips
+            ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         MapFilterChip(title: "Pinned", systemImage: "pin.fill", isActive: showPinnedOnly) {
                             showPinnedOnly.toggle()
@@ -134,6 +201,9 @@ struct NearbyView: View {
                         .padding()
                     } else {
                         List {
+                            // Today note card
+                            todayNoteSection
+
                             if !recentPlaces.isEmpty {
                                 Section(header: HStack(alignment: .firstTextBaseline, spacing: 4) {
     Text("Recent")
@@ -163,15 +233,46 @@ struct NearbyView: View {
                         }
                     }
                 }
+        }
+    }
+
+    // MARK: - Today note section
+
+    @ViewBuilder
+    private var todayNoteSection: some View {
+        let todayNote = notionService.dayNotes.first { note in
+            guard let d = note.date else { return false }
+            return Calendar.current.isDateInToday(d)
+        }
+
+        Section {
+            if let note = todayNote {
+                Button {
+                    dayNoteAction = .tapDate(Date(), note)
+                } label: {
+                    Text(note.body)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    dayNoteAction = .tapDate(Date(), nil)
+                } label: {
+                    Label("Add a note for today", systemImage: "square.and.pencil")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            .navigationTitle("Nearby")
-            .drawerToolbar()
+        } header: {
+            Text("Today")
         }
-        .sheet(item: $selectedPlace) { place in
-            PlaceDetailView(place: place)
-                .environment(NotionService.shared)
-                .environment(LocationManager.shared)
-        }
+
     }
 }
 
@@ -201,5 +302,247 @@ struct NearbyPlaceRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Day Notes Calendar View
+
+struct DayNotesCalendarView: View {
+    @Environment(NotionService.self) private var notion
+    @State private var dayNoteAction: DayNoteAction?
+    @State private var selectedBucketScope: String?
+    @State private var selectedDayDate: Date? = nil
+
+    private let bucketScopes = ["This Week", "Next Week", "This Month", "Next Month"]
+    private let bucketAbbrevs = ["This Week": "TW", "Next Week": "NW", "This Month": "TM", "Next Month": "NM"]
+
+    private var bucketNotesList: [DayNote] { notion.dayNotes.filter { $0.scope != nil } }
+    private func bucketCount(for scope: String) -> Int {
+        bucketNotesList.filter { $0.scope == scope }.count
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            CalendarGridView(
+                entries: [],
+                notesByDate: notion.dayNotesByDate,
+                bucketNotes: [],
+                showBucketControls: false,
+                weekSecondary: { _ in nil },
+                monthStats: { _ in [] },
+                onSelect: { _ in },
+                onNoteAction: { action in
+                    // If there are existing notes for this day, show the list first
+                    if case .tapDate(let date, let note) = action, note != nil {
+                        selectedDayDate = date
+                    } else {
+                        dayNoteAction = action
+                    }
+                }
+            )
+
+            // Bucket tiles
+            HStack(spacing: 8) {
+                ForEach(bucketScopes, id: \.self) { scope in
+                    let abbrev = bucketAbbrevs[scope] ?? scope
+                    let count = bucketCount(for: scope)
+                    Button { selectedBucketScope = scope } label: {
+                        VStack(spacing: 3) {
+                            Text(abbrev)
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            Text("\(count)")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(count > 0 ? Color.orange : Color(.tertiaryLabel))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Color(.secondarySystemGroupedBackground),
+                                    in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .sheet(item: $dayNoteAction) { action in
+            DayNoteSheet(action: action).environment(notion)
+        }
+        .sheet(isPresented: Binding(
+            get: { selectedDayDate != nil },
+            set: { if !$0 { selectedDayDate = nil } }
+        )) {
+            if let date = selectedDayDate {
+                DayNotesListSheet(
+                    date: date,
+                    onEdit: { note in
+                        selectedDayDate = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            dayNoteAction = .tapDate(date, note)
+                        }
+                    }
+                )
+                .environment(notion)
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { selectedBucketScope != nil },
+            set: { if !$0 { selectedBucketScope = nil } }
+        )) {
+            if let scope = selectedBucketScope {
+                BucketNoteSheet(
+                    scope: scope,
+                    onEdit: { note in
+                        selectedBucketScope = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            dayNoteAction = .tapBucket(scope, note)
+                        }
+                    }
+                )
+                .environment(notion)
+            }
+        }
+    }
+}
+
+// MARK: - Day Notes List Sheet
+
+struct DayNotesListSheet: View {
+    let date: Date
+    let onEdit: (DayNote) -> Void
+
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+    @State private var quickNote = ""
+    @State private var isSaving = false
+    @FocusState private var fieldFocused: Bool
+
+    private var notes: [DayNote] {
+        let cal = Calendar.current
+        return notion.dayNotes.filter {
+            guard let d = $0.date else { return false }
+            return cal.isDate(d, inSameDayAs: date)
+        }
+    }
+
+    private var title: String {
+        date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.title2.bold())
+                    Text(notes.isEmpty ? "No notes" : "\(notes.count) note\(notes.count == 1 ? "" : "s")")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .font(.body.weight(.medium))
+            }
+            .padding()
+
+            Divider()
+
+            if notes.isEmpty {
+                Spacer()
+                ContentUnavailableView("No notes yet", systemImage: "note.text",
+                    description: Text("Type below to add your first note for this day"))
+                Spacer()
+            } else {
+                List {
+                    ForEach(notes) { note in
+                        Button { onEdit(note) } label: {
+                            Text(note.body)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color(.systemGray5))
+                                .padding(.vertical, 3)
+                        )
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                Task { try? await notion.deleteDayNote(id: note.id) }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                            Button { onEdit(note) } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            .tint(.orange)
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+
+            Divider()
+
+            // Inline quick-add
+            VStack(spacing: 8) {
+                TextEditor(text: $quickNote)
+                    .focused($fieldFocused)
+                    .frame(minHeight: 60, maxHeight: 100)
+                    .scrollContentBackground(.hidden)
+                    .font(.body)
+                    .overlay(alignment: .topLeading) {
+                        if quickNote.isEmpty {
+                            Text("Add a note…")
+                                .foregroundStyle(Color(.placeholderText))
+                                .font(.body)
+                                .padding(.top, 8).padding(.leading, 5)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+
+                HStack {
+                    Spacer()
+                    Button {
+                        Task { await saveQuick() }
+                    } label: {
+                        if isSaving {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Text("Save")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 8)
+                                .background(Color.orange, in: RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+                    .disabled(quickNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
+            .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 14))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func saveQuick() async {
+        let text = quickNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        isSaving = true
+        try? await notion.saveDayNote(date: date, noteBody: text)
+        quickNote = ""
+        fieldFocused = false
+        isSaving = false
     }
 }

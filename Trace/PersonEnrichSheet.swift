@@ -8,23 +8,27 @@ struct PersonEnrichSheet: View {
 
     private let relationships = ["colleague", "friend", "family", "neighbor", "client", "mentor", "Pool Team", "other"]
     private let strengthOptions = ["new", "active", "dormant"]
-    private let tagOptions = ["kearney", "personal", "finance", "travel-buddy", "pool-league",
-                               "treasury", "gbu", "family", "chicago", "french"]
+    private let tagOptions = ["Family", "Business", "Friend", "Network", "Work", "Pool", "Reference"]
 
     @State private var relationship = ""
     @State private var relationshipStrength = "new"
+    @State private var phone = ""
+    @State private var email = ""
     @State private var companyContext = ""
     @State private var city = ""
     @State private var howWeMet = ""
+    @State private var address = ""
     @State private var selectedTags: Set<String> = []
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var showingAddTag = false
+    @State private var newTagText = ""
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Picker("Relationship", selection: $relationship) {
+                Section("Identity") {
+                    Picker("Category", selection: $relationship) {
                         Text("—").tag("")
                         ForEach(relationships, id: \.self) { r in
                             Text(r.capitalized).tag(r)
@@ -40,27 +44,17 @@ struct PersonEnrichSheet: View {
                     TextField("How We Met", text: $howWeMet)
                 }
 
-                Section("Tags") {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 110))], spacing: 8) {
-                        ForEach(tagOptions, id: \.self) { tag in
-                            Button {
-                                if selectedTags.contains(tag) { selectedTags.remove(tag) }
-                                else { selectedTags.insert(tag) }
-                            } label: {
-                                Text(tag)
-                                    .font(.caption)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .frame(maxWidth: .infinity)
-                                    .background(selectedTags.contains(tag) ? Color.accentColor : Color.secondary.opacity(0.12))
-                                    .foregroundStyle(selectedTags.contains(tag) ? .white : .primary)
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                Section("Contact") {
+                    TextField("Phone", text: $phone)
+                        .keyboardType(.phonePad)
+                    TextField("Email", text: $email)
+                        .keyboardType(.emailAddress)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    TextField("Address", text: $address)
                 }
+
+                tagSection
 
                 if let err = errorMessage {
                     Section {
@@ -79,7 +73,55 @@ struct PersonEnrichSheet: View {
                         .disabled(isSaving)
                 }
             }
+            .alert("Add Tag", isPresented: $showingAddTag) {
+                TextField("Tag name", text: $newTagText)
+                    .autocorrectionDisabled()
+                Button("Add") {
+                    let tag = newTagText.trimmingCharacters(in: .whitespaces)
+                    if !tag.isEmpty { selectedTags.insert(tag) }
+                    newTagText = ""
+                }
+                Button("Cancel", role: .cancel) { newTagText = "" }
+            }
         }
+    }
+
+    private var tagSection: some View {
+        Section("Tags") {
+            let customTags = Array(selectedTags).filter { !tagOptions.contains($0) }.sorted()
+            FlowLayout(spacing: 8) {
+                ForEach(tagOptions, id: \.self) { tag in tagChip(tag) }
+                ForEach(customTags, id: \.self) { tag in tagChip(tag) }
+                Button { showingAddTag = true } label: {
+                    Label("Add", systemImage: "plus")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.secondary.opacity(0.1))
+                        .foregroundStyle(.secondary)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+        }
+    }
+
+    @ViewBuilder
+    private func tagChip(_ tag: String) -> some View {
+        Button {
+            if selectedTags.contains(tag) { selectedTags.remove(tag) }
+            else { selectedTags.insert(tag) }
+        } label: {
+            Text(tag)
+                .font(.caption)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(selectedTags.contains(tag) ? Color.accentColor : Color.secondary.opacity(0.12))
+                .foregroundStyle(selectedTags.contains(tag) ? .white : .primary)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private func save() {
@@ -93,7 +135,10 @@ struct PersonEnrichSheet: View {
                     companyContext: companyContext.isEmpty ? nil : companyContext,
                     city: city.isEmpty ? nil : city,
                     howWeMet: howWeMet.isEmpty ? nil : howWeMet,
-                    tags: Array(selectedTags)
+                    tags: Array(selectedTags),
+                    phone: phone.isEmpty ? nil : phone,
+                    email: email.isEmpty ? nil : email,
+                    address: address.isEmpty ? nil : address
                 )
                 dismiss()
             } catch {

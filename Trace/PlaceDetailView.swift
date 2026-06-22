@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 struct PlaceDetailView: View {
     let place: Place
@@ -13,6 +14,11 @@ struct PlaceDetailView: View {
     @State private var showingSpots = false
     @State private var isEditingTags = false
     @State private var newTagText = ""
+    @State private var markedForReview = false
+    @State private var isEnriching = false
+    @State private var enrichError: String?
+    @State private var enrichCandidate: GooglePlace?
+    @State private var showingEnrichConfirm = false
 
     private var placeVisits: [Visit] {
         notionService.visits
@@ -52,6 +58,14 @@ struct PlaceDetailView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     HStack(spacing: 16) {
+                        Button {
+                            let notionID = livePlace.id.replacingOccurrences(of: "-", with: "")
+                            if let url = URL(string: "https://notion.so/\(notionID)") {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            Image(systemName: "arrow.up.right.square")
+                        }
                         Button {
                             showingEditPlace = true
                         } label: {
@@ -342,9 +356,61 @@ struct PlaceDetailView: View {
                     }
                 }
                 .tint(.primary)
+
+                // Re-enrich
+                DetailRow(label: "Google Places") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button {
+                            Task { await runEnrich() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isEnriching {
+                                    ProgressView().scaleEffect(0.8)
+                                } else {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                }
+                                Text(isEnriching ? "Searching…" : "Re-enrich from Google")
+                                    .font(.subheadline)
+                            }
+                        }
+                        .disabled(isEnriching)
+                        .tint(.blue)
+                        if let err = enrichError {
+                            Text(err)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
             }
             .padding()
         }
+        .alert("Update from Google Places?", isPresented: $showingEnrichConfirm, presenting: enrichCandidate) { candidate in
+            Button("Update") {
+                Task { try? await notionService.enrichPlace(livePlace, from: candidate) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { candidate in
+            Text("\(candidate.name)\n\(candidate.formattedAddress)")
+        }
+    }
+
+    private func runEnrich() async {
+        isEnriching = true
+        enrichError = nil
+        do {
+            let coord = CLLocationCoordinate2D(latitude: livePlace.latitude, longitude: livePlace.longitude)
+            let results = try await GooglePlacesService.shared.nearbySearch(coordinate: coord, query: livePlace.name)
+            if let top = results.first {
+                enrichCandidate = top
+                showingEnrichConfirm = true
+            } else {
+                enrichError = "No match found on Google Places."
+            }
+        } catch {
+            enrichError = error.localizedDescription
+        }
+        isEnriching = false
     }
 
     // MARK: - Visits
@@ -442,6 +508,19 @@ struct PlaceDetailView: View {
             }
             .buttonStyle(.bordered)
             .tint(livePlace.flagged ? .yellow : .secondary)
+
+            Button {
+                Task {
+                    try? await notionService.markPlaceForReview(livePlace)
+                    markedForReview = true
+                }
+            } label: {
+                Image(systemName: markedForReview ? "exclamationmark.triangle.fill" : "exclamationmark.triangle")
+                    .font(.title3)
+                    .frame(width: 36)
+            }
+            .buttonStyle(.bordered)
+            .tint(markedForReview ? .orange : .secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -605,14 +684,23 @@ struct PlaceEditSheet: View {
     @State private var name: String
     @State private var category: String
     @State private var status: String
+    @State private var city: String
+    @State private var notes: String
+    @State private var dwellTimeText: String
+    @State private var geofenceRadiusText: String
     @State private var isSaving = false
     @State private var saveError: String?
+    @State private var showingArchiveConfirm = false
 
     init(place: Place) {
         self.place = place
-        _name = State(initialValue: place.name)
+        _name     = State(initialValue: place.name)
         _category = State(initialValue: place.category.isEmpty ? "Restaurant" : place.category)
-        _status = State(initialValue: place.status.isEmpty ? "Visited" : place.status)
+        _status   = State(initialValue: place.status.isEmpty ? "Visited" : place.status)
+        _city     = State(initialValue: place.city)
+        _notes    = State(initialValue: place.notes ?? "")
+        _dwellTimeText      = State(initialValue: place.dwellTime.map { String($0) } ?? "")
+        _geofenceRadiusText = State(initialValue: place.geofenceRadius.map { String($0) } ?? "")
     }
 
     var body: some View {
@@ -621,6 +709,11 @@ struct PlaceEditSheet: View {
                 Section("Name") {
                     TextField("Place name", text: $name)
                 }
+
+                Section("Location") {
+                    TextField("City", text: $city)
+                }
+
                 Section {
                     HStack {
                         Text("Category")
@@ -636,9 +729,59 @@ struct PlaceEditSheet: View {
                     }
                     .pickerStyle(.segmented)
                 }
+
+                Section("Notes") {
+                    TextField("Add notes…", text: $notes, axis: .vertical)
+                        .lineLimit(3...8)
+                }
+
+                Section {
+                    HStack {
+                        Text("Dwell time")
+                        Spacer()
+                        TextField("3", text: $dwellTimeText)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 60)
+                        Text("min")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Geofence radius")
+                        Spacer()
+                        TextField(place.frequent ? "200" : "50", text: $geofenceRadiusText)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 60)
+                        Text("m")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Geofencing")
+                } footer: {
+                    Text("Leave blank to use defaults (3 min dwell, 50 m radius / 200 m if Frequent).")
+                }
+
+                if place.enrichmentStatus == "Needs Review" {
+                    Section {
+                        Button {
+                            Task {
+                                try? await notion.clearReviewFlag(place)
+                                dismiss()
+                            }
+                        } label: {
+                            Label("Clear Review Flag", systemImage: "checkmark.triangle")
+                                .foregroundStyle(.orange)
+                        }
+                    } footer: {
+                        Text("Marks this place as Enriched and removes it from the Needs Review list.")
+                    }
+                }
+
                 if let err = saveError {
                     Section { Text(err).foregroundStyle(.red).font(.caption) }
                 }
+
                 Section {
                     Button {
                         Task { await save() }
@@ -651,6 +794,17 @@ struct PlaceEditSheet: View {
                     }
                     .disabled(isSaving || name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+
+                Section {
+                    Button(role: .destructive) {
+                        showingArchiveConfirm = true
+                    } label: {
+                        Label("Archive Place", systemImage: "archivebox")
+                            .frame(maxWidth: .infinity)
+                    }
+                } footer: {
+                    Text("Archived places are hidden from all views but not deleted.")
+                }
             }
             .navigationTitle("Edit Place")
             .navigationBarTitleDisplayMode(.inline)
@@ -658,6 +812,17 @@ struct PlaceEditSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
+            }
+            .confirmationDialog("Archive \(place.name)?", isPresented: $showingArchiveConfirm, titleVisibility: .visible) {
+                Button("Archive", role: .destructive) {
+                    Task {
+                        try? await notion.archivePlace(place)
+                        dismiss()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This place will be hidden from all views.")
             }
         }
     }
@@ -668,10 +833,22 @@ struct PlaceEditSheet: View {
         isSaving = true
         saveError = nil
         do {
-            try await notion.updatePlace(place, name: trimmed, category: category, status: status)
-            // updatePlace() already patches the local cache; skip fetchPlaces() here.
-            // Calling fetchPlaces() while PlaceDetailView is still on screen causes a brief
-            // array replacement that can destabilize the parent view.
+            try await notion.updatePlace(
+                place,
+                name: trimmed,
+                category: category,
+                status: status,
+                city: city.trimmingCharacters(in: .whitespaces),
+                notes: notes.trimmingCharacters(in: .whitespaces).isEmpty ? nil : notes.trimmingCharacters(in: .whitespaces)
+            )
+            let newDwell  = Int(dwellTimeText.trimmingCharacters(in: .whitespaces))
+            let newRadius = Int(geofenceRadiusText.trimmingCharacters(in: .whitespaces))
+            if newDwell != place.dwellTime {
+                try await notion.setDwellTime(place, minutes: newDwell)
+            }
+            if newRadius != place.geofenceRadius {
+                try await notion.setGeofenceRadius(place, metres: newRadius)
+            }
             dismiss()
         } catch {
             saveError = error.localizedDescription

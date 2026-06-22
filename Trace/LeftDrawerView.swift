@@ -6,6 +6,13 @@ struct LeftDrawerView: View {
     @Binding var isShowing: Bool
     var onSave: () async -> Void
 
+    @Environment(NotionService.self) private var notion
+    @State private var showingNeedsReview = false
+
+    private var needsReviewCount: Int {
+        notion.places.filter { $0.enrichmentStatus == "Needs Review" }.count
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -14,6 +21,25 @@ struct LeftDrawerView: View {
                 } label: {
                     Label("Settings", systemImage: "gear")
                 }
+
+                Button {
+                    showingNeedsReview = true
+                } label: {
+                    HStack {
+                        Label("Needs Review", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(needsReviewCount > 0 ? .orange : .primary)
+                        Spacer()
+                        if needsReviewCount > 0 {
+                            Text("\(needsReviewCount)")
+                                .font(.caption.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(.orange, in: Capsule())
+                        }
+                    }
+                }
+                .tint(.primary)
 
                 NavigationLink {
                     AboutView(isShowing: $isShowing)
@@ -29,6 +55,11 @@ struct LeftDrawerView: View {
                     closeButton
                 }
             }
+        }
+        .sheet(isPresented: $showingNeedsReview) {
+            NeedsReviewSheet()
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
         }
     }
 
@@ -212,6 +243,89 @@ struct SettingsView: View {
         try? await Task.sleep(nanoseconds: 1_200_000_000)
         withAnimation(.easeInOut(duration: 0.3)) { isShowing = false }
         saveState = .idle
+    }
+}
+
+// MARK: - Needs Review Sheet
+
+struct NeedsReviewSheet: View {
+    @Environment(NotionService.self) private var notion
+    @Environment(LocationManager.self) private var locationManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedPlace: Place?
+
+    private var flaggedPlaces: [Place] {
+        notion.places
+            .filter { $0.enrichmentStatus == "Needs Review" && $0.status != "Archived" }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if flaggedPlaces.isEmpty {
+                    ContentUnavailableView(
+                        "All clear",
+                        systemImage: "checkmark.circle",
+                        description: Text("Tap the triangle on any place to flag it for review.")
+                    )
+                } else {
+                    List(flaggedPlaces) { place in
+                        Button {
+                            selectedPlace = place
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: placeIcon(for: place.category))
+                                    .foregroundStyle(placeColor(for: place.category))
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(place.name)
+                                        .font(.body)
+                                        .foregroundStyle(.primary)
+                                    Text([place.category, place.city]
+                                        .filter { !$0.isEmpty }
+                                        .joined(separator: " · "))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                    .font(.caption)
+                            }
+                        }
+                        .tint(.primary)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                Task { try? await notion.archivePlace(place) }
+                            } label: {
+                                Label("Archive", systemImage: "archivebox")
+                            }
+                        }
+                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                            Button {
+                                Task { try? await notion.clearReviewFlag(place) }
+                            } label: {
+                                Label("Clear Flag", systemImage: "checkmark.triangle")
+                            }
+                            .tint(.orange)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Needs Review")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .sheet(item: $selectedPlace) { place in
+            PlaceDetailView(place: place)
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
+        }
     }
 }
 
