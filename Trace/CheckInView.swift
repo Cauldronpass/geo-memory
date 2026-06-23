@@ -22,6 +22,7 @@ struct CheckInView: View {
     @State private var showPinnedOnly = false
     @State private var selectedCategory: String? = nil
     @State private var selectedTag: String? = nil
+    @State private var showingAddPlace = false
 
     init(preselectedPlace: Place? = nil) {
         self.preselectedPlace = preselectedPlace
@@ -160,6 +161,20 @@ struct CheckInView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingAddPlace = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+            }
+        }
+        .sheet(isPresented: $showingAddPlace) {
+            Task { await notionService.fetchPlaces() }
+        } content: {
+            AddPlaceView()
+                .environment(notionService)
+                .environment(locationManager)
         }
     }
 

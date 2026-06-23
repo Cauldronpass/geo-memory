@@ -19,8 +19,10 @@ struct PlacesView: View {
     @State private var sort: PlacesSort  = .lastVisited
     @State private var selectedCategory: String? = nil
     @State private var frequentOnly      = false
+    @State private var pinnedOnly        = false
     @State private var wantToVisitOnly   = false
     @State private var checkInPlace: Place? = nil
+    @State private var showingAddPlace   = false
 
     private var availableCategories: [String] {
         Array(Set(notion.places.compactMap { $0.category.isEmpty ? nil : $0.category })).sorted()
@@ -36,6 +38,7 @@ struct PlacesView: View {
         }
 
         if frequentOnly { result = result.filter { $0.frequent } }
+        if pinnedOnly   { result = result.filter { $0.flagged } }
         if let cat = selectedCategory { result = result.filter { $0.category == cat } }
 
         if !searchText.isEmpty {
@@ -73,11 +76,31 @@ struct PlacesView: View {
     }
 
     private var hasActiveFilters: Bool {
-        selectedCategory != nil || frequentOnly || wantToVisitOnly
+        selectedCategory != nil || frequentOnly || pinnedOnly || wantToVisitOnly
     }
 
     var body: some View {
         VStack(spacing: 0) {
+            // Search bar
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search places", text: $searchText)
+                    .autocorrectionDisabled()
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(10)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+            .background(Color(UIColor.systemGroupedBackground))
+
             // Filter chips
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -99,7 +122,15 @@ struct PlacesView: View {
                                   isActive: frequentOnly,
                                   showChevron: false) {
                         frequentOnly.toggle()
-                        if frequentOnly { wantToVisitOnly = false }
+                        if frequentOnly { wantToVisitOnly = false; pinnedOnly = false }
+                    }
+
+                    MapFilterChip(title: "Pinned",
+                                  systemImage: "pin.fill",
+                                  isActive: pinnedOnly,
+                                  showChevron: false) {
+                        pinnedOnly.toggle()
+                        if pinnedOnly { frequentOnly = false; wantToVisitOnly = false }
                     }
 
                     MapFilterChip(title: "Want to Visit",
@@ -114,6 +145,7 @@ struct PlacesView: View {
                         Button {
                             selectedCategory = nil
                             frequentOnly = false
+                            pinnedOnly = false
                             wantToVisitOnly = false
                         } label: {
                             Text("Clear")
@@ -165,7 +197,6 @@ struct PlacesView: View {
                         }
                     }
                 }
-                .searchable(text: $searchText, prompt: "Search places")
                 .refreshable { await notion.fetchPlaces() }
             }
         }
@@ -173,6 +204,11 @@ struct PlacesView: View {
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
         .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { showingAddPlace = true } label: {
+                    Image(systemName: "plus")
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     ForEach(PlacesSort.allCases, id: \.self) { option in
@@ -200,6 +236,13 @@ struct PlacesView: View {
         }
         .sheet(item: $checkInPlace) { place in
             CheckInView(preselectedPlace: place)
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
+        }
+        .sheet(isPresented: $showingAddPlace) {
+            Task { await notion.fetchPlaces() }
+        } content: {
+            AddPlaceView()
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
         }
@@ -233,6 +276,11 @@ struct PlacesListRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
                     Text(place.name).font(.body)
+                    if place.flagged {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.yellow)
+                    }
                     if place.frequent {
                         Image(systemName: "star.fill")
                             .font(.caption2)

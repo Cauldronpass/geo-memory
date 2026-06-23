@@ -16,7 +16,7 @@ struct ContentView: View {
     @State private var quickPinCoord = CLLocationCoordinate2D()
     @State private var geofencePlace: Place? = nil
     @State private var showingGeofenceCheckIn = false
-    @State private var nearbyShowsCalendar = false
+    @State private var showingWorkoutPrompt = false
     @State private var visitsShowsCalendar = false
     @State private var showingQuickNoteFromURL = false
     @State private var showingWorkoutFromURL = false
@@ -24,23 +24,30 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             TabView(selection: $selectedTab) {
-                LifeView()
-                    .tabItem { Label("Life", systemImage: "waveform") }
+                HomeView()
+                    .environment(NotionService.shared)
+                    .environment(LocationManager.shared)
+                    .tabItem { Label("Home", systemImage: "house.fill") }
                     .tag(0)
-                NearbyView(onCalendarStateChange: { nearbyShowsCalendar = $0 })
-                    .tabItem { Label("Nearby", systemImage: "location.fill") }
-                    .tag(1)
+                NavigationStack {
+                    PlacesView()
+                        .environment(NotionService.shared)
+                        .environment(LocationManager.shared)
+                }
+                .tabItem { Label("Places", systemImage: "mappin") }
+                .tag(1)
                 DiscoverView()
                     .tabItem { Label("Discover", systemImage: "magnifyingglass") }
                     .tag(2)
                 VisitsView(onCalendarStateChange: { visitsShowsCalendar = $0 })
                     .tabItem { Label("Visits", systemImage: "clock.arrow.circlepath") }
                     .tag(3)
-                FlaggedView()
-                    .tabItem { Label("Pinned", systemImage: "pin.fill") }
+                LifeView()
+                    .tabItem { Label("Life", systemImage: "waveform") }
+                    .tag(4)
             }
 
-            if selectedTab != 0 && !(selectedTab == 1 && nearbyShowsCalendar) && !(selectedTab == 3 && visitsShowsCalendar) {
+            if selectedTab != 0 && !(selectedTab == 3 && visitsShowsCalendar) {
                 Button(action: { showingActionSheet = true }) {
                     Image(systemName: "plus")
                         .font(.title2.bold())
@@ -152,6 +159,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .traceGeofenceCheckIn)) { _ in
             checkPendingGeofence()
         }
+        // Workout prompt notification tapped
+        .onReceive(NotificationCenter.default.publisher(for: .traceWorkoutPrompt)) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                showingWorkoutPrompt = true
+            }
+        }
         // Drawer buttons from child tabs
         .onReceive(NotificationCenter.default.publisher(for: .traceOpenLeftDrawer)) { _ in
             withAnimation(.easeInOut(duration: 0.3)) { showingLeftDrawer = true }
@@ -165,6 +178,10 @@ struct ContentView: View {
                     .environment(NotionService.shared)
                     .environment(LocationManager.shared)
             }
+        }
+        .sheet(isPresented: $showingWorkoutPrompt) {
+            WorkoutWizardView()
+                .environment(NotionService.shared)
         }
         // Re-fetch when app returns to foreground
         .onChange(of: scenePhase) { _, phase in
@@ -197,6 +214,10 @@ struct ContentView: View {
             case "quicknote": showingQuickNoteFromURL = true
             case "checkin":   showingCheckIn = true
             case "workout":   showingWorkoutFromURL = true
+            case "addphoto":  showingAddPhoto = true
+            case "addplace":  showingAddPlace = true
+            case "addnote":   showingAddCapture = true
+            case "pin":       quickPin()
             default: break
             }
         }

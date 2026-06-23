@@ -332,6 +332,14 @@ class NotionService {
         }
     }
 
+    func skipVisitEnrichment(_ visit: Visit) async throws {
+        let body: [String: Any] = ["properties": ["Skip Enrichment": ["checkbox": true]]]
+        _ = try await patch("\(baseURL)/pages/\(visit.id)", body: body)
+        if let index = visits.firstIndex(where: { $0.id == visit.id }) {
+            visits[index].skipEnrichment = true
+        }
+    }
+
     func saveCapture(notes: String, placeID: String?, placeName: String?, lat: Double?, lon: Double?, photoURL: String? = nil) async throws {
         var props: [String: Any] = [
             "Name": ["title": [["text": ["content": placeName ?? "Capture"]]]],
@@ -965,8 +973,11 @@ class NotionService {
         fmt.formatOptions = [.withFullDate]
         fmt.timeZone = TimeZone.current
         let date = dateStr.flatMap { fmt.date(from: $0) }
-        let scope  = select(props["Scope"])
-        let status = select(props["Status"])
+        // Normalize: empty string from Notion → nil; homeless notes (no date, no scope) → Inbox
+        let rawScope = select(props["Scope"])
+        let normalizedScope = rawScope.flatMap { $0.isEmpty ? nil : $0 }
+        let status   = select(props["Status"])
+        let scope = (normalizedScope == nil && date == nil) ? "Inbox" : normalizedScope
 
         return DayNote(id: id, date: date, scope: scope, body: body, status: status)
     }
@@ -1041,6 +1052,8 @@ class NotionService {
             dwellTime: (props["Dwell Time"] as? [String: Any])?["number"] as? Int,
             geofenceRadius: (props["Geofence Radius"] as? [String: Any])?["number"] as? Int,
             geofenceExcluded: checkbox(props["Geofence Excluded"]),
+            promptLog: checkbox(props["Prompt Log"]),
+            skipEnrichment: checkbox(props["Skip Enrichment"]),
             enrichmentStatus: selectProp(props["Enrichment Status"])
         )
     }
@@ -1100,6 +1113,26 @@ class NotionService {
         }
     }
 
+    func togglePromptLog(_ place: Place) async throws {
+        let body: [String: Any] = [
+            "properties": ["Prompt Log": ["checkbox": !place.promptLog]]
+        ]
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
+        if let index = places.firstIndex(where: { $0.id == place.id }) {
+            places[index].promptLog = !place.promptLog
+        }
+    }
+
+    func toggleSkipEnrichment(_ place: Place) async throws {
+        let body: [String: Any] = [
+            "properties": ["Skip Enrichment": ["checkbox": !place.skipEnrichment]]
+        ]
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
+        if let index = places.firstIndex(where: { $0.id == place.id }) {
+            places[index].skipEnrichment = !place.skipEnrichment
+        }
+    }
+
     private func parseVisit(_ page: [String: Any]) -> Visit? {
         guard let id = page["id"] as? String,
               let props = page["properties"] as? [String: Any] else { return nil }
@@ -1122,7 +1155,8 @@ class NotionService {
             rating: (props["Rating"] as? [String: Any])?["number"] as? Int,
             notes: richText(props["Notes"]),
             photoURLs: photoURLs,
-            peopleIDs: peopleIDs
+            peopleIDs: peopleIDs,
+            skipEnrichment: checkbox(props["Skip Enrichment"])
         )
     }
 

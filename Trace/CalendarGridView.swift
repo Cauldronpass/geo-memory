@@ -46,7 +46,7 @@ struct CalendarGridView: View {
 
     private let cal = Calendar.current
     private let weekdayLetters = ["S", "M", "T", "W", "T", "F", "S"]
-    private let bucketOrder = ["This Week", "Next Week", "This Month", "Next Month"]
+    private let bucketOrder = ["Inbox", "This Week", "Next Week", "This Month", "Next Month"]
 
     init(
         entries: [CalendarEntry],

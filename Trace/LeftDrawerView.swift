@@ -8,9 +8,25 @@ struct LeftDrawerView: View {
 
     @Environment(NotionService.self) private var notion
     @State private var showingNeedsReview = false
+    @State private var showingEnrichVisits = false
 
     private var needsReviewCount: Int {
         notion.places.filter { $0.enrichmentStatus == "Needs Review" }.count
+    }
+
+    private var enrichVisitsCount: Int {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+        let excludedPlaceIDs = Set(notion.places.filter { $0.skipEnrichment }.map { $0.id })
+        let journaledVisitIDs = Set(notion.workouts.compactMap { $0.visitID })
+        return notion.visits.filter { visit in
+            visit.date >= cutoff &&
+            !visit.skipEnrichment &&
+            (visit.notes == nil || visit.notes!.isEmpty) &&
+            visit.rating == nil &&
+            visit.photoURLs.isEmpty &&
+            !excludedPlaceIDs.contains(visit.placeID) &&
+            !journaledVisitIDs.contains(visit.id)
+        }.count
     }
 
     var body: some View {
@@ -41,6 +57,25 @@ struct LeftDrawerView: View {
                 }
                 .tint(.primary)
 
+                Button {
+                    showingEnrichVisits = true
+                } label: {
+                    HStack {
+                        Label("Enrich Visits", systemImage: "pencil.circle")
+                            .foregroundStyle(enrichVisitsCount > 0 ? .indigo : .primary)
+                        Spacer()
+                        if enrichVisitsCount > 0 {
+                            Text("\(enrichVisitsCount)")
+                                .font(.caption.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(.indigo, in: Capsule())
+                        }
+                    }
+                }
+                .tint(.primary)
+
                 NavigationLink {
                     AboutView(isShowing: $isShowing)
                 } label: {
@@ -58,6 +93,11 @@ struct LeftDrawerView: View {
         }
         .sheet(isPresented: $showingNeedsReview) {
             NeedsReviewSheet()
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
+        }
+        .sheet(isPresented: $showingEnrichVisits) {
+            EnrichVisitsSheet()
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
         }
@@ -85,10 +125,14 @@ struct SettingsView: View {
     @State private var b2KeyID = ""
     @State private var b2ApplicationKey = ""
     @State private var googlePlacesKey = ""
+    @State private var ouraToken = ""
+    @State private var thingsApiURL = ""
+    @State private var calShowAllDay = false
     @State private var showToken = false
     @State private var showPassword = false
     @State private var showB2Key = false
     @State private var showGoogleKey = false
+    @State private var showOuraToken = false
     @State private var saveState: SaveState = .idle
     @State private var geofenceEnabled = false
 
@@ -130,6 +174,40 @@ struct SettingsView: View {
                 Label("Google Places", systemImage: "map")
             } footer: {
                 Text("API key with Places API (New) enabled. Used for place search in Discover.")
+            }
+
+            Section {
+                credentialRow(text: $ouraToken, show: $showOuraToken, placeholder: "eyJ…")
+            } header: {
+                Label("Oura Ring", systemImage: "heart.fill")
+            } footer: {
+                Text("Personal Access Token from developer.ouraring.com. Used for sleep, readiness, and activity scores on the Home screen.")
+            }
+
+            Section {
+                TextField("http://100.x.x.x:8000", text: $thingsApiURL)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .font(.system(.body, design: .monospaced))
+            } header: {
+                Label("Things 3", systemImage: "checkmark.circle")
+            } footer: {
+                Text("Base URL of the things-api server running on your Mac Mini (via Tailscale). Used for today's tasks on the Home screen. Leave blank to hide the section.")
+            }
+
+            Section {
+                Toggle(isOn: $calShowAllDay) {
+                    Label("Show all-day events", systemImage: "calendar")
+                }
+                .onChange(of: calShowAllDay) { _, val in
+                    UserDefaults.standard.set(val, forKey: "cal_show_all_day")
+                    Task { await CalendarService.shared.fetchUpcomingEvents() }
+                }
+            } header: {
+                Label("Calendar", systemImage: "calendar")
+            } footer: {
+                Text("When on, all-day events appear in the Next Up section on the Home screen.")
             }
 
             Section {
@@ -202,11 +280,14 @@ struct SettingsView: View {
             }
         }
         .onAppear {
-            notionToken       = UserDefaults.standard.string(forKey: "notion_token") ?? ""
+            notionToken       = (UserDefaults(suiteName: "group.com.david.trace") ?? .standard).string(forKey: "notion_token") ?? ""
             nasPassword       = UserDefaults.standard.string(forKey: "nas_password") ?? ""
             b2KeyID           = UserDefaults.standard.string(forKey: "b2_key_id") ?? ""
             b2ApplicationKey  = UserDefaults.standard.string(forKey: "b2_application_key") ?? ""
             googlePlacesKey   = UserDefaults.standard.string(forKey: "google_places_key") ?? ""
+            ouraToken         = UserDefaults.standard.string(forKey: "oura_token") ?? ""
+            thingsApiURL      = UserDefaults.standard.string(forKey: "things_api_url") ?? ""
+            calShowAllDay     = UserDefaults.standard.bool(forKey: "cal_show_all_day")
             geofenceEnabled   = UserDefaults.standard.bool(forKey: "geofence_enabled")
         }
     }
@@ -233,11 +314,14 @@ struct SettingsView: View {
 
     private func save() async {
         saveState = .saving
-        UserDefaults.standard.set(notionToken,      forKey: "notion_token")
+        let sharedDefaults = UserDefaults(suiteName: "group.com.david.trace") ?? .standard
+        sharedDefaults.set(notionToken,      forKey: "notion_token")
         UserDefaults.standard.set(nasPassword,      forKey: "nas_password")
         UserDefaults.standard.set(b2KeyID,          forKey: "b2_key_id")
         UserDefaults.standard.set(b2ApplicationKey, forKey: "b2_application_key")
         UserDefaults.standard.set(googlePlacesKey,  forKey: "google_places_key")
+        UserDefaults.standard.set(ouraToken,        forKey: "oura_token")
+        UserDefaults.standard.set(thingsApiURL,     forKey: "things_api_url")
         await onSave()
         saveState = .saved
         try? await Task.sleep(nanoseconds: 1_200_000_000)
@@ -325,6 +409,99 @@ struct NeedsReviewSheet: View {
             PlaceDetailView(place: place)
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
+        }
+    }
+}
+
+// MARK: - Enrich Visits Sheet
+
+struct EnrichVisitsSheet: View {
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedVisit: Visit?
+
+    private var visitsToEnrich: [Visit] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+        let excludedPlaceIDs = Set(notion.places.filter { $0.skipEnrichment }.map { $0.id })
+        let journaledVisitIDs = Set(notion.workouts.compactMap { $0.visitID })
+        return notion.visits
+            .filter { visit in
+                visit.date >= cutoff &&
+                !visit.skipEnrichment &&
+                (visit.notes == nil || visit.notes!.isEmpty) &&
+                visit.rating == nil &&
+                visit.photoURLs.isEmpty &&
+                !excludedPlaceIDs.contains(visit.placeID) &&
+                !journaledVisitIDs.contains(visit.id)
+            }
+            .sorted { $0.date > $1.date }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if visitsToEnrich.isEmpty {
+                    ContentUnavailableView(
+                        "All caught up",
+                        systemImage: "checkmark.circle",
+                        description: Text("No recent visits need notes, ratings, or photos.")
+                    )
+                } else {
+                    List(visitsToEnrich) { visit in
+                        Button {
+                            selectedVisit = visit
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(visit.placeName)
+                                    .font(.body)
+                                    .foregroundStyle(.primary)
+                                HStack(spacing: 8) {
+                                    Text(visit.date, style: .date)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    missingTag("no notes", condition: visit.notes == nil || visit.notes!.isEmpty)
+                                    missingTag("no rating", condition: visit.rating == nil)
+                                    missingTag("no photos", condition: visit.photoURLs.isEmpty)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        .tint(.primary)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button {
+                                Task { try? await notion.skipVisitEnrichment(visit) }
+                            } label: {
+                                Label("Skip", systemImage: "xmark.circle")
+                            }
+                            .tint(.indigo)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Enrich Visits")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .sheet(item: $selectedVisit) { visit in
+            VisitDetailView(visit: visit)
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
+        }
+    }
+
+    @ViewBuilder
+    private func missingTag(_ label: String, condition: Bool) -> some View {
+        if condition {
+            Text(label)
+                .font(.caption2)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Color.indigo.opacity(0.12), in: Capsule())
+                .foregroundStyle(.indigo)
         }
     }
 }

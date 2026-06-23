@@ -68,7 +68,7 @@ struct DiscoverView: View {
 
     // Local database places matching the current search text — updated on every keystroke.
     private var matchingLocalPlaces: [Place] {
-        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = normalized(searchText.trimmingCharacters(in: .whitespaces))
         guard !q.isEmpty else { return [] }
         let filtered = notion.places
             .filter { $0.status != "Archived" }
@@ -76,11 +76,11 @@ struct DiscoverView: View {
             .filter { selectedCategory == nil || $0.category == selectedCategory }
             .filter { selectedTag == nil || $0.tags.contains(selectedTag!) }
             .filter { place in
-                place.name.lowercased().contains(q) ||
-                place.city.lowercased().contains(q) ||
-                place.address.lowercased().contains(q) ||
-                place.tags.contains { $0.lowercased().contains(q) } ||
-                (place.notes?.lowercased().contains(q) ?? false)
+                normalized(place.name).contains(q) ||
+                normalized(place.city).contains(q) ||
+                normalized(place.address).contains(q) ||
+                place.tags.contains { normalized($0).contains(q) } ||
+                (place.notes.map { normalized($0).contains(q) } ?? false)
             }
         // Sort by distance when location is available; fall back to alphabetical
         if let userLoc = locationManager.location {
@@ -220,7 +220,17 @@ struct DiscoverView: View {
                     .padding(.vertical, 8)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
 
-                    if !searchText.isEmpty && !isSearching {
+                    if searchFocused {
+                        Button("Cancel") {
+                            searchFocused = false
+                            searchText = ""
+                            searchResults = []
+                            hasSearched = false
+                            selectedResult = nil
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    } else if !searchText.isEmpty && !isSearching {
                         Button("Search") {
                             Task { await performSearch() }
                             searchFocused = false
@@ -231,6 +241,7 @@ struct DiscoverView: View {
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                     }
                 }
+                .animation(.easeInOut(duration: 0.2), value: searchFocused)
                 .padding(.horizontal, 16)
                 .onChange(of: searchText) { _, newValue in
                     // Cancel any pending debounce
@@ -1022,4 +1033,13 @@ struct DiscoverResultRow: View {
             try await notion.addPhotoToPage(pageID, photoURL: url)
         } catch { }
     }
+}
+
+// MARK: - Helpers
+
+/// Strips diacritics and punctuation so "OHare" matches "O'Hare", "cafe" matches "café".
+private func normalized(_ s: String) -> String {
+    s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+     .components(separatedBy: CharacterSet.punctuationCharacters)
+     .joined()
 }

@@ -428,8 +428,41 @@ struct VisitRow: View {
         notion.places.first { $0.id == visit.placeID }?.city
     }
 
+    private func companionRow(_ people: [Person]) -> some View {
+        HStack(spacing: 4) {
+            ForEach(people.prefix(4)) { person in
+                let initials = person.name
+                    .components(separatedBy: " ")
+                    .compactMap { $0.first.map { String($0) } }
+                    .prefix(2).joined()
+                let colors = companionColors(person.name)
+                Text(initials)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(colors.text)
+                    .frame(width: 16, height: 16)
+                    .background(colors.bg, in: Circle())
+            }
+            Text(people.map { $0.name.components(separatedBy: " ").first ?? $0.name }
+                .joined(separator: ", "))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func companionColors(_ name: String) -> (bg: Color, text: Color) {
+        let options: [(Color, Color)] = [
+            (Color(red: 0.933, green: 0.929, blue: 0.996), Color(red: 0.149, green: 0.129, blue: 0.361)),
+            (Color(red: 0.882, green: 0.961, blue: 0.933), Color(red: 0.016, green: 0.204, blue: 0.173)),
+            (Color(red: 0.980, green: 0.927, blue: 0.906), Color(red: 0.290, green: 0.113, blue: 0.047)),
+            (Color(red: 0.900, green: 0.953, blue: 0.871), Color(red: 0.092, green: 0.428, blue: 0.067)),
+        ]
+        return options[abs(name.hashValue) % options.count]
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let visitPeople = notion.people.filter { visit.peopleIDs.contains($0.id) }
+
+        return VStack(alignment: .leading, spacing: 3) {
             Text(visit.placeName)
                 .font(.body)
             HStack {
@@ -451,6 +484,9 @@ struct VisitRow: View {
             }
             .font(.caption)
             .foregroundColor(.secondary)
+            if !visitPeople.isEmpty {
+                companionRow(visitPeople)
+            }
             if let notes = visit.notes {
                 Text(notes)
                     .font(.caption)

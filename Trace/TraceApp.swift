@@ -46,7 +46,17 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             actions: [checkInAction],
             intentIdentifiers: []
         )
-        UNUserNotificationCenter.current().setNotificationCategories([geofenceCategory])
+        let logWorkoutAction = UNNotificationAction(
+            identifier: "LOG_WORKOUT_ACTION",
+            title: "Log Workout",
+            options: .foreground
+        )
+        let workoutCategory = UNNotificationCategory(
+            identifier: "WORKOUT_PROMPT",
+            actions: [logWorkoutAction],
+            intentIdentifiers: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([geofenceCategory, workoutCategory])
         UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
@@ -100,6 +110,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 extension Notification.Name {
     static let traceShortcut        = Notification.Name("TraceShortcut")
     static let traceGeofenceCheckIn = Notification.Name("TraceGeofenceCheckIn")
+    static let traceWorkoutPrompt   = Notification.Name("TraceWorkoutPrompt")
     static let traceOpenLeftDrawer  = Notification.Name("TraceOpenLeftDrawer")
     static let traceOpenRightDrawer = Notification.Name("TraceOpenRightDrawer")
 }
@@ -125,11 +136,17 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        if let placeID = userInfo["placeID"] as? String,
-           response.notification.request.content.categoryIdentifier == "GEOFENCE_CHECKIN" {
+        let category = response.notification.request.content.categoryIdentifier
+
+        if let placeID = userInfo["placeID"] as? String, category == "GEOFENCE_CHECKIN" {
             UserDefaults.standard.set(placeID, forKey: "pendingGeofencePlaceID")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 NotificationCenter.default.post(name: .traceGeofenceCheckIn, object: nil)
+            }
+        } else if let placeID = userInfo["placeID"] as? String, category == "WORKOUT_PROMPT" {
+            UserDefaults.standard.set(placeID, forKey: "pendingWorkoutPlaceID")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                NotificationCenter.default.post(name: .traceWorkoutPrompt, object: nil)
             }
         }
         completionHandler()

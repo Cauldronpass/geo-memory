@@ -19,6 +19,9 @@ struct PlaceDetailView: View {
     @State private var enrichError: String?
     @State private var enrichCandidate: GooglePlace?
     @State private var showingEnrichConfirm = false
+    @State private var radiusStr: String = ""
+    @State private var dwellStr: String = ""
+    @FocusState private var settingsFieldFocused: Bool
 
     private var placeVisits: [Visit] {
         notionService.visits
@@ -37,6 +40,7 @@ struct PlaceDetailView: View {
                     Text("Overview").tag(0)
                     Text("Info").tag(1)
                     Text("Visits").tag(2)
+                    Text("Settings").tag(3)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -46,6 +50,7 @@ struct PlaceDetailView: View {
                     overviewTab.tag(0)
                     infoTab.tag(1)
                     visitsTab.tag(2)
+                    settingsTab.tag(3)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
 
@@ -89,8 +94,9 @@ struct PlaceDetailView: View {
                 .environment(LocationManager.shared)
         }
         .sheet(item: $editingVisit) { visit in
-            VisitEditSheet(visit: visit)
+            VisitDetailView(visit: visit)
                 .environment(NotionService.shared)
+                .environment(LocationManager.shared)
         }
         .sheet(isPresented: $showingEditPlace) {
             PlaceEditSheet(place: livePlace)
@@ -271,20 +277,6 @@ struct PlaceDetailView: View {
                         Text(last, style: .date)
                     }
                 }
-                DetailRow(label: "Frequent") {
-                    Toggle("", isOn: Binding(
-                        get: { livePlace.frequent },
-                        set: { _ in Task { try? await notionService.toggleFrequent(livePlace) } }
-                    ))
-                    .labelsHidden()
-                }
-                DetailRow(label: "Exclude from geofencing") {
-                    Toggle("", isOn: Binding(
-                        get: { livePlace.geofenceExcluded },
-                        set: { _ in Task { try? await notionService.toggleGeofenceExcluded(livePlace) } }
-                    ))
-                    .labelsHidden()
-                }
                 Button {
                     showingSpots = true
                 } label: {
@@ -411,6 +403,77 @@ struct PlaceDetailView: View {
             enrichError = error.localizedDescription
         }
         isEnriching = false
+    }
+
+    // MARK: - Settings
+
+    private var settingsTab: some View {
+        Form {
+            Section("Behavior") {
+                Toggle("Pinned", isOn: Binding(
+                    get: { livePlace.flagged },
+                    set: { _ in Task { try? await notionService.toggleFlagged(livePlace) } }
+                ))
+                Toggle("Frequent", isOn: Binding(
+                    get: { livePlace.frequent },
+                    set: { _ in Task { try? await notionService.toggleFrequent(livePlace) } }
+                ))
+                Toggle("Skip Enrichment", isOn: Binding(
+                    get: { livePlace.skipEnrichment },
+                    set: { _ in Task { try? await notionService.toggleSkipEnrichment(livePlace) } }
+                ))
+                Toggle("Prompt Log on Exit", isOn: Binding(
+                    get: { livePlace.promptLog },
+                    set: { _ in Task { try? await notionService.togglePromptLog(livePlace) } }
+                ))
+            }
+
+            Section {
+                Toggle("Exclude from Geofencing", isOn: Binding(
+                    get: { livePlace.geofenceExcluded },
+                    set: { _ in Task { try? await notionService.toggleGeofenceExcluded(livePlace) } }
+                ))
+                HStack {
+                    Text("Radius")
+                    Spacer()
+                    TextField("default", text: $radiusStr)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 70)
+                        .focused($settingsFieldFocused)
+                    Text("m").foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("Dwell Time")
+                    Spacer()
+                    TextField("default", text: $dwellStr)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 70)
+                        .focused($settingsFieldFocused)
+                    Text("min").foregroundStyle(.secondary)
+                }
+                Button("Save Geofencing Settings") {
+                    settingsFieldFocused = false
+                    Task {
+                        try? await notionService.setGeofenceRadius(livePlace, metres: Int(radiusStr))
+                        try? await notionService.setDwellTime(livePlace, minutes: Int(dwellStr))
+                    }
+                }
+                .disabled(
+                    Int(radiusStr) == livePlace.geofenceRadius &&
+                    Int(dwellStr) == livePlace.dwellTime
+                )
+            } header: {
+                Text("Geofencing")
+            } footer: {
+                Text("Radius default: 50m (200m for frequent places). Dwell default: 3 min.")
+            }
+        }
+        .onAppear {
+            radiusStr = livePlace.geofenceRadius.map { String($0) } ?? ""
+            dwellStr = livePlace.dwellTime.map { String($0) } ?? ""
+        }
     }
 
     // MARK: - Visits

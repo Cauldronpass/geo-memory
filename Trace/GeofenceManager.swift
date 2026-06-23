@@ -14,9 +14,11 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
 
     private let locationManager = CLLocationManager()
     private var pendingDwellPlaceIDs: Set<String> = []  // tracks places with scheduled dwell notifications
+    private var entryTimes: [String: Date] = [:]         // records when we entered each geofence
 
     // Design decisions (locked Build 18)
     private let defaultDwellSeconds: Double = 180   // 3 minutes
+    private let workoutMinDwellSeconds: Double = 30 * 60  // must be inside 30+ min to trigger workout prompt
     private let defaultRadius: Double = 50          // metres
     private let frequentRadius: Double = 200        // metres for Frequent places
     private let cooldownSeconds: Double = 4 * 3600  // 4 hours between notifications per place
@@ -124,6 +126,10 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         guard let place = NotionService.shared.places.first(where: { $0.id == region.identifier }) else { return }
+
+        // Record entry time for workout prompt calculation on exit
+        entryTimes[region.identifier] = Date()
+
         guard !isOnCooldown(placeID: place.id) else { return }
         guard !pendingDwellPlaceIDs.contains(place.id) else { return }
 
@@ -132,7 +138,20 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
-        cancelDwellNotification(placeID: region.identifier)
+        let placeID = region.identifier
+        cancelDwellNotification(placeID: placeID)
+
+        // Fire log prompt if place has it enabled and we were inside long enough
+        if let place = NotionService.shared.places.first(where: { $0.id == placeID }),
+           place.promptLog,
+           let entryTime = entryTimes[placeID] {
+            let duration = Date().timeIntervalSince(entryTime)
+            if duration >= workoutMinDwellSeconds && !isOnWorkoutCooldown(placeID: placeID) {
+                scheduleWorkoutPromptNotification(for: place, duration: duration)
+                setWorkoutCooldown(placeID: placeID)
+            }
+        }
+        entryTimes.removeValue(forKey: placeID)
     }
 
     func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
@@ -179,6 +198,48 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
         let ids = pendingDwellPlaceIDs.map { "dwell-\($0)" }
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
         pendingDwellPlaceIDs.removeAll()
+    }
+
+    // MARK: - Workout Prompt Notification
+
+    private func scheduleWorkoutPromptNotification(for place: Place, duration: TimeInterval) {
+        let minutes = Int(duration / 60)
+        let content = UNMutableNotificationContent()
+        content.title = "Log your \(place.name) workout?"
+        content.body  = "You were there for \(minutes) minutes."
+        content.sound = .default
+        content.userInfo = ["placeID": place.id, "placeName": place.name]
+        content.categoryIdentifier = "WORKOUT_PROMPT"
+
+        // Fire immediately (1-second delay required by UNTimeIntervalNotificationTrigger)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: "workout-\(place.id)",
+            content: content,
+            trigger: trigger
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    // MARK: - Workout Cooldown (separate from check-in cooldown)
+
+    private func isOnWorkoutCooldown(placeID: String) -> Bool {
+        guard let data = UserDefaults.standard.data(forKey: "workout_prompt_cooldowns"),
+              let cooldowns = try? JSONDecoder().decode([String: Date].self, from: data),
+              let last = cooldowns[placeID] else { return false }
+        return Date().timeIntervalSince(last) < cooldownSeconds
+    }
+
+    private func setWorkoutCooldown(placeID: String) {
+        var cooldowns: [String: Date] = [:]
+        if let data = UserDefaults.standard.data(forKey: "workout_prompt_cooldowns"),
+           let existing = try? JSONDecoder().decode([String: Date].self, from: data) {
+            cooldowns = existing
+        }
+        cooldowns[placeID] = Date()
+        if let encoded = try? JSONEncoder().encode(cooldowns) {
+            UserDefaults.standard.set(encoded, forKey: "workout_prompt_cooldowns")
+        }
     }
 
     // MARK: - Cooldown (UserDefaults-backed [placeID: Date])

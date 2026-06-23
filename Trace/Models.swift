@@ -1,7 +1,7 @@
 import Foundation
 import CoreLocation
 
-struct Place: Identifiable, Codable {
+struct Place: Identifiable, Codable, Hashable {
     let id: String
     var name: String
     var city: String
@@ -26,7 +26,9 @@ struct Place: Identifiable, Codable {
     var frequent: Bool = false        // Notion "Frequent" checkbox — wide geofence + Nearby priority
     var dwellTime: Int? = nil         // Notion "Dwell Time" (minutes) — nil = use 3 min default
     var geofenceRadius: Int? = nil    // Notion "Geofence Radius" (metres) — nil = use default (50m / 200m for frequent)
-    var geofenceExcluded: Bool = false // Notion "Geofence Excluded" checkbox — opt this place out entirely
+    var geofenceExcluded: Bool = false  // Notion "Geofence Excluded" checkbox — opt this place out entirely
+    var promptLog: Bool = false          // Notion "Prompt Log" checkbox — fire a log prompt on exit (workout, billiards, etc.)
+    var skipEnrichment: Bool = false    // Notion "Skip Enrichment" checkbox — exclude from Enrich Visits prompts
     var enrichmentStatus: String?      // Notion "Enrichment Status" select — e.g. "Enriched", "Needs Review"
 
     var coordinate: CLLocationCoordinate2D {
@@ -43,6 +45,7 @@ struct Visit: Identifiable, Codable {
     var notes: String?
     var photoURLs: [String]
     var peopleIDs: [String]   // Notion relation IDs into the People DB
+    var skipEnrichment: Bool = false  // Notion "Skip Enrichment" checkbox — hides from Enrich Visits list
 }
 
 struct Person: Identifiable, Codable {

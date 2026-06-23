@@ -18,8 +18,8 @@ struct NearbyView: View {
     @State private var noteToMove: DayNote? = nil
     @State private var showMoveNote = false
 
-    private let bucketScopes = ["This Week", "Next Week", "This Month", "Next Month"]
-    private let bucketAbbrevs = ["This Week": "TW", "Next Week": "NW", "This Month": "TM", "Next Month": "NM"]
+    private let bucketScopes = ["Inbox", "This Week", "Next Week", "This Month", "Next Month"]
+    private let bucketAbbrevs = ["Inbox": "IN", "This Week": "TW", "Next Week": "NW", "This Month": "TM", "Next Month": "NM"]
 
     private var availableCategories: [String] {
         Array(Set(notionService.places
@@ -83,6 +83,13 @@ struct NearbyView: View {
             }
             .navigationTitle(showCalendar ? "Notes" : "Nearby")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        NotificationCenter.default.post(name: .traceOpenLeftDrawer, object: nil)
+                    } label: {
+                        Image(systemName: "line.3.horizontal")
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
                         Task {
@@ -138,16 +145,8 @@ struct NearbyView: View {
                 set: { if !$0 { selectedBucketScope = nil } }
             )) {
                 if let scope = selectedBucketScope {
-                    BucketNoteSheet(
-                        scope: scope,
-                        onEdit: { note in
-                            selectedBucketScope = nil
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                                dayNoteAction = .tapBucket(scope, note)
-                            }
-                        }
-                    )
-                    .environment(notionService)
+                    BucketNoteSheet(scope: scope)
+                        .environment(notionService)
                 }
             }
         }
@@ -405,8 +404,8 @@ struct DayNotesCalendarView: View {
     @State private var selectedBucketScope: String?
     @State private var selectedDayDate: Date? = nil
 
-    private let bucketScopes = ["This Week", "Next Week", "This Month", "Next Month"]
-    private let bucketAbbrevs = ["This Week": "TW", "Next Week": "NW", "This Month": "TM", "Next Month": "NM"]
+    private let bucketScopes = ["Inbox", "This Week", "Next Week", "This Month", "Next Month"]
+    private let bucketAbbrevs = ["Inbox": "IN", "This Week": "TW", "Next Week": "NW", "This Month": "TM", "Next Month": "NM"]
 
     private var bucketNotesList: [DayNote] { notion.dayNotes.filter { $0.scope != nil } }
     private func bucketCount(for scope: String) -> Int {
@@ -483,16 +482,8 @@ struct DayNotesCalendarView: View {
             set: { if !$0 { selectedBucketScope = nil } }
         )) {
             if let scope = selectedBucketScope {
-                BucketNoteSheet(
-                    scope: scope,
-                    onEdit: { note in
-                        selectedBucketScope = nil
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                            dayNoteAction = .tapBucket(scope, note)
-                        }
-                    }
-                )
-                .environment(notion)
+                BucketNoteSheet(scope: scope)
+                    .environment(notion)
             }
         }
     }
@@ -509,6 +500,12 @@ struct DayNotesListSheet: View {
     @State private var quickNote = ""
     @State private var isSaving = false
     @FocusState private var fieldFocused: Bool
+    @State private var noteToMove: DayNote? = nil
+    @State private var showMovePicker = false
+    @State private var showMoveDatePicker = false
+    @State private var moveTargetDate = Date()
+
+    private let bucketScopes = ["Inbox", "This Week", "Next Week", "This Month", "Next Month"]
 
     private var notes: [DayNote] {
         let cal = Calendar.current
@@ -567,16 +564,41 @@ struct DayNotesListSheet: View {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
-                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                            Button { onEdit(note) } label: {
-                                Label("Edit", systemImage: "pencil")
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button {
+                                noteToMove = note
+                                showMovePicker = true
+                            } label: {
+                                Label("Move", systemImage: "arrow.right.circle")
                             }
-                            .tint(.orange)
+                            .tint(.blue)
                         }
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .confirmationDialog("Move to…", isPresented: $showMovePicker, titleVisibility: .visible) {
+                    ForEach(bucketScopes, id: \.self) { scope in
+                        Button(scope) {
+                            if let note = noteToMove {
+                                Task { try? await notion.moveDayNoteToBucket(id: note.id, scope: scope) }
+                            }
+                        }
+                    }
+                    Button("Different Day…") {
+                        moveTargetDate = date
+                        showMoveDatePicker = true
+                    }
+                    Button("Cancel", role: .cancel) { noteToMove = nil }
+                }
+                .sheet(isPresented: $showMoveDatePicker) {
+                    MoveDatePickerSheet(initialDate: moveTargetDate) { newDate in
+                        if let note = noteToMove {
+                            Task { try? await notion.moveDayNote(id: note.id, toDate: newDate) }
+                        }
+                        noteToMove = nil
+                    }
+                }
             }
 
             Divider()

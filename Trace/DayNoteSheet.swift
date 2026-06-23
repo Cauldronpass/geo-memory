@@ -58,7 +58,7 @@ struct DayNoteSheet: View {
     @State private var copiedCapture = false
     @State private var errorMessage: String?
 
-    private let bucketScopes = ["This Week", "Next Week", "This Month", "Next Month"]
+    private let bucketScopes = ["Inbox", "This Week", "Next Week", "This Month", "Next Month"]
 
     init(action: DayNoteAction) {
         self.action = action

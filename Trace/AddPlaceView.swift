@@ -156,6 +156,7 @@ struct AddPlaceView: View {
 
     // Shared
     @State private var isSaving = false
+    @State private var checkInAfterSave = false
 
     var body: some View {
         NavigationStack {
@@ -342,12 +343,21 @@ struct AddPlaceView: View {
             }
             .pickerStyle(.segmented)
 
+            if personalStatus == "Visited" {
+                Toggle("Check in after saving", isOn: $checkInAfterSave)
+            }
+
             Button {
                 savePersonal()
             } label: {
                 Group {
                     if isSaving { ProgressView() }
-                    else { Text("Save Place").frame(maxWidth: .infinity) }
+                    else {
+                        Text(checkInAfterSave && personalStatus == "Visited"
+                             ? "Save & Check In"
+                             : "Save Place")
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -519,12 +529,19 @@ struct AddPlaceView: View {
         guard !isSaving, !personalName.isEmpty else { return }
         isSaving = true
         Task {
-            try? await notion.addPlace(
-                name: personalName, address: geocodedAddress, city: geocodedCity,
-                category: personalCategory, latitude: geocodedLat, longitude: geocodedLon,
-                googlePlaceID: nil, phone: nil, website: nil, status: personalStatus
-            )
-            await notion.fetchPlaces()
+            do {
+                let placeID = try await notion.addPlace(
+                    name: personalName, address: geocodedAddress, city: geocodedCity,
+                    category: personalCategory, latitude: geocodedLat, longitude: geocodedLon,
+                    googlePlaceID: nil, phone: nil, website: nil, status: personalStatus
+                )
+                await notion.fetchPlaces()
+                if checkInAfterSave, personalStatus == "Visited",
+                   let savedPlace = notion.places.first(where: { $0.id == placeID }) {
+                    try await notion.checkIn(place: savedPlace)
+                    await notion.fetchVisits()
+                }
+            } catch { }
             isSaving = false
             dismiss()
         }

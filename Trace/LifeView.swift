@@ -250,14 +250,23 @@ struct LifeCalendarView: View {
     @State private var showQuickNote = false
     @State private var dayNotesListDate: Date? = nil
 
-    private let bucketScopes = ["This Week", "Next Week", "This Month", "Next Month"]
-    private let bucketAbbrevs = ["This Week": "TW", "Next Week": "NW", "This Month": "TM", "Next Month": "NM"]
+    private let bucketScopes = ["Inbox", "This Week", "Next Week", "This Month", "Next Month"]
+    private let bucketAbbrevs = ["Inbox": "IN", "This Week": "TW", "Next Week": "NW", "This Month": "TM", "Next Month": "NM"]
 
-    private var bucketNotesList: [DayNote] {
-        notion.dayNotes.filter { $0.scope != nil }
-    }
+    /// Count bullet lines across ALL Notion records for this scope (multiple records can exist if
+    /// items were added from different entry points before being merged into one).
     private func bucketCount(for scope: String) -> Int {
-        bucketNotesList.filter { $0.scope == scope }.count
+        notion.dayNotes
+            .filter { note in
+                guard let s = note.scope else { return false }
+                return s == scope && note.status != "Archived"
+            }
+            .reduce(0) { acc, note in
+                acc + note.body
+                    .components(separatedBy: "\n")
+                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    .count
+            }
     }
 
     private func dateKey(_ date: Date) -> String {
@@ -304,15 +313,28 @@ struct LifeCalendarView: View {
         let visits   = monthEntries.filter { $0.id.hasPrefix("v-") }.count
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
-        let activeNotes = notion.dayNotes.filter {
-            if $0.scope != nil { return true }
+
+        // Bucket notes: count individual bullet lines (one Notion record per bucket)
+        let bucketBullets = notion.dayNotes
+            .filter { $0.scope != nil && $0.status != "Archived" }
+            .reduce(0) { acc, note in
+                acc + note.body
+                    .components(separatedBy: "\n")
+                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    .count
+            }
+        // Date notes: each record counts as one note
+        let dateNotes = notion.dayNotes.filter {
+            if $0.scope != nil { return false }
             guard let d = $0.date else { return false }
             return cal.startOfDay(for: d) >= today
         }.count
+        let activeNotes = bucketBullets + dateNotes
+
         var stats: [(String, String)] = []
-        if workouts > 0 { stats.append(("\(workouts)", "workouts")) }
-        if visits   > 0 { stats.append(("\(visits)",   "visits"))   }
-        if activeNotes > 0 { stats.append(("\(activeNotes)", "notes")) }
+        if workouts > 0    { stats.append(("\(workouts)",   "workouts")) }
+        if visits   > 0    { stats.append(("\(visits)",     "visits"))   }
+        if activeNotes > 0 { stats.append(("\(activeNotes)", "notes"))   }
         return stats
     }
 
@@ -433,7 +455,8 @@ struct LifeCalendarView: View {
             .padding(.vertical)
 
             bottomBar
-                .padding(.horizontal)
+                .padding(.leading, 16)
+                .padding(.trailing, 76)   // keep clear of FAB
                 .padding(.bottom, 20)
         }
         .task {
@@ -501,16 +524,8 @@ struct LifeCalendarView: View {
             set: { if !$0 { selectedBucketScope = nil } }
         )) {
             if let scope = selectedBucketScope {
-                BucketNoteSheet(
-                    scope: scope,
-                    onEdit: { note in
-                        selectedBucketScope = nil
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                            dayNoteAction = .tapBucket(scope, note)
-                        }
-                    }
-                )
-                .environment(notion)
+                BucketNoteSheet(scope: scope)
+                    .environment(notion)
             }
         }
         .sheet(isPresented: Binding(
@@ -532,26 +547,25 @@ struct LifeCalendarView: View {
     // MARK: - Bottom Bar
 
     private var bottomBar: some View {
-        HStack(spacing: 0) {
-            // Compact legend
-            HStack(spacing: 10) {
+        VStack(spacing: 10) {
+            // Legend row
+            HStack(spacing: 16) {
                 HStack(spacing: 4) {
                     RoundedRectangle(cornerRadius: 2).fill(Color.orange).frame(width: 8, height: 8)
-                    Text("Workout").font(.caption2).foregroundStyle(.secondary)
+                    Text("Workout").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 4) {
                     Circle().fill(Color.teal).frame(width: 8, height: 8)
-                    Text("Visit").font(.caption2).foregroundStyle(.secondary)
+                    Text("Visit").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 4) {
-                    Circle().fill(Color.indigo).frame(width: 5, height: 5)
-                    Text("Note").font(.caption2).foregroundStyle(.secondary)
+                    Circle().fill(Color.indigo).frame(width: 6, height: 6)
+                    Text("Note").font(.caption).foregroundStyle(.secondary)
                 }
+                Spacer()
             }
 
-            Spacer(minLength: 10)
-
-            // Bucket note tiles
+            // Bucket note tiles row
             HStack(spacing: 6) {
                 ForEach(bucketScopes, id: \.self) { scope in
                     let abbrev = bucketAbbrevs[scope] ?? scope
@@ -565,7 +579,8 @@ struct LifeCalendarView: View {
                                 .font(.system(size: 15, weight: .bold))
                                 .foregroundStyle(count > 0 ? Color.orange : Color(.tertiaryLabel))
                         }
-                        .frame(width: 38, height: 38)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
                         .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)
@@ -579,135 +594,288 @@ struct LifeCalendarView: View {
 }
 
 // MARK: - Bucket Note Sheet
+// One Notion record per bucket. Body is newline-separated bullet lines.
 
 struct BucketNoteSheet: View {
     let scope: String
-    let onEdit: (DayNote) -> Void
 
     @Environment(NotionService.self) private var notion
     @Environment(\.dismiss) private var dismiss
-    @State private var quickNote = ""
+    @State private var newBullet = ""
     @State private var isSaving = false
-    @FocusState private var fieldFocused: Bool
+    @FocusState private var addFocused: Bool
+    @State private var bulletToMove: Int? = nil
+    @State private var showMoveDialog = false
+    @State private var showDatePicker = false
+    @State private var pickedDate = Date()
+    @State private var editedTexts: [Int: String] = [:]
 
-    private var notes: [DayNote] {
-        notion.dayNotes.filter { $0.scope == scope }
+    private let allBuckets = ["Inbox", "This Week", "Next Week", "This Month", "Next Month"]
+
+    /// All Notion records for this scope (may be >1 if items were added from different entry points).
+    private var allNotes: [DayNote] {
+        notion.dayNotes.filter { note in
+            guard let s = note.scope else { return false }
+            return s == scope && note.status != "Archived"
+        }
+    }
+
+    /// Flat bullet list across all records, carrying the source note id for operations.
+    private var bullets: [(noteId: String, text: String)] {
+        allNotes.flatMap { note in
+            note.body
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .map { (noteId: note.id, text: $0) }
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Header
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(scope).font(.title2.bold())
-                    Text(notes.isEmpty ? "No notes" : "\(notes.count) note\(notes.count == 1 ? "" : "s")")
+                    Text(bullets.isEmpty
+                         ? "No items"
+                         : "\(bullets.count) item\(bullets.count == 1 ? "" : "s")")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Done") { dismiss() }
-                    .font(.body.weight(.medium))
+                Button("Done") { dismiss() }.font(.body.weight(.medium))
             }
             .padding()
 
             Divider()
 
-            if notes.isEmpty {
+            if bullets.isEmpty {
                 Spacer()
-                ContentUnavailableView("No notes yet", systemImage: "note.text",
-                    description: Text("Type below to add your first note for \(scope.lowercased())"))
+                ContentUnavailableView(
+                    "Nothing here yet",
+                    systemImage: "list.bullet",
+                    description: Text("Add your first item below")
+                )
                 Spacer()
             } else {
                 List {
-                    ForEach(notes) { note in
-                        Button { onEdit(note) } label: {
-                            Text(note.body)
-                                .font(.body)
-                                .foregroundStyle(.primary)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 6)
+                    ForEach(Array(bullets.enumerated()), id: \.offset) { idx, entry in
+                        HStack(alignment: .top, spacing: 10) {
+                            Circle()
+                                .fill(Color.orange.opacity(0.7))
+                                .frame(width: 6, height: 6)
+                                .padding(.top, 7)
+                            TextField("", text: Binding(
+                                get: { editedTexts[idx] ?? entry.text },
+                                set: { editedTexts[idx] = $0 }
+                            ))
+                            .font(.body)
+                            .foregroundStyle(.primary)
+                            .onSubmit { Task { await saveBulletEdit(at: idx, originalText: entry.text, noteId: entry.noteId) } }
                         }
-                        .buttonStyle(.plain)
-                        .listRowBackground(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color(.systemGray5))
-                                .padding(.vertical, 3)
-                        )
+                        .padding(.vertical, 4)
+                        .listRowBackground(Color.clear)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
-                                Task { try? await notion.deleteDayNote(id: note.id) }
+                                Task { await deleteBullet(at: idx) }
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
-                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                            Button { onEdit(note) } label: {
-                                Label("Edit", systemImage: "pencil")
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button {
+                                bulletToMove = idx
+                                showMoveDialog = true
+                            } label: {
+                                Label("Move", systemImage: "arrow.right.circle")
                             }
-                            .tint(.orange)
+                            .tint(.blue)
                         }
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .confirmationDialog(
+                    "Move to…",
+                    isPresented: $showMoveDialog,
+                    titleVisibility: .visible
+                ) {
+                    Button("Today") {
+                        if let idx = bulletToMove {
+                            Task { await moveBulletToDate(at: idx, date: Date()) }
+                        }
+                        bulletToMove = nil
+                    }
+                    Button("Choose a date…") {
+                        pickedDate = Date()
+                        showDatePicker = true
+                        // bulletToMove intentionally NOT cleared — needed by the date picker
+                    }
+                    ForEach(allBuckets.filter { $0 != scope }, id: \.self) { target in
+                        Button(target) {
+                            if let idx = bulletToMove {
+                                Task { await moveBullet(at: idx, to: target) }
+                            }
+                            bulletToMove = nil
+                        }
+                    }
+                    Button("Cancel", role: .cancel) { bulletToMove = nil }
+                }
+                .sheet(isPresented: $showDatePicker) {
+                    NavigationStack {
+                        DatePicker(
+                            "Move to date",
+                            selection: $pickedDate,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.graphical)
+                        .padding()
+                        .navigationTitle("Choose Date")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Cancel") {
+                                    showDatePicker = false
+                                    bulletToMove = nil
+                                }
+                            }
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Move") {
+                                    if let idx = bulletToMove {
+                                        Task { await moveBulletToDate(at: idx, date: pickedDate) }
+                                    }
+                                    showDatePicker = false
+                                    bulletToMove = nil
+                                }
+                            }
+                        }
+                    }
+                    .presentationDetents([.medium])
+                }
             }
 
             Divider()
 
-            // Inline quick-add
-            VStack(spacing: 8) {
-                TextEditor(text: $quickNote)
-                    .focused($fieldFocused)
-                    .frame(minHeight: 60, maxHeight: 100)
-                    .scrollContentBackground(.hidden)
+            // Add new bullet
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(Color.orange.opacity(0.4))
+                    .frame(width: 6, height: 6)
+                TextField("Add item…", text: $newBullet)
+                    .focused($addFocused)
                     .font(.body)
-                    .overlay(alignment: .topLeading) {
-                        if quickNote.isEmpty {
-                            Text("Add a note…")
-                                .foregroundStyle(Color(.placeholderText))
-                                .font(.body)
-                                .padding(.top, 8).padding(.leading, 5)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .padding(.horizontal, 4)
-
-                HStack {
-                    Spacer()
-                    Button {
-                        Task { await saveQuick() }
-                    } label: {
-                        if isSaving {
-                            ProgressView().scaleEffect(0.8)
-                        } else {
-                            Text("Save")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 8)
-                                .background(Color.orange, in: RoundedRectangle(cornerRadius: 10))
-                        }
-                    }
-                    .disabled(quickNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
+                    .onSubmit { Task { await addBullet() } }
+                Button {
+                    Task { await addBullet() }
+                } label: {
+                    Image(systemName: isSaving ? "arrow.circlepath" : "return")
+                        .foregroundStyle(newBullet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                         ? Color.secondary.opacity(0.4) : Color.orange)
                 }
+                .buttonStyle(.plain)
+                .disabled(newBullet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 12)
-            .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 14))
-            .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(Color(.systemGray6))
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .onAppear { addFocused = true }
     }
 
-    private func saveQuick() async {
-        let text = quickNote.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func addBullet() async {
+        let text = newBullet.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         isSaving = true
-        try? await notion.saveBucketNote(scope: scope, noteBody: text)
-        quickNote = ""
-        fieldFocused = false
+        // Always append to the first existing record, or create one
+        if let existing = allNotes.first {
+            let body = existing.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            let newBody = body.isEmpty ? text : body + "\n" + text
+            try? await notion.updateDayNote(id: existing.id, noteBody: newBody)
+        } else {
+            try? await notion.saveBucketNote(scope: scope, noteBody: text)
+        }
+        newBullet = ""
         isSaving = false
+    }
+
+    private func saveBulletEdit(at index: Int, originalText: String, noteId: String) async {
+        guard let newText = editedTexts[index]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !newText.isEmpty, newText != originalText,
+              let sourceNote = allNotes.first(where: { $0.id == noteId }) else {
+            editedTexts.removeValue(forKey: index)
+            return
+        }
+        let lines = sourceNote.body
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let localOffset = bullets[..<index].filter { $0.noteId == noteId }.count
+        var updated = lines
+        if localOffset < updated.count { updated[localOffset] = newText }
+        try? await notion.updateDayNote(id: sourceNote.id, noteBody: updated.joined(separator: "\n"))
+        editedTexts.removeValue(forKey: index)
+    }
+
+    private func deleteBullet(at index: Int) async {
+        guard index < bullets.count else { return }
+        let entry = bullets[index]
+        guard let sourceNote = allNotes.first(where: { $0.id == entry.noteId }) else { return }
+
+        // Rebuild that record's lines without this bullet
+        let lines = sourceNote.body
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        // Find which line within this record this bullet corresponds to
+        let localOffset = bullets[..<index].filter { $0.noteId == entry.noteId }.count
+        var updated = lines
+        if localOffset < updated.count { updated.remove(at: localOffset) }
+
+        if updated.isEmpty {
+            try? await notion.deleteDayNote(id: sourceNote.id)
+        } else {
+            try? await notion.updateDayNote(id: sourceNote.id, noteBody: updated.joined(separator: "\n"))
+        }
+    }
+
+    private func removeBullet(at index: Int) async -> String? {
+        guard index < bullets.count else { return nil }
+        let entry = bullets[index]
+        guard let sourceNote = allNotes.first(where: { $0.id == entry.noteId }) else { return nil }
+
+        let lines = sourceNote.body
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let localOffset = bullets[..<index].filter { $0.noteId == entry.noteId }.count
+        var updated = lines
+        if localOffset < updated.count { updated.remove(at: localOffset) }
+
+        if updated.isEmpty {
+            try? await notion.deleteDayNote(id: sourceNote.id)
+        } else {
+            try? await notion.updateDayNote(id: sourceNote.id, noteBody: updated.joined(separator: "\n"))
+        }
+        return entry.text
+    }
+
+    private func moveBullet(at index: Int, to targetScope: String) async {
+        guard let bulletText = await removeBullet(at: index) else { return }
+        let targetNote = notion.dayNotes.first { $0.scope == targetScope && $0.status != "Archived" }
+        if let target = targetNote {
+            let body = target.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            try? await notion.updateDayNote(id: target.id, noteBody: body.isEmpty ? bulletText : body + "\n" + bulletText)
+        } else {
+            try? await notion.saveBucketNote(scope: targetScope, noteBody: bulletText)
+        }
+    }
+
+    private func moveBulletToDate(at index: Int, date: Date) async {
+        guard let bulletText = await removeBullet(at: index) else { return }
+        // Always create a new record — each moved item becomes its own swipeable note on the target date.
+        try? await notion.saveDayNote(date: date, noteBody: bulletText)
     }
 }
 
@@ -718,10 +886,10 @@ struct QuickNoteSheet: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
     @State private var noteText = ""
-    @State private var scope = "This Week"
+    @State private var scope = "Inbox"
     @State private var isSaving = false
 
-    private let bucketScopes = ["This Week", "Next Week", "This Month", "Next Month"]
+    private let bucketScopes = ["Inbox", "This Week", "Next Week", "This Month", "Next Month"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -739,12 +907,12 @@ struct QuickNoteSheet: View {
             // Scope picker
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    Button("Today") { scope = "today" }
-                        .scopeChip(selected: scope == "today")
                     ForEach(bucketScopes, id: \.self) { s in
                         Button(s) { scope = s }
                             .scopeChip(selected: scope == s)
                     }
+                    Button("Today") { scope = "today" }
+                        .scopeChip(selected: scope == "today")
                 }
                 .padding(.horizontal)
             }
@@ -831,11 +999,11 @@ struct AllNotesSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editAction: DayNoteAction? = nil
     @State private var quickNote = ""
-    @State private var quickScope = "This Week"
+    @State private var quickScope = "Inbox"
     @FocusState private var fieldFocused: Bool
     @State private var isSaving = false
 
-    private let bucketScopes = ["This Week", "Next Week", "This Month", "Next Month"]
+    private let bucketScopes = ["Inbox", "This Week", "Next Week", "This Month", "Next Month"]
 
     private struct NoteGroup: Identifiable {
         let id: String
@@ -970,11 +1138,11 @@ struct AllNotesSheet: View {
                     Text("Add to:")
                         .font(.caption).foregroundStyle(.secondary)
                     Menu {
-                        Button("Today") { quickScope = "today" }
-                        Divider()
                         ForEach(bucketScopes, id: \.self) { scope in
                             Button(scope) { quickScope = scope }
                         }
+                        Divider()
+                        Button("Today") { quickScope = "today" }
                     } label: {
                         HStack(spacing: 4) {
                             Text(quickScope == "today" ? "Today" : quickScope)
