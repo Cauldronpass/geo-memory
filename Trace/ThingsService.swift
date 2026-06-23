@@ -4,15 +4,15 @@ import Observation
 // MARK: - Models
 
 struct ThingsTask: Identifiable, Codable {
-    let id: String
+    let id: String          // mapped from "uuid"
     let title: String
-    let list: String?   // Things project or area name ("Work", "Personal", etc.)
-}
+    let list: String?       // mapped from "project_title" (area/project name)
 
-private struct ThingsTodayResponse: Codable {
-    let count: Int
-    let tasks: [ThingsTask]
-    let inbox_count: Int?
+    enum CodingKeys: String, CodingKey {
+        case id = "uuid"
+        case title
+        case list = "project_title"
+    }
 }
 
 // MARK: - Service
@@ -58,15 +58,18 @@ final class ThingsService {
         do {
             var request = URLRequest(url: url, timeoutInterval: 8)
             request.cachePolicy = .reloadIgnoringLocalCacheData
+            if let token = UserDefaults.standard.string(forKey: "things_api_token"), !token.isEmpty {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
             let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw URLError(.badServerResponse)
             }
-            let decoded = try JSONDecoder().decode(ThingsTodayResponse.self, from: data)
+            let decoded = try JSONDecoder().decode([ThingsTask].self, from: data)
             await MainActor.run {
-                tasks = decoded.tasks
+                tasks = decoded
                 totalCount = decoded.count
-                inboxCount = decoded.inbox_count ?? 0
+                inboxCount = 0
                 lastFetched = Date()
                 isLoading = false
             }

@@ -127,6 +127,7 @@ struct SettingsView: View {
     @State private var googlePlacesKey = ""
     @State private var ouraToken = ""
     @State private var thingsApiURL = ""
+    @State private var thingsApiToken = ""
     @State private var calShowAllDay = false
     @State private var showToken = false
     @State private var showPassword = false
@@ -190,10 +191,14 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .font(.system(.body, design: .monospaced))
+                TextField("Bearer token", text: $thingsApiToken)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .font(.system(.body, design: .monospaced))
             } header: {
                 Label("Things 3", systemImage: "checkmark.circle")
             } footer: {
-                Text("Base URL of the things-api server running on your Mac Mini (via Tailscale). Used for today's tasks on the Home screen. Leave blank to hide the section.")
+                Text("Base URL and auth token for the things-api server on your Mac Mini (via Tailscale). Used for today's tasks on the Home screen.")
             }
 
             Section {
@@ -287,6 +292,7 @@ struct SettingsView: View {
             googlePlacesKey   = UserDefaults.standard.string(forKey: "google_places_key") ?? ""
             ouraToken         = UserDefaults.standard.string(forKey: "oura_token") ?? ""
             thingsApiURL      = UserDefaults.standard.string(forKey: "things_api_url") ?? ""
+            thingsApiToken    = UserDefaults.standard.string(forKey: "things_api_token") ?? ""
             calShowAllDay     = UserDefaults.standard.bool(forKey: "cal_show_all_day")
             geofenceEnabled   = UserDefaults.standard.bool(forKey: "geofence_enabled")
         }
@@ -322,6 +328,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(googlePlacesKey,  forKey: "google_places_key")
         UserDefaults.standard.set(ouraToken,        forKey: "oura_token")
         UserDefaults.standard.set(thingsApiURL,     forKey: "things_api_url")
+        UserDefaults.standard.set(thingsApiToken,   forKey: "things_api_token")
         await onSave()
         saveState = .saved
         try? await Task.sleep(nanoseconds: 1_200_000_000)

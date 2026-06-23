@@ -96,6 +96,7 @@ final class CalendarService {
         let pred = store.predicateForEvents(withStart: now, end: windowEnd, calendars: nil)
         let events = store.events(matching: pred)
             .filter { showAllDayEvents || !$0.isAllDay }
+            .filter { $0.status != .canceled }
             .sorted { $0.startDate < $1.startDate }
 
         upcomingEvents = events.map { makeEvent($0) }
@@ -106,6 +107,7 @@ final class CalendarService {
             let farPred = store.predicateForEvents(withStart: windowEnd, end: farEnd, calendars: nil)
             let farEvents = store.events(matching: farPred)
                 .filter { showAllDayEvents || !$0.isAllDay }
+                .filter { $0.status != .canceled }
                 .sorted { $0.startDate < $1.startDate }
             nextEventBeyondWindow = farEvents.first.map { makeEvent($0) }
         } else {

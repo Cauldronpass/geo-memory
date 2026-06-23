@@ -96,9 +96,11 @@ struct HomeView: View {
     private var nextUpItems: [NextUpItem] {
         var items: [NextUpItem] = cal.upcomingEvents.map { .event($0) }
         let hour = Calendar.current.component(.hour, from: Date())
-        if hour >= 12 {
+        // Show bedtime from 4 PM onward; keep showing even after it passes (red "past bedtime")
+        // until midnight so the reminder remains visible late at night.
+        if hour >= 16 || hour < 2 {
             let st = oura.sleepTime ?? OuraSleepTime.userDefault()
-            if let bt = st.bedtimeDate, bt > Date() {
+            if st.bedtimeDate != nil {
                 items.append(.bedtime(st))
             }
         }
@@ -701,7 +703,7 @@ struct HomeView: View {
                             .foregroundStyle(.secondary)
                     }
                     Button {
-                        UIApplication.shared.open(URL(string: "things:///today")!)
+                        UIApplication.shared.open(URL(string: "things:///show?id=today")!)
                     } label: {
                         Text("Open Things →")
                             .font(.system(size: 10))

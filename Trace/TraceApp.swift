@@ -166,6 +166,7 @@ struct TraceApp: App {
             ContentView()
                 .environment(notionService)
                 .environment(locationManager)
+                .preferredColorScheme(.light)
                 .task {
                     await notionService.fetchPlaces()
                     await notionService.fetchVisits()
