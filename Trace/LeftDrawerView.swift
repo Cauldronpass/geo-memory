@@ -18,6 +18,7 @@ struct LeftDrawerView: View {
         let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
         let excludedPlaceIDs = Set(notion.places.filter { $0.skipEnrichment }.map { $0.id })
         let journaledVisitIDs = Set(notion.workouts.compactMap { $0.visitID })
+        let billiardsVisitIDs = Set(notion.billiardsSessions.compactMap { $0.visitID })
         return notion.visits.filter { visit in
             visit.date >= cutoff &&
             !visit.skipEnrichment &&
@@ -25,7 +26,8 @@ struct LeftDrawerView: View {
             visit.rating == nil &&
             visit.photoURLs.isEmpty &&
             !excludedPlaceIDs.contains(visit.placeID) &&
-            !journaledVisitIDs.contains(visit.id)
+            !journaledVisitIDs.contains(visit.id) &&
+            !billiardsVisitIDs.contains(visit.id)
         }.count
     }
 
@@ -128,6 +130,8 @@ struct SettingsView: View {
     @State private var ouraToken = ""
     @State private var thingsApiURL = ""
     @State private var thingsApiToken = ""
+    @State private var billiardsMyName = ""
+    @State private var billiardsMyslStr = ""
     @State private var calShowAllDay = false
     @State private var showToken = false
     @State private var showPassword = false
@@ -199,6 +203,17 @@ struct SettingsView: View {
                 Label("Things 3", systemImage: "checkmark.circle")
             } footer: {
                 Text("Base URL and auth token for the things-api server on your Mac Mini (via Tailscale). Used for today's tasks on the Home screen.")
+            }
+
+            Section {
+                TextField("Dave", text: $billiardsMyName)
+                    .autocorrectionDisabled()
+                TextField("5", text: $billiardsMyslStr)
+                    .keyboardType(.numberPad)
+            } header: {
+                Label("Billiards", systemImage: "circle.grid.2x2")
+            } footer: {
+                Text("Your name as it appears on APA scorecards (used to auto-identify your row when scanning), and your current APA skill level (pre-fills the wizard).")
             }
 
             Section {
@@ -293,6 +308,9 @@ struct SettingsView: View {
             ouraToken         = UserDefaults.standard.string(forKey: "oura_token") ?? ""
             thingsApiURL      = UserDefaults.standard.string(forKey: "things_api_url") ?? ""
             thingsApiToken    = UserDefaults.standard.string(forKey: "things_api_token") ?? ""
+            billiardsMyName   = UserDefaults.standard.string(forKey: "billiards_my_name") ?? ""
+            let sl = UserDefaults.standard.integer(forKey: "billiards_my_sl")
+            billiardsMyslStr  = sl > 0 ? "\(sl)" : ""
             calShowAllDay     = UserDefaults.standard.bool(forKey: "cal_show_all_day")
             geofenceEnabled   = UserDefaults.standard.bool(forKey: "geofence_enabled")
         }
@@ -329,6 +347,12 @@ struct SettingsView: View {
         UserDefaults.standard.set(ouraToken,        forKey: "oura_token")
         UserDefaults.standard.set(thingsApiURL,     forKey: "things_api_url")
         UserDefaults.standard.set(thingsApiToken,   forKey: "things_api_token")
+        if !billiardsMyName.isEmpty {
+            UserDefaults.standard.set(billiardsMyName, forKey: "billiards_my_name")
+        }
+        if let sl = Int(billiardsMyslStr), sl > 0 {
+            UserDefaults.standard.set(sl, forKey: "billiards_my_sl")
+        }
         await onSave()
         saveState = .saved
         try? await Task.sleep(nanoseconds: 1_200_000_000)
@@ -431,6 +455,7 @@ struct EnrichVisitsSheet: View {
         let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
         let excludedPlaceIDs = Set(notion.places.filter { $0.skipEnrichment }.map { $0.id })
         let journaledVisitIDs = Set(notion.workouts.compactMap { $0.visitID })
+        let billiardsVisitIDs = Set(notion.billiardsSessions.compactMap { $0.visitID })
         return notion.visits
             .filter { visit in
                 visit.date >= cutoff &&
@@ -439,7 +464,8 @@ struct EnrichVisitsSheet: View {
                 visit.rating == nil &&
                 visit.photoURLs.isEmpty &&
                 !excludedPlaceIDs.contains(visit.placeID) &&
-                !journaledVisitIDs.contains(visit.id)
+                !journaledVisitIDs.contains(visit.id) &&
+                !billiardsVisitIDs.contains(visit.id)
             }
             .sorted { $0.date > $1.date }
     }

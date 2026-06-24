@@ -10,13 +10,28 @@ struct FitnessView: View {
     @State private var selectedWorkout: Workout? = nil
     @State private var showAll = false
     @State private var selectedPeriod: StatPeriod? = nil
+    @State private var typeFilter: String? = nil
+
+    private let typeOrder = ["OrangeTheory", "Run", "Bike", "Hike", "Lift"]
 
     private var sortedWorkouts: [Workout] {
         notion.workouts.sorted { $0.date > $1.date }
     }
 
+    private var filteredWorkouts: [Workout] {
+        guard let filter = typeFilter else { return sortedWorkouts }
+        return sortedWorkouts.filter { $0.type == filter }
+    }
+
     private var displayedWorkouts: [Workout] {
-        showAll ? sortedWorkouts : Array(sortedWorkouts.prefix(5))
+        showAll ? filteredWorkouts : Array(filteredWorkouts.prefix(5))
+    }
+
+    private var availableTypes: [String] {
+        let used = Set(sortedWorkouts.map { $0.type })
+        let ordered = typeOrder.filter { used.contains($0) }
+        let extras = used.subtracting(Set(typeOrder)).sorted()
+        return ordered + extras
     }
 
     private func workoutsIn(_ period: StatPeriod) -> [Workout] {
@@ -53,6 +68,9 @@ struct FitnessView: View {
                 } else {
                     List {
                         statsSection
+                        if !sortedWorkouts.isEmpty {
+                            typeFilterSection
+                        }
                         workoutsSection
                     }
                     .listStyle(.insetGrouped)
@@ -138,6 +156,70 @@ struct FitnessView: View {
         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
     }
 
+    // MARK: - Type filter chips
+
+    @ViewBuilder
+    private var typeFilterSection: some View {
+        Section {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(availableTypes, id: \.self) { type in
+                        typeFilterChip(type)
+                    }
+                    if typeFilter != nil {
+                        Button {
+                            typeFilter = nil
+                        } label: {
+                            Text("Clear")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+        }
+        .listRowBackground(Color.clear)
+    }
+
+    private func chipColor(for type: String) -> Color {
+        switch type {
+        case "OrangeTheory": return .orange
+        case "Run":          return .blue
+        case "Bike":         return .green
+        case "Hike":         return .brown
+        case "Lift":         return .purple
+        default:             return .gray
+        }
+    }
+
+    private func chipLabel(for type: String) -> String {
+        switch type {
+        case "OrangeTheory": return "OTF"
+        default: return type
+        }
+    }
+
+    private func typeFilterChip(_ type: String) -> some View {
+        let isActive = typeFilter == type
+        return Button {
+            typeFilter = isActive ? nil : type
+        } label: {
+            Text(chipLabel(for: type))
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(isActive ? chipColor(for: type) : Color(.secondarySystemGroupedBackground))
+                .foregroundStyle(isActive ? .white : .primary)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: - Workouts list
 
     @ViewBuilder
@@ -147,16 +229,20 @@ struct FitnessView: View {
                 Text("No workouts logged yet")
                     .foregroundStyle(.secondary)
                     .font(.subheadline)
+            } else if filteredWorkouts.isEmpty {
+                Text("No \(chipLabel(for: typeFilter ?? "")) workouts logged yet")
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
             } else {
                 ForEach(displayedWorkouts) { w in
                     Button { selectedWorkout = w } label: { WorkoutRow(workout: w) }
                         .buttonStyle(.plain)
                 }
-                if sortedWorkouts.count > 5 {
+                if filteredWorkouts.count > 5 {
                     Button {
                         withAnimation { showAll.toggle() }
                     } label: {
-                        Text(showAll ? "Show less" : "Show all \(sortedWorkouts.count) workouts")
+                        Text(showAll ? "Show less" : "Show all \(filteredWorkouts.count) workouts")
                             .font(.subheadline)
                             .foregroundStyle(.orange)
                             .frame(maxWidth: .infinity)
