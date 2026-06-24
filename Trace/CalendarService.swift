@@ -4,7 +4,8 @@ import Observation
 
 // MARK: - Model
 
-struct NextCalendarEvent {
+struct NextCalendarEvent: Identifiable {
+    var id: String { "\(startDate.timeIntervalSinceReferenceDate)-\(title)" }
     let title: String
     let startDate: Date
     let endDate: Date
@@ -58,6 +59,26 @@ final class CalendarService {
 
     private let store = EKEventStore()
 
+    // Title substrings that should never appear on the Home screen.
+    // "travel to the office" is a phrase match — "travel" alone is intentionally NOT excluded
+    // because David manages the travel team and has many legitimate travel-related events.
+    private static let excludedPhrases: [String] = [
+        "hold",
+        "rehab",
+        "blood",
+        "travel to the office",
+        "you're invited",
+        "townhall"
+    ]
+
+    private func shouldExclude(title: String) -> Bool {
+        let lower = title.lowercased()
+        return Self.excludedPhrases.contains { lower.contains($0) }
+    }
+
+    /// Max events shown in the Home calendar section.
+    private let maxEvents = 5
+
     /// Events within the next 18 hours (excluding all-day unless setting enabled).
     var upcomingEvents: [NextCalendarEvent] = []
 
@@ -97,17 +118,19 @@ final class CalendarService {
         let events = store.events(matching: pred)
             .filter { showAllDayEvents || !$0.isAllDay }
             .filter { $0.status != .canceled }
+            .filter { !shouldExclude(title: $0.title ?? "") }
             .sorted { $0.startDate < $1.startDate }
 
-        upcomingEvents = events.map { makeEvent($0) }
+        upcomingEvents = Array(events.prefix(maxEvents)).map { makeEvent($0) }
 
-        // If window is empty, peek up to 7 days ahead for the next event
+        // If window is empty after filtering, peek up to 7 days ahead for the next event
         if upcomingEvents.isEmpty {
             let farEnd = Calendar.current.date(byAdding: .day, value: 7, to: now) ?? now
             let farPred = store.predicateForEvents(withStart: windowEnd, end: farEnd, calendars: nil)
             let farEvents = store.events(matching: farPred)
                 .filter { showAllDayEvents || !$0.isAllDay }
                 .filter { $0.status != .canceled }
+                .filter { !shouldExclude(title: $0.title ?? "") }
                 .sorted { $0.startDate < $1.startDate }
             nextEventBeyondWindow = farEvents.first.map { makeEvent($0) }
         } else {

@@ -10,17 +10,19 @@ class NotionService {
     var captures: [Capture] = []
     var people: [Person] = []
     var workouts: [Workout] = []
+    var billiardsSessions: [BilliardsSession] = []
     var dayNotes: [DayNote] = []
     var personDetailCache: [String: PersonDetail] = [:]
     var isLoading = false
     var error: String?
 
-    private let placesDBID = "3edc903daeaa41eaa82f93fb0ec55e60"
-    private let visitsDBID = "ecd8cdc617e74c78b090afc5092cbdee"
-    private let capturesDBID = "7e292efac9754d7f8e5fceef5e9dc0e2"
-    private let peopleDBID = "50261ebf9c3c49bc926542e3ccfaa4aa"
-    private let workoutsDBID = "b7dab8c1a46542ab83c442e1b76f002a"
-    private let dayNotesDBID = "da0768bf98ae4ab09e341a80131d4b52"
+    private let placesDBID     = "3edc903daeaa41eaa82f93fb0ec55e60"
+    private let visitsDBID     = "ecd8cdc617e74c78b090afc5092cbdee"
+    private let capturesDBID   = "7e292efac9754d7f8e5fceef5e9dc0e2"
+    private let peopleDBID     = "50261ebf9c3c49bc926542e3ccfaa4aa"
+    private let workoutsDBID   = "b7dab8c1a46542ab83c442e1b76f002a"
+    private let billiardsDBID  = "b2dac41eca9c4a898bf914639950e3d0"
+    private let dayNotesDBID   = "da0768bf98ae4ab09e341a80131d4b52"
     private let notionVersion = "2022-06-28"
     private let baseURL = "https://api.notion.com/v1"
 
@@ -139,7 +141,7 @@ class NotionService {
 
     func checkIn(place: Place, rating: Int? = nil, notes: String? = nil, date: Date = Date(), people: [String]? = nil) async throws -> String {
         var props: [String: Any] = [
-            "Name": ["title": [["text": ["content": place.name]]]],
+            "Name": ["title": [["text": ["content": "\(place.name) · \(date.formatted(.dateTime.month(.abbreviated).day().year()))"]]]],
             "Date Visited": ["date": ["start": localDateString(from: date)]],
             "Place": ["relation": [["id": place.id]]]
         ]
@@ -464,6 +466,101 @@ class NotionService {
         if let idx = workouts.firstIndex(where: { $0.id == pageID }) {
             workouts[idx].notes = notes.isEmpty ? nil : notes
         }
+    }
+
+    // MARK: - Billiards Sessions
+
+    func logBilliardsSession(_ b: BilliardsDraft) async throws -> String {
+        // Title: "vs Opponent" with date
+        let df = DateFormatter(); df.dateFormat = "M/d"
+        let titleStr = "vs \(b.opponent.isEmpty ? "Opponent" : b.opponent) · \(df.string(from: b.date))"
+
+        var props: [String: Any] = [
+            "Name":   ["title": [["text": ["content": titleStr]]]],
+            "Format": ["select": ["name": b.format]],
+            "Date":   ["date": ["start": localDateString(from: b.date)]]
+        ]
+
+        func num(_ val: Int?, key: String)    { if let v = val { props[key] = ["number": v] } }
+        func txt(_ val: String?, key: String) {
+            if let v = val, !v.isEmpty { props[key] = ["rich_text": [["text": ["content": v]]]] }
+        }
+        func rel(_ id: String?, key: String)  { if let id { props[key] = ["relation": [["id": id]]] } }
+
+        if !b.opponent.isEmpty { txt(b.opponent, key: "Opponent") }
+        num(b.mySkillLevel,       key: "My Skill Level")
+        num(b.opponentSkillLevel, key: "Opponent Skill Level")
+        num(b.myTeamPoints,       key: "My Team Points")
+        num(b.opponentTeamPoints, key: "Opponent Team Points")
+        txt(b.myScore,            key: "My Score")
+        txt(b.opponentScore,      key: "Opponent Score")
+        num(b.innings,            key: "Innings")
+        num(b.matchNumber,        key: "Match Number")
+        props["Won Lag"] = ["checkbox": b.wonLag]
+        if let r = b.result, !r.isEmpty { props["Result"] = ["select": ["name": r]] }
+        if !b.notes.isEmpty             { txt(b.notes,   key: "Notes") }
+        rel(b.visitID, key: "Visit")
+
+        let body: [String: Any] = [
+            "parent": ["database_id": billiardsDBID],
+            "properties": props
+        ]
+        let data   = try await post("\(baseURL)/pages", body: body)
+        let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let id     = result["id"] as? String ?? ""
+        await fetchBilliardsSessions()
+        return id
+    }
+
+    func fetchBilliardsSessions() async {
+        guard !token.isEmpty else { return }
+        let body: [String: Any] = [
+            "sorts": [["property": "Date", "direction": "descending"]],
+            "page_size": 100
+        ]
+        guard let data = try? await post("\(baseURL)/databases/\(billiardsDBID)/query", body: body),
+              let root  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pages = root["results"] as? [[String: Any]] else { return }
+        let parsed = pages.compactMap { parseBilliardsSession($0) }
+        await MainActor.run { billiardsSessions = parsed }
+    }
+
+    private func parseBilliardsSession(_ page: [String: Any]) -> BilliardsSession? {
+        guard let id    = page["id"] as? String,
+              let props = page["properties"] as? [String: Any] else { return nil }
+
+        func num(_ prop: Any?) -> Int? {
+            guard let n = (prop as? [String: Any])?["number"] as? Double else { return nil }
+            return Int(n)
+        }
+
+        let date: Date = {
+            guard let s = ((props["Date"] as? [String: Any])?["date"] as? [String: Any])?["start"] as? String
+            else { return Date() }
+            return notionDate(from: s) ?? Date()
+        }()
+
+        let visitID = ((props["Visit"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String
+        let wonLag  = (props["Won Lag"] as? [String: Any])?["checkbox"] as? Bool ?? false
+
+        return BilliardsSession(
+            id:                   id,
+            date:                 date,
+            format:               select(props["Format"]) ?? "8-Ball",
+            opponent:             richText(props["Opponent"]) ?? "",
+            mySkillLevel:         num(props["My Skill Level"]),
+            opponentSkillLevel:   num(props["Opponent Skill Level"]),
+            result:               select(props["Result"]),
+            myTeamPoints:         num(props["My Team Points"]),
+            opponentTeamPoints:   num(props["Opponent Team Points"]),
+            myScore:              richText(props["My Score"]),
+            opponentScore:        richText(props["Opponent Score"]),
+            innings:              num(props["Innings"]),
+            wonLag:               wonLag,
+            notes:                richText(props["Notes"]),
+            visitID:              visitID,
+            matchNumber:          num(props["Match Number"])
+        )
     }
 
     private func parseWorkout(_ page: [String: Any]) -> Workout? {

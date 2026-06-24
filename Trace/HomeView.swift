@@ -64,6 +64,7 @@ struct HomeView: View {
     @State private var selectedBucketScope: String? = nil
     @State private var showDeleteNoteConfirm = false
     @State private var showMoveNoteDialog = false
+    @State private var selectedCalEvent: NextCalendarEvent? = nil
 
     private var oura: OuraService { OuraService.shared }
     private var cal: CalendarService { CalendarService.shared }
@@ -388,6 +389,14 @@ struct HomeView: View {
                         }
                     }
                 }
+                Button {
+                    UIApplication.shared.open(URL(string: "fantastical://")!)
+                } label: {
+                    Image(systemName: "calendar")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
 
             if items.isEmpty {
@@ -423,6 +432,9 @@ struct HomeView: View {
                 .frame(height: 56)
             }
         }
+        .sheet(item: $selectedCalEvent) { event in
+            CalendarEventDetailSheet(event: event)
+        }
     }
 
     @ViewBuilder
@@ -435,7 +447,7 @@ struct HomeView: View {
 
     private func eventCard(_ event: NextCalendarEvent) -> some View {
         Button {
-            UIApplication.shared.open(URL(string: "calshow://")!)
+            selectedCalEvent = event
         } label: {
             HStack(spacing: 10) {
                 RoundedRectangle(cornerRadius: 2)
@@ -689,13 +701,16 @@ struct HomeView: View {
                     Spacer()
                     if things.inboxCount > 0 {
                         HStack(spacing: 3) {
-                            Text("\(things.inboxCount)")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.secondary)
                             Image(systemName: "tray")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("\(things.inboxCount)")
+                                .font(.system(size: 10, weight: .bold))
                         }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color(red: 0.114, green: 0.620, blue: 0.459))
+                        .clipShape(Capsule())
                     }
                     if things.totalCount > 3 {
                         Text("\(shown.count) of \(things.totalCount)")
@@ -964,5 +979,93 @@ struct HomeView: View {
         if days < 7 { return "\(days) days ago" }
         let f = DateFormatter(); f.dateFormat = "MMM d"
         return f.string(from: date)
+    }
+}
+
+// MARK: - Calendar Event Detail Sheet
+
+private struct CalendarEventDetailSheet: View {
+    let event: NextCalendarEvent
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Pull indicator
+            Capsule()
+                .fill(Color.secondary.opacity(0.3))
+                .frame(width: 36, height: 4)
+                .padding(.top, 12)
+                .padding(.bottom, 20)
+
+            // Color bar + title
+            HStack(alignment: .top, spacing: 14) {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(event.color)
+                    .frame(width: 4, height: 52)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(event.title)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(event.calendarTitle)
+                        .font(.subheadline)
+                        .foregroundStyle(event.color)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 24)
+
+            Divider().padding(.vertical, 20).padding(.horizontal, 24)
+
+            // Detail rows
+            VStack(spacing: 14) {
+                detailRow(icon: "clock", label: "Time", value: timeRangeString)
+                detailRow(icon: "timer", label: "Duration", value: event.durationLabel)
+                detailRow(icon: "calendar", label: "When", value: event.timeLabel)
+            }
+            .padding(.horizontal, 24)
+
+            Spacer()
+
+            // Open in Fantastical
+            Button {
+                UIApplication.shared.open(URL(string: "fantastical://")!)
+                dismiss()
+            } label: {
+                HStack {
+                    Image(systemName: "calendar.badge.plus")
+                    Text("Open in Fantastical")
+                        .fontWeight(.medium)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color(red: 0.98, green: 0.35, blue: 0.24))
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 32)
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.hidden)
+    }
+
+    private var timeRangeString: String {
+        let start = DateFormatter.localizedString(from: event.startDate, dateStyle: .none, timeStyle: .short)
+        let end   = DateFormatter.localizedString(from: event.endDate,   dateStyle: .none, timeStyle: .short)
+        return "\(start) – \(end)"
+    }
+
+    private func detailRow(icon: String, label: String, value: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .frame(width: 20)
+                .foregroundStyle(.secondary)
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .fontWeight(.medium)
+        }
+        .font(.subheadline)
     }
 }

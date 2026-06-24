@@ -15,8 +15,9 @@ struct LifeView: View {
                 LifeMenuRow(icon: "figure.run", color: .orange, title: "Fitness", subtitle: "Workouts & OrangeTheory") {
                     FitnessView()
                 }
-                LifeMenuRow(icon: "8.circle.fill", color: .green, title: "Billiards", subtitle: "Match journal & season stats") {
-                    LifePlaceholderView(title: "Billiards", icon: "8.circle.fill")
+                LifeMenuRow(icon: "8.circle.fill", color: .black, title: "Billiards", subtitle: "Match journal & season stats") {
+                    BilliardsView()
+                        .environment(notion)
                 }
                 LifeMenuRow(icon: "person.2.fill", color: .purple, title: "People", subtitle: "Personal contacts & connections") {
                     LifePeopleView()

@@ -181,14 +181,19 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     /// Call this after a manual check-in to prevent the dwell notification from firing redundantly.
+    /// Keeps the cooldown active so geofencing won't prompt again for 4 hours.
     func cancelDwellNotificationForManualCheckIn(placeID: String) {
-        cancelDwellNotification(placeID: placeID)
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["dwell-\(placeID)"])
+        pendingDwellPlaceIDs.remove(placeID)
+        // Do NOT clear the cooldown — user just checked in manually, suppress for 4 hours.
+        // Ensure a cooldown is set in case the dwell timer hadn't fired yet.
+        setCooldown(placeID: placeID)
     }
 
     private func cancelDwellNotification(placeID: String) {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["dwell-\(placeID)"])
         pendingDwellPlaceIDs.remove(placeID)
-        // Also remove the cooldown we set at schedule time so it can re-trigger on next entry
+        // Clear the cooldown on geofence exit so it can re-trigger on next entry
         var c = cooldowns
         c.removeValue(forKey: placeID)
         cooldowns = c

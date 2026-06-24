@@ -203,3 +203,42 @@ struct CheckInSession: Identifiable, Codable {
         self.startedAt = Date()
     }
 }
+
+// MARK: - Billiards
+
+struct BilliardsDraft {
+    var date: Date = Date()
+    var format: String = "8-Ball"
+    var opponent: String = ""
+    var mySkillLevel: Int = 5
+    var opponentSkillLevel: Int? = nil
+    var result: String? = nil            // "Win" or "Loss"
+    var myTeamPoints: Int? = nil
+    var opponentTeamPoints: Int? = nil
+    var myScore: String? = nil           // "score/needed" e.g. "39/38" or "4/5"
+    var opponentScore: String? = nil
+    var innings: Int? = nil
+    var wonLag: Bool = false
+    var notes: String = ""
+    var visitID: String? = nil
+    var matchNumber: Int? = nil
+}
+
+struct BilliardsSession: Identifiable, Codable {
+    let id: String
+    var date: Date
+    var format: String
+    var opponent: String
+    var mySkillLevel: Int?
+    var opponentSkillLevel: Int?
+    var result: String?
+    var myTeamPoints: Int?
+    var opponentTeamPoints: Int?
+    var myScore: String?
+    var opponentScore: String?
+    var innings: Int?
+    var wonLag: Bool
+    var notes: String?
+    var visitID: String?
+    var matchNumber: Int?
+}

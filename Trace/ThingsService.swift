@@ -15,6 +15,16 @@ struct ThingsTask: Identifiable, Codable {
     }
 }
 
+private struct ThingsResponse: Decodable {
+    let today: [ThingsTask]
+    let inboxCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case today
+        case inboxCount = "inbox_count"
+    }
+}
+
 // MARK: - Service
 
 /// Fetches today's tasks from the things-api REST wrapper running on Mac Mini (over Tailscale).
@@ -65,11 +75,11 @@ final class ThingsService {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw URLError(.badServerResponse)
             }
-            let decoded = try JSONDecoder().decode([ThingsTask].self, from: data)
+            let decoded = try JSONDecoder().decode(ThingsResponse.self, from: data)
             await MainActor.run {
-                tasks = decoded
-                totalCount = decoded.count
-                inboxCount = 0
+                tasks = decoded.today
+                totalCount = decoded.today.count
+                inboxCount = decoded.inboxCount
                 lastFetched = Date()
                 isLoading = false
             }

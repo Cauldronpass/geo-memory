@@ -8,7 +8,19 @@ struct WorkoutWizardView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
-    @State private var draft = WorkoutDraft()
+    let visitID: String?
+    let initialDate: Date?
+
+    init(visitID: String? = nil, initialDate: Date? = nil) {
+        self.visitID = visitID
+        self.initialDate = initialDate
+        var d = WorkoutDraft()
+        d.visitID = visitID
+        d.date = initialDate
+        _draft = State(initialValue: d)
+    }
+
+    @State private var draft: WorkoutDraft
     @State private var step = 0
     @State private var isSaving = false
     @State private var saveError: String?

@@ -23,6 +23,7 @@ struct CheckInView: View {
     @State private var selectedCategory: String? = nil
     @State private var selectedTag: String? = nil
     @State private var showingAddPlace = false
+    @State private var showingBilliardsWizard = false
 
     init(preselectedPlace: Place? = nil) {
         self.preselectedPlace = preselectedPlace
@@ -61,7 +62,6 @@ struct CheckInView: View {
         sortedPlaces.filter {
             (searchText.isEmpty ||
              $0.name.localizedCaseInsensitiveContains(searchText) ||
-             $0.city.localizedCaseInsensitiveContains(searchText) ||
              $0.category.localizedCaseInsensitiveContains(searchText))
             && (!showPinnedOnly || $0.flagged)
             && (selectedCategory == nil || $0.category == selectedCategory)
@@ -273,6 +273,10 @@ struct CheckInView: View {
                 CheckInSuccessOverlay(placeName: place.name)
             }
         }
+        .sheet(isPresented: $showingBilliardsWizard) {
+            BilliardsWizardView()
+                .environment(notionService)
+        }
     }
 
     // MARK: - Action
@@ -291,9 +295,7 @@ struct CheckInView: View {
             GeofenceManager.shared.cancelDwellNotificationForManualCheckIn(placeID: place.id)
             await notionService.fetchPlaces()
             await notionService.fetchVisits()
-            withAnimation {
-                showSuccess = true
-            }
+            withAnimation { showSuccess = true }
             try? await Task.sleep(for: .seconds(1.2))
             dismiss()
         } catch {
