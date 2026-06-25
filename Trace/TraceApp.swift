@@ -172,7 +172,6 @@ struct TraceApp: App {
                     await notionService.fetchVisits()
                     await notionService.fetchCaptures()
                     await notionService.fetchPeople()
-                    await notionService.fetchDayNotes()
                     await notionService.fetchBilliardsSessions()
                     // Start geofencing if enabled in Settings
                     if UserDefaults.standard.bool(forKey: "geofence_enabled") {

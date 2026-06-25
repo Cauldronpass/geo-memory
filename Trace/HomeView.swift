@@ -56,14 +56,9 @@ struct HomeView: View {
     @Environment(NotionService.self) private var notion
     @Environment(LocationManager.self) private var locationManager
 
-    @State private var dayNoteAction: DayNoteAction? = nil
     @State private var selectedVisit: Visit?
     @State private var navigateToPlace: Place?
-    @State private var notePageIndex = 0
     @State private var calPageIndex = 0
-    @State private var selectedBucketScope: String? = nil
-    @State private var showDeleteNoteConfirm = false
-    @State private var showMoveNoteDialog = false
     @State private var selectedCalEvent: NextCalendarEvent? = nil
     @State private var notePlanContent: String = ""
     @State private var notePlanLoaded: Bool = false
@@ -112,14 +107,6 @@ struct HomeView: View {
     }
 
     // MARK: Computed data
-
-    private var todayNote: DayNote? {
-        notion.dayNotes.first {
-            $0.scope == nil &&
-            $0.status != "Archived" &&
-            ($0.date.map { Calendar.current.isDateInToday($0) } ?? false)
-        }
-    }
 
     private var nearbyPlace: Place? {
         guard let userLoc = locationManager.location else { return nil }
@@ -228,19 +215,6 @@ struct HomeView: View {
         }
         .onReceive(Timer.publish(every: 900, on: .main, in: .common).autoconnect()) { _ in
             Task { await oura.fetchToday() }
-        }
-        .sheet(item: $dayNoteAction) { action in
-            DayNoteSheet(action: action)
-                .environment(NotionService.shared)
-        }
-        .sheet(isPresented: Binding(
-            get: { selectedBucketScope != nil },
-            set: { if !$0 { selectedBucketScope = nil } }
-        )) {
-            if let scope = selectedBucketScope {
-                BucketNoteSheet(scope: scope)
-                    .environment(NotionService.shared)
-            }
         }
         .sheet(item: $selectedVisit) { visit in
             VisitDetailView(visit: visit)

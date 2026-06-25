@@ -8,7 +8,6 @@ import SwiftUI
 // MARK: - Constants
 
 private let kAppGroup      = "group.com.david.trace"
-private let kNotesDBID     = "da0768bf98ae4ab09e341a80131d4b52"
 private let kWorkoutsDBID  = "b7dab8c1a46542ab83c442e1b76f002a"
 private let kVisitsDBID    = "ecd8cdc617e74c78b090afc5092cbdee"
 private let kNotionVersion = "2022-06-28"
@@ -20,8 +19,6 @@ struct TraceWidgetEntry: TimelineEntry {
     let date: Date
     let workoutsToday: Int
     let visitsToday: Int
-    let notesToday: Int
-    let notePreview: String?
     let tokenMissing: Bool
 }
 
@@ -30,8 +27,7 @@ struct TraceWidgetEntry: TimelineEntry {
 struct TraceProvider: TimelineProvider {
 
     func placeholder(in context: Context) -> TraceWidgetEntry {
-        TraceWidgetEntry(date: .now, workoutsToday: 1, visitsToday: 3, notesToday: 2,
-                         notePreview: "Grab milk", tokenMissing: false)
+        TraceWidgetEntry(date: .now, workoutsToday: 1, visitsToday: 3, tokenMissing: false)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (TraceWidgetEntry) -> Void) {
@@ -50,16 +46,14 @@ struct TraceProvider: TimelineProvider {
         guard let token = UserDefaults(suiteName: kAppGroup)?.string(forKey: "notion_token"),
               !token.isEmpty else {
             return TraceWidgetEntry(date: .now, workoutsToday: 0, visitsToday: 0,
-                                    notesToday: 0, notePreview: "Open Trace to set token",
                                     tokenMissing: true)
         }
         let today = isoToday()
         async let w = queryCount(dbID: kWorkoutsDBID, dateField: "Date", token: token, date: today)
         async let v = queryCount(dbID: kVisitsDBID,   dateField: "Date", token: token, date: today)
-        async let n = queryNotes(token: token, date: today)
-        let (workouts, visits, (noteCount, preview)) = await (w, v, n)
+        let (workouts, visits) = await (w, v)
         return TraceWidgetEntry(date: .now, workoutsToday: workouts, visitsToday: visits,
-                                notesToday: noteCount, notePreview: preview, tokenMissing: false)
+                                tokenMissing: false)
     }
 
     private func isoToday() -> String {
@@ -85,27 +79,6 @@ struct TraceProvider: TimelineProvider {
         return results.count
     }
 
-    private func queryNotes(token: String, date: String) async -> (Int, String?) {
-        guard let url = URL(string: "\(kNotionBase)/databases/\(kNotesDBID)/query") else { return (0, nil) }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue(kNotionVersion,    forHTTPHeaderField: "Notion-Version")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "filter": ["property": "Date", "date": ["equals": date]]
-        ])
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let json  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let results = json["results"] as? [[String: Any]] else { return (0, nil) }
-        let preview = results.first.flatMap { page -> String? in
-            let props = page["properties"] as? [String: Any]
-            let bodyProp = props?["Body"] as? [String: Any]
-            let titles = bodyProp?["title"] as? [[String: Any]]
-            return titles?.first.flatMap { $0["plain_text"] as? String }
-        }
-        return (results.count, preview)
-    }
 }
 
 // MARK: - Widget View
@@ -128,16 +101,8 @@ struct TraceWidgetView: View {
                 statCell(count: entry.workoutsToday, icon: "figure.run",         color: .orange, label: "workout")
                 Divider().frame(height: 36)
                 statCell(count: entry.visitsToday,   icon: "mappin.circle.fill", color: .teal,   label: "visit")
-                Divider().frame(height: 36)
-                statCell(count: entry.notesToday,    icon: "note.text",          color: .indigo, label: "note")
             }
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-            if let preview = entry.notePreview, !preview.isEmpty {
-                Text(preview)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(family == .systemSmall ? 1 : 2)
-            }
             Spacer(minLength: 0)
             Link(destination: URL(string: "trace://quicknote")!) {
                 HStack(spacing: 4) {

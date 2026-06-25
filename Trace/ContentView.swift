@@ -18,7 +18,6 @@ struct ContentView: View {
     @State private var showingGeofenceCheckIn = false
     @State private var showingWorkoutPrompt = false
     @State private var visitsShowsCalendar = false
-    @State private var showingQuickNoteFromURL = false
     @State private var showingWorkoutFromURL = false
 
     var body: some View {
@@ -207,11 +206,11 @@ struct ContentView: View {
                         }
                 )
         }
-        // URL scheme: trace://quicknote → open QuickNoteSheet (used by the home screen widget)
+        // URL scheme: trace://quicknote → redirects to Captures (QuickNoteSheet retired)
         .onOpenURL { url in
             guard url.scheme == "trace" else { return }
             switch url.host {
-            case "quicknote": showingQuickNoteFromURL = true
+            case "quicknote": showingAddCapture = true
             case "checkin":   showingCheckIn = true
             case "workout":   showingWorkoutFromURL = true
             case "addphoto":  showingAddPhoto = true
@@ -220,10 +219,6 @@ struct ContentView: View {
             case "pin":       quickPin()
             default: break
             }
-        }
-        .sheet(isPresented: $showingQuickNoteFromURL) {
-            QuickNoteSheet()
-                .environment(NotionService.shared)
         }
         .sheet(isPresented: $showingWorkoutFromURL) {
             WorkoutWizardView()
