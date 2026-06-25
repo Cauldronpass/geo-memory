@@ -224,6 +224,9 @@ struct NoteFileListTab: View {
     @State private var files: [String] = []
     @State private var isLoading = true
     @State private var selectedFile: String?
+    @State private var showingNewNote = false
+    @State private var newNoteName = ""
+    @State private var isCreating = false
 
     var body: some View {
         Group {
@@ -241,6 +244,11 @@ struct NoteFileListTab: View {
                     systemImage: "note.text",
                     description: Text(emptyMessage)
                 )
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        newNoteButton
+                    }
+                }
             } else {
                 List(files, id: \.self) { filename in
                     Button {
@@ -257,8 +265,20 @@ struct NoteFileListTab: View {
                                 .font(.caption)
                         }
                     }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            deleteFile(filename)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
                 }
                 .listStyle(.plain)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        newNoteButton
+                    }
+                }
             }
         }
         .task { loadFiles() }
@@ -266,6 +286,44 @@ struct NoteFileListTab: View {
             NoteEditorView(relativePath: "\(subfolder)/\(filename)",
                            title: filename.replacingOccurrences(of: ".md", with: ""))
         }
+        .sheet(isPresented: $showingNewNote) {
+            NewNoteSheet(name: $newNoteName, isCreating: isCreating) {
+                createNote()
+            }
+        }
+    }
+
+    private var newNoteButton: some View {
+        Button {
+            newNoteName = ""
+            showingNewNote = true
+        } label: {
+            Image(systemName: "square.and.pencil")
+        }
+    }
+
+    private func createNote() {
+        let name = newNoteName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        isCreating = true
+        Task {
+            let filename = "\(name).md"
+            let path = "\(subfolder)/\(filename)"
+            try? notePlan.writeFile(path, content: "# \(name)\n")
+            await MainActor.run {
+                showingNewNote = false
+                newNoteName = ""
+                isCreating = false
+            }
+            // Reload then navigate into the new note
+            files = (try? notePlan.listFiles(in: subfolder)) ?? []
+            await MainActor.run { selectedFile = filename }
+        }
+    }
+
+    private func deleteFile(_ filename: String) {
+        try? notePlan.deleteFile("\(subfolder)/\(filename)")
+        files.removeAll { $0 == filename }
     }
 
     private func loadFiles() {
@@ -274,6 +332,45 @@ struct NoteFileListTab: View {
             files = (try? notePlan.listFiles(in: subfolder)) ?? []
             isLoading = false
         }
+    }
+}
+
+// MARK: - New note name sheet
+
+private struct NewNoteSheet: View {
+    @Binding var name: String
+    let isCreating: Bool
+    let onCreate: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Note title", text: $name)
+                        .focused($focused)
+                        .onSubmit { if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { onCreate() } }
+                }
+            }
+            .navigationTitle("New Note")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isCreating {
+                        ProgressView().scaleEffect(0.8)
+                    } else {
+                        Button("Create") { onCreate() }
+                            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
+            .onAppear { focused = true }
+        }
+        .presentationDetents([.height(180)])
     }
 }
 

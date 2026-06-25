@@ -179,6 +179,13 @@ class NotePlanService {
         }
     }
 
+    func deleteFile(_ relativePath: String) throws {
+        try withAccess { documentsURL in
+            let fileURL = documentsURL.appendingPathComponent(relativePath)
+            try FileManager.default.removeItem(at: fileURL)
+        }
+    }
+
     /// Returns the full content of the daily note for a given date.
     /// Returns an empty string if the note doesn't exist yet.
     func readDailyNote(date: Date = Date()) throws -> String {
