@@ -27,6 +27,9 @@ struct LifeView: View {
                         .environment(notion)
                         .environment(LocationManager.shared)
                 }
+                LifeMenuRow(icon: "note.text", color: .teal, title: "Notes", subtitle: "Daily notes, buckets & places") {
+                    NotesView()
+                }
             }
             .navigationTitle("Life")
             .drawerToolbar()

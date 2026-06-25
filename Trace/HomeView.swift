@@ -65,6 +65,9 @@ struct HomeView: View {
     @State private var showDeleteNoteConfirm = false
     @State private var showMoveNoteDialog = false
     @State private var selectedCalEvent: NextCalendarEvent? = nil
+    @State private var notePlanContent: String = ""
+    @State private var notePlanLoaded: Bool = false
+    @State private var showNotesView: Bool = false
 
     private var oura: OuraService { OuraService.shared }
     private var cal: CalendarService { CalendarService.shared }
@@ -211,6 +214,10 @@ struct HomeView: View {
             await oura.fetchToday()
             await cal.requestAndFetch()
             await things.fetch()
+            if let content = try? NotePlanService.shared.readDailyNote() {
+                notePlanContent = content
+            }
+            notePlanLoaded = true
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             Task {
@@ -538,92 +545,42 @@ struct HomeView: View {
                     in: RoundedRectangle(cornerRadius: 10))
     }
 
-    // MARK: – Day note
-
-    /// All non-archived day notes: today's date note first, then scope notes ("This Week", etc.).
-    private var allActiveNotes: [DayNote] {
-        var result: [DayNote] = []
-        let todayNotes = notion.dayNotes
-            .filter {
-                $0.scope == nil && $0.status != "Archived" &&
-                ($0.date.map { Calendar.current.isDateInToday($0) } ?? false)
-            }
-            .sorted { ($0.date ?? Date.distantPast) > ($1.date ?? Date.distantPast) }
-        result.append(contentsOf: todayNotes)
-        return result
-    }
+    // MARK: – Daily note (NotePlan)
 
     @ViewBuilder
     private var noteSection: some View {
-        let notes = allActiveNotes
-        let label = (notePageIndex < notes.count)
-            ? (notes[notePageIndex].scope ?? "Today's note")
-            : "Today's note"
-
+        let notePlan = NotePlanService.shared
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                sectionLabel(label)
+                sectionLabel("Today's note")
                 Spacer()
-                if notes.count > 1 {
-                    HStack(spacing: 4) {
-                        ForEach(0..<notes.count, id: \.self) { i in
-                            Circle()
-                                .fill(i == notePageIndex
-                                      ? theme.headerSub
-                                      : Color.secondary.opacity(0.3))
-                                .frame(width: 5, height: 5)
-                        }
-                    }
+                Button { showNotesView = true } label: {
+                    Image(systemName: "note.text")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                if !notes.isEmpty {
-                    Button { showMoveNoteDialog = true } label: {
-                        Image(systemName: "folder")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .confirmationDialog(
-                        "Move to bucket",
-                        isPresented: $showMoveNoteDialog,
-                        titleVisibility: .visible
-                    ) {
-                        let note = notes[min(notePageIndex, notes.count - 1)]
-                        ForEach(["Inbox", "This Week", "Next Week", "This Month", "Next Month"], id: \.self) { target in
-                            Button(target) {
-                                Task {
-                                    try? await notion.moveDayNoteToBucket(id: note.id, scope: target)
-                                }
-                            }
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    }
-
-                    Button { showDeleteNoteConfirm = true } label: {
-                        Image(systemName: "trash")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .confirmationDialog(
-                        "Delete this note?",
-                        isPresented: $showDeleteNoteConfirm,
-                        titleVisibility: .visible
-                    ) {
-                        let note = notes[min(notePageIndex, notes.count - 1)]
-                        Button("Delete", role: .destructive) {
-                            Task { try? await notion.deleteDayNote(id: note.id) }
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    }
+                .buttonStyle(.plain)
+                Button { notePlan.openDailyNote() } label: {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Image(systemName: "pencil")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
             }
 
-            if notes.isEmpty {
-                Button { dayNoteAction = .tapDate(Date(), nil) } label: {
-                    Text("Tap to add a note for today…")
+            if !notePlan.hasAccess {
+                sectionCard {
+                    Text("Link NotePlan in Settings → NotePlan to enable daily notes.")
+                        .font(.subheadline)
+                        .foregroundStyle(.tertiary)
+                }
+            } else if !notePlanLoaded {
+                sectionCard {
+                    ProgressView().frame(maxWidth: .infinity)
+                }
+            } else if notePlanContent.isEmpty {
+                Button { notePlan.openDailyNote() } label: {
+                    Text("Tap to open today's note in NotePlan…")
                         .font(.subheadline)
                         .foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -633,60 +590,33 @@ struct HomeView: View {
                                     in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
-                .contextMenu {
-                    Button("Inbox")      { selectedBucketScope = "Inbox"      }
-                    Button("This Week")  { selectedBucketScope = "This Week"  }
-                    Button("This Month") { selectedBucketScope = "This Month" }
-                    Button("Next Week")  { selectedBucketScope = "Next Week"  }
-                    Button("Next Month") { selectedBucketScope = "Next Month" }
-                }
-            } else if notes.count == 1 {
-                noteCard(notes[0])
             } else {
-                TabView(selection: $notePageIndex) {
-                    ForEach(Array(notes.enumerated()), id: \.offset) { idx, note in
-                        noteCard(note).tag(idx)
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .frame(height: 72)
-            }
-        }
-    }
-
-    private func noteCard(_ note: DayNote) -> some View {
-        Button {
-            dayNoteAction = note.scope != nil
-                ? .tapBucket(note.scope!, note)
-                : .tapDate(note.date ?? Date(), note)
-        } label: {
-            Group {
-                if !note.body.isEmpty {
-                    Text(note.body)
+                Button { showNotesView = true } label: {
+                    Text(notePlanPreview)
                         .font(.subheadline)
                         .foregroundStyle(.primary)
                         .multilineTextAlignment(.leading)
                         .lineLimit(3)
-                } else {
-                    Text("Tap to add a note…")
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color(UIColor.secondarySystemGroupedBackground),
+                                    in: RoundedRectangle(cornerRadius: 10))
                 }
+                .buttonStyle(.plain)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color(UIColor.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 10))
         }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button("Inbox")      { selectedBucketScope = "Inbox"      }
-            Button("This Week")  { selectedBucketScope = "This Week"  }
-            Button("This Month") { selectedBucketScope = "This Month" }
-            Button("Next Week")  { selectedBucketScope = "Next Week"  }
-            Button("Next Month") { selectedBucketScope = "Next Month" }
+        .sheet(isPresented: $showNotesView) {
+            NotesView()
         }
+    }
+
+    private var notePlanPreview: String {
+        notePlanContent
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .prefix(3)
+            .joined(separator: "\n")
     }
 
     // MARK: – Things
