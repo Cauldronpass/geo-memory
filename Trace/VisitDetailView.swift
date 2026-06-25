@@ -26,6 +26,8 @@ struct VisitDetailView: View {
     @State private var date: Date
     @State private var personIDs: [String]
     @State private var isSaving = false
+    @State private var isDeleting = false
+    @State private var showDeleteVisitConfirm = false
     @State private var errorMessage: String?
     @State private var activeSheet: VisitDetailSheet?
     @State private var showingBilliardsWizard = false
@@ -297,6 +299,22 @@ struct VisitDetailView: View {
                             .font(.caption)
                     }
                 }
+
+                Section {
+                    Button(role: .destructive) {
+                        showDeleteVisitConfirm = true
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if isDeleting {
+                                ProgressView()
+                            } else {
+                                Text("Delete Visit")
+                            }
+                            Spacer()
+                        }
+                    }
+                }
             }
             .refreshable { await refreshFromNotion() }
             .navigationTitle(visit.placeName)
@@ -321,6 +339,18 @@ struct VisitDetailView: View {
                 }
             }
             .task { await refreshFromNotion() }
+            .confirmationDialog("Delete this visit?", isPresented: $showDeleteVisitConfirm, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    isDeleting = true
+                    Task {
+                        try? await notion.deleteVisit(id: visit.id)
+                        dismiss()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This cannot be undone.")
+            }
             .sheet(isPresented: $showingBilliardsWizard) {
                 Task { await notion.fetchBilliardsSessions() }
             } content: {
@@ -357,6 +387,7 @@ struct VisitDetailView: View {
     private func refreshFromNotion() async {
         await notion.fetchVisits()
         if notion.people.isEmpty { await notion.fetchPeople() }
+        if notion.places.isEmpty { await notion.fetchPlaces() }   // ensures isBilliardsPlace / isFitnessPlace evaluate correctly
         if isBilliardsPlace { await notion.fetchBilliardsSessions() }
         if isFitnessPlace { await notion.fetchWorkouts() }
         if let fresh = notion.visits.first(where: { $0.id == visit.id }) {

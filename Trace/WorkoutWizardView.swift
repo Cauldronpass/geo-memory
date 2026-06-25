@@ -414,11 +414,11 @@ struct WorkoutWizardView: View {
     }
 
     private func applyScanResult(_ result: OTScanResult) {
-        if let v = result.splatPoints    { splatsStr   = "\(v)" }
-        if let v = result.calories       { calStr       = "\(v)" }
-        if let v = result.durationMinutes { durationStr = "\(v)" }
-        if let v = result.avgHr          { hrAvgStr     = "\(v)" }
-        if let v = result.maxHr          { hrMaxStr     = "\(v)" }
+        if let v = result.splatPoints,    v > 0 { splatsStr    = "\(v)" }
+        if let v = result.calories,       v > 0 { calStr        = "\(v)" }
+        if let v = result.durationMinutes, v > 0 { durationStr = "\(v)" }
+        if let v = result.avgHr,          v > 0 { hrAvgStr     = "\(v)" }
+        if let v = result.maxHr,          v > 0 { hrMaxStr     = "\(v)" }
 
         // Parse class date if returned
         if let dateStr = result.classDate {
@@ -443,9 +443,9 @@ struct WorkoutWizardView: View {
         }
 
         // Treadmill fields
-        if let v = result.distanceMiles  { distanceStr  = String(format: "%.1f", v) }
-        if let v = result.steps          { stepsStr     = "\(v)" }
-        if let v = result.elevationFt    { elevationStr = String(format: "%.0f", v) }
+        if let v = result.distanceMiles,  v > 0 { distanceStr  = String(format: "%.1f", v) }
+        if let v = result.steps,          v > 0 { stepsStr     = "\(v)" }
+        if let v = result.elevationFt,    v > 0 { elevationStr = String(format: "%.0f", v) }
 
         // Convert avg speed (mph) → pace (min/mi) as "M:SS"
         if let speed = result.avgSpeedMph, speed > 0 {

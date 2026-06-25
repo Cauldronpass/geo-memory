@@ -314,6 +314,11 @@ class NotionService {
         }
     }
 
+    func deleteVisit(id: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["archived": true])
+        await MainActor.run { visits.removeAll { $0.id == id } }
+    }
+
     func updateVisit(_ visit: Visit, rating: Int?, notes: String?, date: Date? = nil, people: [String]? = nil) async throws {
         var props: [String: Any] = [:]
         props["Rating"] = rating != nil ? ["number": rating!] : ["number": NSNull()]
@@ -561,6 +566,29 @@ class NotionService {
             visitID:              visitID,
             matchNumber:          num(props["Match Number"])
         )
+    }
+
+    func deleteBilliardsSession(id: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["archived": true])
+        await MainActor.run { billiardsSessions.removeAll { $0.id == id } }
+    }
+
+    func updateBilliardsSessionNotes(id: String, notes: String) async throws {
+        let props: [String: Any] = notes.isEmpty
+            ? ["Notes": ["rich_text": []]]
+            : ["Notes": ["rich_text": [["text": ["content": notes]]]]]
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
+        if let idx = billiardsSessions.firstIndex(where: { $0.id == id }) {
+            await MainActor.run { billiardsSessions[idx].notes = notes.isEmpty ? nil : notes }
+        }
+    }
+
+    func linkBilliardsSessionToVisit(sessionID: String, visitID: String) async throws {
+        let props: [String: Any] = ["Visit": ["relation": [["id": visitID]]]]
+        _ = try await patch("\(baseURL)/pages/\(sessionID)", body: ["properties": props])
+        if let idx = billiardsSessions.firstIndex(where: { $0.id == sessionID }) {
+            await MainActor.run { billiardsSessions[idx].visitID = visitID }
+        }
     }
 
     private func parseWorkout(_ page: [String: Any]) -> Workout? {

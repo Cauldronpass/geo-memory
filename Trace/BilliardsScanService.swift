@@ -56,9 +56,12 @@ enum BilliardsScanService {
             X goes in player1_score / player2_score and Y goes in player1_needed / player2_needed. \
         Do NOT put the team points value (A) into the score field. \
         \
-        For 8-Ball: each player has a row of small boxes. Count the number of boxes that are \
-        filled/checked/marked — that is player score (games won). The games needed to win is \
-        printed separately as a number near the player's name or skill level. \
+        For 8-Ball — two possible formats: \
+        (1) Paper scorecard: count the number of boxes that are filled/checked/marked in the \
+            player's row — that is games won (score). Games needed is printed near their name or SL. \
+        (2) APA app screenshot: score is shown as "X/Y games" text directly (e.g. "4/4 games" \
+            means score=4, needed=4). Read X as score and Y as needed. \
+            Do NOT confuse the "N Points" team points label with the game score. \
         For 9-Ball: read the "X/Y Ball Points" fraction — X = score, Y = needed. \
         \
         Fields to extract: \

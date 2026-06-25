@@ -25,6 +25,13 @@ struct BilliardsWizardView: View {
     @State private var scanComplete = false
     @State private var scanError: String?
 
+    // Post-save state
+    @State private var savedSessionID: String? = nil
+    @State private var postSaveNotes = ""
+    @State private var isSavingNotes = false
+    @State private var showingVisitLinker = false
+    @State private var linkedVisitName: String? = nil
+
     // Opponent picker
     @State private var showingOpponentPicker = false
 
@@ -346,35 +353,107 @@ struct BilliardsWizardView: View {
     // MARK: – Done
 
     private var doneView: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 72))
-                .foregroundStyle(.green)
-            VStack(spacing: 6) {
-                Text(loggedCount == 1 ? "Match logged!" : "\(loggedCount) matches logged!")
-                    .font(.title2.bold())
-                if !draft.opponent.isEmpty {
-                    Text("vs \(draft.opponent) · \(draft.format)")
-                        .foregroundStyle(.secondary)
+        ScrollView {
+            VStack(spacing: 24) {
+                // Header
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 60))
+                        .foregroundStyle(.green)
+                    Text(loggedCount == 1 ? "Match logged!" : "\(loggedCount) matches logged!")
+                        .font(.title2.bold())
+                    if !draft.opponent.isEmpty {
+                        Text("vs \(draft.opponent) · \(draft.format)")
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            }
-            Spacer()
-            VStack(spacing: 12) {
-                // "Log another" only makes sense on Tuesday when both formats are possible
-                Button("Log Another Match") {
-                    logAnother()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+                .padding(.top, 32)
 
-                Button("Done") { dismiss() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
+                // Post-save notes
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Notes")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $postSaveNotes)
+                        .frame(minHeight: 90)
+                        .padding(8)
+                        .background(Color(UIColor.secondarySystemGroupedBackground),
+                                    in: RoundedRectangle(cornerRadius: 10))
+                    if !postSaveNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button {
+                            Task { await savePostNotes() }
+                        } label: {
+                            if isSavingNotes {
+                                ProgressView()
+                                    .frame(maxWidth: .infinity)
+                            } else {
+                                Text("Save Notes")
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isSavingNotes)
+                    }
+                }
+                .padding(.horizontal, 24)
+
+                // Visit linking (only when wizard was opened without a visitID)
+                if visitID == nil, let sessionID = savedSessionID {
+                    Divider().padding(.horizontal, 24)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Link to Visit")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        if let name = linkedVisitName {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                Text(name)
+                                    .foregroundStyle(.primary)
+                            }
+                        } else {
+                            Button {
+                                showingVisitLinker = true
+                            } label: {
+                                Label("Link to a visit…", systemImage: "link")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .sheet(isPresented: $showingVisitLinker) {
+                        BilliardsVisitLinkerSheet(sessionID: sessionID) { visitID, visitName in
+                            linkedVisitName = visitName
+                        }
+                        .environment(notion)
+                    }
+                }
+
+                Spacer(minLength: 16)
+
+                // Actions
+                VStack(spacing: 12) {
+                    Button("Log Another Match") { logAnother() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    Button("Done") { dismiss() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 32)
             }
-            .padding(.bottom, 32)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+    }
+
+    private func savePostNotes() async {
+        guard let id = savedSessionID,
+              !postSaveNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        isSavingNotes = true
+        try? await notion.updateBilliardsSessionNotes(id: id, notes: postSaveNotes)
+        isSavingNotes = false
     }
 
     // MARK: – Scan
@@ -425,7 +504,7 @@ struct BilliardsWizardView: View {
 
         if let n  = oppName, !n.isEmpty { draft.opponent = n }
         if let sl = oppSL               { opponentSLStr  = "\(sl)" }
-        if let sl = mySLScan            { draft.mySkillLevel = sl }
+        if let sl = mySLScan, sl > 0    { draft.mySkillLevel = sl }
         if let sc = myScore             { myScoreStr     = "\(sc)" }
         if let n  = myNeeded            { myNeededStr    = "\(n)"  }
         if let sc = oppScore            { opponentScoreStr = "\(sc)" }
@@ -476,7 +555,8 @@ struct BilliardsWizardView: View {
 
         isSaving = true
         do {
-            _ = try await notion.logBilliardsSession(draft)
+            let sessionID = try await notion.logBilliardsSession(draft)
+            savedSessionID = sessionID
             loggedCount += 1
             done = true
         } catch {
@@ -496,6 +576,9 @@ struct BilliardsWizardView: View {
         draft.date        = savedDate
         draft.matchNumber = nextMatchNo
         matchNumberStr    = "\(nextMatchNo)"
+        savedSessionID    = nil
+        postSaveNotes     = ""
+        linkedVisitName   = nil
         done = false
         step = 0
     }
@@ -601,5 +684,97 @@ struct OpponentPickerSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+}
+
+// MARK: - Billiards Visit Linker Sheet
+
+struct BilliardsVisitLinkerSheet: View {
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+
+    let sessionID: String
+    var onLink: (String, String) -> Void   // (visitID, visitName)
+
+    @State private var isLinking = false
+    @State private var errorMessage: String?
+
+    /// Visits to billiards places in the last 30 days, newest first.
+    private var candidateVisits: [Visit] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+        let billiardsPlaceIDs = Set(
+            notion.places
+                .filter { $0.category.lowercased() == "billiards" }
+                .map { $0.id }
+        )
+        return notion.visits
+            .filter { billiardsPlaceIDs.contains($0.placeID) && $0.date >= cutoff }
+            .sorted { $0.date > $1.date }
+    }
+
+    private func visitLabel(_ v: Visit) -> String {
+        let df = DateFormatter(); df.dateFormat = "MMM d"
+        return "\(v.placeName) · \(df.string(from: v.date))"
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if candidateVisits.isEmpty {
+                    ContentUnavailableView(
+                        "No recent billiards visits",
+                        systemImage: "8.circle",
+                        description: Text("No billiards place visits found in the last 30 days.")
+                    )
+                } else {
+                    List(candidateVisits) { visit in
+                        Button {
+                            Task { await link(to: visit) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(visit.placeName)
+                                    .foregroundStyle(.primary)
+                                Text(visit.date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .disabled(isLinking)
+                    }
+                }
+            }
+            .navigationTitle("Link to Visit")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .overlay {
+                if isLinking { ProgressView() }
+            }
+            .alert("Link failed", isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(errorMessage ?? "")
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func link(to visit: Visit) async {
+        isLinking = true
+        do {
+            try await notion.linkBilliardsSessionToVisit(sessionID: sessionID, visitID: visit.id)
+            onLink(visit.id, visitLabel(visit))
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLinking = false
     }
 }

@@ -83,6 +83,13 @@ struct BilliardsView: View {
                                     NavigationLink(destination: BilliardsSessionDetailView(session: session)) {
                                         SessionRow(session: session)
                                     }
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button(role: .destructive) {
+                                            Task { try? await notion.deleteBilliardsSession(id: session.id) }
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                                 }
                             } header: {
                                 Text(group.date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
@@ -311,6 +318,10 @@ private struct SessionRow: View {
 
 struct BilliardsSessionDetailView: View {
     let session: BilliardsSession
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+    @State private var showDeleteConfirm = false
+    @State private var isDeleting = false
 
     private var resultColor: Color {
         switch session.result {
@@ -383,10 +394,39 @@ struct BilliardsSessionDetailView: View {
                         .foregroundStyle(.primary)
                 }
             }
+
+            // Delete
+            Section {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        if isDeleting {
+                            ProgressView()
+                        } else {
+                            Text("Delete Match")
+                        }
+                        Spacer()
+                    }
+                }
+            }
         }
         .navigationTitle("\(session.format) · \(session.date.formatted(.dateTime.month(.abbreviated).day()))")
         .navigationBarTitleDisplayMode(.inline)
         .drawerToolbar()
+        .confirmationDialog("Delete this match?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                isDeleting = true
+                Task {
+                    try? await notion.deleteBilliardsSession(id: session.id)
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This cannot be undone.")
+        }
     }
 
     private func detailRow(label: String, value: String) -> some View {
