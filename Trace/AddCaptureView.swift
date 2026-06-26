@@ -93,17 +93,25 @@ struct AddCaptureView: View {
 
     func save() {
         isSaving = true
-        let coord = locationManager.location?.coordinate
         Task {
-            try? await notion.saveCapture(
-                notes: notes,
-                placeID: selectedPlace?.id,
-                placeName: selectedPlace?.name,
-                lat: coord?.latitude,
-                lon: coord?.longitude
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+            let timestamp = formatter.string(from: Date())
+
+            var lines = ["# Note"]
+            let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedNotes.isEmpty {
+                lines += ["", trimmedNotes]
+            }
+            if let place = selectedPlace {
+                lines += ["", "**Place:** \(place.name)"]
+            }
+            try? NoteStore.shared.writeFile(
+                "Notes/Inbox/\(timestamp).md",
+                content: lines.joined(separator: "\n")
             )
-            isSaving = false
-            dismiss()
+            await MainActor.run { isSaving = false; dismiss() }
         }
     }
 }

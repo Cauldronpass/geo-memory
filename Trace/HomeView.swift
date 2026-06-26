@@ -568,7 +568,7 @@ struct HomeView: View {
                 .simultaneousGesture(LongPressGesture().onEnded { _ in showingQuickAppend = true })
             } else {
                 Button { showNotesView = true } label: {
-                    Text(notePlanPreview)
+                    Text(notePlanPreviewAttributed)
                         .font(.subheadline)
                         .foregroundStyle(.primary)
                         .multilineTextAlignment(.leading)
@@ -583,7 +583,13 @@ struct HomeView: View {
                 .simultaneousGesture(LongPressGesture().onEnded { _ in showingQuickAppend = true })
             }
         }
-        .sheet(isPresented: $showNotesView) {
+        .sheet(isPresented: $showNotesView, onDismiss: {
+            Task {
+                if let content = try? NoteStore.shared.readDailyNote() {
+                    notePlanContent = content
+                }
+            }
+        }) {
             NotesView()
         }
         .sheet(isPresented: $showingQuickAppend) {
@@ -606,12 +612,44 @@ struct HomeView: View {
         }
     }
 
-    private var notePlanPreview: String {
-        notePlanContent
-            .components(separatedBy: "\n")
+    // Renders the daily note preview with live bold/italic using SwiftUI's AttributedString
+    // markdown parser. Heading and bullet prefixes are stripped; inline ** and * are rendered
+    // as actual bold/italic so the preview matches what the user wrote.
+    private var notePlanPreviewAttributed: AttributedString {
+        var lines = notePlanContent.components(separatedBy: "\n")
+        // Strip the date header (# YYYY-MM-DD) and leading blank lines
+        if let first = lines.first,
+           first.hasPrefix("# "),
+           first.dropFirst(2).range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil {
+            lines.removeFirst()
+            while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                lines.removeFirst()
+            }
+        }
+        let preview = lines
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             .prefix(3)
+            .map { stripLinePrefix($0) }
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             .joined(separator: "\n")
+        return (try? AttributedString(
+            markdown: preview,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(preview)
+    }
+
+    // Strips heading/bullet/checkbox line prefixes only; leaves inline ** * ~~ for
+    // AttributedString to render as bold/italic/strikethrough.
+    private func stripLinePrefix(_ line: String) -> String {
+        var s = line
+        for prefix in ["### ", "## ", "# "] {
+            if s.hasPrefix(prefix) { return String(s.dropFirst(prefix.count)) }
+        }
+        for prefix in ["- [x] ", "- [ ] ", "• ", "- "] {
+            if s.hasPrefix(prefix) { return String(s.dropFirst(prefix.count)) }
+        }
+        return s
     }
 
     // MARK: – Things

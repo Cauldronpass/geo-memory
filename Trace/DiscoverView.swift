@@ -1023,14 +1023,14 @@ struct DiscoverResultRow: View {
     }
 
     private func uploadPhoto(_ image: UIImage, toPageID pageID: String) async {
-        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
-        guard !B2Service.shared.keyID.isEmpty else { return }
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd-HHmmss"
         let filename = "place-\(formatter.string(from: Date())).jpg"
         do {
-            let url = try await B2Service.shared.upload(image, filename: filename)
-            try await notion.addPhotoToPage(pageID, photoURL: url)
+            let path = try NoteStore.shared.writePhoto(data, category: "Visits", filename: filename)
+            try await notion.addPhotoToPage(pageID, photoURL: path)
         } catch { }
     }
 }

@@ -76,6 +76,11 @@ class NoteStore {
             }
         }
         if let err = coordinatorError ?? writeError { throw err }
+        // Notify observers so DailyNoteTab can reload without user having to tap the date.
+        let notePath = "Calendar/\(dateStr).md"
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .noteStoreCalendarDidChange, object: notePath)
+        }
     }
 
     /// Moves a daily note's content to another date, merging if destination already has content.
@@ -230,6 +235,12 @@ class NoteStore {
             }
         }
         if let err = coordinatorError ?? writeError { throw err }
+        // Notify DailyNoteTab to reload when a Calendar file changes (covers moveDailyNote, save, clear).
+        if relativePath.hasPrefix("Calendar/") {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .noteStoreCalendarDidChange, object: relativePath)
+            }
+        }
     }
 
     func deleteFile(_ relativePath: String) throws {
@@ -251,6 +262,14 @@ class NoteStore {
         let items = try FileManager.default.contentsOfDirectory(atPath: folderURL.path)
         return items.filter { $0.hasSuffix(".md") }.sorted()
     }
+}
+
+// MARK: - Notification names
+
+extension Notification.Name {
+    /// Posted on the main queue after any Calendar/ file is written.
+    /// `object` is the relative path string, e.g. "Calendar/2026-06-26.md".
+    static let noteStoreCalendarDidChange = Notification.Name("com.david.trace.noteStoreCalendarDidChange")
 }
 
 // MARK: - Error

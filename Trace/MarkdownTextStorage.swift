@@ -24,6 +24,8 @@ final class MarkdownTextStorage: NSTextStorage {
     static let linkColor:    UIColor = .systemBlue
     static let checkColor:   UIColor = .systemGreen
     static let uncheckColor: UIColor = UIColor(red: 0.9, green: 0.5, blue: 0.1, alpha: 1)
+    // Tiny invisible font used to hide markdown syntax markers (**, *, etc.)
+    static let hiddenFont:   UIFont  = UIFont.systemFont(ofSize: 0.1)
 
     // MARK: - Required NSTextStorage overrides
 
@@ -83,8 +85,11 @@ final class MarkdownTextStorage: NSTextStorage {
         // Checkboxes must be checked before generic bullets
         if line.hasPrefix("- [x]") { styleCheckbox(checked: true,  line: line, in: range); return }
         if line.hasPrefix("- [ ]") { styleCheckbox(checked: false, line: line, in: range); return }
+        if line.hasPrefix("• ")   { styleBulletPrefix(in: range) }
         if line.hasPrefix("- ")   { styleBulletPrefix(in: range) }
         applyBold(in: line, lineRange: range)
+        applyItalic(in: line, lineRange: range)
+        applyHighlight(in: line, lineRange: range)
         applyLinks(in: line, lineRange: range)
     }
 
@@ -124,30 +129,81 @@ final class MarkdownTextStorage: NSTextStorage {
     }
 
     // MARK: Bold — **text**
+    // The ** markers are set to a near-zero invisible font so they vanish visually
+    // while remaining in the backing store (file on disk is valid markdown).
 
     private func applyBold(in line: String, lineRange: NSRange) {
         guard line.contains("**"),
               let regex = try? NSRegularExpression(pattern: #"\*\*(.+?)\*\*"#) else { return }
         let ns = line as NSString
+        let hidden: [NSAttributedString.Key: Any] = [
+            .font: Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ]
         for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
             guard m.range.length >= 5 else { continue }
             let base = lineRange.location + m.range.location
             let len  = m.range.length
-            // Dim the ** markers
-            backing.addAttribute(.foregroundColor, value: Self.dimColor,
-                                 range: NSRange(location: base, length: 2))
+            // Hide the ** markers
+            backing.addAttributes(hidden, range: NSRange(location: base, length: 2))
             // Bold the inner text
             backing.addAttribute(.font, value: Self.boldFont,
                                  range: NSRange(location: base + 2, length: len - 4))
-            backing.addAttribute(.foregroundColor, value: Self.dimColor,
-                                 range: NSRange(location: base + len - 2, length: 2))
+            backing.addAttributes(hidden, range: NSRange(location: base + len - 2, length: 2))
+        }
+    }
+
+    // MARK: Italic — *text*
+    // Same approach: hide the * markers, apply italic font to inner text.
+    // Negative lookaround prevents matching inside ** bold spans.
+
+    private func applyItalic(in line: String, lineRange: NSRange) {
+        guard line.contains("*"),
+              let regex = try? NSRegularExpression(
+                  pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#) else { return }
+        let ns = line as NSString
+        let hidden: [NSAttributedString.Key: Any] = [
+            .font: Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ]
+        for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            guard m.range.length >= 3 else { continue }
+            let base = lineRange.location + m.range.location
+            let len  = m.range.length
+            backing.addAttributes(hidden, range: NSRange(location: base, length: 1))
+            backing.addAttribute(.font, value: UIFont.italicSystemFont(ofSize: 16),
+                                 range: NSRange(location: base + 1, length: len - 2))
+            backing.addAttributes(hidden, range: NSRange(location: base + len - 1, length: 1))
+        }
+    }
+
+    // MARK: Highlight — ==text==
+    // Hides the == markers, applies yellow background to inner text.
+
+    private func applyHighlight(in line: String, lineRange: NSRange) {
+        guard line.contains("=="),
+              let regex = try? NSRegularExpression(pattern: "==(.+?)==") else { return }
+        let ns = line as NSString
+        let hidden: [NSAttributedString.Key: Any] = [
+            .font: Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ]
+        for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            guard m.range.length >= 5 else { continue }
+            let base = lineRange.location + m.range.location
+            let len  = m.range.length
+            backing.addAttributes(hidden, range: NSRange(location: base, length: 2))
+            backing.addAttribute(.backgroundColor,
+                                 value: UIColor.systemYellow.withAlphaComponent(0.4),
+                                 range: NSRange(location: base + 2, length: len - 4))
+            backing.addAttributes(hidden, range: NSRange(location: base + len - 2, length: 2))
         }
     }
 
     // MARK: Links
 
     private static let customPattern =
-        "(x-devonthink-item|obsidian|things|NoteStore|bear|drafts)://\\S+"
+        "(x-devonthink-item|obsidian|things|noteplan|bear|drafts)://\\S+"
 
     private func applyLinks(in line: String, lineRange: NSRange) {
         let ns = line as NSString

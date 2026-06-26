@@ -678,10 +678,8 @@ struct PersonEditSheet: View {
                     guard let data = try? await newItem.loadTransferable(type: Data.self),
                           let image = UIImage(data: data) else { return }
                     pickedImage = image
-                    if !B2Service.shared.keyID.isEmpty {
-                        let filename = "person-\(personID)-\(Int(Date().timeIntervalSince1970)).jpg"
-                        uploadedPhotoURL = try? await B2Service.shared.upload(image, filename: filename)
-                    }
+                    let filename = "person-\(personID)-\(Int(Date().timeIntervalSince1970)).jpg"
+                    uploadedPhotoURL = try? NoteStore.shared.writePhoto(data, category: "People", filename: filename)
                 }
             }
             .alert("Add Tag", isPresented: $showingAddTag) {

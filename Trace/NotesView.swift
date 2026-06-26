@@ -119,6 +119,8 @@ struct DailyNoteTab: View {
     @State private var datesWithNotes: Set<String> = []
     @State private var showingMoveDaily: Bool = false
     @State private var moveTargetDate: Date = Date()
+    @State private var timestampTrigger: Date? = nil
+    @State private var showingClearConfirm: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -149,7 +151,8 @@ struct DailyNoteTab: View {
                     MarkdownEditorView(
                         text: $content,
                         onSave: { newText in save(newText) },
-                        placeholder: "Nothing here yet — start writing."
+                        placeholder: "Nothing here yet — start writing.",
+                        timestampTrigger: $timestampTrigger
                     )
                 }
             }
@@ -160,6 +163,16 @@ struct DailyNoteTab: View {
         }
         .onChange(of: showCalendar) { _, isOn in
             if isOn { displayMonth = selectedDate }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { note in
+            // Reload if the file that changed is the one currently displayed.
+            guard let changedPath = note.object as? String else { return }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd"
+            let currentPath = "Calendar/\(formatter.string(from: selectedDate)).md"
+            guard changedPath == currentPath else { return }
+            load()
         }
         .sheet(isPresented: $showingMoveDaily) {
             MoveDailyNoteSheet(targetDate: $moveTargetDate) {
@@ -176,6 +189,16 @@ struct DailyNoteTab: View {
                     datesWithNotes.insert(formatter.string(from: moveTargetDate))
                 }
             }
+        }
+        .confirmationDialog(
+            "Clear this note?",
+            isPresented: $showingClearConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Note", role: .destructive) { clearNote() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The note will be erased. This cannot be undone.")
         }
     }
 
@@ -220,6 +243,24 @@ struct DailyNoteTab: View {
                     .frame(width: 44, height: 44)
             }
             .disabled(content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            Button {
+                showingClearConfirm = true
+            } label: {
+                Image(systemName: "trash")
+                    .font(.subheadline)
+                    .foregroundStyle(content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color(UIColor.tertiaryLabel) : Color.red.opacity(0.7))
+                    .frame(width: 40, height: 44)
+            }
+            .disabled(content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            Button {
+                timestampTrigger = Date()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.subheadline.weight(.medium))
+                    .frame(width: 40, height: 44)
+            }
         }
         .padding(.horizontal, 4)
         .background(.bar)
@@ -259,7 +300,8 @@ struct DailyNoteTab: View {
         errorMessage = nil
         Task {
             do {
-                content = try noteStore.readDailyNote(date: selectedDate)
+                let raw = try noteStore.readDailyNote(date: selectedDate)
+                content = stripDateHeader(raw)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -267,15 +309,47 @@ struct DailyNoteTab: View {
         }
     }
 
+    /// Removes the `# YYYY-MM-DD` first line (and any immediately following blank line)
+    /// so the date header is hidden in the editor but preserved in the file.
+    private func stripDateHeader(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        guard let first = lines.first,
+              first.hasPrefix("# "),
+              first.dropFirst(2).range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil
+        else { return text }
+        lines.removeFirst()
+        while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            lines.removeFirst()
+        }
+        return lines.joined(separator: "\n")
+    }
+
     private func save(_ text: String) {
         Task {
             let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.dateFormat = "yyyy-MM-dd"
-            let path = "Calendar/\(formatter.string(from: selectedDate)).md"
-            try? noteStore.writeFile(path, content: text)
-            // Refresh dot for this date if newly created
-            datesWithNotes.insert(formatter.string(from: selectedDate))
+            let dateStr = formatter.string(from: selectedDate)
+            let path = "Calendar/\(dateStr).md"
+            // Always write with the date header preserved in the raw file
+            let fileContent = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? ""
+                : "# \(dateStr)\n\n\(text)"
+            try? noteStore.writeFile(path, content: fileContent)
+            datesWithNotes.insert(dateStr)
         }
+    }
+
+    private func clearNote() {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let dateStr = formatter.string(from: selectedDate)
+        // Write empty content — keeps the file to avoid iCloud sync edge cases.
+        // The date header is not re-added so the file is truly blank.
+        try? noteStore.writeFile("Calendar/\(dateStr).md", content: "")
+        content = ""
+        datesWithNotes.remove(dateStr)
     }
 
     private func loadDatesWithNotes() {

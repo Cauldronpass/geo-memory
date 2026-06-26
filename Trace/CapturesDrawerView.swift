@@ -1,191 +1,133 @@
 import SwiftUI
 import CoreLocation
 
+// MARK: - InboxNote
+//
+// Represents one file from Notes/Inbox/YYYY-MM-DD-HHmmss.md.
+// Written by AddCaptureView (text notes) and AddPhotoView (photo captures).
+
+struct InboxNote: Identifiable {
+    let filename: String     // e.g. "2026-06-26-143022.md"
+    let content: String      // raw file content
+    let date: Date           // parsed from filename prefix
+
+    var id: String { filename }
+
+    var hasPhoto: Bool { content.contains("![](") }
+
+    /// Everything after the leading # header line(s) and blank lines.
+    var bodyContent: String {
+        let lines = content.components(separatedBy: "\n")
+        let body = lines.drop(while: { $0.hasPrefix("#") || $0.trimmingCharacters(in: .whitespaces).isEmpty })
+        return body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Short preview for the list row — skips photo/PDF reference lines.
+    var previewLine: String {
+        bodyContent.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.hasPrefix("![]") && !$0.hasPrefix("📎") && !$0.isEmpty }
+            .first ?? (hasPhoto ? "(photo)" : "(empty)")
+    }
+
+    init?(filename: String, content: String) {
+        self.filename = filename
+        self.content = content
+        let bare = filename.replacingOccurrences(of: ".md", with: "")
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd-HHmmss"
+        guard let d = f.date(from: bare) else { return nil }
+        self.date = d
+    }
+}
+
+// MARK: - CapturesDrawerView
+
 struct CapturesDrawerView: View {
     @Binding var isShowing: Bool
     @Environment(NotionService.self) private var notion
-    @State private var selectedCapture: Capture?
-    @State private var actionCapture: Capture?
-    @State private var showingVisitPicker = false
+
+    @State private var inboxNotes: [InboxNote] = []
+    @State private var isLoading = true
+    @State private var actionNote: InboxNote?
     @State private var showingActions = false
-    @State private var showingCreateVisit = false
-    @State private var showingSaveAsPlace = false
-
-    // Bulk select
-    @State private var isSelecting = false
-    @State private var selectedCaptureIDs: Set<String> = []
-    @State private var showingBulkVisitPicker = false
-    @State private var showingBulkDeleteConfirm = false
-
-    var groupedCaptures: [(key: String, value: [Capture])] {
-        let grouped = Dictionary(grouping: notion.captures) { capture in
-            capture.placeID != nil ? (capture.placeName ?? "Unknown Place") : "No Place"
-        }
-        return grouped.sorted { a, b in
-            if a.key == "No Place" { return false }
-            if b.key == "No Place" { return true }
-            let aLatest = a.value.map { $0.timestamp }.max() ?? .distantPast
-            let bLatest = b.value.map { $0.timestamp }.max() ?? .distantPast
-            return aLatest > bLatest
-        }
-    }
-
-    private var selectedCaptures: [Capture] {
-        notion.captures.filter { selectedCaptureIDs.contains($0.id) }
-    }
+    @State private var showingPlacePicker = false
+    @State private var selectedPlaceForMove: Place? = nil
 
     var body: some View {
         NavigationStack {
             Group {
-                if notion.captures.isEmpty {
+                if isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if inboxNotes.isEmpty {
                     VStack {
                         Spacer()
                         Image(systemName: "tray")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
+                            .font(.largeTitle).foregroundStyle(.secondary)
                         Text("No pending notes")
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 8)
+                            .foregroundStyle(.secondary).padding(.top, 8)
                         Spacer()
                     }
                     .frame(maxWidth: .infinity)
                 } else {
                     List {
-                        ForEach(groupedCaptures, id: \.key) { group in
-                            Section(group.key) {
-                                ForEach(group.value) { capture in
-                                    CaptureRow(
-                                        capture: capture,
-                                        isSelecting: isSelecting,
-                                        isSelected: selectedCaptureIDs.contains(capture.id)
-                                    ) {
-                                        if isSelecting {
-                                            toggleSelection(capture.id)
-                                        } else {
-                                            actionCapture = capture
-                                            showingActions = true
-                                        }
-                                    } onDismiss: {
-                                        Task { try? await notion.dismissCapture(capture.id) }
-                                    } onLongPress: {
-                                        if !isSelecting {
-                                            withAnimation { isSelecting = true }
-                                            toggleSelection(capture.id)
-                                        }
-                                    }
+                        ForEach(inboxNotes) { note in
+                            InboxNoteRow(note: note)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    actionNote = note
+                                    showingActions = true
                                 }
-                            }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button("Delete", role: .destructive) { delete(note) }
+                                }
                         }
                     }
                     .listStyle(.insetGrouped)
-                    .safeAreaInset(edge: .bottom) {
-                        if isSelecting && !selectedCaptureIDs.isEmpty {
-                            bulkActionBar
-                        }
-                    }
                 }
             }
-            .navigationTitle(isSelecting ? "\(selectedCaptureIDs.count) selected" : "Pending")
+            .navigationTitle("Inbox")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    if isSelecting {
-                        Button("Cancel") {
-                            withAnimation {
-                                isSelecting = false
-                                selectedCaptureIDs.removeAll()
-                            }
-                        }
-                    } else {
-                        Button("Done") {
-                            withAnimation(.easeInOut(duration: 0.3)) { isShowing = false }
-                        }
-                        .bold()
+                    Button("Done") {
+                        withAnimation(.easeInOut(duration: 0.3)) { isShowing = false }
                     }
+                    .bold()
                 }
-                if isSelecting {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button(selectedCaptureIDs.count == notion.captures.count ? "Deselect All" : "Select All") {
-                            if selectedCaptureIDs.count == notion.captures.count {
-                                selectedCaptureIDs.removeAll()
-                            } else {
-                                selectedCaptureIDs = Set(notion.captures.map { $0.id })
-                            }
-                        }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if !inboxNotes.isEmpty {
+                        Text("\(inboxNotes.count) item\(inboxNotes.count == 1 ? "" : "s")")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
         }
         .confirmationDialog("What would you like to do?", isPresented: $showingActions, titleVisibility: .visible) {
-            if let capture = actionCapture {
-                Button("Link to existing visit") {
-                    selectedCapture = capture
-                    showingVisitPicker = true
+            if let note = actionNote {
+                Button("Add to Today's Note") { addToTodayNote(note) }
+                Button("Move to Place Note…") {
+                    selectedPlaceForMove = nil
+                    showingPlacePicker = true
                 }
-                if capture.placeID != nil {
-                    Button("Add to place notes") {
-                        Task {
-                            guard let placeID = capture.placeID else { return }
-                            try? await notion.appendToPlaceNotes(placeID: placeID, text: capture.notes)
-                            try? await notion.deleteCapture(capture.id)
-                        }
-                    }
-                }
-                // NoteStore actions (only shown when NoteStore folder is linked)
-                let NoteStore = NoteStore.shared
-                if NoteStore.hasAccess {
-                    Button("Send to today's note") {
-                        Task {
-                            try? NoteStore.appendToDailyNote("- \(capture.notes)")
-                            try? await notion.dismissCapture(capture.id)
-                        }
-                    }
-                    if let placeName = capture.placeName {
-                        Button("Send to \(placeName) note") {
-                            Task {
-                                try? NoteStore.appendToPlaceNote(for: placeName, text: "- \(capture.notes)")
-                                try? await notion.dismissCapture(capture.id)
-                            }
-                        }
-                    }
-                }
-                if let lat = capture.gpsLat, let lon = capture.gpsLon,
-                   let url = URL(string: "maps://?daddr=\(lat),\(lon)") {
-                    Button("Get Directions") {
-                        UIApplication.shared.open(url)
-                    }
-                }
-                if capture.gpsLat != nil {
-                    Button("Save as Place…") {
-                        selectedCapture = capture
-                        showingSaveAsPlace = true
-                    }
-                }
-                Button("Create new visit") {
-                    selectedCapture = capture
-                    showingCreateVisit = true
-                }
-                Button("Dismiss from queue", role: .destructive) {
-                    Task { try? await notion.dismissCapture(capture.id) }
-                }
+                Button("Delete", role: .destructive) { delete(note) }
                 Button("Cancel", role: .cancel) { }
             }
         }
-        .confirmationDialog(
-            "Delete \(selectedCaptureIDs.count) capture\(selectedCaptureIDs.count == 1 ? "" : "s")?",
-            isPresented: $showingBulkDeleteConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                let ids = Array(selectedCaptureIDs)
-                Task {
-                    for id in ids {
-                        try? await notion.deleteCapture(id)
-                    }
-                    withAnimation { isSelecting = false; selectedCaptureIDs.removeAll() }
-                }
+        .sheet(isPresented: $showingPlacePicker, onDismiss: {
+            // Fires after PlacePickerView dismisses — place is set if user made a selection.
+            guard let place = selectedPlaceForMove, let note = actionNote else {
+                selectedPlaceForMove = nil
+                return
             }
-            Button("Cancel", role: .cancel) { }
+            moveToPlaceNote(note, placeName: place.name)
+            selectedPlaceForMove = nil
+        }) {
+            PlacePickerView(selectedPlace: $selectedPlaceForMove)
+                .environment(notion)
+                .environment(LocationManager.shared)
         }
         .gesture(
             DragGesture(minimumDistance: 30, coordinateSpace: .local)
@@ -195,462 +137,80 @@ struct CapturesDrawerView: View {
                     }
                 }
         )
-        .sheet(isPresented: $showingVisitPicker) {
-            if let capture = selectedCapture {
-                VisitPickerView(capture: capture, isShowing: $showingVisitPicker) {
-                    showingCreateVisit = true
-                }
-                .environment(notion)
+        .task { await loadInbox() }
+    }
+
+    // MARK: - Data
+
+    private func loadInbox() async {
+        let files = (try? NoteStore.shared.listFiles(in: "Notes/Inbox")) ?? []
+        var notes: [InboxNote] = []
+        for filename in files.reversed() {  // newest first (listFiles returns sorted ascending)
+            let content = (try? NoteStore.shared.readFile("Notes/Inbox/\(filename)")) ?? ""
+            if let note = InboxNote(filename: filename, content: content) {
+                notes.append(note)
             }
         }
-        .sheet(isPresented: $showingCreateVisit) {
-            if let capture = selectedCapture {
-                CreateVisitFromCaptureView(capture: capture, isShowing: $showingCreateVisit)
-                    .environment(notion)
-                    .environment(LocationManager.shared)
-            }
-        }
-        .sheet(isPresented: $showingSaveAsPlace) {
-            if let capture = selectedCapture {
-                SaveCaptureAsPlaceSheet(capture: capture)
-                    .environment(NotionService.shared)
-            }
-        }
-        .sheet(isPresented: $showingBulkVisitPicker) {
-            BulkVisitPickerView(captures: selectedCaptures, isShowing: $showingBulkVisitPicker) {
-                withAnimation { isSelecting = false; selectedCaptureIDs.removeAll() }
-            }
-            .environment(notion)
-        }
-        .task {
-            await notion.fetchCaptures()
+        await MainActor.run {
+            inboxNotes = notes
+            isLoading = false
         }
     }
 
-    // MARK: - Bulk Action Bar
+    // MARK: - Actions
 
-    private var bulkActionBar: some View {
-        HStack(spacing: 12) {
-            Button {
-                showingBulkVisitPicker = true
-            } label: {
-                Label("Assign to Visit", systemImage: "link")
-                    .font(.subheadline.bold())
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.accentColor)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
-
-            Button {
-                showingBulkDeleteConfirm = true
-            } label: {
-                Label("Delete \(selectedCaptureIDs.count)", systemImage: "trash")
-                    .font(.subheadline.bold())
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.red.opacity(0.12))
-                    .foregroundStyle(.red)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
+    private func addToTodayNote(_ note: InboxNote) {
+        Task {
+            try? NoteStore.shared.appendToDailyNote(note.bodyContent)
+            try? NoteStore.shared.deleteFile("Notes/Inbox/\(note.filename)")
+            await MainActor.run { inboxNotes.removeAll { $0.id == note.id } }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.regularMaterial)
     }
 
-    // MARK: - Helpers
+    private func moveToPlaceNote(_ note: InboxNote, placeName: String) {
+        Task {
+            try? NoteStore.shared.appendToPlaceNote(for: placeName, text: "\n" + note.bodyContent)
+            try? NoteStore.shared.deleteFile("Notes/Inbox/\(note.filename)")
+            await MainActor.run { inboxNotes.removeAll { $0.id == note.id } }
+        }
+    }
 
-    private func toggleSelection(_ id: String) {
-        if selectedCaptureIDs.contains(id) {
-            selectedCaptureIDs.remove(id)
-        } else {
-            selectedCaptureIDs.insert(id)
+    private func delete(_ note: InboxNote) {
+        Task {
+            try? NoteStore.shared.deleteFile("Notes/Inbox/\(note.filename)")
+            await MainActor.run { inboxNotes.removeAll { $0.id == note.id } }
         }
     }
 }
 
-// MARK: - CaptureRow
+// MARK: - InboxNoteRow
 
-struct CaptureRow: View {
-    let capture: Capture
-    var isSelecting: Bool = false
-    var isSelected: Bool = false
-    let onTap: () -> Void
-    let onDismiss: () -> Void
-    var onLongPress: (() -> Void)? = nil
+private struct InboxNoteRow: View {
+    let note: InboxNote
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            // Selection indicator
-            if isSelecting {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
-                    .animation(.easeInOut(duration: 0.15), value: isSelected)
-            }
-
-            if let urlString = capture.photoURL, let url = URL(string: urlString) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable()
-                            .scaledToFill()
-                            .frame(width: 56, height: 56)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    case .failure:
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.secondary.opacity(0.2))
-                            .frame(width: 56, height: 56)
-                            .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
-                    default:
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.secondary.opacity(0.1))
-                            .frame(width: 56, height: 56)
-                    }
-                }
-            }
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: note.hasPhoto ? "photo" : "note.text")
+                .foregroundStyle(note.hasPhoto ? Color.blue : Color.secondary)
+                .font(.title3)
+                .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(capture.notes.isEmpty ? "(no note)" : capture.notes)
+                Text(note.previewLine)
                     .lineLimit(2)
-                HStack(spacing: 6) {
-                    Text(capture.timestamp, style: .relative)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if capture.gpsLat != nil {
-                        Image(systemName: "location.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                    .foregroundStyle(.primary)
+                Text(note.date, style: .relative)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
         }
         .padding(.vertical, 2)
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            if !isSelecting {
-                Button("Dismiss", role: .destructive) { onDismiss() }
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { onTap() }
-        .onLongPressGesture(minimumDuration: 0.4) {
-            onLongPress?()
-        }
     }
 }
 
-// MARK: - BulkVisitPickerView
-
-struct BulkVisitPickerView: View {
-    let captures: [Capture]
-    @Binding var isShowing: Bool
-    var onDone: () -> Void
-    @Environment(NotionService.self) private var notion
-    @State private var searchText = ""
-    @State private var isLinking = false
-    @State private var linkError: String?
-
-    var relevantVisits: [Visit] {
-        if searchText.isEmpty { return notion.visits }
-        return notion.visits.filter {
-            $0.placeName.localizedCaseInsensitiveContains(searchText) ||
-            $0.notes?.localizedCaseInsensitiveContains(searchText) == true
-        }
-    }
-
-    var body: some View {
-        NavigationStack {
-            List(relevantVisits) { visit in
-                Button {
-                    Task {
-                        isLinking = true
-                        for capture in captures {
-                            try? await notion.linkCapture(
-                                capture.id,
-                                toVisit: visit.id,
-                                captureNotes: capture.photoURL != nil ? "" : capture.notes,
-                                photoURL: capture.photoURL
-                            )
-                        }
-                        isShowing = false
-                        onDone()
-                    }
-                } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(visit.placeName).font(.headline)
-                        HStack {
-                            Text(visit.date, style: .date)
-                            if let rating = visit.rating {
-                                Text("·")
-                                Text(String(repeating: "★", count: rating))
-                                    .foregroundStyle(.orange)
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                    .foregroundStyle(.primary)
-                }
-            }
-            .searchable(text: $searchText, prompt: "Search visits")
-            .navigationTitle("Link \(captures.count) to Visit")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { isShowing = false }
-                }
-            }
-            .overlay {
-                if isLinking {
-                    Color.black.opacity(0.2).ignoresSafeArea()
-                    ProgressView("Linking…")
-                        .padding(20)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                }
-            }
-        }
-    }
-}
-
-// MARK: - VisitPickerView
-
-struct VisitPickerView: View {
-    let capture: Capture
-    @Binding var isShowing: Bool
-    var onCreateVisit: (() -> Void)? = nil
-    @Environment(NotionService.self) private var notion
-    @State private var searchText = ""
-    @State private var linkError: String?
-    @State private var isLinking = false
-
-    var relevantVisits: [Visit] {
-        let base = capture.placeID != nil
-            ? notion.visits.filter { $0.placeID == capture.placeID }
-            : notion.visits
-        if searchText.isEmpty { return base }
-        return base.filter {
-            $0.placeName.localizedCaseInsensitiveContains(searchText) ||
-            $0.notes?.localizedCaseInsensitiveContains(searchText) == true
-        }
-    }
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if relevantVisits.isEmpty {
-                    VStack(spacing: 16) {
-                        Spacer()
-                        Text(searchText.isEmpty
-                            ? (capture.placeID != nil ? "No check-ins for this place yet" : "No visits found")
-                            : "No matching visits")
-                            .foregroundStyle(.secondary)
-                        if searchText.isEmpty && capture.placeID != nil {
-                            Button("Create New Visit") {
-                                isShowing = false
-                                onCreateVisit?()
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                        Button("Close") { isShowing = false }
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                } else {
-                    List(relevantVisits) { visit in
-                        Button {
-                            Task {
-                                isLinking = true
-                                do {
-                                    try await notion.linkCapture(capture.id, toVisit: visit.id, captureNotes: capture.photoURL != nil ? "" : capture.notes, photoURL: capture.photoURL)
-                                    isShowing = false
-                                } catch {
-                                    linkError = error.localizedDescription
-                                    isLinking = false
-                                }
-                            }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(visit.placeName).font(.headline)
-                                HStack {
-                                    Text(visit.date, style: .date)
-                                    if let rating = visit.rating {
-                                        Text("·")
-                                        Text(String(repeating: "★", count: rating))
-                                            .foregroundStyle(.orange)
-                                    }
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                if let notes = visit.notes {
-                                    Text(notes)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .foregroundStyle(.primary)
-                        }
-                    }
-                    .searchable(text: $searchText, prompt: "Search visits")
-                }
-            }
-            .navigationTitle("Link to Visit")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { isShowing = false }
-                }
-            }
-            .alert("Link Failed", isPresented: .constant(linkError != nil)) {
-                Button("OK") { linkError = nil }
-            } message: {
-                Text(linkError ?? "")
-            }
-            .overlay {
-                if isLinking {
-                    Color.black.opacity(0.2).ignoresSafeArea()
-                    ProgressView("Linking…")
-                        .padding(20)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                }
-            }
-        }
-    }
-}
-
-// MARK: - CreateVisitFromCaptureView
-
-struct CreateVisitFromCaptureView: View {
-    let capture: Capture
-    @Binding var isShowing: Bool
-    @Environment(NotionService.self) private var notion
-    @State private var selectedPlace: Place? = nil
-    @State private var rating: Int? = nil
-    @State private var notes: String = ""
-    @State private var isSaving = false
-    @State private var errorMessage: String?
-    @State private var showingPlacePicker = false
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Button {
-                        showingPlacePicker = true
-                    } label: {
-                        HStack {
-                            Text("Place")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Text(selectedPlace?.name ?? "Select place…")
-                                .foregroundStyle(selectedPlace == nil ? .red : .secondary)
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    HStack {
-                        Text("Date")
-                        Spacer()
-                        Text(capture.timestamp, style: .date)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Capture note") {
-                    Text(capture.notes.isEmpty ? "(no note)" : capture.notes)
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
-                }
-
-                Section("Rating (optional)") {
-                    StarRatingPicker(rating: $rating)
-                }
-
-                Section("Visit notes (optional)") {
-                    TextField("Add notes…", text: $notes, axis: .vertical)
-                        .lineLimit(3...6)
-                }
-
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage).foregroundStyle(.red).font(.caption)
-                    }
-                }
-
-                Section {
-                    Button {
-                        Task { await save() }
-                    } label: {
-                        if isSaving {
-                            HStack { Spacer(); ProgressView(); Spacer() }
-                        } else {
-                            Text("Create Visit & Link Note")
-                                .frame(maxWidth: .infinity)
-                                .bold()
-                        }
-                    }
-                    .disabled(isSaving || selectedPlace == nil)
-                }
-            }
-            .navigationTitle("New Visit")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { isShowing = false }
-                }
-            }
-            .sheet(isPresented: $showingPlacePicker) {
-                PlacePickerSheet(currentPlaceID: selectedPlace?.id) { place in
-                    selectedPlace = place
-                }
-                .environment(notion)
-            }
-            .task { resolvePlace() }
-        }
-    }
-
-    private func resolvePlace() {
-        // If capture already has a place linked, use it
-        if let id = capture.placeID,
-           let place = notion.places.first(where: { $0.id == id }) {
-            selectedPlace = place
-            return
-        }
-        // Otherwise find nearest place by GPS
-        guard let lat = capture.gpsLat, let lon = capture.gpsLon else { return }
-        let capLoc = CLLocation(latitude: lat, longitude: lon)
-        selectedPlace = notion.places
-            .filter { $0.status != "Archived" }
-            .min(by: {
-                CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: capLoc) <
-                CLLocation(latitude: $1.latitude, longitude: $1.longitude).distance(from: capLoc)
-            })
-    }
-
-    private func save() async {
-        guard let selectedPlace else { return }
-        isSaving = true
-        do {
-            let visitID = try await notion.checkIn(
-                place: selectedPlace,
-                rating: rating,
-                notes: notes.isEmpty ? nil : notes,
-                date: capture.timestamp
-            )
-            try await notion.linkCapture(capture.id, toVisit: visitID, captureNotes: capture.notes, photoURL: capture.photoURL)
-            await notion.fetchPlaces()
-            await notion.fetchVisits()
-            isShowing = false
-        } catch {
-            errorMessage = error.localizedDescription
-            isSaving = false
-        }
-    }
-}
+// MARK: - PlacePickerSheet
+// Still used by CreateVisitFromCaptureView and other call sites.
 
 struct PlacePickerSheet: View {
     let currentPlaceID: String?
@@ -678,7 +238,9 @@ struct PlacePickerSheet: View {
                     }
                 }
             }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search places")
+            .searchable(text: $searchText,
+                        placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Search places")
             .navigationTitle("Select Place")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
