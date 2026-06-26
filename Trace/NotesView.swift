@@ -121,6 +121,7 @@ struct DailyNoteTab: View {
     @State private var moveTargetDate: Date = Date()
     @State private var timestampTrigger: Date? = nil
     @State private var showingClearConfirm: Bool = false
+    @State private var isEditorFocused: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -152,7 +153,8 @@ struct DailyNoteTab: View {
                         text: $content,
                         onSave: { newText in save(newText) },
                         placeholder: "Nothing here yet — start writing.",
-                        timestampTrigger: $timestampTrigger
+                        timestampTrigger: $timestampTrigger,
+                        onFocusChange: { isEditorFocused = $0 }
                     )
                 }
             }
@@ -165,7 +167,10 @@ struct DailyNoteTab: View {
             if isOn { displayMonth = selectedDate }
         }
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { note in
-            // Reload if the file that changed is the one currently displayed.
+            // Only reload for external writes (e.g. from capture drawer).
+            // If the editor has focus the user is typing — the editor owns the
+            // content and reloading would fight the keyboard and lose keystrokes.
+            guard !isEditorFocused else { return }
             guard let changedPath = note.object as? String else { return }
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")

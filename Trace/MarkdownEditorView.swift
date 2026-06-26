@@ -23,6 +23,8 @@ struct MarkdownEditorView: UIViewRepresentable {
     var placeholder: String = "Start writing…"
     /// Set to Date() from outside to insert a bold timestamp at the end of the document.
     var timestampTrigger: Binding<Date?>? = nil
+    /// Called with true when the editor gains first responder, false when it resigns.
+    var onFocusChange: ((Bool) -> Void)? = nil
 
     // MARK: Make
 
@@ -101,7 +103,7 @@ struct MarkdownEditorView: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onSave: onSave)
+        Coordinator(text: $text, onSave: onSave, onFocusChange: onFocusChange)
     }
 
     // MARK: - Placeholder helpers
@@ -263,13 +265,15 @@ struct MarkdownEditorView: UIViewRepresentable {
 
         @Binding var text: String
         var onSave: ((String) -> Void)?
+        var onFocusChange: ((Bool) -> Void)?
         weak var textView: UITextView?
         private var saveWork: DispatchWorkItem?
         var lastTimestampTrigger: Date?
 
-        init(text: Binding<String>, onSave: ((String) -> Void)?) {
+        init(text: Binding<String>, onSave: ((String) -> Void)?, onFocusChange: ((Bool) -> Void)?) {
             _text = text
             self.onSave = onSave
+            self.onFocusChange = onFocusChange
         }
 
         // MARK: UITextViewDelegate
@@ -278,6 +282,14 @@ struct MarkdownEditorView: UIViewRepresentable {
             text = tv.text
             tv.viewWithTag(9_001)?.isHidden = !tv.text.isEmpty
             scheduleSave(tv.text)
+        }
+
+        func textViewDidBeginEditing(_ tv: UITextView) {
+            onFocusChange?(true)
+        }
+
+        func textViewDidEndEditing(_ tv: UITextView) {
+            onFocusChange?(false)
         }
 
         // MARK: Auto-continue bullets and checkboxes on Return
