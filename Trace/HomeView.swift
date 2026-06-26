@@ -63,6 +63,10 @@ struct HomeView: View {
     @State private var notePlanContent: String = ""
     @State private var notePlanLoaded: Bool = false
     @State private var showNotesView: Bool = false
+    @State private var showingMoveDailyNote: Bool = false
+    @State private var moveDailyNoteDate: Date = Date()
+    @State private var showingVisitsView: Bool = false
+    @State private var showingQuickAppend: Bool = false
 
     private var oura: OuraService { OuraService.shared }
     private var cal: CalendarService { CalendarService.shared }
@@ -201,7 +205,7 @@ struct HomeView: View {
             await oura.fetchToday()
             await cal.requestAndFetch()
             await things.fetch()
-            if let content = try? NotePlanService.shared.readDailyNote() {
+            if let content = try? NoteStore.shared.readDailyNote() {
                 notePlanContent = content
             }
             notePlanLoaded = true
@@ -519,11 +523,10 @@ struct HomeView: View {
                     in: RoundedRectangle(cornerRadius: 10))
     }
 
-    // MARK: – Daily note (NotePlan)
+    // MARK: – Daily note
 
     @ViewBuilder
     private var noteSection: some View {
-        let notePlan = NotePlanService.shared
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 sectionLabel("Today's note")
@@ -534,27 +537,25 @@ struct HomeView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                Button { notePlan.openDailyNote() } label: {
-                    Image(systemName: "arrow.up.right.square")
+                Button {
+                    moveDailyNoteDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+                    showingMoveDailyNote = true
+                } label: {
+                    Image(systemName: "arrow.right.square")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(notePlanContent.isEmpty ? .tertiary : .secondary)
                 }
                 .buttonStyle(.plain)
+                .disabled(notePlanContent.isEmpty)
             }
 
-            if !notePlan.hasAccess {
-                sectionCard {
-                    Text("Link NotePlan in Settings → NotePlan to enable daily notes.")
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
-                }
-            } else if !notePlanLoaded {
+            if !notePlanLoaded {
                 sectionCard {
                     ProgressView().frame(maxWidth: .infinity)
                 }
             } else if notePlanContent.isEmpty {
-                Button { notePlan.openDailyNote() } label: {
-                    Text("Tap to open today's note in NotePlan…")
+                Button { showNotesView = true } label: {
+                    Text("Long-press to add a note, or tap to open Notes…")
                         .font(.subheadline)
                         .foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -564,6 +565,7 @@ struct HomeView: View {
                                     in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
+                .simultaneousGesture(LongPressGesture().onEnded { _ in showingQuickAppend = true })
             } else {
                 Button { showNotesView = true } label: {
                     Text(notePlanPreview)
@@ -578,10 +580,29 @@ struct HomeView: View {
                                     in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
+                .simultaneousGesture(LongPressGesture().onEnded { _ in showingQuickAppend = true })
             }
         }
         .sheet(isPresented: $showNotesView) {
             NotesView()
+        }
+        .sheet(isPresented: $showingQuickAppend) {
+            QuickAppendSheet { text in
+                Task {
+                    try? NoteStore.shared.appendToDailyNote(text)
+                    notePlanContent = (try? NoteStore.shared.readDailyNote()) ?? ""
+                    showingQuickAppend = false
+                }
+            }
+        }
+        .sheet(isPresented: $showingMoveDailyNote) {
+            MoveDailyNoteSheet(targetDate: $moveDailyNoteDate) {
+                Task {
+                    try? NoteStore.shared.moveDailyNote(from: Date(), to: moveDailyNoteDate)
+                    notePlanContent = (try? NoteStore.shared.readDailyNote()) ?? ""
+                    showingMoveDailyNote = false
+                }
+            }
         }
     }
 
@@ -745,7 +766,16 @@ struct HomeView: View {
     // Fallback: recent visits list
     private var recentVisitsSection: some View {
         VStack(alignment: .leading, spacing: 5) {
-            sectionLabel("Recent visits")
+            HStack(spacing: 6) {
+                sectionLabel("Recent visits")
+                Spacer()
+                Button { showingVisitsView = true } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
             VStack(spacing: 0) {
                 ForEach(Array(recentVisits.enumerated()), id: \.element.id) { idx, visit in
                     let place = placeFor(visit)
@@ -790,6 +820,13 @@ struct HomeView: View {
             }
             .background(Color(UIColor.secondarySystemGroupedBackground),
                         in: RoundedRectangle(cornerRadius: 10))
+        }
+        .sheet(isPresented: $showingVisitsView) {
+            NavigationStack {
+                VisitsView()
+                    .environment(NotionService.shared)
+                    .environment(LocationManager.shared)
+            }
         }
     }
 

@@ -6,8 +6,11 @@ struct LifeView: View {
     var body: some View {
         NavigationStack {
             List {
-                LifeMenuRow(icon: "calendar", color: .indigo, title: "Calendar", subtitle: "Visits, workouts & notes") {
+                LifeMenuRow(icon: "calendar", color: .indigo, title: "Activity", subtitle: "Visits, workouts & billiards") {
                     LifeCalendarView().environment(notion)
+                }
+                LifeMenuRow(icon: "note.text", color: .teal, title: "Notes", subtitle: "Daily notes, buckets & places") {
+                    NotesView()
                 }
                 LifeMenuRow(icon: "airplane", color: .blue, title: "Trips", subtitle: "Upcoming & past trips") {
                     LifePlaceholderView(title: "Trips", icon: "airplane")
@@ -26,9 +29,6 @@ struct LifeView: View {
                     PlacesView()
                         .environment(notion)
                         .environment(LocationManager.shared)
-                }
-                LifeMenuRow(icon: "note.text", color: .teal, title: "Notes", subtitle: "Daily notes, buckets & places") {
-                    NotesView()
                 }
             }
             .navigationTitle("Life")
@@ -247,7 +247,12 @@ struct LifeCalendarView: View {
     @State private var selectedWorkout: Workout? = nil
     @State private var dayVisits: [Visit]? = nil
     @State private var dayVisitsTitle: String? = nil
+    @State private var dayBilliards: [BilliardsSession]? = nil
+    @State private var dayBilliardsTitle: String? = nil
+    @State private var selectedBilliards: BilliardsSession? = nil
     @State private var mixedDayEntries: [CalendarEntry]?
+    // Legend filter: nil = show all; non-nil = set of active prefixes
+    @State private var activeFilters: Set<String> = []
     private func dateKey(_ date: Date) -> String {
         let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
         return "\(c.year!)-\(c.month!)-\(c.day!)"
@@ -283,17 +288,51 @@ struct LifeCalendarView: View {
         }
     }
 
+    // Billiards sessions → CalendarEntry (prefixed "b-")
+    private var billiardsEntries: [CalendarEntry] {
+        notion.billiardsSessions.map { b in
+            CalendarEntry(
+                id: "b-\(b.id)",
+                date: b.date,
+                color: Color(.systemGray3),
+                cellStat: nil,
+                displayName: {
+                    var name = b.opponent.isEmpty ? "Billiards" : "vs. \(b.opponent)"
+                    if let r = b.result {
+                        let lower = r.lowercased()
+                        if lower == "win"  { name += " (W)" }
+                        else if lower == "loss" { name += " (L)" }
+                    }
+                    return name
+                }(),
+                value: nil,
+                shape: .circle
+            )
+        }
+    }
+
     private var allEntries: [CalendarEntry] {
-        (workoutEntries + visitEntries).sorted { $0.date > $1.date }
+        let combined = workoutEntries + visitEntries + billiardsEntries
+        let filtered: [CalendarEntry]
+        if activeFilters.isEmpty {
+            filtered = combined
+        } else {
+            filtered = combined.filter { entry in
+                activeFilters.contains(where: { entry.id.hasPrefix($0) })
+            }
+        }
+        return filtered.sorted { $0.date > $1.date }
     }
 
     private func monthStats(_ monthEntries: [CalendarEntry]) -> [(String, String)] {
-        let workouts = monthEntries.filter { $0.id.hasPrefix("w-") }.count
-        let visits   = monthEntries.filter { $0.id.hasPrefix("v-") }.count
+        let workouts  = monthEntries.filter { $0.id.hasPrefix("w-") }.count
+        let visits    = monthEntries.filter { $0.id.hasPrefix("v-") }.count
+        let billiards = monthEntries.filter { $0.id.hasPrefix("b-") }.count
 
         var stats: [(String, String)] = []
-        if workouts > 0 { stats.append(("\(workouts)", "workouts")) }
-        if visits   > 0 { stats.append(("\(visits)",   "visits"))   }
+        if workouts  > 0 { stats.append(("\(workouts)",  "workouts"))  }
+        if visits    > 0 { stats.append(("\(visits)",    "visits"))    }
+        if billiards > 0 { stats.append(("\(billiards)", "billiards")) }
         return stats
     }
 
@@ -316,6 +355,11 @@ struct LifeCalendarView: View {
                 .filter { cal.isDate($0.date, inSameDayAs: entry.date) }
                 .sorted { $0.date > $1.date }
             dayVisits = sorted.isEmpty ? nil : sorted
+        } else if entry.id.hasPrefix("b-") {
+            let sorted = notion.billiardsSessions
+                .filter { cal.isDate($0.date, inSameDayAs: entry.date) }
+                .sorted { $0.date > $1.date }
+            dayBilliards = sorted.isEmpty ? nil : sorted
         }
     }
 
@@ -331,7 +375,9 @@ struct LifeCalendarView: View {
                     let cal = Calendar.current
                     let wEntries = dayEntries.filter { $0.id.hasPrefix("w-") }
                     let vEntries = dayEntries.filter { $0.id.hasPrefix("v-") }
-                    if !wEntries.isEmpty && vEntries.isEmpty {
+                    let bEntries = dayEntries.filter { $0.id.hasPrefix("b-") }
+                    // Single-type days → go direct
+                    if !wEntries.isEmpty && vEntries.isEmpty && bEntries.isEmpty {
                         if wEntries.count == 1 {
                             route(wEntries[0])
                         } else {
@@ -342,8 +388,12 @@ struct LifeCalendarView: View {
                         }
                         return
                     }
-                    if !vEntries.isEmpty && wEntries.isEmpty {
+                    if !vEntries.isEmpty && wEntries.isEmpty && bEntries.isEmpty {
                         route(vEntries[0])
+                        return
+                    }
+                    if !bEntries.isEmpty && wEntries.isEmpty && vEntries.isEmpty {
+                        route(bEntries[0])
                         return
                     }
                     mixedDayEntries = dayEntries
@@ -366,6 +416,14 @@ struct LifeCalendarView: View {
                             dayVisitsTitle = "\(monthTitle) — Visits"
                             dayVisits = sorted
                         }
+                    } else if label == "billiards" {
+                        let ids = Set(monthEntries.filter { $0.id.hasPrefix("b-") }.map { String($0.id.dropFirst(2)) })
+                        let sorted = notion.billiardsSessions.filter { ids.contains($0.id) }.sorted { $0.date > $1.date }
+                        if !sorted.isEmpty {
+                            let monthTitle = sorted[0].date.formatted(.dateTime.month(.wide).year())
+                            dayBilliardsTitle = "\(monthTitle) — Billiards"
+                            dayBilliards = sorted
+                        }
                     }
                 }
             )
@@ -380,8 +438,11 @@ struct LifeCalendarView: View {
             if notion.workouts.isEmpty {
                 await notion.fetchWorkouts()
             }
+            if notion.billiardsSessions.isEmpty {
+                await notion.fetchBilliardsSessions()
+            }
         }
-        .navigationTitle("Calendar")
+        .navigationTitle("Activity")
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
         .toolbar {
@@ -406,6 +467,14 @@ struct LifeCalendarView: View {
                 DayVisitsSheet(visits: visits, titleOverride: dayVisitsTitle).environment(notion)
             }
         }
+        .sheet(isPresented: Binding(get: { dayBilliards != nil }, set: { if !$0 { dayBilliards = nil; dayBilliardsTitle = nil } })) {
+            if let sessions = dayBilliards {
+                DayBilliardsSheet(sessions: sessions, titleOverride: dayBilliardsTitle).environment(notion)
+            }
+        }
+        .sheet(item: $selectedBilliards) { b in
+            BilliardsSessionDetailView(session: b).environment(notion)
+        }
         .sheet(isPresented: Binding(
             get: { mixedDayEntries != nil },
             set: { if !$0 { mixedDayEntries = nil } }
@@ -419,23 +488,64 @@ struct LifeCalendarView: View {
         }
     }
 
-    // MARK: - Bottom Bar
+    // MARK: - Bottom Bar (filter legend)
 
     private var bottomBar: some View {
-        HStack(spacing: 16) {
-            HStack(spacing: 4) {
-                RoundedRectangle(cornerRadius: 2).fill(Color.orange).frame(width: 8, height: 8)
-                Text("Workout").font(.caption).foregroundStyle(.secondary)
-            }
-            HStack(spacing: 4) {
-                Circle().fill(Color.teal).frame(width: 8, height: 8)
-                Text("Visit").font(.caption).foregroundStyle(.secondary)
-            }
+        HStack(spacing: 8) {
+            legendButton(prefix: "w-", label: "Workout",  color: .orange,              shape: .square)
+            legendButton(prefix: "v-", label: "Visit",    color: .teal,                shape: .circle)
+            legendButton(prefix: "b-", label: "Billiards",color: Color(.systemGray3),  shape: .circle)
             Spacer()
+            if !activeFilters.isEmpty {
+                Button("Clear") { activeFilters = [] }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private func legendButton(prefix: String, label: String, color: Color, shape: EntryShape) -> some View {
+        let isActive = activeFilters.contains(prefix)
+        let isAnyActive = !activeFilters.isEmpty
+        let dimmed = isAnyActive && !isActive
+
+        Button {
+            if isActive {
+                activeFilters.remove(prefix)
+            } else {
+                activeFilters.insert(prefix)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if shape == .square {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(color)
+                        .frame(width: 8, height: 8)
+                } else {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 8, height: 8)
+                }
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(dimmed ? Color(.tertiaryLabel) : Color(.secondaryLabel))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isActive ? color.opacity(0.15) : Color.clear)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(isActive ? color.opacity(0.4) : Color.clear, lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -587,6 +697,78 @@ struct DayVisitsSheet: View {
         .presentationDragIndicator(.visible)
         .sheet(item: $selectedVisit) { v in
             VisitDetailView(visit: v).environment(notion)
+        }
+    }
+}
+
+// MARK: - Day Billiards Sheet
+
+struct DayBilliardsSheet: View {
+    let sessions: [BilliardsSession]
+    var titleOverride: String? = nil
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedSession: BilliardsSession? = nil
+
+    private var title: String {
+        titleOverride ?? (sessions.first?.date).map {
+            $0.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        } ?? "Billiards"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.title2.bold())
+                    Text("\(sessions.count) match\(sessions.count == 1 ? "" : "es")")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }.font(.body.weight(.medium))
+            }
+            .padding()
+            Divider()
+            List {
+                ForEach(sessions) { s in
+                    Button { selectedSession = s } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(s.opponent.isEmpty ? "Billiards Match" : "vs. \(s.opponent)")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                HStack(spacing: 8) {
+                                    Text(s.date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if let result = s.result {
+                                        Text(result)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(result.lowercased() == "win" ? .green : .red)
+                                    }
+                                }
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption).foregroundStyle(Color(.systemGray3))
+                        }
+                        .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color(.systemGray5))
+                            .padding(.vertical, 3)
+                    )
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .sheet(item: $selectedSession) { s in
+            BilliardsSessionDetailView(session: s).environment(notion)
         }
     }
 }

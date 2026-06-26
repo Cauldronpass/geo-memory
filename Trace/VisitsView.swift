@@ -77,79 +77,85 @@ struct VisitsView: View {
             }
     }
 
+    private var filterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Menu {
+                    Button("All Categories") { selectedCategory = nil }
+                    Divider()
+                    ForEach(availableCategories, id: \.self) { cat in
+                        Button(cat) { selectedCategory = cat }
+                    }
+                } label: {
+                    MapFilterChip(title: selectedCategory ?? "Category",
+                                  systemImage: "square.grid.2x2",
+                                  isActive: selectedCategory != nil,
+                                  showChevron: true) {}
+                }
+
+                if !availableTags.isEmpty {
+                    Menu {
+                        Button("All Tags") { selectedTag = nil }
+                        Divider()
+                        ForEach(availableTags, id: \.self) { tag in
+                            Button(tag) { selectedTag = tag }
+                        }
+                    } label: {
+                        MapFilterChip(title: selectedTag ?? "Tag",
+                                      systemImage: "tag",
+                                      isActive: selectedTag != nil,
+                                      showChevron: true) {}
+                    }
+                }
+
+                if !availablePeople.isEmpty {
+                    MapFilterChip(
+                        title: peopleChipLabel,
+                        systemImage: "person",
+                        isActive: !selectedPeopleIDs.isEmpty,
+                        showChevron: true) {
+                        showingPeopleFilter = true
+                    }
+                }
+
+                if hasActiveFilters {
+                    Button {
+                        selectedCategory = nil
+                        selectedTag = nil
+                        selectedPeopleIDs = []
+                    } label: {
+                        Text("Clear")
+                            .font(.subheadline)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(Color(.systemBackground).opacity(0.9))
+                            .foregroundStyle(.secondary)
+                            .clipShape(Capsule())
+                            .shadow(color: .black.opacity(0.1), radius: 3, x: 0, y: 1)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .background(Color(UIColor.systemGroupedBackground))
+    }
+
     var body: some View {
         NavigationStack {
             Group {
                 if showCalendar {
-                    ScrollView {
-                        VisitsCalendarView(visits: notion.visits)
-                            .environment(notion)
-                            .padding(.vertical)
+                    VStack(spacing: 0) {
+                        filterChips
+                        ScrollView {
+                            VisitsCalendarView(visits: filtered)
+                                .environment(notion)
+                                .padding(.vertical)
+                        }
                     }
                 } else {
                     VStack(spacing: 0) {
-                        // Filter chips
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                Menu {
-                                    Button("All Categories") { selectedCategory = nil }
-                                    Divider()
-                                    ForEach(availableCategories, id: \.self) { cat in
-                                        Button(cat) { selectedCategory = cat }
-                                    }
-                                } label: {
-                                    MapFilterChip(title: selectedCategory ?? "Category",
-                                                  systemImage: "square.grid.2x2",
-                                                  isActive: selectedCategory != nil,
-                                                  showChevron: true) {}
-                                }
-
-                                if !availableTags.isEmpty {
-                                    Menu {
-                                        Button("All Tags") { selectedTag = nil }
-                                        Divider()
-                                        ForEach(availableTags, id: \.self) { tag in
-                                            Button(tag) { selectedTag = tag }
-                                        }
-                                    } label: {
-                                        MapFilterChip(title: selectedTag ?? "Tag",
-                                                      systemImage: "tag",
-                                                      isActive: selectedTag != nil,
-                                                      showChevron: true) {}
-                                    }
-                                }
-
-                                if !availablePeople.isEmpty {
-                                    MapFilterChip(
-                                        title: peopleChipLabel,
-                                        systemImage: "person",
-                                        isActive: !selectedPeopleIDs.isEmpty,
-                                        showChevron: true) {
-                                        showingPeopleFilter = true
-                                    }
-                                }
-
-                                if hasActiveFilters {
-                                    Button {
-                                        selectedCategory = nil
-                                        selectedTag = nil
-                                        selectedPeopleIDs = []
-                                    } label: {
-                                        Text("Clear")
-                                            .font(.subheadline)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 7)
-                                            .background(Color(.systemBackground).opacity(0.9))
-                                            .foregroundStyle(.secondary)
-                                            .clipShape(Capsule())
-                                            .shadow(color: .black.opacity(0.1), radius: 3, x: 0, y: 1)
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                        }
-                        .background(Color(UIColor.systemGroupedBackground))
+                        filterChips
 
                         if notion.isLoading {
                             ProgressView("Loading visits...")

@@ -44,6 +44,7 @@
 		638DB1CD2FE881FF00A0523F /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		638DB1E42FE8836200A0523F /* TraceWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TraceWidgetExtension.entitlements; sourceTree = "<group>"; };
 		63DCBCB42FDEF667009EBC1B /* Trace.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Trace.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		63FF43EB2FEE24B000EAC44A /* Trace.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Trace.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -116,6 +117,7 @@
 		63DCBCAB2FDEF667009EBC1B = {
 			isa = PBXGroup;
 			children = (
+				63FF43EB2FEE24B000EAC44A /* Trace.entitlements */,
 				638DB1E42FE8836200A0523F /* TraceWidgetExtension.entitlements */,
 				63DCBCB62FDEF667009EBC1B /* Trace */,
 				638DB1CF2FE881FF00A0523F /* TraceWidget */,
@@ -453,7 +455,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -495,7 +497,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;

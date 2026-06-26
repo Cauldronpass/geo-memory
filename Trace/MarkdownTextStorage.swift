@@ -147,7 +147,7 @@ final class MarkdownTextStorage: NSTextStorage {
     // MARK: Links
 
     private static let customPattern =
-        "(x-devonthink-item|obsidian|things|noteplan|bear|drafts)://\\S+"
+        "(x-devonthink-item|obsidian|things|NoteStore|bear|drafts)://\\S+"
 
     private func applyLinks(in line: String, lineRange: NSRange) {
         let ns = line as NSString

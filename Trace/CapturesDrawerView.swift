@@ -131,6 +131,24 @@ struct CapturesDrawerView: View {
                         }
                     }
                 }
+                // NoteStore actions (only shown when NoteStore folder is linked)
+                let NoteStore = NoteStore.shared
+                if NoteStore.hasAccess {
+                    Button("Send to today's note") {
+                        Task {
+                            try? NoteStore.appendToDailyNote("- \(capture.notes)")
+                            try? await notion.dismissCapture(capture.id)
+                        }
+                    }
+                    if let placeName = capture.placeName {
+                        Button("Send to \(placeName) note") {
+                            Task {
+                                try? NoteStore.appendToPlaceNote(for: placeName, text: "- \(capture.notes)")
+                                try? await notion.dismissCapture(capture.id)
+                            }
+                        }
+                    }
+                }
                 if let lat = capture.gpsLat, let lon = capture.gpsLon,
                    let url = URL(string: "maps://?daddr=\(lat),\(lon)") {
                     Button("Get Directions") {
