@@ -105,8 +105,10 @@ final class MarkdownTextStorage: NSTextStorage {
         let markerLen = level + 1          // "# " = 2, "## " = 3, "### " = 4
         guard range.length >= markerLen else { return }
 
+        // Hide the # markers entirely (same approach as ** and * markers)
         let markerRange = NSRange(location: range.location, length: markerLen)
-        backing.addAttribute(.foregroundColor, value: Self.dimColor, range: markerRange)
+        backing.addAttribute(.font,            value: Self.hiddenFont, range: markerRange)
+        backing.addAttribute(.foregroundColor, value: UIColor.clear,   range: markerRange)
 
         let textLen = range.length - markerLen
         guard textLen > 0 else { return }

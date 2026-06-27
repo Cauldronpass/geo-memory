@@ -71,6 +71,7 @@ struct HomeView: View {
     private var oura: OuraService { OuraService.shared }
     private var cal: CalendarService { CalendarService.shared }
     private var things: ThingsService { ThingsService.shared }
+    private var healthKit: HealthKitService { HealthKitService.shared }
     private let theme = HomeTheme.current
 
     // MARK: - Next Up items (calendar + bedtime merged)
@@ -126,16 +127,6 @@ struct HomeView: View {
         Array(notion.visits.sorted { $0.date > $1.date }.prefix(3))
     }
 
-    private var activityLabel: String {
-        guard let day = oura.activity?.day else { return "Activity" }
-        let today = Calendar.current.startOfDay(for: Date())
-        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
-        if let d = fmt.date(from: day), Calendar.current.startOfDay(for: d) < today {
-            return "Activity ↑"   // showing a prior day's data
-        }
-        return "Activity"
-    }
-
     private func companions(for visit: Visit) -> [Person] {
         notion.people.filter { visit.peopleIDs.contains($0.id) }
     }
@@ -164,6 +155,7 @@ struct HomeView: View {
 
                     VStack(spacing: 10) {
                         ouraSection
+                        activityRingsSection
                         calendarSection
                         noteSection
                         thingsSection
@@ -205,6 +197,7 @@ struct HomeView: View {
             await oura.fetchToday()
             await cal.requestAndFetch()
             await things.fetch()
+            await healthKit.requestAuthorizationAndFetch()
             if let content = try? NoteStore.shared.readDailyNote() {
                 notePlanContent = content
             }
@@ -215,6 +208,7 @@ struct HomeView: View {
                 await cal.fetchUpcomingEvents()
                 await things.fetch()
                 await oura.fetchToday()
+                await healthKit.fetchToday()
                 if let content = try? NoteStore.shared.readDailyNote() {
                     notePlanContent = content
                 }
@@ -227,7 +221,10 @@ struct HomeView: View {
             }
         }
         .onReceive(Timer.publish(every: 900, on: .main, in: .common).autoconnect()) { _ in
-            Task { await oura.fetchToday() }
+            Task {
+                await oura.fetchToday()
+                await healthKit.fetchToday()
+            }
         }
         .sheet(item: $selectedVisit) { visit in
             VisitDetailView(visit: visit)
@@ -290,11 +287,6 @@ struct HomeView: View {
                         detail: oura.sleep?.averageHrv.map { "HRV \($0)ms" }
                              ?? oura.sleep?.lowestHeartRate.map { "HR \($0) bpm" }
                     )
-                    ouraTile(
-                        label: activityLabel,
-                        score: oura.activity?.score,
-                        detail: oura.activity?.steps.map { "\($0.formatted()) steps" }
-                    )
                 }
             }
         }
@@ -336,7 +328,7 @@ struct HomeView: View {
 
     private func ouraTile(label: String, score: Int?, detail: String?) -> some View {
         let (bg, labelColor, valueColor) = ouraTileColors(score)
-        return VStack(alignment: .leading, spacing: 2) {
+        return VStack(alignment: .center, spacing: 2) {
             Text(label)
                 .font(.system(size: 10))
                 .foregroundStyle(labelColor)
@@ -356,10 +348,103 @@ struct HomeView: View {
                 .foregroundStyle(labelColor)
                 .lineLimit(1)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
         .background(bg, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    // MARK: – Activity Rings (Apple Watch / HealthKit)
+
+    @ViewBuilder
+    private var activityRingsSection: some View {
+        if healthKit.isAvailable {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    sectionLabel("Activity")
+                    Spacer()
+                    Button {
+                        UIApplication.shared.open(URL(string: "x-apple-health://")!)
+                    } label: {
+                        Image(systemName: "heart.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                HStack(spacing: 7) {
+                    activityRingTile(
+                        label: "Move",
+                        value: healthKit.moveCalories.map { Int($0) }.map { "\($0)" } ?? "–",
+                        unit: "kcal",
+                        goal: healthKit.moveGoal.map { Int($0) }.map { "/ \($0)" },
+                        progress: healthKit.moveProgress() ?? 0,
+                        color: Color(red: 1.0, green: 0.22, blue: 0.36)
+                    )
+                    activityRingTile(
+                        label: "Exercise",
+                        value: healthKit.exerciseMinutes.map { Int($0) }.map { "\($0)" } ?? "–",
+                        unit: "min",
+                        goal: healthKit.exerciseGoal.map { Int($0) }.map { "/ \($0)" },
+                        progress: healthKit.exerciseProgress() ?? 0,
+                        color: Color(red: 0.42, green: 0.95, blue: 0.39)
+                    )
+                    activityRingTile(
+                        label: "Stand",
+                        value: healthKit.standHours.map { Int($0) }.map { "\($0)" } ?? "–",
+                        unit: "hrs",
+                        goal: healthKit.standGoal.map { Int($0) }.map { "/ \($0)" },
+                        progress: healthKit.standProgress() ?? 0,
+                        color: Color(red: 0.18, green: 0.85, blue: 0.95)
+                    )
+                }
+            }
+        }
+    }
+
+    private func activityRingTile(label: String, value: String, unit: String,
+                                   goal: String?, progress: Double, color: Color) -> some View {
+        VStack(alignment: .center, spacing: 6) {
+            // Ring graphic
+            ZStack {
+                Circle()
+                    .stroke(color.opacity(0.18), lineWidth: 9)
+                Circle()
+                    .trim(from: 0, to: min(CGFloat(progress), 1.0))
+                    .stroke(color, style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                // Overdone second lap (>100%) — thin inner ring
+                if progress > 1.0 {
+                    Circle()
+                        .trim(from: 0, to: min(CGFloat(progress - 1.0), 1.0))
+                        .stroke(color.opacity(0.55), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+            }
+            .frame(width: 42, height: 42)
+
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(color)
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(Color.primary)
+                Text(unit)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            if let goal {
+                Text(goal)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: – Calendar
@@ -658,17 +743,17 @@ struct HomeView: View {
     }
 
     /// Builds an AttributedString from raw markdown preview text, manually handling
-    /// **bold**, *italic*, and ==highlight== (yellow bg). SwiftUI's built-in markdown
-    /// parser doesn't understand == syntax, so we do the full pass ourselves.
+    /// **bold**, *italic*, ~~strikethrough~~, and ==highlight== (yellow bg). SwiftUI's
+    /// built-in markdown parser doesn't understand ~~ or == syntax, so we do the full pass ourselves.
     private func styledPreview(_ raw: String) -> AttributedString {
         struct Span {
             let start: String.Index; let end: String.Index
             let inner: String
-            let isBold: Bool; let isItalic: Bool; let isHighlight: Bool
+            let isBold: Bool; let isItalic: Bool; let isHighlight: Bool; let isStrike: Bool
         }
         var spans: [Span] = []
 
-        func collect(pattern: String, markerLen: Int, bold: Bool, italic: Bool, highlight: Bool) {
+        func collect(pattern: String, markerLen: Int, bold: Bool, italic: Bool, highlight: Bool, strike: Bool = false) {
             guard let re = try? NSRegularExpression(pattern: pattern) else { return }
             let ns = raw as NSString
             for m in re.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)) {
@@ -678,31 +763,33 @@ struct HomeView: View {
                 guard innerNS.length > 0 else { continue }
                 let inner = ns.substring(with: innerNS)
                 spans.append(Span(start: fullRange.lowerBound, end: fullRange.upperBound,
-                                  inner: inner, isBold: bold, isItalic: italic, isHighlight: highlight))
+                                  inner: inner, isBold: bold, isItalic: italic, isHighlight: highlight, isStrike: strike))
             }
         }
         collect(pattern: #"\*\*(.+?)\*\*"#,             markerLen: 2, bold: true,  italic: false, highlight: false)
         collect(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#, markerLen: 1, bold: false, italic: true,  highlight: false)
         collect(pattern: "==(.+?)==",                    markerLen: 2, bold: false, italic: false, highlight: true)
+        collect(pattern: #"~~(.+?)~~"#,                  markerLen: 2, bold: false, italic: false, highlight: false, strike: true)
         spans.sort { $0.start < $1.start }
 
         var result = AttributedString()
         var cursor = raw.startIndex
 
-        func seg(_ str: String, bold: Bool = false, italic: Bool = false, highlight: Bool = false) {
+        func seg(_ str: String, bold: Bool = false, italic: Bool = false, highlight: Bool = false, strike: Bool = false) {
             guard !str.isEmpty else { return }
             var a = AttributedString(str)
             if bold        { a.font = .system(size: 14, weight: .semibold) }
             else if italic { a.font = .system(size: 14).italic() }
             else           { a.font = .system(size: 14) }
             if highlight   { a.backgroundColor = Color(UIColor.systemYellow.withAlphaComponent(0.4)) }
+            if strike      { a.strikethroughStyle = .single }
             result += a
         }
 
         for span in spans {
             guard span.start >= cursor else { continue }
             seg(String(raw[cursor..<span.start]))
-            seg(span.inner, bold: span.isBold, italic: span.isItalic, highlight: span.isHighlight)
+            seg(span.inner, bold: span.isBold, italic: span.isItalic, highlight: span.isHighlight, strike: span.isStrike)
             cursor = span.end
         }
         if cursor < raw.endIndex { seg(String(raw[cursor...])) }

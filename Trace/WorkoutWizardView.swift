@@ -292,9 +292,9 @@ struct WorkoutWizardView: View {
 
             if ["Run", "Bike", "Hike", "OrangeTheory", "Other"].contains(draft.type) {
                 Section("Treadmill / Cardio") {
-                    fieldRow("Distance", binding: $distanceStr, unit: "mi")
-                    fieldRow("Steps",     binding: $stepsStr,    unit: "steps")
-                    fieldRow("Avg Pace",  binding: $treadPaceStr, unit: "min/mi")
+                    fieldRow("Distance", binding: $distanceStr,  unit: "mi",     keyboard: .decimalPad)
+                    fieldRow("Steps",    binding: $stepsStr,     unit: "steps")
+                    fieldRow("Avg Pace", binding: $treadPaceStr, unit: "min/mi", keyboard: .numbersAndPunctuation)
                     fieldRow("Elevation", binding: $elevationStr, unit: "ft")
                 }
             }
@@ -305,7 +305,7 @@ struct WorkoutWizardView: View {
                     if hasRower {
                         fieldRow("Distance",    binding: $rowerDistStr,   unit: "m")
                         fieldRow("Avg Watts",   binding: $rowerWattsStr,  unit: "W")
-                        fieldRow("500m Pace",   binding: $rowerPaceStr,   unit: "min")
+                        fieldRow("500m Pace",   binding: $rowerPaceStr,   unit: "min",  keyboard: .numbersAndPunctuation)
                         fieldRow("Stroke Rate", binding: $rowerStrokeStr, unit: "spm")
                     }
                 } header: {
@@ -414,11 +414,11 @@ struct WorkoutWizardView: View {
     }
 
     private func applyScanResult(_ result: OTScanResult) {
-        if let v = result.splatPoints    { splatsStr   = "\(v)" }
-        if let v = result.calories       { calStr       = "\(v)" }
-        if let v = result.durationMinutes { durationStr = "\(v)" }
-        if let v = result.avgHr          { hrAvgStr     = "\(v)" }
-        if let v = result.maxHr          { hrMaxStr     = "\(v)" }
+        if let v = result.splatPoints,    v > 0 { splatsStr    = "\(v)" }
+        if let v = result.calories,       v > 0 { calStr        = "\(v)" }
+        if let v = result.durationMinutes, v > 0 { durationStr = "\(v)" }
+        if let v = result.avgHr,          v > 0 { hrAvgStr     = "\(v)" }
+        if let v = result.maxHr,          v > 0 { hrMaxStr     = "\(v)" }
 
         // Parse class date if returned
         if let dateStr = result.classDate {
@@ -443,9 +443,9 @@ struct WorkoutWizardView: View {
         }
 
         // Treadmill fields
-        if let v = result.distanceMiles  { distanceStr  = String(format: "%.1f", v) }
-        if let v = result.steps          { stepsStr     = "\(v)" }
-        if let v = result.elevationFt    { elevationStr = String(format: "%.0f", v) }
+        if let v = result.distanceMiles,  v > 0 { distanceStr  = String(format: "%.1f", v) }
+        if let v = result.steps,          v > 0 { stepsStr     = "\(v)" }
+        if let v = result.elevationFt,    v > 0 { elevationStr = String(format: "%.0f", v) }
 
         // Convert avg speed (mph) → pace (min/mi) as "M:SS"
         if let speed = result.avgSpeedMph, speed > 0 {
@@ -495,12 +495,13 @@ struct WorkoutWizardView: View {
     // MARK: - Helpers
 
     @ViewBuilder
-    private func fieldRow(_ label: String, binding: Binding<String>, unit: String) -> some View {
+    private func fieldRow(_ label: String, binding: Binding<String>, unit: String,
+                          keyboard: UIKeyboardType = .numberPad) -> some View {
         HStack {
             Text(label).foregroundStyle(.secondary)
             Spacer()
             TextField("—", text: binding)
-                .keyboardType(.numberPad)
+                .keyboardType(keyboard)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 80)
             Text(unit).foregroundStyle(.secondary).font(.caption)

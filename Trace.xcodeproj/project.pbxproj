@@ -455,7 +455,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 50;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -463,6 +463,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Trace shows your next calendar event on the home screen.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trace uses the camera to capture photos linked to places.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Trace reads your Apple Watch activity rings to show Move, Exercise, and Stand progress.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Trace uses your location to show nearby places and auto check-in.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Trace uses your location to show nearby places and auto check-in.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Trace saves captured photos to your photo library.";
@@ -498,7 +499,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 50;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -506,6 +507,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Trace shows your next calendar event on the home screen.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trace uses the camera to capture photos linked to places.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Trace reads your Apple Watch activity rings to show Move, Exercise, and Stand progress.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Trace uses your location to show nearby places and auto check-in.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Trace uses your location to show nearby places and auto check-in.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Trace saves captured photos to your photo library.";

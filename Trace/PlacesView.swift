@@ -275,7 +275,10 @@ struct PlacesListRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
-                    Text(place.name).font(.body)
+                    Text(place.name)
+                        .font(.body)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     if place.flagged {
                         Image(systemName: "pin.fill")
                             .font(.caption2)
@@ -287,13 +290,11 @@ struct PlacesListRow: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                HStack(spacing: 4) {
-                    if !place.city.isEmpty     { Text(place.city) }
-                    if !place.city.isEmpty && !place.category.isEmpty { Text("·") }
-                    if !place.category.isEmpty { Text(place.category) }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text([place.city, place.category].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
 
             Spacer()
