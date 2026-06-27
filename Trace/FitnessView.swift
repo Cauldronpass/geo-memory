@@ -521,6 +521,7 @@ struct WorkoutDetailView: View {
     @State private var isSavingFeel = false
     @State private var feelSaved = false
     @State private var isEditingNotes = false
+    @State private var showingEdit = false
 
     private let feelEmoji = ["", "😴", "😕", "😐", "🙂", "😊", "💪", "🔥"]
     private var notesChanged: Bool { editNotes != (workout.notes ?? "") }
@@ -724,9 +725,22 @@ struct WorkoutDetailView: View {
                         }
                     }
                 }
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        showingEdit = true
+                    } label: {
+                        Image(systemName: "pencil")
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .sheet(isPresented: $showingEdit) {
+                Task { await notion.fetchWorkouts() }
+            } content: {
+                WorkoutWizardView(editing: workout)
+                    .environment(notion)
             }
             .onAppear {
                 editNotes = workout.notes ?? ""

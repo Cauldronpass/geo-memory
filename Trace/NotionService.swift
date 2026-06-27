@@ -314,6 +314,11 @@ class NotionService {
         }
     }
 
+    func deleteVisit(id: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["archived": true])
+        await MainActor.run { visits.removeAll { $0.id == id } }
+    }
+
     func updateVisit(_ visit: Visit, rating: Int?, notes: String?, date: Date? = nil, people: [String]? = nil) async throws {
         var props: [String: Any] = [:]
         props["Rating"] = rating != nil ? ["number": rating!] : ["number": NSNull()]
@@ -448,6 +453,54 @@ class NotionService {
         return id
     }
 
+    func updateWorkout(_ pageID: String, draft: WorkoutDraft) async throws {
+        var props: [String: Any] = [
+            "Name": ["title": [["text": ["content": draft.name]]]],
+            "Type": ["select": ["name": draft.type]]
+        ]
+        if let d = draft.date {
+            props["Date"] = ["date": ["start": localDateString(from: d)]]
+        }
+        func num(_ val: Int?, key: String) { if let v = val { props[key] = ["number": v] } else { props[key] = ["number": NSNull()] } }
+        func numD(_ val: Double?, key: String) { if let v = val { props[key] = ["number": v] } else { props[key] = ["number": NSNull()] } }
+        func txt(_ val: String?, key: String) {
+            if let v = val, !v.isEmpty { props[key] = ["rich_text": [["text": ["content": v]]]] }
+            else { props[key] = ["rich_text": []] }
+        }
+
+        num(draft.duration,     key: "Duration")
+        num(draft.calories,     key: "Calories")
+        num(draft.heartRateAvg, key: "Heart Rate Avg")
+        num(draft.heartRateMax, key: "Heart Rate Max")
+        num(draft.splatPoints,  key: "Splat Points")
+        num(draft.output,       key: "Output")
+        num(draft.zone1,        key: "Zone 1")
+        num(draft.zone2,        key: "Zone 2")
+        num(draft.zone3,        key: "Zone 3")
+        num(draft.zone4,        key: "Zone 4")
+        num(draft.zone5,        key: "Zone 5")
+        num(draft.feel,         key: "Feel")
+        numD(draft.distance,    key: "Distance")
+        txt(draft.notes,        key: "Notes")
+        if let ct = draft.classType, !ct.isEmpty {
+            props["Class Type"] = ["select": ["name": ct]]
+        } else {
+            props["Class Type"] = ["select": NSNull()]
+        }
+        num(draft.steps,          key: "Steps")
+        numD(draft.elevation,     key: "Elevation")
+        txt(draft.treadPace,      key: "Tread Pace")
+        if let hr = draft.hasRower { props["Has Rower"] = ["checkbox": hr] }
+        num(draft.rowerDistance,  key: "Rower Distance")
+        num(draft.rowerWattsAvg,  key: "Rower Watts Avg")
+        txt(draft.rowerPace,      key: "Rower Pace 500m")
+        num(draft.rowerStrokeAvg, key: "Rower Stroke Avg")
+
+        let body: [String: Any] = ["properties": props]
+        _ = try await patch("\(baseURL)/pages/\(pageID)", body: body)
+        await fetchWorkouts()
+    }
+
     func updateWorkoutFeel(_ pageID: String, feel: Int) async throws {
         let body: [String: Any] = ["properties": ["Feel": ["number": feel]]]
         _ = try await patch("\(baseURL)/pages/\(pageID)", body: body)
@@ -561,6 +614,29 @@ class NotionService {
             visitID:              visitID,
             matchNumber:          num(props["Match Number"])
         )
+    }
+
+    func deleteBilliardsSession(id: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["archived": true])
+        await MainActor.run { billiardsSessions.removeAll { $0.id == id } }
+    }
+
+    func updateBilliardsSessionNotes(id: String, notes: String) async throws {
+        let props: [String: Any] = notes.isEmpty
+            ? ["Notes": ["rich_text": []]]
+            : ["Notes": ["rich_text": [["text": ["content": notes]]]]]
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
+        if let idx = billiardsSessions.firstIndex(where: { $0.id == id }) {
+            await MainActor.run { billiardsSessions[idx].notes = notes.isEmpty ? nil : notes }
+        }
+    }
+
+    func linkBilliardsSessionToVisit(sessionID: String, visitID: String) async throws {
+        let props: [String: Any] = ["Visit": ["relation": [["id": visitID]]]]
+        _ = try await patch("\(baseURL)/pages/\(sessionID)", body: ["properties": props])
+        if let idx = billiardsSessions.firstIndex(where: { $0.id == sessionID }) {
+            await MainActor.run { billiardsSessions[idx].visitID = visitID }
+        }
     }
 
     private func parseWorkout(_ page: [String: Any]) -> Workout? {

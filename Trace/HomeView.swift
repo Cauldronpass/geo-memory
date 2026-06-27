@@ -62,11 +62,16 @@ struct HomeView: View {
     @State private var selectedCalEvent: NextCalendarEvent? = nil
     @State private var notePlanContent: String = ""
     @State private var notePlanLoaded: Bool = false
+    @State private var weekNoteContent: String = ""
+    @State private var monthNoteContent: String = ""
     @State private var showNotesView: Bool = false
     @State private var showingMoveDailyNote: Bool = false
     @State private var moveDailyNoteDate: Date = Date()
     @State private var showingVisitsView: Bool = false
     @State private var showingQuickAppend: Bool = false
+    @State private var showingWeekNote: Bool = false
+    @State private var showingMonthNote: Bool = false
+    @State private var notePageIndex: Int = 0
 
     private var oura: OuraService { OuraService.shared }
     private var cal: CalendarService { CalendarService.shared }
@@ -202,6 +207,8 @@ struct HomeView: View {
                 notePlanContent = content
             }
             notePlanLoaded = true
+            weekNoteContent = (try? NoteStore.shared.readFile(weekNoteRelativePath)) ?? ""
+            monthNoteContent = (try? NoteStore.shared.readFile(monthNoteRelativePath)) ?? ""
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             Task {
@@ -212,6 +219,8 @@ struct HomeView: View {
                 if let content = try? NoteStore.shared.readDailyNote() {
                     notePlanContent = content
                 }
+                weekNoteContent = (try? NoteStore.shared.readFile(weekNoteRelativePath)) ?? ""
+                monthNoteContent = (try? NoteStore.shared.readFile(monthNoteRelativePath)) ?? ""
             }
         }
         // Reload preview whenever the daily note changes (e.g. from NotesView or capture drawer).
@@ -623,7 +632,7 @@ struct HomeView: View {
     private var noteSection: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                sectionLabel("Today's note")
+                sectionLabel("Notes")
                 Spacer()
                 Button { showNotesView = true } label: {
                     Image(systemName: "note.text")
@@ -631,51 +640,63 @@ struct HomeView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                Button {
-                    moveDailyNoteDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
-                    showingMoveDailyNote = true
-                } label: {
-                    Image(systemName: "arrow.right.square")
-                        .font(.caption)
-                        .foregroundStyle(notePlanContent.isEmpty ? .tertiary : .secondary)
+                // Move-to-tomorrow only relevant on the daily card
+                if notePageIndex == 0 {
+                    Button {
+                        moveDailyNoteDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+                        showingMoveDailyNote = true
+                    } label: {
+                        Image(systemName: "arrow.right.square")
+                            .font(.caption)
+                            .foregroundStyle(notePlanContent.isEmpty ? .tertiary : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(notePlanContent.isEmpty)
                 }
-                .buttonStyle(.plain)
-                .disabled(notePlanContent.isEmpty)
             }
 
-            if !notePlanLoaded {
-                sectionCard {
-                    ProgressView().frame(maxWidth: .infinity)
-                }
-            } else if notePlanContent.isEmpty {
-                Button { showNotesView = true } label: {
-                    Text("Long-press to add a note, or tap to open Notes…")
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(Color(UIColor.secondarySystemGroupedBackground),
-                                    in: RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(.plain)
-                .simultaneousGesture(LongPressGesture().onEnded { _ in showingQuickAppend = true })
-            } else {
-                Button { showNotesView = true } label: {
-                    Text(notePlanPreviewAttributed)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                        .multilineTextAlignment(.leading)
-                        .lineLimit(4)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(Color(UIColor.secondarySystemGroupedBackground),
-                                    in: RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(.plain)
-                .simultaneousGesture(LongPressGesture().onEnded { _ in showingQuickAppend = true })
+            TabView(selection: $notePageIndex) {
+                // Card 0 — Daily note
+                noteCard(
+                    label: dailyCardLabel,
+                    labelColor: .accentColor,
+                    isLoading: !notePlanLoaded,
+                    isEmpty: notePlanContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    preview: notePlanPreviewAttributed,
+                    emptyPrompt: "Long-press to add a note, or tap to open Notes…",
+                    onTap: { showNotesView = true },
+                    onLongPress: { showingQuickAppend = true }
+                )
+                .tag(0)
+
+                // Card 1 — Week note
+                noteCard(
+                    label: weekLabel,
+                    labelColor: .orange,
+                    isLoading: false,
+                    isEmpty: weekNoteContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    preview: horizonPreview(weekNoteContent),
+                    emptyPrompt: "Tap to start this week's note…",
+                    onTap: { showingWeekNote = true },
+                    onLongPress: { showingWeekNote = true }
+                )
+                .tag(1)
+
+                // Card 2 — Month note
+                noteCard(
+                    label: monthLabel,
+                    labelColor: .blue,
+                    isLoading: false,
+                    isEmpty: monthNoteContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    preview: horizonPreview(monthNoteContent),
+                    emptyPrompt: "Tap to start this month's note…",
+                    onTap: { showingMonthNote = true },
+                    onLongPress: { showingMonthNote = true }
+                )
+                .tag(2)
             }
+            .tabViewStyle(.page(indexDisplayMode: .always))
+            .frame(height: 130)
         }
         .sheet(isPresented: $showNotesView, onDismiss: {
             Task {
@@ -685,6 +706,20 @@ struct HomeView: View {
             }
         }) {
             NotesView()
+        }
+        .sheet(isPresented: $showingWeekNote, onDismiss: {
+            weekNoteContent = (try? NoteStore.shared.readFile(weekNoteRelativePath)) ?? ""
+        }) {
+            NavigationStack {
+                NoteEditorView(relativePath: weekNoteRelativePath, title: weekLabel)
+            }
+        }
+        .sheet(isPresented: $showingMonthNote, onDismiss: {
+            monthNoteContent = (try? NoteStore.shared.readFile(monthNoteRelativePath)) ?? ""
+        }) {
+            NavigationStack {
+                NoteEditorView(relativePath: monthNoteRelativePath, title: monthLabel)
+            }
         }
         .sheet(isPresented: $showingQuickAppend) {
             QuickAppendSheet {
@@ -699,6 +734,57 @@ struct HomeView: View {
                     showingMoveDailyNote = false
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func noteCard(
+        label: String,
+        labelColor: Color,
+        isLoading: Bool,
+        isEmpty: Bool,
+        preview: AttributedString,
+        emptyPrompt: String,
+        onTap: @escaping () -> Void,
+        onLongPress: @escaping () -> Void
+    ) -> some View {
+        if isLoading {
+            sectionCard {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 2)
+        } else {
+            Button(action: onTap) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(label)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(labelColor)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(labelColor.opacity(0.12), in: Capsule())
+                    if isEmpty {
+                        Text(emptyPrompt)
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text(preview)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(Color(UIColor.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
+            .padding(.horizontal, 2)
         }
     }
 
@@ -856,6 +942,58 @@ struct HomeView: View {
                             in: RoundedRectangle(cornerRadius: 10))
             }
         }
+    }
+
+    // MARK: - Horizons note helpers
+
+    private var isoCal: Calendar = {
+        var c = Calendar(identifier: .iso8601)
+        c.locale = Locale(identifier: "en_US_POSIX")
+        return c
+    }()
+
+    private var currentWeekFilename: String {
+        let week = isoCal.component(.weekOfYear, from: Date())
+        let year = isoCal.component(.yearForWeekOfYear, from: Date())
+        return String(format: "%d-W%02d.md", year, week)
+    }
+
+    private var currentMonthFilename: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM"
+        return "\(f.string(from: Date())).md"
+    }
+
+    private var weekNoteRelativePath: String { "Notes/Horizons/\(currentWeekFilename)" }
+    private var monthNoteRelativePath: String { "Notes/Horizons/\(currentMonthFilename)" }
+
+    private var weekLabel: String {
+        let week = isoCal.component(.weekOfYear, from: Date())
+        return "Week \(week)"
+    }
+
+    private var monthLabel: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMMM yyyy"
+        return f.string(from: Date())
+    }
+
+    private var dailyCardLabel: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM d"
+        return "Daily · \(f.string(from: Date()))"
+    }
+
+    private func horizonPreview(_ raw: String) -> AttributedString {
+        let lines = raw.components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .prefix(3)
+            .map { stripLinePrefix($0) }
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        return styledPreview(lines.joined(separator: "\n"))
     }
 
     // MARK: – Place / recent visits

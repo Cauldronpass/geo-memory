@@ -57,9 +57,24 @@ struct VisitsView: View {
         }
     }
 
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .none
+        return f
+    }()
+
+    private func visitMatchesSearch(_ visit: Visit) -> Bool {
+        guard !searchText.isEmpty else { return true }
+        if visit.placeName.localizedCaseInsensitiveContains(searchText) { return true }
+        if let notes = visit.notes, notes.localizedCaseInsensitiveContains(searchText) { return true }
+        if Self.dateFormatter.string(from: visit.date).localizedCaseInsensitiveContains(searchText) { return true }
+        return false
+    }
+
     var filtered: [Visit] {
         notion.visits
-            .filter { searchText.isEmpty || $0.placeName.localizedCaseInsensitiveContains(searchText) }
+            .filter { visitMatchesSearch($0) }
             .filter { visit in
                 if !selectedPeopleIDs.isEmpty {
                     switch peopleFilterMode {

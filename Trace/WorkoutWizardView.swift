@@ -10,14 +10,96 @@ struct WorkoutWizardView: View {
 
     let visitID: String?
     let initialDate: Date?
+    private let editingID: String?
 
+    // Create mode
     init(visitID: String? = nil, initialDate: Date? = nil) {
         self.visitID = visitID
         self.initialDate = initialDate
+        self.editingID = nil
         var d = WorkoutDraft()
         d.visitID = visitID
         d.date = initialDate
         _draft = State(initialValue: d)
+        _calStr = State(initialValue: "")
+        _hrAvgStr = State(initialValue: "")
+        _hrMaxStr = State(initialValue: "")
+        _splatsStr = State(initialValue: "")
+        _outputStr = State(initialValue: "")
+        _durationStr = State(initialValue: "")
+        _distanceStr = State(initialValue: "")
+        _z1Str = State(initialValue: "")
+        _z2Str = State(initialValue: "")
+        _z3Str = State(initialValue: "")
+        _z4Str = State(initialValue: "")
+        _z5Str = State(initialValue: "")
+        _classType = State(initialValue: "Tread 50")
+        _stepsStr = State(initialValue: "")
+        _elevationStr = State(initialValue: "")
+        _treadPaceStr = State(initialValue: "")
+        _hasRower = State(initialValue: false)
+        _rowerDistStr = State(initialValue: "")
+        _rowerWattsStr = State(initialValue: "")
+        _rowerPaceStr = State(initialValue: "")
+        _rowerStrokeStr = State(initialValue: "")
+    }
+
+    // Edit mode — pre-fills from an existing Workout
+    init(editing w: Workout) {
+        self.visitID = w.visitID
+        self.initialDate = w.date
+        self.editingID = w.id
+        var d = WorkoutDraft()
+        d.name = w.name
+        d.type = w.type
+        d.date = w.date
+        d.duration = w.duration
+        d.calories = w.calories
+        d.heartRateAvg = w.heartRateAvg
+        d.heartRateMax = w.heartRateMax
+        d.splatPoints = w.splatPoints
+        d.output = w.output
+        d.zone1 = w.zone1
+        d.zone2 = w.zone2
+        d.zone3 = w.zone3
+        d.zone4 = w.zone4
+        d.zone5 = w.zone5
+        d.distance = w.distance
+        d.feel = w.feel
+        d.notes = w.notes
+        d.placeID = w.placeID
+        d.visitID = w.visitID
+        d.classType = w.classType
+        d.steps = w.steps
+        d.elevation = w.elevation
+        d.treadPace = w.treadPace
+        d.hasRower = w.hasRower
+        d.rowerDistance = w.rowerDistance
+        d.rowerWattsAvg = w.rowerWattsAvg
+        d.rowerPace = w.rowerPace
+        d.rowerStrokeAvg = w.rowerStrokeAvg
+        _draft = State(initialValue: d)
+        _calStr = State(initialValue: w.calories.map { "\($0)" } ?? "")
+        _hrAvgStr = State(initialValue: w.heartRateAvg.map { "\($0)" } ?? "")
+        _hrMaxStr = State(initialValue: w.heartRateMax.map { "\($0)" } ?? "")
+        _splatsStr = State(initialValue: w.splatPoints.map { "\($0)" } ?? "")
+        _outputStr = State(initialValue: w.output.map { "\($0)" } ?? "")
+        _durationStr = State(initialValue: w.duration.map { "\($0)" } ?? "")
+        _distanceStr = State(initialValue: w.distance.map { String(format: "%.2f", $0) } ?? "")
+        _z1Str = State(initialValue: w.zone1.map { "\($0)" } ?? "")
+        _z2Str = State(initialValue: w.zone2.map { "\($0)" } ?? "")
+        _z3Str = State(initialValue: w.zone3.map { "\($0)" } ?? "")
+        _z4Str = State(initialValue: w.zone4.map { "\($0)" } ?? "")
+        _z5Str = State(initialValue: w.zone5.map { "\($0)" } ?? "")
+        _classType = State(initialValue: w.classType ?? "Tread 50")
+        _stepsStr = State(initialValue: w.steps.map { "\($0)" } ?? "")
+        _elevationStr = State(initialValue: w.elevation.map { String(format: "%.0f", $0) } ?? "")
+        _treadPaceStr = State(initialValue: w.treadPace ?? "")
+        _hasRower = State(initialValue: w.hasRower ?? false)
+        _rowerDistStr = State(initialValue: w.rowerDistance.map { "\($0)" } ?? "")
+        _rowerWattsStr = State(initialValue: w.rowerWattsAvg.map { "\($0)" } ?? "")
+        _rowerPaceStr = State(initialValue: w.rowerPace ?? "")
+        _rowerStrokeStr = State(initialValue: w.rowerStrokeAvg.map { "\($0)" } ?? "")
     }
 
     @State private var draft: WorkoutDraft
@@ -27,31 +109,31 @@ struct WorkoutWizardView: View {
     @State private var done = false
 
     // OTF-specific string inputs (convert on save)
-    @State private var calStr = ""
-    @State private var hrAvgStr = ""
-    @State private var hrMaxStr = ""
-    @State private var splatsStr = ""
-    @State private var outputStr = ""
-    @State private var durationStr = ""
-    @State private var distanceStr = ""
+    @State private var calStr: String
+    @State private var hrAvgStr: String
+    @State private var hrMaxStr: String
+    @State private var splatsStr: String
+    @State private var outputStr: String
+    @State private var durationStr: String
+    @State private var distanceStr: String
 
     // Zone minute fields
-    @State private var z1Str = ""
-    @State private var z2Str = ""
-    @State private var z3Str = ""
-    @State private var z4Str = ""
-    @State private var z5Str = ""
+    @State private var z1Str: String
+    @State private var z2Str: String
+    @State private var z3Str: String
+    @State private var z4Str: String
+    @State private var z5Str: String
 
     // Extra fields
-    @State private var classType = "Tread 50"
-    @State private var stepsStr = ""
-    @State private var elevationStr = ""
-    @State private var treadPaceStr = ""
-    @State private var hasRower = false
-    @State private var rowerDistStr = ""
-    @State private var rowerWattsStr = ""
-    @State private var rowerPaceStr = ""
-    @State private var rowerStrokeStr = ""
+    @State private var classType: String
+    @State private var stepsStr: String
+    @State private var elevationStr: String
+    @State private var treadPaceStr: String
+    @State private var hasRower: Bool
+    @State private var rowerDistStr: String
+    @State private var rowerWattsStr: String
+    @State private var rowerPaceStr: String
+    @State private var rowerStrokeStr: String
 
     // OT scan state
     @State private var selectedPhoto: PhotosPickerItem?
@@ -113,7 +195,7 @@ struct WorkoutWizardView: View {
     }
 
     private var stepTitle: String {
-        if done { return "Logged!" }
+        if done { return editingID != nil ? "Updated!" : "Logged!" }
         switch step {
         case 0: return "Workout Type"
         case 1: return "When & How Long"
@@ -376,7 +458,7 @@ struct WorkoutWizardView: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 72))
                 .foregroundStyle(.green)
-            Text("Workout logged!")
+            Text(editingID != nil ? "Workout updated!" : "Workout logged!")
                 .font(.title2.bold())
             if let cal = draft.calories {
                 Text("\(cal) calories · \(draft.type)")
@@ -484,7 +566,11 @@ struct WorkoutWizardView: View {
 
         isSaving = true
         do {
-            _ = try await notion.logWorkout(draft)
+            if let id = editingID {
+                try await notion.updateWorkout(id, draft: draft)
+            } else {
+                _ = try await notion.logWorkout(draft)
+            }
             done = true
         } catch {
             saveError = error.localizedDescription

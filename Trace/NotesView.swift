@@ -5,7 +5,7 @@ import SwiftUI
 // Four-tab notes screen backed by NoteStore (Trace iCloud container).
 //
 //  Daily     — today's Calendar/YYYY-MM-DD.md, editable inline
-//  Buckets   — Notes/Buckets/*.md (This Week, Next Week, etc.)
+//  Horizons  — Notes/Horizons/*.md (week + month notes)
 //  Projects  — Notes/Projects/*.md
 //  Places    — Notes/Places/*.md (one file per place)
 
@@ -110,11 +110,16 @@ struct DailyNoteTab: View {
 
     @Binding var showCalendar: Bool
 
+    @Environment(NotionService.self) private var notion
     @State private var noteStore = NoteStore.shared
     @State private var content: String = ""
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var selectedDate: Date = Date()
+    // E15 — calendar bottom panel
+    @State private var panelNotePreview: String = ""
+    @State private var panelIsLoading: Bool = false
+    @State private var selectedPanelVisit: Visit? = nil
     @State private var displayMonth: Date = Date()
     @State private var datesWithNotes: Set<String> = []
     @State private var showingMoveDaily: Bool = false
@@ -142,8 +147,14 @@ struct DailyNoteTab: View {
                     datesWithNotes: datesWithNotes,
                     existingWeekNotes: existingWeekNotes,
                     onDateSelected: { date in
+                        // E15: single tap selects date + refreshes panel — stays on calendar
                         selectedDate = date
                         displayMonth = date
+                        loadPanelContent()
+                    },
+                    onDateLongPressed: { date in
+                        // E15: long press opens the note directly
+                        selectedDate = date
                         showCalendar = false
                         load()
                     },
@@ -152,7 +163,7 @@ struct DailyNoteTab: View {
                         showingWeekNote = true
                     }
                 )
-                Spacer()
+                calendarBottomPanel
             } else {
                 editorHeader
                 Divider()
@@ -191,6 +202,7 @@ struct DailyNoteTab: View {
             if isOn {
                 displayMonth = selectedDate
                 refreshHorizonNoteExistence()
+                loadPanelContent()
             }
         }
         .onChange(of: displayMonth) { _, _ in
@@ -216,6 +228,10 @@ struct DailyNoteTab: View {
             BlockPromoteSheet(block: block) { action in
                 applyBlockAction(action, block: block)
             }
+        }
+        .sheet(item: $selectedPanelVisit) { visit in
+            VisitDetailView(visit: visit)
+                .environment(notion)
         }
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { note in
             // Only reload for external writes (e.g. from capture drawer).
@@ -360,6 +376,116 @@ struct DailyNoteTab: View {
         .background(.bar)
     }
 
+    // MARK: Calendar bottom panel (E15)
+
+    private var calendarBottomPanel: some View {
+        let cal = Calendar.current
+        let visitsForDay = notion.visits
+            .filter { cal.isDate($0.date, inSameDayAs: selectedDate) }
+            .sorted { $0.date < $1.date }
+
+        return VStack(spacing: 0) {
+            Divider()
+
+            // Header: date label + "Open note" button
+            HStack {
+                Text(selectedDate.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button {
+                    showCalendar = false
+                    load()
+                } label: {
+                    HStack(spacing: 3) {
+                        Text("Open note")
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color(UIColor.secondarySystemGroupedBackground))
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+
+                    // Note preview
+                    if panelIsLoading {
+                        HStack(spacing: 8) {
+                            ProgressView().scaleEffect(0.8)
+                            Text("Loading…").font(.callout).foregroundStyle(.secondary)
+                        }
+                        .padding(16)
+                    } else if panelNotePreview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        HStack(spacing: 8) {
+                            Image(systemName: "note.text").foregroundStyle(.tertiary)
+                            Text("No note for this day").font(.callout).foregroundStyle(.tertiary)
+                        }
+                        .padding(16)
+                    } else {
+                        Text(panelNotePreview)
+                            .font(.callout)
+                            .lineLimit(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(16)
+                    }
+
+                    // Visits for this day
+                    if !visitsForDay.isEmpty {
+                        Divider().padding(.horizontal, 16)
+
+                        Label("Visits", systemImage: "mappin.circle")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                            .padding(.bottom, 4)
+
+                        ForEach(visitsForDay) { visit in
+                            Button { selectedPanelVisit = visit } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "mappin.circle.fill")
+                                        .foregroundStyle(.orange)
+                                        .font(.subheadline)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(visit.placeName)
+                                            .font(.callout.weight(.medium))
+                                            .foregroundStyle(.primary)
+                                        if let notes = visit.notes, !notes.isEmpty {
+                                            Text(notes)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(2)
+                                        }
+                                    }
+                                    Spacer()
+                                    if let rating = visit.rating {
+                                        Text(String(repeating: "★", count: rating))
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                    }
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 6)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.bottom, 8)
+                    }
+                }
+            }
+            .background(Color(UIColor.systemGroupedBackground))
+        }
+    }
+
     // MARK: Helpers
 
     private func load() {
@@ -373,6 +499,17 @@ struct DailyNoteTab: View {
                 errorMessage = error.localizedDescription
             }
             isLoading = false
+        }
+    }
+
+    private func loadPanelContent() {
+        guard showCalendar else { return }
+        panelIsLoading = true
+        panelNotePreview = ""
+        Task {
+            let raw = (try? noteStore.readDailyNote(date: selectedDate)) ?? ""
+            panelNotePreview = stripDateHeader(raw)
+            panelIsLoading = false
         }
     }
 
@@ -569,6 +706,7 @@ struct MonthCalendarView: View {
     let datesWithNotes: Set<String>
     let existingWeekNotes: Set<String>
     let onDateSelected: (Date) -> Void
+    var onDateLongPressed: ((Date) -> Void)? = nil
     let onWeekNote: (Date) -> Void
 
     private let cal = Calendar.current
@@ -653,10 +791,10 @@ struct MonthCalendarView: View {
                         date: date,
                         isSelected: cal.isDate(date, inSameDayAs: selectedDate),
                         isToday: cal.isDateInToday(date),
-                        hasNote: datesWithNotes.contains(isoString(date))
-                    ) {
-                        onDateSelected(date)
-                    }
+                        hasNote: datesWithNotes.contains(isoString(date)),
+                        onTap: { onDateSelected(date) },
+                        onLongPress: onDateLongPressed.map { handler in { handler(date) } }
+                    )
                 } else {
                     Color.clear
                         .frame(height: 40)
@@ -701,25 +839,29 @@ private struct DayCell: View {
     let isToday: Bool
     let hasNote: Bool
     let onTap: () -> Void
+    var onLongPress: (() -> Void)? = nil
 
     var body: some View {
-        Button(action: onTap) {
-            VStack(spacing: 2) {
-                Text("\(Calendar.current.component(.day, from: date))")
-                    .font(.system(.subheadline, design: .rounded).weight(isToday ? .bold : .regular))
-                    .foregroundStyle(labelColor)
-                    .frame(width: 34, height: 34)
-                    .background(Circle().fill(isSelected ? Color.accentColor : Color.clear))
-                    .overlay(
-                        Circle().strokeBorder(isToday && !isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
-                    )
+        VStack(spacing: 2) {
+            Text("\(Calendar.current.component(.day, from: date))")
+                .font(.system(.subheadline, design: .rounded).weight(isToday ? .bold : .regular))
+                .foregroundStyle(labelColor)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(isSelected ? Color.accentColor : Color.clear))
+                .overlay(
+                    Circle().strokeBorder(isToday && !isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                )
 
-                Circle()
-                    .fill(hasNote ? dotColor : Color.clear)
-                    .frame(width: 4, height: 4)
-            }
+            Circle()
+                .fill(hasNote ? dotColor : Color.clear)
+                .frame(width: 4, height: 4)
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+        .gesture(
+            LongPressGesture(minimumDuration: 0.5)
+                .onEnded { _ in onLongPress?() }
+        )
         .frame(maxWidth: .infinity)
     }
 
@@ -734,7 +876,7 @@ private struct DayCell: View {
     }
 }
 
-// MARK: - Note file list tab (Buckets / Projects / Places)
+// MARK: - Note file list tab (Horizons / Projects / Places)
 
 struct NoteFileListTab: View {
 
@@ -753,7 +895,7 @@ struct NoteFileListTab: View {
     var body: some View {
         Group {
             if let filename = selectedFile {
-                // Inline editor — keeps the parent Daily/Buckets/Projects/Places tab bar visible.
+                // Inline editor — keeps the parent Daily/Horizons/Projects/Places tab bar visible.
                 NoteEditorView(
                     relativePath: "\(subfolder)/\(filename)",
                     title: filename.replacingOccurrences(of: ".md", with: ""),
@@ -923,7 +1065,7 @@ private struct NewNoteSheet: View {
 //
 // When `onBack` is nil  → pushed via NavigationDestination; uses .navigationTitle + .toolbar.
 // When `onBack` is set  → rendered inline inside NoteFileListTab; shows its own header row so
-//                          the parent tab bar (Daily/Buckets/Projects/Places) stays visible above.
+//                          the parent tab bar (Daily/Horizons/Projects/Places) stays visible above.
 
 struct NoteEditorView: View {
 
