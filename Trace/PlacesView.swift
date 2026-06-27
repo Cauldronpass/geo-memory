@@ -23,6 +23,7 @@ struct PlacesView: View {
     @State private var wantToVisitOnly   = false
     @State private var checkInPlace: Place? = nil
     @State private var showingAddPlace   = false
+    @State private var showingVisits     = false
 
     private var availableCategories: [String] {
         Array(Set(notion.places.compactMap { $0.category.isEmpty ? nil : $0.category })).sorted()
@@ -205,6 +206,11 @@ struct PlacesView: View {
         .drawerToolbar()
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
+                Button { showingVisits = true } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button { showingAddPlace = true } label: {
                     Image(systemName: "plus")
                 }
@@ -233,6 +239,10 @@ struct PlacesView: View {
                     Image(systemName: "arrow.clockwise")
                 }
             }
+        }
+        .sheet(isPresented: $showingVisits) {
+            VisitsView()
+                .environment(NotionService.shared)
         }
         .sheet(item: $checkInPlace) { place in
             CheckInView(preselectedPlace: place)

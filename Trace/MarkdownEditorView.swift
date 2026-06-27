@@ -25,6 +25,8 @@ struct MarkdownEditorView: UIViewRepresentable {
     var timestampTrigger: Binding<Date?>? = nil
     /// Called with true when the editor gains first responder, false when it resigns.
     var onFocusChange: ((Bool) -> Void)? = nil
+    /// Called when user long-presses a timestamp-delimited block (E1).
+    var onBlockLongPress: ((BlockInfo) -> Void)? = nil
 
     // MARK: Make
 
@@ -56,6 +58,13 @@ struct MarkdownEditorView: UIViewRepresentable {
                                         action: #selector(Coordinator.handleTap(_:)))
         tap.delegate = context.coordinator
         tv.addGestureRecognizer(tap)
+
+        // Block long-press — identifies timestamp-delimited blocks (E1)
+        let longPress = UILongPressGestureRecognizer(target: context.coordinator,
+                                                     action: #selector(Coordinator.handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.5
+        longPress.delegate = context.coordinator
+        tv.addGestureRecognizer(longPress)
 
         addPlaceholder(to: tv, text: placeholder)
 
@@ -103,7 +112,7 @@ struct MarkdownEditorView: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onSave: onSave, onFocusChange: onFocusChange)
+        Coordinator(text: $text, onSave: onSave, onFocusChange: onFocusChange, onBlockLongPress: onBlockLongPress)
     }
 
     // MARK: - Placeholder helpers
@@ -267,14 +276,19 @@ struct MarkdownEditorView: UIViewRepresentable {
         @Binding var text: String
         var onSave: ((String) -> Void)?
         var onFocusChange: ((Bool) -> Void)?
+        var onBlockLongPress: ((BlockInfo) -> Void)?
         weak var textView: UITextView?
         private var saveWork: DispatchWorkItem?
         var lastTimestampTrigger: Date?
 
-        init(text: Binding<String>, onSave: ((String) -> Void)?, onFocusChange: ((Bool) -> Void)?) {
+        init(text: Binding<String>,
+             onSave: ((String) -> Void)?,
+             onFocusChange: ((Bool) -> Void)?,
+             onBlockLongPress: ((BlockInfo) -> Void)? = nil) {
             _text = text
             self.onSave = onSave
             self.onFocusChange = onFocusChange
+            self.onBlockLongPress = onBlockLongPress
         }
 
         // MARK: UITextViewDelegate
@@ -353,6 +367,89 @@ struct MarkdownEditorView: UIViewRepresentable {
             }
             saveWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+        }
+
+        // MARK: - E1: Long-press block detection
+
+        @objc func handleLongPress(_ gr: UILongPressGestureRecognizer) {
+            guard gr.state == .began, let tv = textView else { return }
+
+            // Find character under touch
+            let point = gr.location(in: tv)
+            guard let textPos = tv.closestPosition(to: point) else { return }
+            let charIndex = tv.offset(from: tv.beginningOfDocument, to: textPos)
+
+            let fullText = tv.textStorage.string
+            guard let blockInfo = findBlock(in: fullText, at: charIndex) else { return }
+
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            DispatchQueue.main.async { [weak self] in
+                self?.onBlockLongPress?(blockInfo)
+            }
+        }
+
+        /// Locate the timestamp-delimited block that contains the character at `charIndex`.
+        /// Returns nil if the tap is not inside any block.
+        private func findBlock(in text: String, at charIndex: Int) -> BlockInfo? {
+            // NSString for safe UTF-16 range arithmetic
+            let ns = text as NSString
+            let totalLen = ns.length
+            guard charIndex >= 0, charIndex <= totalLen else { return nil }
+
+            // Split into lines, recording each line's NSRange in the NSString
+            var lineRanges: [(text: String, nsRange: NSRange)] = []
+            var pos = 0
+            while pos < totalLen {
+                let lineRange = ns.lineRange(for: NSRange(location: pos, length: 0))
+                let lineText = ns.substring(with: lineRange)
+                lineRanges.append((lineText, lineRange))
+                pos = lineRange.location + lineRange.length
+                if lineRange.length == 0 { break }  // safety
+            }
+
+            // Timestamp pattern: **HH:MM AM/PM** at start of line
+            let pattern = #"^\*\*\d{1,2}:\d{2} [AP]M\*\*"#
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+            func isTimestamp(_ s: String) -> Bool {
+                let r = NSRange(s.startIndex..., in: s)
+                return regex.firstMatch(in: s, range: r) != nil
+            }
+
+            // Which line does charIndex land on?
+            guard let targetIdx = lineRanges.firstIndex(where: {
+                $0.nsRange.location <= charIndex && charIndex < $0.nsRange.location + $0.nsRange.length
+            }) ?? (charIndex == totalLen ? lineRanges.indices.last : nil) else { return nil }
+
+            // Scan backwards to find the nearest timestamp line
+            var blockStart = -1
+            for i in stride(from: targetIdx, through: 0, by: -1) {
+                if isTimestamp(lineRanges[i].text) {
+                    blockStart = i
+                    break
+                }
+            }
+            guard blockStart >= 0 else { return nil }  // not inside any block
+
+            // Scan forwards to find end (exclusive) — next timestamp line or EOF
+            var blockEnd = lineRanges.count - 1
+            for i in (blockStart + 1)..<lineRanges.count {
+                if isTimestamp(lineRanges[i].text) {
+                    blockEnd = i - 1
+                    break
+                }
+            }
+
+            // Compute NSRange for the block (including trailing newline of last line)
+            let startNS = lineRanges[blockStart].nsRange.location
+            let endLineRange = lineRanges[blockEnd].nsRange
+            let endNS = endLineRange.location + endLineRange.length
+            let blockRange = NSRange(location: startNS, length: endNS - startNS)
+
+            // Trim trailing whitespace/newline from displayed text but keep range intact
+            var blockText = ns.substring(with: blockRange)
+            while blockText.hasSuffix("\n") { blockText = String(blockText.dropLast()) }
+
+            return BlockInfo(text: blockText, nsRange: blockRange)
         }
 
         // MARK: - Toolbar: formatting actions

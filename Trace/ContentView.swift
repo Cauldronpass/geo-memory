@@ -17,7 +17,6 @@ struct ContentView: View {
     @State private var geofencePlace: Place? = nil
     @State private var showingGeofenceCheckIn = false
     @State private var showingWorkoutPrompt = false
-    @State private var visitsShowsCalendar = false
     @State private var showingWorkoutFromURL = false
 
     var body: some View {
@@ -38,15 +37,15 @@ struct ContentView: View {
                 DiscoverView()
                     .tabItem { Label("Discover", systemImage: "magnifyingglass") }
                     .tag(2)
-                VisitsView(onCalendarStateChange: { visitsShowsCalendar = $0 })
-                    .tabItem { Label("Visits", systemImage: "clock.arrow.circlepath") }
-                    .tag(3)
                 LifeView()
                     .tabItem { Label("Life", systemImage: "waveform") }
+                    .tag(3)
+                NotesView()
+                    .tabItem { Label("Notes", systemImage: "note.text") }
                     .tag(4)
             }
 
-            if selectedTab != 0 && !(selectedTab == 3 && visitsShowsCalendar) {
+            if selectedTab != 0 {
                 Button(action: { showingActionSheet = true }) {
                     Image(systemName: "plus")
                         .font(.title2.bold())

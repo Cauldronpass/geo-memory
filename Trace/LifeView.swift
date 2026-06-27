@@ -9,9 +9,6 @@ struct LifeView: View {
                 LifeMenuRow(icon: "calendar", color: .indigo, title: "Activity", subtitle: "Visits, workouts & billiards") {
                     LifeCalendarView().environment(notion)
                 }
-                LifeMenuRow(icon: "note.text", color: .teal, title: "Notes", subtitle: "Daily notes, buckets & places") {
-                    NotesView()
-                }
                 LifeMenuRow(icon: "airplane", color: .blue, title: "Trips", subtitle: "Upcoming & past trips") {
                     LifePlaceholderView(title: "Trips", icon: "airplane")
                 }

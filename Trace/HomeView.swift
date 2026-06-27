@@ -666,7 +666,7 @@ struct HomeView: View {
                         .font(.subheadline)
                         .foregroundStyle(.primary)
                         .multilineTextAlignment(.leading)
-                        .lineLimit(3)
+                        .lineLimit(4)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
@@ -687,12 +687,8 @@ struct HomeView: View {
             NotesView()
         }
         .sheet(isPresented: $showingQuickAppend) {
-            QuickAppendSheet { text in
-                Task {
-                    try? NoteStore.shared.appendToDailyNote(text)
-                    notePlanContent = (try? NoteStore.shared.readDailyNote()) ?? ""
-                    showingQuickAppend = false
-                }
+            QuickAppendSheet {
+                notePlanContent = (try? NoteStore.shared.readDailyNote()) ?? ""
             }
         }
         .sheet(isPresented: $showingMoveDailyNote) {
