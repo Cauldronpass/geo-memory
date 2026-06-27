@@ -215,6 +215,15 @@ struct HomeView: View {
                 await cal.fetchUpcomingEvents()
                 await things.fetch()
                 await oura.fetchToday()
+                if let content = try? NoteStore.shared.readDailyNote() {
+                    notePlanContent = content
+                }
+            }
+        }
+        // Reload preview whenever the daily note changes (e.g. from NotesView or capture drawer).
+        .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { _ in
+            if let content = try? NoteStore.shared.readDailyNote() {
+                notePlanContent = content
             }
         }
         .onReceive(Timer.publish(every: 900, on: .main, in: .common).autoconnect()) { _ in
@@ -632,11 +641,7 @@ struct HomeView: View {
             .map { stripLinePrefix($0) }
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             .joined(separator: "\n")
-        return (try? AttributedString(
-            markdown: preview,
-            options: AttributedString.MarkdownParsingOptions(
-                interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(preview)
+        return styledPreview(preview)
     }
 
     // Strips heading/bullet/checkbox line prefixes only; leaves inline ** * ~~ for
@@ -650,6 +655,58 @@ struct HomeView: View {
             if s.hasPrefix(prefix) { return String(s.dropFirst(prefix.count)) }
         }
         return s
+    }
+
+    /// Builds an AttributedString from raw markdown preview text, manually handling
+    /// **bold**, *italic*, and ==highlight== (yellow bg). SwiftUI's built-in markdown
+    /// parser doesn't understand == syntax, so we do the full pass ourselves.
+    private func styledPreview(_ raw: String) -> AttributedString {
+        struct Span {
+            let start: String.Index; let end: String.Index
+            let inner: String
+            let isBold: Bool; let isItalic: Bool; let isHighlight: Bool
+        }
+        var spans: [Span] = []
+
+        func collect(pattern: String, markerLen: Int, bold: Bool, italic: Bool, highlight: Bool) {
+            guard let re = try? NSRegularExpression(pattern: pattern) else { return }
+            let ns = raw as NSString
+            for m in re.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)) {
+                guard let fullRange = Range(m.range, in: raw) else { continue }
+                let innerNS = NSRange(location: m.range.location + markerLen,
+                                     length: m.range.length - 2 * markerLen)
+                guard innerNS.length > 0 else { continue }
+                let inner = ns.substring(with: innerNS)
+                spans.append(Span(start: fullRange.lowerBound, end: fullRange.upperBound,
+                                  inner: inner, isBold: bold, isItalic: italic, isHighlight: highlight))
+            }
+        }
+        collect(pattern: #"\*\*(.+?)\*\*"#,             markerLen: 2, bold: true,  italic: false, highlight: false)
+        collect(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#, markerLen: 1, bold: false, italic: true,  highlight: false)
+        collect(pattern: "==(.+?)==",                    markerLen: 2, bold: false, italic: false, highlight: true)
+        spans.sort { $0.start < $1.start }
+
+        var result = AttributedString()
+        var cursor = raw.startIndex
+
+        func seg(_ str: String, bold: Bool = false, italic: Bool = false, highlight: Bool = false) {
+            guard !str.isEmpty else { return }
+            var a = AttributedString(str)
+            if bold        { a.font = .system(size: 14, weight: .semibold) }
+            else if italic { a.font = .system(size: 14).italic() }
+            else           { a.font = .system(size: 14) }
+            if highlight   { a.backgroundColor = Color(UIColor.systemYellow.withAlphaComponent(0.4)) }
+            result += a
+        }
+
+        for span in spans {
+            guard span.start >= cursor else { continue }
+            seg(String(raw[cursor..<span.start]))
+            seg(span.inner, bold: span.isBold, italic: span.isItalic, highlight: span.isHighlight)
+            cursor = span.end
+        }
+        if cursor < raw.endIndex { seg(String(raw[cursor...])) }
+        return result
     }
 
     // MARK: – Things

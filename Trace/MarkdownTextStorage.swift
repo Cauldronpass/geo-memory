@@ -82,6 +82,10 @@ final class MarkdownTextStorage: NSTextStorage {
     // MARK: - Per-line styling
 
     private func styleLine(_ line: String, in range: NSRange) {
+        // Headings — dim markers, apply larger semibold font to text
+        if line.hasPrefix("### ") { styleHeading(line, in: range, level: 3); return }
+        if line.hasPrefix("## ")  { styleHeading(line, in: range, level: 2); return }
+        if line.hasPrefix("# ")   { styleHeading(line, in: range, level: 1); return }
         // Checkboxes must be checked before generic bullets
         if line.hasPrefix("- [x]") { styleCheckbox(checked: true,  line: line, in: range); return }
         if line.hasPrefix("- [ ]") { styleCheckbox(checked: false, line: line, in: range); return }
@@ -91,6 +95,26 @@ final class MarkdownTextStorage: NSTextStorage {
         applyItalic(in: line, lineRange: range)
         applyHighlight(in: line, lineRange: range)
         applyLinks(in: line, lineRange: range)
+    }
+
+    // MARK: Heading — # / ## / ###
+    // Dims the # prefix chars; applies larger semibold font to the heading text.
+    // level 1 = 22pt, level 2 = 19pt, level 3 = 17pt (body is 16pt).
+
+    private func styleHeading(_ line: String, in range: NSRange, level: Int) {
+        let markerLen = level + 1          // "# " = 2, "## " = 3, "### " = 4
+        guard range.length >= markerLen else { return }
+
+        let markerRange = NSRange(location: range.location, length: markerLen)
+        backing.addAttribute(.foregroundColor, value: Self.dimColor, range: markerRange)
+
+        let textLen = range.length - markerLen
+        guard textLen > 0 else { return }
+        let textRange = NSRange(location: range.location + markerLen, length: textLen)
+        let size: CGFloat = level == 1 ? 22 : (level == 2 ? 19 : 17)
+        backing.addAttribute(.font,
+                             value: UIFont.systemFont(ofSize: size, weight: .semibold),
+                             range: textRange)
     }
 
     // MARK: Bullet prefix

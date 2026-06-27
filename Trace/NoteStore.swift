@@ -84,13 +84,35 @@ class NoteStore {
     }
 
     /// Moves a daily note's content to another date, merging if destination already has content.
+    /// The source date header (# YYYY-MM-DD) is stripped and replaced with a bold timestamp
+    /// so the moved block reads naturally in the destination without an embedded title.
     func moveDailyNote(from sourceDate: Date, to destDate: Date) throws {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone.current
         formatter.dateFormat = "yyyy-MM-dd"
-        let sourceContent = try readDailyNote(date: sourceDate)
+        var sourceContent = try readDailyNote(date: sourceDate)
         guard !sourceContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        // Strip the date header so it doesn't embed a duplicate title in the destination.
+        var sourceLines = sourceContent.components(separatedBy: "\n")
+        if let first = sourceLines.first,
+           first.hasPrefix("# "),
+           first.dropFirst(2).range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil {
+            sourceLines.removeFirst()
+            while sourceLines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                sourceLines.removeFirst()
+            }
+        }
+        // Prepend a bold timestamp so the block is identifiable in the destination.
+        let timeFmt = DateFormatter()
+        timeFmt.locale = Locale(identifier: "en_US_POSIX")
+        timeFmt.timeZone = TimeZone.current
+        timeFmt.dateFormat = "h:mm a"
+        let timeStr = timeFmt.string(from: Date())
+        sourceLines.insert("**\(timeStr)**", at: 0)
+        sourceContent = sourceLines.joined(separator: "\n")
+
         let destContent = (try? readDailyNote(date: destDate)) ?? ""
         let merged = destContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? sourceContent
@@ -135,18 +157,9 @@ class NoteStore {
         guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
         let fileURL = placeNoteURL(documentsURL: documentsURL, placeName: placeName)
         guard !FileManager.default.fileExists(atPath: fileURL.path) else { return }
-        let content = """
-        # \(placeName)
-
-        ## Notes
-
-
-        ## Want to Try
-
-
-        ## Visit History
-
-        """
+        // Minimal template — no empty section scaffolding.
+        // Heading rendered in-place via MarkdownTextStorage styleHeading().
+        let content = "# \(placeName)\n\n"
         try writeFile("Notes/Places/\(placeNoteFilename(for: placeName)).md", content: content)
     }
 
@@ -156,6 +169,7 @@ class NoteStore {
         let existing = (try? readFile(relativePath)) ?? ""
         let updated = existing.hasSuffix("\n") ? existing + text : existing + "\n" + text
         try writeFile(relativePath, content: updated)
+        NotificationCenter.default.post(name: .noteStorePlaceNoteDidChange, object: placeName)
     }
 
     // MARK: - Photos
@@ -270,6 +284,8 @@ extension Notification.Name {
     /// Posted on the main queue after any Calendar/ file is written.
     /// `object` is the relative path string, e.g. "Calendar/2026-06-26.md".
     static let noteStoreCalendarDidChange = Notification.Name("com.david.trace.noteStoreCalendarDidChange")
+    /// Posted after a Notes/Places/ file is written. `object` is the place name string.
+    static let noteStorePlaceNoteDidChange = Notification.Name("com.david.trace.noteStorePlaceNoteDidChange")
 }
 
 // MARK: - Error

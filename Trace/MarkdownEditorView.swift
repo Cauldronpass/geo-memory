@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 // UIViewRepresentable wrapping UITextView with MarkdownTextStorage (TextKit 1).
 // Features:
 //   • Live markdown syntax highlighting via MarkdownTextStorage
-//   • Scrollable toolbar: B · I · ~~ · H · # · − · ⊘ · ☐ · 📎 · 🔗 ‖ Done
+//   • Scrollable toolbar: B · I · ~~ · H · # · − · → · ← · ☐ · 📎 · 🔗 ‖ Done
 //   • Auto-save: 0.8 s debounce after last keystroke
 //   • Checkbox tap: tapping a checkbox line toggles - [ ] ↔ - [x]
 //   • Link tap: opens URLs (http/https and custom schemes) via UIApplication.open
@@ -179,17 +179,18 @@ struct MarkdownEditorView: UIViewRepresentable {
         stack.translatesAutoresizingMaskIntoConstraints = false
         scrollView.addSubview(stack)
 
+        // Order: B · ~~ · H · − · ☐ · ← · → · 📎 · 🔗 · #
         let items: [(title: String, bold: Bool, action: Selector)] = [
             ("B",   true,  #selector(Coordinator.insertBold)),
-            ("I",   false, #selector(Coordinator.insertItalic)),
             ("~~",  false, #selector(Coordinator.insertStrike)),
             ("H",   false, #selector(Coordinator.insertHighlight)),
-            ("#",   false, #selector(Coordinator.insertHeading)),
             ("−",   false, #selector(Coordinator.insertBullet)),
-            ("⊘",  false, #selector(Coordinator.insertIndent)),
-            ("☐",  false, #selector(Coordinator.insertCheckbox)),
-            ("📎", false, #selector(Coordinator.showAttachMenu)),
-            ("🔗", false, #selector(Coordinator.insertLink)),
+            ("☐",   false, #selector(Coordinator.insertCheckbox)),
+            ("←",   false, #selector(Coordinator.outdentLine)),
+            ("→",   false, #selector(Coordinator.indentLine)),
+            ("📎",  false, #selector(Coordinator.showAttachMenu)),
+            ("🔗",  false, #selector(Coordinator.insertLink)),
+            ("#",   false, #selector(Coordinator.insertHeading)),
         ]
 
         for item in items {
@@ -448,14 +449,68 @@ struct MarkdownEditorView: UIViewRepresentable {
             text = tv.text; scheduleSave(tv.text)
         }
 
-        @objc func insertIndent() {
+        /// Adds one indent level (2 spaces) at the start of the current line.
+        @objc func indentLine() {
             guard let tv = textView else { return }
-            toggleLinePrefix(tv: tv, prefix: "  ")
+            let cursorRange = tv.selectedRange
+            let ns = tv.text as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
+            tv.textStorage.replaceCharacters(
+                in: NSRange(location: lineRange.location, length: 0), with: "  ")
+            tv.selectedRange = NSRange(location: cursorRange.location + 2, length: 0)
+            text = tv.text; scheduleSave(tv.text)
+        }
+
+        /// Removes one indent level (up to 2 spaces) from the start of the current line.
+        @objc func outdentLine() {
+            guard let tv = textView else { return }
+            let cursorRange = tv.selectedRange
+            let ns = tv.text as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
+            let line = ns.substring(with: lineRange)
+            let toRemove = line.hasPrefix("  ") ? 2 : (line.hasPrefix(" ") ? 1 : 0)
+            guard toRemove > 0 else { return }
+            tv.textStorage.replaceCharacters(
+                in: NSRange(location: lineRange.location, length: toRemove), with: "")
+            let newLoc = max(lineRange.location, cursorRange.location - toRemove)
+            tv.selectedRange = NSRange(location: newLoc, length: 0)
+            text = tv.text; scheduleSave(tv.text)
         }
 
         @objc func insertCheckbox() {
             guard let tv = textView else { return }
-            toggleLinePrefix(tv: tv, prefix: "- [ ] ")
+            let cursorRange = tv.selectedRange
+            let ns = tv.text as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
+            let line = ns.substring(with: lineRange)
+
+            func uiRange(from loc: Int, length: Int) -> UITextRange? {
+                guard let s = tv.position(from: tv.beginningOfDocument, offset: loc),
+                      let e = tv.position(from: tv.beginningOfDocument, offset: loc + length)
+                else { return nil }
+                return tv.textRange(from: s, to: e)
+            }
+
+            if line.hasPrefix("- [x] ") {
+                // Checked → unchecked
+                guard let r = uiRange(from: lineRange.location, length: 6) else { return }
+                tv.replace(r, withText: "- [ ] ")
+                tv.selectedRange = NSRange(location: cursorRange.location, length: 0)
+            } else if line.hasPrefix("- [ ] ") {
+                // Unchecked → remove prefix
+                guard let r = uiRange(from: lineRange.location, length: 6) else { return }
+                tv.replace(r, withText: "")
+                let newLoc = max(lineRange.location, cursorRange.location - 6)
+                tv.selectedRange = NSRange(location: newLoc, length: 0)
+            } else {
+                // No checkbox — add one
+                guard let insertPos = tv.position(from: tv.beginningOfDocument,
+                                                  offset: lineRange.location),
+                      let r = tv.textRange(from: insertPos, to: insertPos) else { return }
+                tv.replace(r, withText: "- [ ] ")
+                tv.selectedRange = NSRange(location: cursorRange.location + 6, length: 0)
+            }
+            // tv.replace() fires textViewDidChange → text binding + scheduleSave handled there
         }
 
         @objc func insertLink() {

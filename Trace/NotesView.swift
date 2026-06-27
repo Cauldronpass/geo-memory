@@ -159,6 +159,15 @@ struct DailyNoteTab: View {
                 }
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    NotificationCenter.default.post(name: .traceOpenRightDrawer, object: nil)
+                } label: {
+                    Image(systemName: "tray")
+                }
+            }
+        }
         .task {
             load()
             loadDatesWithNotes()
@@ -360,7 +369,15 @@ struct DailyNoteTab: View {
     private func loadDatesWithNotes() {
         Task {
             let files = (try? noteStore.listFiles(in: "Calendar")) ?? []
-            let dates = Set(files.map { $0.replacingOccurrences(of: ".md", with: "") })
+            // Only mark a date if the file has actual content. Empty files are left behind
+            // by moveDailyNote/clearNote — they must not show a dot on the calendar.
+            var dates = Set<String>()
+            for file in files {
+                let content = (try? noteStore.readFile("Calendar/\(file)")) ?? ""
+                if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    dates.insert(file.replacingOccurrences(of: ".md", with: ""))
+                }
+            }
             await MainActor.run { datesWithNotes = dates }
         }
     }
@@ -516,7 +533,17 @@ struct NoteFileListTab: View {
 
     var body: some View {
         Group {
-            if isLoading {
+            if let filename = selectedFile {
+                // Inline editor — keeps the parent Daily/Buckets/Projects/Places tab bar visible.
+                NoteEditorView(
+                    relativePath: "\(subfolder)/\(filename)",
+                    title: filename.replacingOccurrences(of: ".md", with: ""),
+                    onBack: {
+                        selectedFile = nil
+                        loadFiles()   // refresh list in case the note was renamed or deleted
+                    }
+                )
+            } else if isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if files.isEmpty {
                 ContentUnavailableView(
@@ -525,9 +552,7 @@ struct NoteFileListTab: View {
                     description: Text(emptyMessage)
                 )
                 .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        newNoteButton
-                    }
+                    ToolbarItem(placement: .navigationBarTrailing) { newNoteButton }
                 }
             } else {
                 List(files, id: \.self) { filename in
@@ -563,17 +588,11 @@ struct NoteFileListTab: View {
                 }
                 .listStyle(.plain)
                 .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        newNoteButton
-                    }
+                    ToolbarItem(placement: .navigationBarTrailing) { newNoteButton }
                 }
             }
         }
         .task { loadFiles() }
-        .navigationDestination(item: $selectedFile) { filename in
-            NoteEditorView(relativePath: "\(subfolder)/\(filename)",
-                           title: filename.replacingOccurrences(of: ".md", with: ""))
-        }
         .sheet(isPresented: $showingNewNote) {
             NewNoteSheet(name: $newNoteName, isCreating: isCreating) {
                 createNote()
@@ -681,18 +700,27 @@ private struct NewNoteSheet: View {
     }
 }
 
-// MARK: - Note editor (full-screen for a single file)
+// MARK: - Note editor (full-screen or inline for a single file)
+//
+// When `onBack` is nil  → pushed via NavigationDestination; uses .navigationTitle + .toolbar.
+// When `onBack` is set  → rendered inline inside NoteFileListTab; shows its own header row so
+//                          the parent tab bar (Daily/Buckets/Projects/Places) stays visible above.
 
 struct NoteEditorView: View {
 
     let relativePath: String
     let title: String
+    /// Provide this when showing inline (not pushed). Called instead of dismiss() on back/delete/rename/move.
+    var onBack: (() -> Void)? = nil
 
     @State private var noteStore = NoteStore.shared
     @State private var content: String = ""
     @State private var isLoading = true
     @State private var savedIndicator = false
     @State private var showingMoveSheet = false
+    @State private var showingDeleteConfirm = false
+    @State private var showingRename = false
+    @State private var renameText = ""
     @Environment(\.dismiss) private var dismiss
 
     private var subfolder: String {
@@ -702,46 +730,155 @@ struct NoteEditorView: View {
         relativePath.components(separatedBy: "/").last ?? ""
     }
 
+    // MARK: - Body
+
     var body: some View {
+        editorStack
+            .task { load() }
+            .sheet(isPresented: $showingMoveSheet) {
+                MoveNoteSheet(filename: filename, currentSubfolder: subfolder) { destSubfolder in
+                    let dest = "\(destSubfolder)/\(filename)"
+                    try? noteStore.moveFile(from: relativePath, to: dest)
+                    showingMoveSheet = false
+                    back()
+                }
+            }
+            .confirmationDialog("Delete this note?", isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    try? noteStore.deleteFile(relativePath)
+                    back()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This cannot be undone.")
+            }
+            .alert("Rename", isPresented: $showingRename) {
+                TextField("Name", text: $renameText)
+                Button("Rename") {
+                    let newName = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !newName.isEmpty, newName != title else { return }
+                    let newFilename = "\(newName).md"
+                    let dest = "\(subfolder)/\(newFilename)"
+                    try? noteStore.moveFile(from: relativePath, to: dest)
+                    back()
+                }
+                Button("Cancel", role: .cancel) { renameText = "" }
+            }
+    }
+
+    @ViewBuilder
+    private var editorStack: some View {
+        if onBack != nil {
+            // Inline mode — show manual header so the parent tab bar stays visible.
+            VStack(spacing: 0) {
+                inlineHeader
+                Divider()
+                editorBody
+            }
+        } else {
+            // Push mode — use standard NavigationStack title + toolbar.
+            editorBody
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        actionButtons
+                    }
+                }
+        }
+    }
+
+    // Editor body shared by both modes
+    private var editorBody: some View {
         Group {
             if isLoading {
                 ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 MarkdownEditorView(
                     text: $content,
-                    onSave: { newText in
-                        save(newText)
-                    }
+                    onSave: { newText in save(newText) }
                 )
             }
         }
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                HStack(spacing: 16) {
-                    if savedIndicator {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .transition(.opacity)
-                    }
-                    Button {
-                        showingMoveSheet = true
-                    } label: {
-                        Image(systemName: "folder.badge.arrow.right")
-                    }
+    }
+
+    // Header row used in inline mode — mimics a navigation bar
+    private var inlineHeader: some View {
+        HStack(spacing: 0) {
+            // Back button
+            Button {
+                back()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text("Notes")
+                        .font(.body)
                 }
+                .foregroundStyle(Color.accentColor)
+            }
+
+            Spacer()
+
+            // Title centred
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+                .frame(maxWidth: 160)
+
+            Spacer()
+
+            // Actions — same as toolbar in push mode
+            actionButtons
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color(.systemBackground))
+    }
+
+    // Shared action buttons (saved indicator + inbox + ellipsis menu)
+    private var actionButtons: some View {
+        HStack(spacing: 4) {
+            if savedIndicator {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .transition(.opacity)
+            }
+            Button {
+                NotificationCenter.default.post(name: .traceOpenRightDrawer, object: nil)
+            } label: {
+                Image(systemName: "tray")
+            }
+            Menu {
+                Button {
+                    showingMoveSheet = true
+                } label: {
+                    Label("Move…", systemImage: "folder.badge.arrow.right")
+                }
+                Button {
+                    renameText = title
+                    showingRename = true
+                } label: {
+                    Label("Rename…", systemImage: "pencil")
+                }
+                Divider()
+                Button(role: .destructive) {
+                    showingDeleteConfirm = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
             }
         }
-        .task { load() }
-        .sheet(isPresented: $showingMoveSheet) {
-            MoveNoteSheet(filename: filename, currentSubfolder: subfolder) { destSubfolder in
-                let dest = "\(destSubfolder)/\(filename)"
-                try? noteStore.moveFile(from: relativePath, to: dest)
-                showingMoveSheet = false
-                dismiss()
-            }
-        }
+    }
+
+    // MARK: - Helpers
+
+    /// Dismisses: uses onBack closure (inline mode) or SwiftUI dismiss (push mode).
+    private func back() {
+        if let onBack { onBack() } else { dismiss() }
     }
 
     private func load() {
@@ -754,13 +891,9 @@ struct NoteEditorView: View {
     private func save(_ text: String) {
         Task {
             try? noteStore.writeFile(relativePath, content: text)
-            withAnimation {
-                savedIndicator = true
-            }
+            withAnimation { savedIndicator = true }
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            withAnimation {
-                savedIndicator = false
-            }
+            withAnimation { savedIndicator = false }
         }
     }
 }

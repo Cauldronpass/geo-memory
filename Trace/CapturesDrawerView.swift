@@ -22,12 +22,33 @@ struct InboxNote: Identifiable {
         return body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Short preview for the list row — skips photo/PDF reference lines.
+    /// Short preview for the list row — skips photo/PDF reference lines and place metadata.
     var previewLine: String {
         bodyContent.components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.hasPrefix("![]") && !$0.hasPrefix("📎") && !$0.isEmpty }
+            .filter { !$0.hasPrefix("![]") && !$0.hasPrefix("📎") && !$0.hasPrefix("**Place:**") && !$0.isEmpty }
             .first ?? (hasPhoto ? "(photo)" : "(empty)")
+    }
+
+    /// Extracts the place name from a `**Place:** Name` line embedded by AddCaptureView, if present.
+    var placeNameInBody: String? {
+        for line in bodyContent.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("**Place:**") {
+                let name = String(t.dropFirst("**Place:**".count))
+                    .trimmingCharacters(in: .whitespaces)
+                return name.isEmpty ? nil : name
+            }
+        }
+        return nil
+    }
+
+    /// Body content with the `**Place:** Name` metadata line stripped — used when routing to a place note.
+    var bodyWithoutPlace: String {
+        bodyContent.components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("**Place:**") }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     init?(filename: String, content: String) {
@@ -54,6 +75,10 @@ struct CapturesDrawerView: View {
     @State private var showingActions = false
     @State private var showingPlacePicker = false
     @State private var selectedPlaceForMove: Place? = nil
+    @State private var showingBucketPicker = false
+    @State private var showingProjectPicker = false
+    @State private var showingDatePicker = false
+    @State private var moveTargetDate: Date = Date()
 
     var body: some View {
         NavigationStack {
@@ -108,14 +133,49 @@ struct CapturesDrawerView: View {
         .confirmationDialog("What would you like to do?", isPresented: $showingActions, titleVisibility: .visible) {
             if let note = actionNote {
                 Button("Add to Today's Note") { addToTodayNote(note) }
-                Button("Move to Place Note…") {
-                    selectedPlaceForMove = nil
-                    showingPlacePicker = true
+                Button("Move to Another Date…") {
+                    moveTargetDate = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+                    showingDatePicker = true
+                }
+                Button("Move to Bucket Note…") { showingBucketPicker = true }
+                Button("Move to Project Note…") { showingProjectPicker = true }
+                // If the capture already has a place attached, route directly — no picker needed.
+                if let placeName = note.placeNameInBody {
+                    Button("Move to \(placeName)") {
+                        moveToPlaceNoteDirectly(note, placeName: placeName)
+                    }
+                } else {
+                    Button("Move to Place Note…") {
+                        selectedPlaceForMove = nil
+                        showingPlacePicker = true
+                    }
                 }
                 Button("Delete", role: .destructive) { delete(note) }
                 Button("Cancel", role: .cancel) { }
             }
         }
+        // Date picker sheet
+        .sheet(isPresented: $showingDatePicker) {
+            InboxMoveDateSheet(targetDate: $moveTargetDate) {
+                if let note = actionNote { moveToDailyNote(note, date: moveTargetDate) }
+                showingDatePicker = false
+            }
+        }
+        // Bucket picker sheet
+        .sheet(isPresented: $showingBucketPicker) {
+            InboxNoteFilePickerSheet(subfolder: "Notes/Buckets", title: "Move to Bucket") { filename in
+                if let note = actionNote { moveToFile(note, path: "Notes/Buckets/\(filename)") }
+                showingBucketPicker = false
+            }
+        }
+        // Project picker sheet
+        .sheet(isPresented: $showingProjectPicker) {
+            InboxNoteFilePickerSheet(subfolder: "Notes/Projects", title: "Move to Project") { filename in
+                if let note = actionNote { moveToFile(note, path: "Notes/Projects/\(filename)") }
+                showingProjectPicker = false
+            }
+        }
+        // Place picker sheet
         .sheet(isPresented: $showingPlacePicker, onDismiss: {
             // Fires after PlacePickerView dismisses — place is set if user made a selection.
             guard let place = selectedPlaceForMove, let note = actionNote else {
@@ -167,18 +227,149 @@ struct CapturesDrawerView: View {
         }
     }
 
-    private func moveToPlaceNote(_ note: InboxNote, placeName: String) {
+    private func moveToDailyNote(_ note: InboxNote, date: Date) {
         Task {
-            try? NoteStore.shared.appendToPlaceNote(for: placeName, text: "\n" + note.bodyContent)
+            try? NoteStore.shared.appendToDailyNote(note.bodyContent, date: date)
             try? NoteStore.shared.deleteFile("Notes/Inbox/\(note.filename)")
             await MainActor.run { inboxNotes.removeAll { $0.id == note.id } }
         }
+    }
+
+    /// Moves inbox note body to any NoteStore file path, appending if the file exists.
+    private func moveToFile(_ note: InboxNote, path: String) {
+        Task {
+            let existing = (try? NoteStore.shared.readFile(path)) ?? ""
+            let body = note.bodyContent
+            let updated = existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? body
+                : existing + "\n\n" + body
+            try? NoteStore.shared.writeFile(path, content: updated)
+            try? NoteStore.shared.deleteFile("Notes/Inbox/\(note.filename)")
+            await MainActor.run { inboxNotes.removeAll { $0.id == note.id } }
+        }
+    }
+
+    /// Moves a capture to a place note, stripping any embedded **Place:** metadata line.
+    private func moveToPlaceNote(_ note: InboxNote, placeName: String) {
+        Task {
+            let body = note.bodyWithoutPlace.isEmpty ? note.bodyContent : note.bodyWithoutPlace
+            try? NoteStore.shared.appendToPlaceNote(for: placeName, text: "\n" + body)
+            try? NoteStore.shared.deleteFile("Notes/Inbox/\(note.filename)")
+            await MainActor.run { inboxNotes.removeAll { $0.id == note.id } }
+        }
+    }
+
+    /// Direct route when the capture already carries a place in its body — no picker needed.
+    private func moveToPlaceNoteDirectly(_ note: InboxNote, placeName: String) {
+        moveToPlaceNote(note, placeName: placeName)
     }
 
     private func delete(_ note: InboxNote) {
         Task {
             try? NoteStore.shared.deleteFile("Notes/Inbox/\(note.filename)")
             await MainActor.run { inboxNotes.removeAll { $0.id == note.id } }
+        }
+    }
+}
+
+// MARK: - InboxMoveDateSheet
+
+private struct InboxMoveDateSheet: View {
+    @Binding var targetDate: Date
+    let onMove: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            DatePicker("Select date", selection: $targetDate, displayedComponents: .date)
+                .datePickerStyle(.graphical)
+                .padding()
+            Spacer()
+            .navigationTitle("Move to Date")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Move") {
+                        onMove()
+                        dismiss()
+                    }
+                    .bold()
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+}
+
+// MARK: - InboxNoteFilePickerSheet
+// Lists all files in a NoteStore subfolder so the user can pick one to append to.
+// A "New…" option creates the file on the spot.
+
+private struct InboxNoteFilePickerSheet: View {
+    let subfolder: String
+    let title: String
+    let onSelect: (String) -> Void
+
+    @State private var files: [String] = []
+    @State private var isLoading = true
+    @State private var showingNewName = false
+    @State private var newName = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        Button {
+                            showingNewName = true
+                        } label: {
+                            Label("New note…", systemImage: "plus")
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        ForEach(files, id: \.self) { filename in
+                            Button {
+                                onSelect(filename)
+                                dismiss()
+                            } label: {
+                                Text(filename.replacingOccurrences(of: ".md", with: ""))
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .alert("New note", isPresented: $showingNewName) {
+                TextField("Name", text: $newName)
+                Button("Create") {
+                    let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !name.isEmpty else { return }
+                    let filename = "\(name).md"
+                    try? NoteStore.shared.writeFile("\(subfolder)/\(filename)", content: "# \(name)\n")
+                    onSelect(filename)
+                    dismiss()
+                }
+                Button("Cancel", role: .cancel) { newName = "" }
+            } message: {
+                Text("Enter a name for the new note.")
+            }
+        }
+        .task {
+            files = (try? NoteStore.shared.listFiles(in: subfolder)) ?? []
+            isLoading = false
         }
     }
 }

@@ -8,6 +8,8 @@ struct PlaceDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedTab = 0
+    @State private var placeNoteContent: String = ""
+    @State private var placeNoteLoaded = false
     @State private var showingCheckIn = false
     @State private var editingVisit: Visit? = nil
     @State private var showingEditPlace = false
@@ -40,7 +42,8 @@ struct PlaceDetailView: View {
                     Text("Overview").tag(0)
                     Text("Info").tag(1)
                     Text("Visits").tag(2)
-                    Text("Settings").tag(3)
+                    Text("Notes").tag(3)
+                    Text("Settings").tag(4)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -50,7 +53,8 @@ struct PlaceDetailView: View {
                     overviewTab.tag(0)
                     infoTab.tag(1)
                     visitsTab.tag(2)
-                    settingsTab.tag(3)
+                    notesTab.tag(3)
+                    settingsTab.tag(4)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
 
@@ -184,6 +188,11 @@ struct PlaceDetailView: View {
                         }
                     }
                     .tint(.primary)
+                }
+                if let description = place.notes, !description.isEmpty {
+                    DetailRow(label: "Description") {
+                        Text(description)
+                    }
                 }
                 if let summary = place.aiSummary, !summary.isEmpty {
                     DetailRow(label: "Summary") {
@@ -403,6 +412,37 @@ struct PlaceDetailView: View {
             enrichError = error.localizedDescription
         }
         isEnriching = false
+    }
+
+    // MARK: - Notes
+
+    private var notesTab: some View {
+        MarkdownEditorView(
+            text: $placeNoteContent,
+            onSave: { newText in
+                let path = "Notes/Places/\(NoteStore.shared.placeNoteFilename(for: place.name)).md"
+                if !newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try? NoteStore.shared.writeFile(path, content: newText)
+                    NotificationCenter.default.post(name: .noteStorePlaceNoteDidChange, object: place.name)
+                }
+            },
+            placeholder: "Notes about \(place.name)…"
+        )
+        .ignoresSafeArea(.keyboard)
+        .onAppear {
+            guard !placeNoteLoaded else { return }
+            placeNoteLoaded = true
+            let path = "Notes/Places/\(NoteStore.shared.placeNoteFilename(for: place.name)).md"
+            placeNoteContent = (try? NoteStore.shared.readFile(path)) ?? ""
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .noteStorePlaceNoteDidChange)) { notification in
+            // Reload if another route (e.g. capture triage) just wrote this place's note
+            guard let updatedPlace = notification.object as? String,
+                  updatedPlace == place.name else { return }
+            let path = "Notes/Places/\(NoteStore.shared.placeNoteFilename(for: place.name)).md"
+            let fresh = (try? NoteStore.shared.readFile(path)) ?? ""
+            if fresh != placeNoteContent { placeNoteContent = fresh }
+        }
     }
 
     // MARK: - Settings
@@ -793,8 +833,8 @@ struct PlaceEditSheet: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section("Notes") {
-                    TextField("Add notes…", text: $notes, axis: .vertical)
+                Section("Description") {
+                    TextField("Short description…", text: $notes, axis: .vertical)
                         .lineLimit(3...8)
                 }
 
