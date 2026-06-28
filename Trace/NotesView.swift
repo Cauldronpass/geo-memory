@@ -1172,7 +1172,8 @@ struct NoteEditorView: View {
             } else {
                 MarkdownEditorView(
                     text: $content,
-                    onSave: { newText in save(newText) }
+                    onSave: { newText in save(newText) },
+                    relativePath: relativePath
                 )
             }
         }
@@ -1394,6 +1395,40 @@ struct HorizonsNoteTab: View {
         files.filter { $0 != currentWeekFilename && $0 != currentMonthFilename }
     }
 
+    private var futureFiles: [String] {
+        otherFiles.filter { isFileFuture($0) }.sorted()
+    }
+
+    private var pastFiles: [String] {
+        otherFiles.filter { !isFileFuture($0) }.sorted(by: >)
+    }
+
+    /// Returns true if the filename represents a future week or month.
+    private func isFileFuture(_ filename: String) -> Bool {
+        let name = filename.replacingOccurrences(of: ".md", with: "")
+        // Week file: YYYY-Www
+        if name.range(of: #"^\d{4}-W\d{2}$"#, options: .regularExpression) != nil {
+            let parts = name.components(separatedBy: "-W")
+            guard parts.count == 2,
+                  let year = Int(parts[0]),
+                  let week = Int(parts[1]) else { return false }
+            let currentWeek = isoCal.component(.weekOfYear, from: Date())
+            let currentYear = isoCal.component(.yearForWeekOfYear, from: Date())
+            return (year, week) > (currentYear, currentWeek)
+        }
+        // Month file: YYYY-MM
+        if name.range(of: #"^\d{4}-\d{2}$"#, options: .regularExpression) != nil {
+            let parts = name.components(separatedBy: "-")
+            guard parts.count == 2,
+                  let year = Int(parts[0]),
+                  let month = Int(parts[1]) else { return false }
+            let currentMonth = Calendar.current.component(.month, from: Date())
+            let currentYear = Calendar.current.component(.year, from: Date())
+            return (year, month) > (currentYear, currentMonth)
+        }
+        return false
+    }
+
     var body: some View {
         Group {
             if let filename = selectedFile {
@@ -1431,31 +1466,18 @@ struct HorizonsNoteTab: View {
                         }
                     }
 
-                    if !otherFiles.isEmpty {
+                    if !futureFiles.isEmpty {
+                        Section("Next") {
+                            ForEach(futureFiles, id: \.self) { filename in
+                                horizonRow(filename)
+                            }
+                        }
+                    }
+
+                    if !pastFiles.isEmpty {
                         Section("Past") {
-                            ForEach(otherFiles, id: \.self) { filename in
-                                Button {
-                                    selectedFile = filename
-                                } label: {
-                                    HStack {
-                                        Image(systemName: "doc.text")
-                                            .foregroundStyle(.secondary)
-                                        Text(filename.replacingOccurrences(of: ".md", with: ""))
-                                            .foregroundStyle(.primary)
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .foregroundStyle(.tertiary)
-                                            .font(.caption)
-                                    }
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        try? noteStore.deleteFile("\(subfolder)/\(filename)")
-                                        files.removeAll { $0 == filename }
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
+                            ForEach(pastFiles, id: \.self) { filename in
+                                horizonRow(filename)
                             }
                         }
                     }
@@ -1477,6 +1499,32 @@ struct HorizonsNoteTab: View {
         .sheet(isPresented: $showingNewNote) {
             NewNoteSheet(name: $newNoteName, isCreating: isCreating) {
                 createNote()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func horizonRow(_ filename: String) -> some View {
+        Button {
+            selectedFile = filename
+        } label: {
+            HStack {
+                Image(systemName: "doc.text")
+                    .foregroundStyle(.secondary)
+                Text(filename.replacingOccurrences(of: ".md", with: ""))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.tertiary)
+                    .font(.caption)
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                try? noteStore.deleteFile("\(subfolder)/\(filename)")
+                files.removeAll { $0 == filename }
+            } label: {
+                Label("Delete", systemImage: "trash")
             }
         }
     }
