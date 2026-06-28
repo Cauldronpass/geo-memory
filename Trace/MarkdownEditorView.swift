@@ -75,6 +75,14 @@ struct MarkdownEditorView: UIViewRepresentable {
         }
         updatePlaceholderVisibility(tv)
 
+        // Refresh thumbnail overlays after layout completes (initial load)
+        let tvForThumb = tv
+        let coord = context.coordinator
+        DispatchQueue.main.async {
+            tvForThumb.layoutManager.ensureLayout(for: tvForThumb.textContainer)
+            coord.refreshThumbnails(in: tvForThumb)
+        }
+
         return tv
     }
 
@@ -330,6 +338,12 @@ struct MarkdownEditorView: UIViewRepresentable {
         /// Set to true when a long-press fires; prevents the tap gesture from
         /// also firing (which would open the photo immediately after the sheet appears).
         private var suppressNextTap = false
+        /// Cache of loaded UIImages keyed by NoteStore path, for fast thumbnail redraws.
+        private var thumbnailImageCache: [String: UIImage] = [:]
+        /// Tag applied to UIImageViews overlaid for !![desc](path) thumbnail lines.
+        private static let thumbnailTag = 8_001
+        /// Paths for which an iCloud-download retry is already scheduled (prevents duplicate timers).
+        private var thumbnailRetryPaths: Set<String> = []
 
         init(text: Binding<String>,
              onSave: ((String) -> Void)?,
@@ -347,6 +361,7 @@ struct MarkdownEditorView: UIViewRepresentable {
             text = tv.text
             tv.viewWithTag(9_001)?.isHidden = !tv.text.isEmpty
             scheduleSave(tv.text)
+            refreshThumbnails(in: tv)
         }
 
         func textViewDidBeginEditing(_ tv: UITextView) {
@@ -519,13 +534,32 @@ struct MarkdownEditorView: UIViewRepresentable {
                 vc.present(alert, animated: true)
             })
 
+            // Toggle thumbnail vs. plain link (images only)
+            if isImage {
+                let isThumbnail = line.hasPrefix("!![")
+                sheet.addAction(UIAlertAction(
+                    title: isThumbnail ? "Show as Link" : "Show Thumbnail",
+                    style: .default
+                ) { [weak self] _ in
+                    guard let self, let tv = self.textView else { return }
+                    let updatedLine = isThumbnail
+                        ? String(line.dropFirst(1))   // "!![…" → "![…"
+                        : "!" + line                  // "![…"  → "!![…"
+                    tv.textStorage.replaceCharacters(in: lineRange, with: updatedLine)
+                    self.text = tv.text
+                    self.scheduleSave(tv.text)
+                    self.refreshThumbnails(in: tv)
+                })
+            }
+
             // Remove link from note (file stays in iCloud)
             sheet.addAction(UIAlertAction(title: "Remove from Note",
                                           style: .destructive) { [weak self] _ in
-                guard let self else { return }
+                guard let self, let tv = self.textView else { return }
                 tv.textStorage.replaceCharacters(in: lineRange, with: "")
                 self.text = tv.text
                 self.scheduleSave(tv.text)
+                self.refreshThumbnails(in: tv)
             })
 
             // Delete file + remove from note
@@ -538,10 +572,11 @@ struct MarkdownEditorView: UIViewRepresentable {
                     preferredStyle: .alert
                 )
                 confirm.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
-                    guard let self else { return }
+                    guard let self, let tv = self.textView else { return }
                     tv.textStorage.replaceCharacters(in: lineRange, with: "")
                     self.text = tv.text
                     self.scheduleSave(tv.text)
+                    self.refreshThumbnails(in: tv)
                     try? NoteStore.shared.deleteFile(path)
                 })
                 confirm.addAction(UIAlertAction(title: "Cancel", style: .cancel))
@@ -1004,6 +1039,104 @@ struct MarkdownEditorView: UIViewRepresentable {
                 let updated = text + str
                 text = updated
                 onSave?(updated)
+            }
+        }
+
+
+        // MARK: - Thumbnail image overlay
+
+        // Scans the text storage for !![desc](path) lines and overlays UIImageViews
+        // at the correct content-coordinate positions. Called after every text change
+        // and on initial load. The overlays scroll with the text view (they are
+        // subviews of UITextView which is a UIScrollView — subview frames are in
+        // content coordinate space, not viewport space).
+
+        func refreshThumbnails(in tv: UITextView) {
+            // Remove previous overlays
+            tv.subviews
+                .filter { $0.tag == Self.thumbnailTag }
+                .forEach { $0.removeFromSuperview() }
+
+            // Find all !![desc](path) lines
+            guard let regex = try? NSRegularExpression(
+                pattern: #"^!!\[([^\]]*)\]\(([^)]+)\)"#,
+                options: .anchorsMatchLines
+            ) else { return }
+            let ns = tv.textStorage.string as NSString
+            let matches = regex.matches(
+                in: tv.textStorage.string,
+                range: NSRange(location: 0, length: ns.length)
+            )
+            guard !matches.isEmpty else { return }
+
+            // Ensure layout is current before querying rects
+            tv.layoutManager.ensureLayout(for: tv.textContainer)
+
+            for match in matches {
+                guard match.range(at: 2).location != NSNotFound else { continue }
+                let path = ns.substring(with: match.range(at: 2))
+
+                // Load image — try direct read first (fast path for locally-present files).
+                // Only trigger iCloud download and schedule a single retry if the direct read fails.
+                let image: UIImage?
+                if let cached = thumbnailImageCache[path] {
+                    image = cached
+                } else if let url = NoteStore.shared.resolvedURL(for: path) {
+                    if let data = try? Data(contentsOf: url),
+                       let loaded = UIImage(data: data) {
+                        thumbnailImageCache[path] = loaded
+                        image = loaded
+                    } else {
+                        // File not local yet — request download and retry once after 1.5 s.
+                        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                        if !thumbnailRetryPaths.contains(path) {
+                            thumbnailRetryPaths.insert(path)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                                self?.thumbnailRetryPaths.remove(path)
+                                if let tv = self?.textView {
+                                    self?.refreshThumbnails(in: tv)
+                                }
+                            }
+                        }
+                        image = nil
+                    }
+                } else {
+                    image = nil
+                }
+                guard let img = image else { continue }
+
+                // Line rect in text-container coords → shift by textContainerInset
+                let lineCharRange = ns.lineRange(for: match.range)
+                let glyphRange = tv.layoutManager.glyphRange(
+                    forCharacterRange: lineCharRange, actualCharacterRange: nil)
+                var lineRect = tv.layoutManager.boundingRect(
+                    forGlyphRange: glyphRange, in: tv.textContainer)
+                lineRect = lineRect.offsetBy(
+                    dx: tv.textContainerInset.left,
+                    dy: tv.textContainerInset.top)
+
+                // Scale to fit, preserving aspect ratio, max 196pt height
+                let availableWidth = lineRect.width
+                let maxHeight: CGFloat = 196
+                let scale = min(availableWidth / img.size.width,
+                                maxHeight / img.size.height,
+                                1.0)
+                let displaySize = CGSize(width:  img.size.width  * scale,
+                                        height: img.size.height * scale)
+
+                let iv = UIImageView(frame: CGRect(
+                    x: lineRect.origin.x,
+                    y: lineRect.origin.y + (lineRect.height - displaySize.height) / 2,
+                    width:  displaySize.width,
+                    height: displaySize.height
+                ))
+                iv.image = img
+                iv.contentMode = .scaleAspectFit
+                iv.layer.cornerRadius = 6
+                iv.clipsToBounds = true
+                iv.tag = Self.thumbnailTag
+                iv.isUserInteractionEnabled = false
+                tv.addSubview(iv)
             }
         }
 

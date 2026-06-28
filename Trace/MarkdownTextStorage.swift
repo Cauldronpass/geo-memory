@@ -96,6 +96,7 @@ final class MarkdownTextStorage: NSTextStorage {
         applyHighlight(in: line, lineRange: range)
         applyLinks(in: line, lineRange: range)
         applyImageLinks(in: line, lineRange: range)
+        applyThumbnailImageLinks(in: line, lineRange: range)
         applyPDFLinks(in: line, lineRange: range)
     }
 
@@ -314,6 +315,39 @@ final class MarkdownTextStorage: NSTextStorage {
                                       range: NSRange(location: afterDescInBacking, length: suffixLen))
             }
         }
+    }
+
+
+    // MARK: Thumbnail image lines — !![desc](path)
+    // Makes the entire line invisible (the Coordinator overlays a UIImageView at this rect)
+    // and reserves 200pt of vertical space via paragraph style.
+    // .imageNoteStorePath is set on the full line so tap/long-press detection works.
+
+    private func applyThumbnailImageLinks(in line: String, lineRange: NSRange) {
+        guard line.hasPrefix("!![") else { return }
+        guard let regex = try? NSRegularExpression(
+                  pattern: #"^!!\[([^\]]*)\]\(([^)]+)\)"#),
+              let match = regex.firstMatch(
+                  in: line, range: NSRange(location: 0, length: (line as NSString).length)),
+              match.numberOfRanges >= 3,
+              match.range(at: 2).location != NSNotFound else { return }
+
+        let path = (line as NSString).substring(with: match.range(at: 2))
+
+        // Hide all text on the line — UIImageView overlay renders the image
+        backing.addAttributes([
+            .font: Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ], range: lineRange)
+
+        // Reserve 200pt vertical space for the thumbnail
+        let para = NSMutableParagraphStyle()
+        para.minimumLineHeight = 200
+        para.maximumLineHeight = 200
+        backing.addAttribute(.paragraphStyle, value: para, range: lineRange)
+
+        // Store path so tap and long-press detect this as an image line
+        backing.addAttribute(.imageNoteStorePath, value: path, range: lineRange)
     }
 
     // MARK: PDF links — 📎 [desc](path)

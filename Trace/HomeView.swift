@@ -811,10 +811,33 @@ struct HomeView: View {
         return styledPreview(preview)
     }
 
-    // Strips heading/bullet/checkbox line prefixes only; leaves inline ** * ~~ for
-    // AttributedString to render as bold/italic/strikethrough.
+    // Strips heading/bullet/checkbox line prefixes, and converts image/PDF link
+    // syntax to human-readable captions for the home screen preview.
     private func stripLinePrefix(_ line: String) -> String {
         var s = line
+
+        // Thumbnail image: !![desc](path) → "📷 desc"
+        // Plain image:     ![desc](path)  → "📷 desc"
+        // Match both; the !![...] check must come first.
+        if s.hasPrefix("!![") || s.hasPrefix("![") {
+            let markerLen = s.hasPrefix("!![") ? 3 : 2
+            let afterMarker = s.index(s.startIndex, offsetBy: markerLen)
+            if let closeRange = s.range(of: "](", range: afterMarker..<s.endIndex) {
+                let desc = String(s[afterMarker..<closeRange.lowerBound])
+                return "📷 \(desc.isEmpty ? "photo" : desc)"
+            }
+        }
+
+        // PDF link: 📎 [desc](path) → "📎 desc"
+        let paperclip = "📎 ["
+        if s.hasPrefix(paperclip) {
+            let afterMarker = s.index(s.startIndex, offsetBy: paperclip.count)
+            if let closeRange = s.range(of: "](", range: afterMarker..<s.endIndex) {
+                let desc = String(s[afterMarker..<closeRange.lowerBound])
+                return "📎 \(desc.isEmpty ? "document" : desc)"
+            }
+        }
+
         for prefix in ["### ", "## ", "# "] {
             if s.hasPrefix(prefix) { return String(s.dropFirst(prefix.count)) }
         }
