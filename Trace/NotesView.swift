@@ -1077,18 +1077,27 @@ struct NoteEditorView: View {
     @State private var noteStore = NoteStore.shared
     @State private var content: String = ""
     @State private var isLoading = true
-    @State private var savedIndicator = false
     @State private var showingMoveSheet = false
     @State private var showingDeleteConfirm = false
     @State private var showingRename = false
     @State private var renameText = ""
+    @State private var showingLinkedPlace: Place? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(NotionService.self) private var notion
 
     private var subfolder: String {
         relativePath.components(separatedBy: "/").dropLast().joined(separator: "/")
     }
     private var filename: String {
         relativePath.components(separatedBy: "/").last ?? ""
+    }
+    /// If this is a Notes/Places/ note, returns the matching Place from NotionService.
+    private var linkedPlace: Place? {
+        guard relativePath.hasPrefix("Notes/Places/") else { return nil }
+        let noteFilename = filename.replacingOccurrences(of: ".md", with: "")
+        return notion.places.first {
+            NoteStore.shared.placeNoteFilename(for: $0.name) == noteFilename
+        }
     }
 
     // MARK: - Body
@@ -1124,6 +1133,11 @@ struct NoteEditorView: View {
                     back()
                 }
                 Button("Cancel", role: .cancel) { renameText = "" }
+            }
+            .sheet(item: $showingLinkedPlace) { place in
+                NavigationStack {
+                    PlaceDetailView(place: place)
+                }
             }
     }
 
@@ -1198,13 +1212,15 @@ struct NoteEditorView: View {
         .background(Color(.systemBackground))
     }
 
-    // Shared action buttons (saved indicator + inbox + ellipsis menu)
+    // Shared action buttons (saved indicator + inbox + place link + ellipsis menu)
     private var actionButtons: some View {
         HStack(spacing: 4) {
-            if savedIndicator {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .transition(.opacity)
+            if let place = linkedPlace {
+                Button {
+                    showingLinkedPlace = place
+                } label: {
+                    Image(systemName: "mappin.and.ellipse")
+                }
             }
             Button {
                 NotificationCenter.default.post(name: .traceOpenRightDrawer, object: nil)
@@ -1252,9 +1268,6 @@ struct NoteEditorView: View {
     private func save(_ text: String) {
         Task {
             try? noteStore.writeFile(relativePath, content: text)
-            withAnimation { savedIndicator = true }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            withAnimation { savedIndicator = false }
         }
     }
 }

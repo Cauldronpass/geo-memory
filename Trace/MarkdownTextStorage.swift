@@ -95,6 +95,8 @@ final class MarkdownTextStorage: NSTextStorage {
         applyItalic(in: line, lineRange: range)
         applyHighlight(in: line, lineRange: range)
         applyLinks(in: line, lineRange: range)
+        applyImageLinks(in: line, lineRange: range)
+        applyPDFLinks(in: line, lineRange: range)
     }
 
     // MARK: Heading — # / ## / ###
@@ -260,4 +262,117 @@ final class MarkdownTextStorage: NSTextStorage {
             }
         }
     }
+
+    // MARK: Image links — ![desc](path)
+    // Hides `![` and `](path)`, shows desc in orange with .imageNoteStorePath attribute.
+    // Tapping the visible desc in MarkdownEditorView's handleTap reads this attribute to open
+    // the photo viewer.
+
+    private func applyImageLinks(in line: String, lineRange: NSRange) {
+        guard line.contains("!["),
+              let regex = try? NSRegularExpression(
+                  pattern: #"!\[([^\]]*)\]\(([^)]+)\)"#) else { return }
+        let ns = line as NSString
+        let hidden: [NSAttributedString.Key: Any] = [
+            .font: Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ]
+        let orange = UIColor.systemOrange
+        for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            guard m.numberOfRanges >= 3 else { continue }
+            let descRange = m.range(at: 1)   // alt text (may be empty)
+            let pathRange = m.range(at: 2)   // relative path
+            guard pathRange.location != NSNotFound else { continue }
+            let path = ns.substring(with: pathRange)
+            let base = lineRange.location + m.range.location
+
+            // Hide `![` (2 ASCII chars at start of match)
+            backing.addAttributes(hidden, range: NSRange(location: base, length: 2))
+
+            if descRange.length > 0 {
+                // Show desc in orange + store path for tap detection
+                let descBase = lineRange.location + descRange.location
+                backing.addAttributes([
+                    .foregroundColor: orange,
+                    .imageNoteStorePath: path
+                ], range: NSRange(location: descBase, length: descRange.length))
+            } else {
+                // Empty desc — un-hide `![` and show in orange so line isn't invisible
+                backing.addAttributes([
+                    .font: Self.bodyFont,
+                    .foregroundColor: orange,
+                    .imageNoteStorePath: path
+                ], range: NSRange(location: base, length: 2))
+            }
+
+            // Hide `](path)` — everything after the desc to end of match
+            let afterDescInLine = descRange.location + descRange.length
+            let afterDescInBacking = lineRange.location + afterDescInLine
+            let suffixLen = (m.range.location + m.range.length) - afterDescInLine
+            if suffixLen > 0 {
+                backing.addAttributes(hidden,
+                                      range: NSRange(location: afterDescInBacking, length: suffixLen))
+            }
+        }
+    }
+
+    // MARK: PDF links — 📎 [desc](path)
+    // Keeps `📎 ` visible in orange, hides `[` and `](path)`, shows desc in orange.
+    // 📎 is U+1F4CE — encodes as 2 UTF-16 code units, so `📎 ` = 3 UTF-16 units.
+
+    private func applyPDFLinks(in line: String, lineRange: NSRange) {
+        guard line.contains("📎"),
+              let regex = try? NSRegularExpression(
+                  pattern: "📎 \\[([^\\]]*)\\]\\(([^)]+)\\)") else { return }
+        let ns = line as NSString
+        let hidden: [NSAttributedString.Key: Any] = [
+            .font: Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ]
+        let orange = UIColor.systemOrange
+        for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            guard m.numberOfRanges >= 3 else { continue }
+            let descRange = m.range(at: 1)
+            let pathRange = m.range(at: 2)
+            guard pathRange.location != NSNotFound else { continue }
+            let path = ns.substring(with: pathRange)
+            let base = lineRange.location + m.range.location
+
+            // Keep `📎 ` (3 UTF-16 units) visible in orange; store path for tap detection
+            backing.addAttributes([
+                .foregroundColor: orange,
+                .pdfNoteStorePath: path
+            ], range: NSRange(location: base, length: 3))
+
+            // Hide `[` (1 unit at offset 3)
+            backing.addAttributes(hidden, range: NSRange(location: base + 3, length: 1))
+
+            // Show desc in orange + store path
+            if descRange.length > 0 {
+                let descBase = lineRange.location + descRange.location
+                backing.addAttributes([
+                    .foregroundColor: orange,
+                    .pdfNoteStorePath: path
+                ], range: NSRange(location: descBase, length: descRange.length))
+            }
+
+            // Hide `](path)` — from end of desc to end of match
+            let afterDescInLine = descRange.location + descRange.length
+            let afterDescInBacking = lineRange.location + afterDescInLine
+            let suffixLen = (m.range.location + m.range.length) - afterDescInLine
+            if suffixLen > 0 {
+                backing.addAttributes(hidden,
+                                      range: NSRange(location: afterDescInBacking, length: suffixLen))
+            }
+        }
+    }
+}
+
+// MARK: - Custom attribute keys for tappable image and PDF links
+
+extension NSAttributedString.Key {
+    /// Stores the NoteStore-relative path of an image. Set by MarkdownTextStorage on `![desc](path)` spans.
+    static let imageNoteStorePath = NSAttributedString.Key("com.david.trace.imageNoteStorePath")
+    /// Stores the NoteStore-relative path of a PDF. Set by MarkdownTextStorage on `📎 [desc](path)` spans.
+    static let pdfNoteStorePath   = NSAttributedString.Key("com.david.trace.pdfNoteStorePath")
 }

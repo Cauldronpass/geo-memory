@@ -257,6 +257,12 @@ class NoteStore {
         }
     }
 
+    /// Resolves a relative path (e.g. "Photos/2026/06/photo.jpg") to an absolute file URL.
+    /// Returns nil if the iCloud container has not yet been resolved.
+    func resolvedURL(for relativePath: String) -> URL? {
+        documentsURL?.appendingPathComponent(relativePath)
+    }
+
     func deleteFile(_ relativePath: String) throws {
         guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
         let fileURL = documentsURL.appendingPathComponent(relativePath)
