@@ -90,6 +90,64 @@ final class ThingsService {
         }
     }
 
+    // MARK: - Complete
+
+    /// Marks a task done on the Mini, removes it from the local list immediately.
+    func complete(taskID: String) async {
+        // Optimistic remove
+        await MainActor.run {
+            tasks.removeAll { $0.id == taskID }
+            totalCount = max(0, totalCount - 1)
+        }
+
+        guard let rawURL = UserDefaults.standard.string(forKey: "things_api_url"),
+              !rawURL.isEmpty else { return }
+        let base = rawURL.hasSuffix("/") ? rawURL : rawURL + "/"
+        guard let url = URL(string: base + "complete") else { return }
+
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = UserDefaults.standard.string(forKey: "things_api_token"), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["uuid": taskID])
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
+    // MARK: - Add
+
+    /// Adds a new task to Things via the Mini server.
+    /// - Parameters:
+    ///   - title: Task title.
+    ///   - toToday: If true, schedules for today; if false, sends to Inbox.
+    func addTask(title: String, toToday: Bool) async {
+        guard let rawURL = UserDefaults.standard.string(forKey: "things_api_url"),
+              !rawURL.isEmpty else { return }
+        let base = rawURL.hasSuffix("/") ? rawURL : rawURL + "/"
+        guard let url = URL(string: base + "add") else { return }
+
+        var body: [String: String] = ["title": title, "notes": "From Trace"]
+        if toToday {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.dateFormat = "yyyy-MM-dd"
+            body["date"] = f.string(from: Date())
+        }
+
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = UserDefaults.standard.string(forKey: "things_api_token"), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        _ = try? await URLSession.shared.data(for: request)
+
+        // Refresh so the new task appears if it landed in Today
+        if toToday { await fetch() }
+    }
+
     // MARK: - Cache
 
     private func saveCache() {
