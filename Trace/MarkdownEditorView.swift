@@ -29,6 +29,9 @@ struct MarkdownEditorView: UIViewRepresentable {
     var onFocusChange: ((Bool) -> Void)? = nil
     /// Called when user long-presses a timestamp-delimited block (E1).
     var onBlockLongPress: ((BlockInfo) -> Void)? = nil
+    /// NoteStore relative path for this note (e.g. "Notes/Daily/2026-06-28.md").
+    /// Used to extract the note date for task scheduling when sending to Things / Tweek.
+    var relativePath: String? = nil
 
     // MARK: Make
 
@@ -75,12 +78,13 @@ struct MarkdownEditorView: UIViewRepresentable {
         }
         updatePlaceholderVisibility(tv)
 
-        // Refresh thumbnail overlays after layout completes (initial load)
+        // Refresh overlays after layout completes (initial load)
         let tvForThumb = tv
         let coord = context.coordinator
         DispatchQueue.main.async {
             tvForThumb.layoutManager.ensureLayout(for: tvForThumb.textContainer)
             coord.refreshThumbnails(in: tvForThumb)
+            coord.refreshCheckboxOverlays(in: tvForThumb)
         }
 
         return tv
@@ -88,7 +92,7 @@ struct MarkdownEditorView: UIViewRepresentable {
 
     // MARK: Update
 
-    func updateUIView(_ tv: UITextView, context: Context) {
+    private func _updateUIView(_ tv: UITextView, context: Context) {
         // Handle timestamp trigger
         if let triggerBinding = timestampTrigger,
            let trigger = triggerBinding.wrappedValue,
@@ -119,10 +123,24 @@ struct MarkdownEditorView: UIViewRepresentable {
         let newLen = tv.textStorage.length
         tv.selectedRange = NSRange(location: min(saved.location, newLen), length: 0)
         updatePlaceholderVisibility(tv)
+        let extCoord = context.coordinator
+        DispatchQueue.main.async {
+            tv.layoutManager.ensureLayout(for: tv.textContainer)
+            extCoord.refreshCheckboxOverlays(in: tv)
+            extCoord.refreshThumbnails(in: tv)
+        }
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onSave: onSave, onFocusChange: onFocusChange, onBlockLongPress: onBlockLongPress)
+        let c = Coordinator(text: $text, onSave: onSave, onFocusChange: onFocusChange, onBlockLongPress: onBlockLongPress)
+        c.relativePath = relativePath
+        return c
+    }
+
+    func updateUIView(_ tv: UITextView, context: Context) {
+        // Keep relativePath in sync if the caller changes it after initial creation.
+        context.coordinator.relativePath = relativePath
+        _updateUIView(tv, context: context)
     }
 
     // MARK: - Placeholder helpers
@@ -198,25 +216,30 @@ struct MarkdownEditorView: UIViewRepresentable {
         stack.translatesAutoresizingMaskIntoConstraints = false
         scrollView.addSubview(stack)
 
-        // Order: B · ~~ · H · − · ☐ · ← · → · 📎(UIMenu) · 🔗 · #
+        // Order: B · ~~ · H · − · ☐(UIMenu) · ← · → · 📎(UIMenu) · 🔗 · # · 📅
         let leadingItems: [(title: String, bold: Bool, action: Selector)] = [
             ("B",   true,  #selector(Coordinator.insertBold)),
             ("~~",  false, #selector(Coordinator.insertStrike)),
             ("H",   false, #selector(Coordinator.insertHighlight)),
             ("−",   false, #selector(Coordinator.insertBullet)),
-            ("☐",   false, #selector(Coordinator.insertCheckbox)),
+            // ☐ is added below as a UIMenu button
             ("←",   false, #selector(Coordinator.outdentLine)),
             ("→",   false, #selector(Coordinator.indentLine)),
         ]
         let trailingItems: [(title: String, bold: Bool, action: Selector)] = [
             ("🔗",  false, #selector(Coordinator.insertLink)),
             ("#",   false, #selector(Coordinator.insertHeading)),
+            ("📅",  false, #selector(Coordinator.insertDate)),
         ]
-        for item in leadingItems {
+        for (i, item) in leadingItems.enumerated() {
             stack.addArrangedSubview(
                 makeToolbarButton(item.title, bold: item.bold,
                                   coordinator: coordinator, action: item.action)
             )
+            // Insert ☐ UIMenu after the − button (index 3)
+            if i == 3 {
+                stack.addArrangedSubview(makeCheckboxMenuButton(coordinator: coordinator))
+            }
         }
         // 📎 uses UIMenu — no presenting VC needed, no keyboard conflicts
         stack.addArrangedSubview(makeAttachMenuButton(coordinator: coordinator))
@@ -296,6 +319,34 @@ struct MarkdownEditorView: UIViewRepresentable {
         return btn
     }
 
+    // ☐ checkbox picker — UIMenu with 3 options: local / Things / Tweek.
+    // Selecting Things or Tweek inserts `- [ ] ` AND immediately fires the send.
+    private func makeCheckboxMenuButton(coordinator: Coordinator) -> UIButton {
+        let btn = UIButton(type: .system)
+        btn.setAttributedTitle(
+            NSAttributedString(string: "☐",
+                               attributes: [.font: UIFont.systemFont(ofSize: 17),
+                                            .foregroundColor: UIColor.label]),
+            for: .normal
+        )
+        btn.menu = UIMenu(title: "", children: [
+            UIAction(title: "Local   ☐", image: nil) { [weak coordinator] _ in
+                coordinator?.insertCheckbox()
+            },
+            UIAction(title: "Things  🔵", image: nil) { [weak coordinator] _ in
+                coordinator?.insertCheckboxAndSend(to: .things)
+            },
+            UIAction(title: "Tweek  🪶", image: nil) { [weak coordinator] _ in
+                coordinator?.insertCheckboxAndSend(to: .tweek)
+            },
+        ])
+        btn.showsMenuAsPrimaryAction = true
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+        btn.heightAnchor.constraint(equalToConstant: 43).isActive = true
+        return btn
+    }
+
     private func makeToolbarButton(_ title: String, bold: Bool,
                                     coordinator: Coordinator, action: Selector) -> UIButton {
         let btn = UIButton(type: .system)
@@ -328,6 +379,9 @@ struct MarkdownEditorView: UIViewRepresentable {
                              VNDocumentCameraViewControllerDelegate,
                              UIDocumentPickerDelegate {
 
+        // MARK: - App target for task sends
+        enum SendApp { case things, tweek }
+
         @Binding var text: String
         var onSave: ((String) -> Void)?
         var onFocusChange: ((Bool) -> Void)?
@@ -335,6 +389,8 @@ struct MarkdownEditorView: UIViewRepresentable {
         weak var textView: UITextView?
         private var saveWork: DispatchWorkItem?
         var lastTimestampTrigger: Date?
+        /// NoteStore relative path — set by MarkdownEditorView so we can extract note date.
+        var relativePath: String?
         /// Set to true when a long-press fires; prevents the tap gesture from
         /// also firing (which would open the photo immediately after the sheet appears).
         private var suppressNextTap = false
@@ -344,6 +400,8 @@ struct MarkdownEditorView: UIViewRepresentable {
         private static let thumbnailTag = 8_001
         /// Paths for which an iCloud-download retry is already scheduled (prevents duplicate timers).
         private var thumbnailRetryPaths: Set<String> = []
+        /// Tag applied to UIButtons overlaid for tappable checkbox circles (E2) and Things send buttons (E11).
+        private static let checkboxOverlayTag = 9_002
 
         init(text: Binding<String>,
              onSave: ((String) -> Void)?,
@@ -362,6 +420,8 @@ struct MarkdownEditorView: UIViewRepresentable {
             tv.viewWithTag(9_001)?.isHidden = !tv.text.isEmpty
             scheduleSave(tv.text)
             refreshThumbnails(in: tv)
+            refreshCheckboxOverlays(in: tv)
+            checkForTextExpansion(tv)
         }
 
         func textViewDidBeginEditing(_ tv: UITextView) {
@@ -408,6 +468,10 @@ struct MarkdownEditorView: UIViewRepresentable {
                     tv.selectedRange = NSRange(location: range.location + 7, length: 0)
                 }
                 self.text = tv.text; scheduleSave(tv.text)
+                // textViewDidChange may not fire when returning false — refresh overlays explicitly
+                DispatchQueue.main.async { [weak self] in
+                    if let tv = self?.textView { self?.refreshCheckboxOverlays(in: tv) }
+                }
                 return false
             }
 
@@ -432,6 +496,30 @@ struct MarkdownEditorView: UIViewRepresentable {
             }
             saveWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+        }
+
+        // MARK: - Note date helpers
+
+        /// Extracts the ISO date (YYYY-MM-DD) from the note's relativePath filename.
+        /// Returns nil for non-daily notes (week notes, month notes, etc.).
+        func noteDate() -> String? {
+            guard let path = relativePath else { return nil }
+            let pattern = #"\d{4}-\d{2}-\d{2}"#
+            guard let range = path.range(of: pattern, options: .regularExpression) else { return nil }
+            return String(path[range])
+        }
+
+        /// Strips any known send badge suffix from a line string (no newline manipulation).
+        /// Used before retrying a failed send so the old badge is replaced cleanly.
+        private func stripBadges(from line: String) -> String {
+            var s = line.trimmingCharacters(in: .newlines)
+            for badge in [" ⚠️🔵", " ⚠️🪶", " 🔵", " 🪶"] {
+                if s.hasSuffix(badge) {
+                    s = String(s.dropLast(badge.count))
+                    break
+                }
+            }
+            return s
         }
 
         // MARK: - E1: Long-press block detection
@@ -824,6 +912,13 @@ struct MarkdownEditorView: UIViewRepresentable {
             text = tv.text; scheduleSave(tv.text)
         }
 
+        @objc func insertDate() {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "MMMM d, yyyy"
+            insertAtCursor(formatter.string(from: Date()))
+        }
+
         @objc func dismissKeyboard() {
             textView?.resignFirstResponder()
         }
@@ -1138,6 +1233,369 @@ struct MarkdownEditorView: UIViewRepresentable {
                 iv.isUserInteractionEnabled = false
                 tv.addSubview(iv)
             }
+        }
+
+        // MARK: - Checkbox circle overlays (E2) + send buttons (E11/Tweek)
+        //
+        // Scans for `- [ ]` / `- [x]` lines. For each:
+        //  • Circle UIButton at left indent — toggles checkbox.
+        //  • Right-edge button based on badge state:
+        //      no badge        → UIMenu "Send to…" (Things + Tweek)
+        //      🔵 or 🪶        → nothing (already sent)
+        //      ⚠️🔵 or ⚠️🪶   → retry button for the appropriate app
+        // Called after every text change and on initial load.
+
+        func refreshCheckboxOverlays(in tv: UITextView) {
+            tv.subviews
+                .filter { $0.tag == Self.checkboxOverlayTag }
+                .forEach { $0.removeFromSuperview() }
+
+            tv.layoutManager.ensureLayout(for: tv.textContainer)
+
+            let ns = tv.textStorage.string as NSString
+            var pos = 0
+            while pos < ns.length {
+                let lineRange = ns.lineRange(for: NSRange(location: pos, length: 0))
+                guard lineRange.length > 0 else { break }
+                let line = ns.substring(with: lineRange)
+
+                if line.hasPrefix("- [ ]") || line.hasPrefix("- [x]") {
+                    let isChecked = line.hasPrefix("- [x]")
+
+                    let glyphIdx = tv.layoutManager.glyphIndexForCharacter(at: lineRange.location)
+                    let lineFragRect = tv.layoutManager.lineFragmentRect(
+                        forGlyphAt: glyphIdx, effectiveRange: nil)
+                    let lineY = lineFragRect.origin.y + tv.textContainerInset.top
+                    let lineH = lineFragRect.height
+
+                    // --- Circle toggle button ---
+                    let circleSize: CGFloat = 18
+                    let circleBtn = UIButton(type: .custom)
+                    circleBtn.frame = CGRect(
+                        x: tv.textContainerInset.left + 1,
+                        y: lineY + (lineH - circleSize) / 2,
+                        width: circleSize, height: circleSize)
+                    circleBtn.tag = Self.checkboxOverlayTag
+                    let symCfg   = UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+                    let symName  = isChecked ? "checkmark.circle.fill" : "circle"
+                    let symColor : UIColor = isChecked
+                        ? MarkdownTextStorage.checkColor
+                        : MarkdownTextStorage.uncheckColor
+                    circleBtn.setImage(
+                        UIImage(systemName: symName, withConfiguration: symCfg)?
+                            .withTintColor(symColor, renderingMode: .alwaysOriginal),
+                        for: .normal)
+                    let captureLoc = lineRange.location
+                    let captureLen = lineRange.length
+                    circleBtn.addAction(UIAction { [weak self, weak tv] _ in
+                        guard let self, let tv else { return }
+                        let nsNow  = tv.text as NSString
+                        let safeL  = min(captureLen, nsNow.length - captureLoc)
+                        guard safeL > 0, captureLoc + safeL <= nsNow.length else { return }
+                        let lr     = NSRange(location: captureLoc, length: safeL)
+                        let cur    = nsNow.substring(with: lr)
+                        if cur.hasPrefix("- [ ]") {
+                            tv.textStorage.replaceCharacters(in: lr, with: "- [x]" + cur.dropFirst(5))
+                        } else if cur.hasPrefix("- [x]") {
+                            tv.textStorage.replaceCharacters(in: lr, with: "- [ ]" + cur.dropFirst(5))
+                        }
+                        self.text = tv.text; self.scheduleSave(tv.text)
+                    }, for: .touchUpInside)
+                    tv.addSubview(circleBtn)
+
+                    // --- Right-edge send / retry button (unchecked lines only) ---
+                    guard !isChecked else {
+                        pos = lineRange.location + lineRange.length
+                        if lineRange.length == 0 { break }
+                        continue
+                    }
+                    let rawTitle = String(line.dropFirst(6))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !rawTitle.isEmpty else {
+                        pos = lineRange.location + lineRange.length
+                        if lineRange.length == 0 { break }
+                        continue
+                    }
+
+                    let hasSentThings   = rawTitle.hasSuffix("🔵") && !rawTitle.hasSuffix("⚠️🔵")
+                    let hasSentTweek    = rawTitle.hasSuffix("🪶") && !rawTitle.hasSuffix("⚠️🪶")
+                    let hasWarnThings   = rawTitle.hasSuffix("⚠️🔵")
+                    let hasWarnTweek    = rawTitle.hasSuffix("⚠️🪶")
+
+                    if hasSentThings || hasSentTweek {
+                        // Already sent — no button.
+                    } else if hasWarnThings || hasWarnTweek {
+                        // Retry button — orange exclamationmark.circle
+                        let retryApp: SendApp = hasWarnThings ? .things : .tweek
+                        let cleanTitle = stripBadges(from: rawTitle)
+                        let btnSize: CGFloat = 16
+                        let retryBtn = UIButton(type: .custom)
+                        retryBtn.frame = CGRect(
+                            x: tv.bounds.width - tv.textContainerInset.right - btnSize - 4,
+                            y: lineY + (lineH - btnSize) / 2,
+                            width: btnSize, height: btnSize)
+                        retryBtn.tag = Self.checkboxOverlayTag
+                        let rCfg = UIImage.SymbolConfiguration(pointSize: 12, weight: .light)
+                        retryBtn.setImage(
+                            UIImage(systemName: "exclamationmark.circle", withConfiguration: rCfg)?
+                                .withTintColor(UIColor.systemOrange, renderingMode: .alwaysOriginal),
+                            for: .normal)
+                        retryBtn.addAction(UIAction { [weak self, weak tv] _ in
+                            guard let self, let tv else { return }
+                            // Strip the warning badge from backing store before retrying.
+                            let nsNow  = tv.text as NSString
+                            let safeL  = min(captureLen, nsNow.length - captureLoc)
+                            guard safeL > 0, captureLoc + safeL <= nsNow.length else { return }
+                            let lr     = NSRange(location: captureLoc, length: safeL)
+                            let rawLine = nsNow.substring(with: lr)
+                            let stripped = self.stripBadges(from: rawLine)
+                            tv.textStorage.replaceCharacters(in: lr, with: stripped + "\n")
+                            self.text = tv.text; self.scheduleSave(tv.text)
+                            let newNs       = tv.text as NSString
+                            let newLineRange = newNs.lineRange(for: NSRange(location: captureLoc, length: 0))
+                            let date = self.noteDate()
+                            switch retryApp {
+                            case .things:
+                                self.sendToThings(taskTitle: cleanTitle, date: date,
+                                                   lineLocation: newLineRange.location,
+                                                   lineLength: newLineRange.length, in: tv)
+                            case .tweek:
+                                self.sendToTweek(taskTitle: cleanTitle, date: date,
+                                                  lineLocation: newLineRange.location,
+                                                  lineLength: newLineRange.length, in: tv)
+                            }
+                        }, for: .touchUpInside)
+                        tv.addSubview(retryBtn)
+
+                    } else {
+                        // Send UIMenu button — arrow.up.right.circle with Things + Tweek options
+                        let sendSize: CGFloat = 16
+                        let sendBtn = UIButton(type: .custom)
+                        sendBtn.frame = CGRect(
+                            x: tv.bounds.width - tv.textContainerInset.right - sendSize - 4,
+                            y: lineY + (lineH - sendSize) / 2,
+                            width: sendSize, height: sendSize)
+                        sendBtn.tag = Self.checkboxOverlayTag
+                        let sCfg = UIImage.SymbolConfiguration(pointSize: 12, weight: .light)
+                        sendBtn.setImage(
+                            UIImage(systemName: "arrow.up.right.circle", withConfiguration: sCfg)?
+                                .withTintColor(UIColor.systemBlue.withAlphaComponent(0.55),
+                                               renderingMode: .alwaysOriginal),
+                            for: .normal)
+                        let captureTitle = rawTitle
+                        sendBtn.menu = UIMenu(title: "", children: [
+                            UIAction(title: "Things  🔵", image: nil) { [weak self, weak tv] _ in
+                                guard let self, let tv else { return }
+                                self.sendToThings(taskTitle: captureTitle, date: self.noteDate(),
+                                                   lineLocation: captureLoc, lineLength: captureLen,
+                                                   in: tv)
+                            },
+                            UIAction(title: "Tweek  🪶", image: nil) { [weak self, weak tv] _ in
+                                guard let self, let tv else { return }
+                                self.sendToTweek(taskTitle: captureTitle, date: self.noteDate(),
+                                                  lineLocation: captureLoc, lineLength: captureLen,
+                                                  in: tv)
+                            },
+                        ])
+                        sendBtn.showsMenuAsPrimaryAction = true
+                        tv.addSubview(sendBtn)
+                    }
+                }
+
+                pos = lineRange.location + lineRange.length
+                if lineRange.length == 0 { break }
+            }
+        }
+
+        // MARK: - Insert checkbox + immediately send (toolbar picker shortcut)
+
+        func insertCheckboxAndSend(to app: SendApp) {
+            guard let tv = textView else { return }
+            let cursorRange = tv.selectedRange
+            let ns = tv.text as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
+            let line = ns.substring(with: lineRange)
+
+            // Task title = current line content (stripped of any existing checkbox prefix)
+            var rawTitle = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if rawTitle.hasPrefix("- [ ] ") { rawTitle = String(rawTitle.dropFirst(6)) }
+            else if rawTitle.hasPrefix("- [x] ") { rawTitle = String(rawTitle.dropFirst(6)) }
+
+            // Insert checkbox prefix if not already present
+            let alreadyCheckbox = line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ")
+            if !alreadyCheckbox {
+                if let insertPos = tv.position(from: tv.beginningOfDocument,
+                                                offset: lineRange.location),
+                   let r = tv.textRange(from: insertPos, to: insertPos) {
+                    tv.replace(r, withText: "- [ ] ")
+                }
+            }
+            text = tv.text; scheduleSave(tv.text)
+
+            guard !rawTitle.isEmpty else { return }   // nothing to send on an empty line
+
+            // Recompute line range after insertion
+            let newNs        = tv.text as NSString
+            let newLineRange = newNs.lineRange(for: NSRange(location: lineRange.location, length: 0))
+            let date = noteDate()
+            switch app {
+            case .things:
+                sendToThings(taskTitle: rawTitle, date: date,
+                             lineLocation: newLineRange.location,
+                             lineLength: newLineRange.length, in: tv)
+            case .tweek:
+                sendToTweek(taskTitle: rawTitle, date: date,
+                             lineLocation: newLineRange.location,
+                             lineLength: newLineRange.length, in: tv)
+            }
+        }
+
+        // MARK: - E11 / Tweek: Send task to external app
+        //
+        // Things:  Mini server first (POST /add, 4-second timeout), URL scheme fallback.
+        // Tweek:   Mini server only (POST /tweek-add, 4-second timeout), no URL scheme fallback.
+        // On success: appends ` 🔵` / ` 🪶`.
+        // On failure: appends ` ⚠️🔵` / ` ⚠️🪶` — tap the orange retry button to retry.
+        // Simulator: both paths skipped to avoid error noise during development.
+
+        private func sendToThings(taskTitle: String,
+                                   date: String?,
+                                   lineLocation: Int,
+                                   lineLength: Int,
+                                   in tv: UITextView) {
+#if targetEnvironment(simulator)
+            return   // skip network calls in simulator
+#endif
+            let baseURL = UserDefaults.standard.string(forKey: "things_api_url") ?? ""
+            let token   = UserDefaults.standard.string(forKey: "things_api_token") ?? ""
+
+            if !baseURL.isEmpty, let serverURL = URL(string: baseURL + "/add") {
+                var request = URLRequest(url: serverURL,
+                                         cachePolicy: .reloadIgnoringLocalCacheData,
+                                         timeoutInterval: 4)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+                var body: [String: String] = ["title": taskTitle, "notes": "From Trace"]
+                if let d = date, !d.isEmpty { body["date"] = d }
+                request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+                URLSession.shared.dataTask(with: request) { [weak self, weak tv] _, response, error in
+                    DispatchQueue.main.async {
+                        guard let self, let tv else { return }
+                        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        if error == nil && code == 200 {
+                            self.appendBadge(" 🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                        } else {
+                            self.openThingsURLScheme(taskTitle: taskTitle, date: date,
+                                                     lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                        }
+                    }
+                }.resume()
+            } else {
+                openThingsURLScheme(taskTitle: taskTitle, date: date,
+                                    lineLocation: lineLocation, lineLength: lineLength, in: tv)
+            }
+        }
+
+        private func openThingsURLScheme(taskTitle: String,
+                                          date: String?,
+                                          lineLocation: Int,
+                                          lineLength: Int,
+                                          in tv: UITextView) {
+#if targetEnvironment(simulator)
+            return
+#endif
+            var comps = URLComponents(string: "things:///add")!
+            var items: [URLQueryItem] = [
+                URLQueryItem(name: "title", value: taskTitle),
+                URLQueryItem(name: "notes", value: "From Trace"),
+                URLQueryItem(name: "show-quick-entry", value: "false"),
+            ]
+            if let d = date, !d.isEmpty {
+                items.append(URLQueryItem(name: "when", value: d))
+            }
+            comps.queryItems = items
+            guard let url = comps.url else {
+                appendBadge(" ⚠️🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                return
+            }
+            UIApplication.shared.open(url, options: [:]) { [weak self, weak tv] success in
+                guard let self, let tv else { return }
+                DispatchQueue.main.async {
+                    self.appendBadge(success ? " 🔵" : " ⚠️🔵",
+                                     lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                }
+            }
+        }
+
+        private func sendToTweek(taskTitle: String,
+                                  date: String?,
+                                  lineLocation: Int,
+                                  lineLength: Int,
+                                  in tv: UITextView) {
+#if targetEnvironment(simulator)
+            return
+#endif
+            let baseURL = UserDefaults.standard.string(forKey: "things_api_url") ?? ""
+            let token   = UserDefaults.standard.string(forKey: "things_api_token") ?? ""
+
+            guard !baseURL.isEmpty, let serverURL = URL(string: baseURL + "/tweek-add") else {
+                appendBadge(" ⚠️🪶", lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                return
+            }
+            var request = URLRequest(url: serverURL,
+                                     cachePolicy: .reloadIgnoringLocalCacheData,
+                                     timeoutInterval: 4)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+            var body: [String: String] = ["title": taskTitle]
+            if let d = date, !d.isEmpty { body["date"] = d }
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+            URLSession.shared.dataTask(with: request) { [weak self, weak tv] _, response, error in
+                DispatchQueue.main.async {
+                    guard let self, let tv else { return }
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    self.appendBadge(error == nil && code == 200 ? " 🪶" : " ⚠️🪶",
+                                     lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                }
+            }.resume()
+        }
+
+        /// Appends a badge string to the task line, stripping any prior badge first.
+        private func appendBadge(_ badge: String, lineLocation: Int, lineLength: Int, in tv: UITextView) {
+            let ns = tv.text as NSString
+            let safeLen = min(lineLength, ns.length - lineLocation)
+            guard safeLen > 0, lineLocation + safeLen <= ns.length else { return }
+            let lr = NSRange(location: lineLocation, length: safeLen)
+            let currentLine = ns.substring(with: lr)
+            let stripped = stripBadges(from: currentLine)
+            tv.textStorage.replaceCharacters(in: lr, with: stripped + badge + "\n")
+            text = tv.text
+            scheduleSave(tv.text)
+        }
+
+        // MARK: - E5: Text expansion — `xdt` → today's date
+
+        private func checkForTextExpansion(_ tv: UITextView) {
+            let cursorLoc = tv.selectedRange.location
+            guard cursorLoc >= 3 else { return }
+            let ns = tv.text as NSString
+            let startLoc = cursorLoc - 3
+            let last3 = ns.substring(with: NSRange(location: startLoc, length: 3))
+            guard last3 == "xdt" else { return }
+
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "MMMM d, yyyy"
+            let dateStr = formatter.string(from: Date())
+            tv.textStorage.replaceCharacters(
+                in: NSRange(location: startLoc, length: 3), with: dateStr)
+            tv.selectedRange = NSRange(location: startLoc + (dateStr as NSString).length, length: 0)
+            text = tv.text
+            scheduleSave(tv.text)
         }
 
         // MARK: - Presenting helpers
