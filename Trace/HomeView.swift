@@ -903,10 +903,14 @@ struct HomeView: View {
 
     // MARK: – Things
 
+    @State private var showingAddTask = false
+    @State private var newTaskTitle = ""
+
     @ViewBuilder
     private var thingsSection: some View {
         if things.shouldShow {
-            let shown = Array(things.tasks.prefix(3))
+            let shown = Array(things.tasks.prefix(5))
+            let thingsGreen = Color(red: 0.114, green: 0.620, blue: 0.459)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
                     sectionLabel("Today in Things")
@@ -921,48 +925,84 @@ struct HomeView: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
-                        .background(Color(red: 0.114, green: 0.620, blue: 0.459))
+                        .background(thingsGreen)
                         .clipShape(Capsule())
                     }
-                    if things.totalCount > 3 {
+                    if things.totalCount > 5 {
                         Text("\(shown.count) of \(things.totalCount)")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
+                    // Add task button
+                    Button {
+                        newTaskTitle = ""
+                        showingAddTask = true
+                    } label: {
+                        Image(systemName: "plus.circle")
+                            .font(.system(size: 14))
+                            .foregroundStyle(thingsGreen)
+                    }
+                    .buttonStyle(.plain)
                     Button {
                         UIApplication.shared.open(URL(string: "things:///show?id=today")!)
                     } label: {
-                        Text("Open Things →")
+                        Text("Open →")
                             .font(.system(size: 10))
-                            .foregroundStyle(Color(red: 0.114, green: 0.620, blue: 0.459))
+                            .foregroundStyle(thingsGreen)
                     }
                     .buttonStyle(.plain)
                 }
 
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(shown) { task in
-                        HStack(alignment: .top, spacing: 8) {
-                            Circle()
-                                .fill(Color.secondary.opacity(0.45))
-                                .frame(width: 4, height: 4)
-                                .padding(.top, 6)
+                        HStack(alignment: .center, spacing: 10) {
+                            // Tappable completion circle
+                            Button {
+                                Task { await things.complete(taskID: task.id) }
+                            } label: {
+                                Image(systemName: "circle")
+                                    .font(.system(size: 18))
+                                    .foregroundStyle(thingsGreen)
+                            }
+                            .buttonStyle(.plain)
+
                             Text(task.title)
                                 .font(.subheadline)
                                 .foregroundStyle(.primary)
                                 .lineLimit(2)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+
                             if let list = task.list, !list.isEmpty {
                                 Text(list)
                                     .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             }
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
+
+                        if task.id != shown.last?.id {
+                            Divider().padding(.leading, 40)
+                        }
                     }
                 }
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 10))
+            }
+            .alert("Add to Things", isPresented: $showingAddTask) {
+                TextField("Task title", text: $newTaskTitle)
+                Button("Today") {
+                    let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty else { return }
+                    Task { await things.addTask(title: title, toToday: true) }
+                }
+                Button("Inbox") {
+                    let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty else { return }
+                    Task { await things.addTask(title: title, toToday: false) }
+                }
+                Button("Cancel", role: .cancel) { }
             }
         }
     }

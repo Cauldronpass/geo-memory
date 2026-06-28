@@ -745,7 +745,7 @@ struct DiscoverResultRow: View {
                     HStack(spacing: 10) {
                         // Directions
                         Button {
-                            let url = URL(string: "maps.apple.com/?daddr=\(place.latitude),\(place.longitude)&dirflg=d")!
+                            let url = URL(string: "maps://?daddr=\(place.latitude),\(place.longitude)&dirflg=d")!
                             UIApplication.shared.open(url)
                         } label: {
                             Label("Directions", systemImage: "arrow.triangle.turn.up.right.circle.fill")
