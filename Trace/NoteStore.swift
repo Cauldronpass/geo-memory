@@ -282,6 +282,15 @@ class NoteStore {
         let items = try FileManager.default.contentsOfDirectory(atPath: folderURL.path)
         return items.filter { $0.hasSuffix(".md") }.sorted()
     }
+
+    /// Like listFiles but returns all files regardless of extension (for Documents/ subfolders).
+    func listDocumentFiles(in subfolder: String) throws -> [String] {
+        guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
+        let folderURL = documentsURL.appendingPathComponent(subfolder)
+        guard FileManager.default.fileExists(atPath: folderURL.path) else { return [] }
+        let items = try FileManager.default.contentsOfDirectory(atPath: folderURL.path)
+        return items.filter { !$0.hasPrefix(".") }.sorted(by: >)  // newest first
+    }
 }
 
 // MARK: - Notification names

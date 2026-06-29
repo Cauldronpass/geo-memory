@@ -18,6 +18,8 @@ struct ContentView: View {
     @State private var showingGeofenceCheckIn = false
     @State private var showingWorkoutPrompt = false
     @State private var showingWorkoutFromURL = false
+    @State private var showingAddDocument = false
+    @State private var pendingIncomingDocument: IncomingDocument? = nil
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -64,6 +66,7 @@ struct ContentView: View {
                     Button("Add Place") { showingAddPlace = true }
                     Button("Add Note") { showingAddCapture = true }
                     Button("Add Photo") { showingAddPhoto = true }
+                    Button("Add Document") { showingAddDocument = true }
                     Button("Cancel", role: .cancel) { }
                 }
             }
@@ -87,6 +90,12 @@ struct ContentView: View {
             AddPhotoView()
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
+        }
+        .sheet(isPresented: $showingAddDocument) {
+            AddDocumentView(incomingDocument: nil)
+        }
+        .sheet(item: $pendingIncomingDocument) { incoming in
+            AddDocumentView(incomingDocument: incoming)
         }
         .sheet(isPresented: $showingQuickPin) {
             QuickPinLabelSheet(coord: quickPinCoord)
@@ -146,6 +155,7 @@ struct ContentView: View {
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 checkPendingShortcut()
+                checkIncomingDocument()
             }
         }
         // Home screen quick actions — foreground (app was suspended)
@@ -188,6 +198,7 @@ struct ContentView: View {
                     await notion.fetchPlaces()
                     await notion.fetchVisits()
                 }
+                checkIncomingDocument()
             }
         }
         // Right edge swipe → opens Captures drawer
@@ -212,8 +223,9 @@ struct ContentView: View {
             case "quicknote": showingAddCapture = true
             case "checkin":   showingCheckIn = true
             case "workout":   showingWorkoutFromURL = true
-            case "addphoto":  showingAddPhoto = true
-            case "addplace":  showingAddPlace = true
+            case "addphoto":    showingAddPhoto = true
+            case "adddocument": showingAddDocument = true
+            case "addplace":    showingAddPlace = true
             case "addnote":   showingAddCapture = true
             case "pin":       quickPin()
             default: break
@@ -238,6 +250,13 @@ struct ContentView: View {
                         }
                 )
         }
+    }
+
+    // MARK: - Incoming document (from Share Extension)
+
+    private func checkIncomingDocument() {
+        guard let incoming = AppGroup.consumeIncoming() else { return }
+        pendingIncomingDocument = incoming
     }
 
     // MARK: - Shortcut handling
