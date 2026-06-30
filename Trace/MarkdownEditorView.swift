@@ -13,7 +13,8 @@ import AVFoundation
 //   • Live markdown syntax highlighting via MarkdownTextStorage
 //   • Scrollable toolbar: B · I · ~~ · H · # · − · → · ← · ☐ · 📎 · 🔗 ‖ Done
 //   • Auto-save: 0.8 s debounce after last keystroke
-//   • Checkbox tap: tapping a checkbox line toggles - [ ] ↔ - [x]
+//   • Checkbox tap: tapping the circle overlay toggles - [ ] ↔ - [x]
+//   • ☐ toolbar tap: UIMenu (no first-responder change) → Keep local / Things / Tweek
 //   • Link tap: opens URLs (http/https and custom schemes) via UIApplication.open
 //   • Placeholder label shown when text is empty
 //   • Timestamp insert: triggered externally via timestampTrigger binding
@@ -54,6 +55,11 @@ struct MarkdownEditorView: UIViewRepresentable {
         tv.autocapitalizationType = .sentences
         tv.keyboardDismissMode    = .interactive
         tv.alwaysBounceVertical   = true
+        // Disable smart punctuation substitutions — a markdown editor needs raw characters.
+        // Smart dashes convert "--" to "–" which breaks "---" horizontal rule detection.
+        // Smart quotes would break markdown link syntax.
+        tv.smartDashesType        = .no
+        tv.smartQuotesType        = .no
 
         context.coordinator.textView = tv
         tv.inputAccessoryView = makeScrollToolbar(context.coordinator)
@@ -78,12 +84,22 @@ struct MarkdownEditorView: UIViewRepresentable {
         }
         updatePlaceholderVisibility(tv)
 
+        // Resign first responder when keyboard fully hides so the format bar
+        // doesn't sit on top of the tab bar.
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.keyboardDidHide),
+            name: UIResponder.keyboardDidHideNotification,
+            object: nil
+        )
+
         // Refresh overlays after layout completes (initial load)
         let tvForThumb = tv
         let coord = context.coordinator
         DispatchQueue.main.async {
             tvForThumb.layoutManager.ensureLayout(for: tvForThumb.textContainer)
             coord.refreshThumbnails(in: tvForThumb)
+            coord.refreshHorizontalRules(in: tvForThumb)
             coord.refreshCheckboxOverlays(in: tvForThumb)
         }
 
@@ -126,8 +142,9 @@ struct MarkdownEditorView: UIViewRepresentable {
         let extCoord = context.coordinator
         DispatchQueue.main.async {
             tv.layoutManager.ensureLayout(for: tv.textContainer)
-            extCoord.refreshCheckboxOverlays(in: tv)
+            extCoord.refreshHorizontalRules(in: tv)
             extCoord.refreshThumbnails(in: tv)
+            extCoord.refreshCheckboxOverlays(in: tv)
         }
     }
 
@@ -319,24 +336,30 @@ struct MarkdownEditorView: UIViewRepresentable {
         return btn
     }
 
-    // ☐ checkbox picker — UIMenu with 3 options: local / Things / Tweek.
-    // Selecting Things or Tweek inserts `- [ ] ` AND immediately fires the send.
+    // Checkbox button — UIMenu (showsMenuAsPrimaryAction) so the popup never
+    // resigns first responder from the text view. Uses an SF Symbol image so the
+    // toolbar never hits the same U+2610 font-fallback "W" bug as the inline glyph.
     private func makeCheckboxMenuButton(coordinator: Coordinator) -> UIButton {
         let btn = UIButton(type: .system)
-        btn.setAttributedTitle(
-            NSAttributedString(string: "☐",
-                               attributes: [.font: UIFont.systemFont(ofSize: 17),
-                                            .foregroundColor: UIColor.label]),
-            for: .normal
-        )
+        let symConfig = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        if let img = UIImage(systemName: "checkmark.square", withConfiguration: symConfig) {
+            btn.setImage(img, for: .normal)
+            btn.tintColor = .label
+        } else {
+            // Fallback: text label (should never be reached on iOS 13+)
+            btn.setTitle("cb", for: .normal)
+        }
         btn.menu = UIMenu(title: "", children: [
-            UIAction(title: "Local   ☐", image: nil) { [weak coordinator] _ in
+            UIAction(title: "Keep local",
+                     image: UIImage(systemName: "checkmark.square")) { [weak coordinator] _ in
                 coordinator?.insertCheckbox()
             },
-            UIAction(title: "Things  🔵", image: nil) { [weak coordinator] _ in
+            UIAction(title: "Send to Things",
+                     image: UIImage(systemName: "checklist")) { [weak coordinator] _ in
                 coordinator?.insertCheckboxAndSend(to: .things)
             },
-            UIAction(title: "Tweek  🪶", image: nil) { [weak coordinator] _ in
+            UIAction(title: "Send to Tweek",
+                     image: UIImage(systemName: "bird")) { [weak coordinator] _ in
                 coordinator?.insertCheckboxAndSend(to: .tweek)
             },
         ])
@@ -394,14 +417,26 @@ struct MarkdownEditorView: UIViewRepresentable {
         /// Set to true when a long-press fires; prevents the tap gesture from
         /// also firing (which would open the photo immediately after the sheet appears).
         private var suppressNextTap = false
+        /// When true, keyboardDidHide will not call resignFirstResponder.
+        /// Set while a UIMenu action is restoring focus so the late-arriving
+        /// keyboardDidHideNotification doesn't undo the re-focus.
+        var suppressResignOnHide = false
+
         /// Cache of loaded UIImages keyed by NoteStore path, for fast thumbnail redraws.
         private var thumbnailImageCache: [String: UIImage] = [:]
         /// Tag applied to UIImageViews overlaid for !![desc](path) thumbnail lines.
         private static let thumbnailTag = 8_001
         /// Paths for which an iCloud-download retry is already scheduled (prevents duplicate timers).
         private var thumbnailRetryPaths: Set<String> = []
-        /// Tag applied to UIButtons overlaid for tappable checkbox circles (E2) and Things send buttons (E11).
-        private static let checkboxOverlayTag = 9_002
+        /// Tag applied to thin UIView separators overlaid for `---` horizontal rules.
+        private static let hrOverlayTag = 9_003
+
+        /// UIImageView subclass that carries the backing character index of its checkbox.
+        /// isUserInteractionEnabled = false so taps fall through to UITextView → handleTap.
+        private final class CheckboxOverlay: UIImageView {
+            /// Character index of the ☐/☑ in the text storage (= lineRange.location).
+            var lineCharStart: Int = 0
+        }
 
         init(text: Binding<String>,
              onSave: ((String) -> Void)?,
@@ -420,6 +455,7 @@ struct MarkdownEditorView: UIViewRepresentable {
             tv.viewWithTag(9_001)?.isHidden = !tv.text.isEmpty
             scheduleSave(tv.text)
             refreshThumbnails(in: tv)
+            refreshHorizontalRules(in: tv)
             refreshCheckboxOverlays(in: tv)
             checkForTextExpansion(tv)
         }
@@ -437,41 +473,98 @@ struct MarkdownEditorView: UIViewRepresentable {
         func textView(_ tv: UITextView,
                       shouldChangeTextIn range: NSRange,
                       replacementText text: String) -> Bool {
+
+            // Tab key → indent current line (same as → toolbar button).
+            // Works with Mac keyboard in Simulator and external Bluetooth keyboards.
+            if text == "\t" {
+                indentLine()
+                return false
+            }
+
+            // "- " at line start → auto-convert to "• " (round bullet).
+            // Fires when user types space immediately after a lone "-" at the start of a line.
+            // Checkboxes (- [ ]) still work via the toolbar button; this only fires on "- <space>".
+            if text == " " {
+                let nsSpace = tv.textStorage.string as NSString
+                let lr = nsSpace.lineRange(for: NSRange(location: range.location, length: 0))
+                if range.location - lr.location == 1,
+                   nsSpace.character(at: lr.location) == 0x2D {  // 0x2D = ASCII '-'
+                    tv.textStorage.replaceCharacters(
+                        in: NSRange(location: lr.location, length: 1), with: "\u{2022}")
+                    // Return true → iOS inserts the space → result is "• " at line start.
+                    // textViewDidChange fires afterward and updates self.text + schedules save.
+                    return true
+                }
+            }
+
             guard text == "\n" else { return true }
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(for: NSRange(location: range.location, length: 0))
             let line = ns.substring(with: lineRange)
 
-            // Round bullet — • item
-            if line.hasPrefix("• ") {
-                let content = String(line.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+            // Round bullet — "• item" or "  • item" (any leading spaces)
+            // NOTE: do NOT use a raw string (#"..."#) here — \u{2022} is not interpreted in raw literals.
+            let bulletChar = "\u{2022}"   // U+2022 BULLET — defined once, used below
+            if let _ = line.range(of: "^( *)\(bulletChar) ", options: .regularExpression) {
+                let indent = String(line.prefix(while: { $0 == " " }))
+                let contentStart = line.index(line.startIndex,
+                                              offsetBy: indent.count + 2,
+                                              limitedBy: line.endIndex) ?? line.endIndex
+                let content = String(line[contentStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
                 if content.isEmpty {
-                    // Double-return on empty bullet exits the list
                     tv.textStorage.replaceCharacters(in: lineRange, with: "\n")
                     tv.selectedRange = NSRange(location: lineRange.location + 1, length: 0)
                 } else {
-                    tv.textStorage.replaceCharacters(in: range, with: "\n• ")
-                    tv.selectedRange = NSRange(location: range.location + 3, length: 0)
+                    let insertion = "\n\(indent)\(bulletChar) "
+                    tv.textStorage.replaceCharacters(in: range, with: insertion)
+                    tv.selectedRange = NSRange(location: range.location + insertion.utf16.count, length: 0)
                 }
                 self.text = tv.text; scheduleSave(tv.text)
                 return false
             }
 
-            // Checkbox — - [ ] item
-            if line.hasPrefix("- [ ] ") {
-                let content = String(line.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines)
+            // Checkbox — ☐ or ☑ item
+            // No deferral needed: the ☐/☑ glyph is hidden (hiddenFont) so there is
+            // no W-render race between processEditing and UITextView's layout pass.
+            // We return false and call replaceCharacters directly, which means
+            // textViewDidChange never fires — so we call refreshCheckboxOverlays
+            // explicitly here to place the overlay for the newly inserted ☐.
+            if line.hasPrefix("☐ ") || line.hasPrefix("☑ ") {
+                let content = String(line.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
                 if content.isEmpty {
                     tv.textStorage.replaceCharacters(in: lineRange, with: "\n")
                     tv.selectedRange = NSRange(location: lineRange.location + 1, length: 0)
                 } else {
-                    tv.textStorage.replaceCharacters(in: range, with: "\n- [ ] ")
-                    tv.selectedRange = NSRange(location: range.location + 7, length: 0)
+                    tv.textStorage.replaceCharacters(in: range, with: "\n☐ ")
+                    tv.selectedRange = NSRange(location: range.location + 3, length: 0)
                 }
                 self.text = tv.text; scheduleSave(tv.text)
-                // textViewDidChange may not fire when returning false — refresh overlays explicitly
-                DispatchQueue.main.async { [weak self] in
-                    if let tv = self?.textView { self?.refreshCheckboxOverlays(in: tv) }
+                refreshCheckboxOverlays(in: tv)
+                return false
+            }
+
+            // Dash bullet — "- item" or indented "  - item"
+            // Detect leading indent (any number of leading spaces), then "- ".
+            // Double-return on an empty bullet exits the list (replaces "  - \n" with "\n").
+            // The indent prefix is preserved on continuation so nested lists stay nested.
+            // Exclude checked checkboxes — let those fall through to return true (plain newline)
+            if !line.hasPrefix("- [x]"),
+               line.range(of: #"^( *)- "#, options: .regularExpression) != nil {
+                let indent = line.prefix(while: { $0 == " " })
+                let prefix = "\(indent)- "
+                let contentStart = line.index(line.startIndex, offsetBy: indent.count + 2) // skip indent + "- "
+                let content = String(line[contentStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if content.isEmpty {
+                    // Empty bullet — exit list mode
+                    tv.textStorage.replaceCharacters(in: lineRange, with: "\n")
+                    tv.selectedRange = NSRange(location: lineRange.location + 1, length: 0)
+                } else {
+                    // Continue with same indent
+                    let insertion = "\n\(prefix)"
+                    tv.textStorage.replaceCharacters(in: range, with: insertion)
+                    tv.selectedRange = NSRange(location: range.location + insertion.utf16.count, length: 0)
                 }
+                self.text = tv.text; scheduleSave(tv.text)
                 return false
             }
 
@@ -565,7 +658,7 @@ struct MarkdownEditorView: UIViewRepresentable {
             guard let tv = textView, let vc = presentingViewController() else { return }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(for: NSRange(location: charIndex, length: 0))
             let line = ns.substring(with: lineRange)
 
@@ -809,11 +902,12 @@ struct MarkdownEditorView: UIViewRepresentable {
         @objc func insertBullet() {
             guard let tv = textView else { return }
             let cursorRange = tv.selectedRange
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
             let line = ns.substring(with: lineRange)
 
-            if line.hasPrefix("• ") {
+            let bullet = "\u{2022} "     // U+2022 BULLET + space — explicit to match shouldChangeTextIn
+            if line.hasPrefix("\u{2022} ") {
                 // Toggle off — remove bullet
                 let stripped = String(line.dropFirst(2))
                 tv.textStorage.replaceCharacters(in: lineRange, with: stripped)
@@ -822,12 +916,12 @@ struct MarkdownEditorView: UIViewRepresentable {
             } else if line.hasPrefix("- ") {
                 // Upgrade old dash bullet to round bullet
                 let content = String(line.dropFirst(2))
-                tv.textStorage.replaceCharacters(in: lineRange, with: "• " + content)
+                tv.textStorage.replaceCharacters(in: lineRange, with: bullet + content)
                 tv.selectedRange = NSRange(location: cursorRange.location, length: 0)
             } else {
                 // Add round bullet
                 tv.textStorage.replaceCharacters(
-                    in: NSRange(location: lineRange.location, length: 0), with: "• ")
+                    in: NSRange(location: lineRange.location, length: 0), with: bullet)
                 tv.selectedRange = NSRange(location: cursorRange.location + 2, length: 0)
             }
             text = tv.text; scheduleSave(tv.text)
@@ -837,8 +931,9 @@ struct MarkdownEditorView: UIViewRepresentable {
         @objc func indentLine() {
             guard let tv = textView else { return }
             let cursorRange = tv.selectedRange
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
+            let before = ns.substring(with: lineRange)
             tv.textStorage.replaceCharacters(
                 in: NSRange(location: lineRange.location, length: 0), with: "  ")
             tv.selectedRange = NSRange(location: cursorRange.location + 2, length: 0)
@@ -849,7 +944,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         @objc func outdentLine() {
             guard let tv = textView else { return }
             let cursorRange = tv.selectedRange
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
             let line = ns.substring(with: lineRange)
             let toRemove = line.hasPrefix("  ") ? 2 : (line.hasPrefix(" ") ? 1 : 0)
@@ -861,10 +956,20 @@ struct MarkdownEditorView: UIViewRepresentable {
             text = tv.text; scheduleSave(tv.text)
         }
 
+
         @objc func insertCheckbox() {
             guard let tv = textView else { return }
+
+            // Ensure we are first responder (UIMenu may have caused a brief keyboard hide
+            // which fired keyboardDidHide → resignFirstResponder before this action ran).
+            suppressResignOnHide = true
+            tv.becomeFirstResponder()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.suppressResignOnHide = false
+            }
+
             let cursorRange = tv.selectedRange
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
             let line = ns.substring(with: lineRange)
 
@@ -875,26 +980,24 @@ struct MarkdownEditorView: UIViewRepresentable {
                 return tv.textRange(from: s, to: e)
             }
 
-            if line.hasPrefix("- [x] ") {
+            if line.hasPrefix("☑ ") {
                 // Checked → unchecked
-                guard let r = uiRange(from: lineRange.location, length: 6) else { return }
-                tv.replace(r, withText: "- [ ] ")
+                guard let r = uiRange(from: lineRange.location, length: 2) else { return }
+                tv.replace(r, withText: "☐ ")
                 tv.selectedRange = NSRange(location: cursorRange.location, length: 0)
-            } else if line.hasPrefix("- [ ] ") {
+            } else if line.hasPrefix("☐ ") {
                 // Unchecked → remove prefix
-                guard let r = uiRange(from: lineRange.location, length: 6) else { return }
+                guard let r = uiRange(from: lineRange.location, length: 2) else { return }
                 tv.replace(r, withText: "")
-                let newLoc = max(lineRange.location, cursorRange.location - 6)
+                let newLoc = max(lineRange.location, cursorRange.location - 2)
                 tv.selectedRange = NSRange(location: newLoc, length: 0)
             } else {
-                // No checkbox — add one
-                guard let insertPos = tv.position(from: tv.beginningOfDocument,
-                                                  offset: lineRange.location),
-                      let r = tv.textRange(from: insertPos, to: insertPos) else { return }
-                tv.replace(r, withText: "- [ ] ")
-                tv.selectedRange = NSRange(location: cursorRange.location + 6, length: 0)
+                // No checkbox — place cursor at line start then insertText so UIKit
+                // naturally advances the cursor to lineStart+2 after inserting "☐ ".
+                tv.selectedRange = NSRange(location: lineRange.location, length: 0)
+                tv.insertText("☐ ")
             }
-            // tv.replace() fires textViewDidChange → text binding + scheduleSave handled there
+            // tv.replace/insertText fires textViewDidChange → text binding + scheduleSave handled there
         }
 
         @objc func insertLink() {
@@ -921,6 +1024,19 @@ struct MarkdownEditorView: UIViewRepresentable {
 
         @objc func dismissKeyboard() {
             textView?.resignFirstResponder()
+        }
+
+        /// Called when the software keyboard fully hides (interactive swipe dismiss).
+        /// Resigns first responder so the format bar doesn't float over the tab bar.
+        /// Guard: skip if the text view was just re-focused (e.g. UIMenu action fired and
+        /// called becomeFirstResponder) — the keyboard hide notification arrives late and
+        /// we don't want it to undo the re-focus.
+        @objc func keyboardDidHide() {
+            guard let tv = textView else { return }
+            // Only resign if the text view is currently first responder AND we are not in the
+            // middle of restoring focus after a menu action.
+            guard tv.isFirstResponder, !suppressResignOnHide else { return }
+            tv.resignFirstResponder()
         }
 
         // MARK: - Image and PDF viewers
@@ -1032,26 +1148,47 @@ struct MarkdownEditorView: UIViewRepresentable {
             }
         }
 
-        // MARK: - Checkbox tap
+        // MARK: - Tap handling (checkboxes, images, PDFs)
 
         @objc func handleTap(_ gr: UITapGestureRecognizer) {
             guard gr.state == .ended, !suppressNextTap, let tv = textView else { return }
 
             let point = gr.location(in: tv)
+
+            // Checkbox toggle — primary detection via overlay frame hit-test.
+            // The ☐/☑ glyph itself is invisible (hiddenFont + clear); CheckboxOverlay is
+            // what the user sees. isUserInteractionEnabled = false on the overlay means the
+            // tap falls through to UITextView → our gesture recognizer here.
+            if let overlay = tv.subviews
+                .compactMap({ $0 as? CheckboxOverlay })
+                .first(where: { $0.frame.contains(point) }) {
+                let ns        = tv.textStorage.string as NSString
+                let lineRange = ns.lineRange(for: NSRange(location: overlay.lineCharStart, length: 0))
+                let line      = ns.substring(with: lineRange)
+                if line.hasPrefix("☐ ") {
+                    tv.textStorage.replaceCharacters(in: lineRange,
+                                                     with: "☑ " + String(line.dropFirst(2)))
+                } else if line.hasPrefix("☑ ") {
+                    tv.textStorage.replaceCharacters(in: lineRange,
+                                                     with: "☐ " + String(line.dropFirst(2)))
+                }
+                text = tv.text; scheduleSave(tv.text)
+                refreshCheckboxOverlays(in: tv)
+                return
+            }
+
+            // Image / PDF taps — resolved via characterIndex then attribute lookup.
             let adj = CGPoint(
                 x: point.x - tv.textContainerInset.left,
                 y: point.y - tv.textContainerInset.top
             )
-            let lm = tv.layoutManager
-            let tc = tv.textContainer
-            let charIdx = lm.characterIndex(
-                for: adj, in: tc,
+            let charIdx = tv.layoutManager.characterIndex(
+                for: adj, in: tv.textContainer,
                 fractionOfDistanceBetweenInsertionPoints: nil
             )
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             guard charIdx < ns.length else { return }
 
-            // Check for tappable image or PDF attachment before line-level handling
             let tapAttrs = tv.textStorage.attributes(at: charIdx, effectiveRange: nil)
             if let path = tapAttrs[.imageNoteStorePath] as? String,
                let url = NoteStore.shared.resolvedURL(for: path) {
@@ -1062,19 +1199,6 @@ struct MarkdownEditorView: UIViewRepresentable {
                let url = NoteStore.shared.resolvedURL(for: path) {
                 showPDFViewer(at: url)
                 return
-            }
-
-            let lineRange = ns.lineRange(for: NSRange(location: charIdx, length: 0))
-            let line = ns.substring(with: lineRange)
-
-            if line.hasPrefix("- [ ]") {
-                let toggled = "- [x]" + line.dropFirst(5)
-                tv.textStorage.replaceCharacters(in: lineRange, with: toggled)
-                text = tv.text; scheduleSave(tv.text)
-            } else if line.hasPrefix("- [x]") {
-                let toggled = "- [ ]" + line.dropFirst(5)
-                tv.textStorage.replaceCharacters(in: lineRange, with: toggled)
-                text = tv.text; scheduleSave(tv.text)
             }
         }
 
@@ -1087,7 +1211,7 @@ struct MarkdownEditorView: UIViewRepresentable {
 
         private func toggleLinePrefix(tv: UITextView, prefix: String) {
             let cursorRange = tv.selectedRange
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(
                 for: NSRange(location: cursorRange.location, length: 0)
             )
@@ -1235,21 +1359,17 @@ struct MarkdownEditorView: UIViewRepresentable {
             }
         }
 
-        // MARK: - Checkbox circle overlays (E2) + send buttons (E11/Tweek)
+        // MARK: - Horizontal rule overlays
         //
-        // Scans for `- [ ]` / `- [x]` lines. For each:
-        //  • Circle UIButton at left indent — toggles checkbox.
-        //  • Right-edge button based on badge state:
-        //      no badge        → UIMenu "Send to…" (Things + Tweek)
-        //      🔵 or 🪶        → nothing (already sent)
-        //      ⚠️🔵 or ⚠️🪶   → retry button for the appropriate app
-        // Called after every text change and on initial load.
+        // For each `---` line (which MarkdownTextStorage hides), overlays a thin
+        // UIColor.separator line centered in the 24pt reserved slot.
 
-        func refreshCheckboxOverlays(in tv: UITextView) {
+        func refreshHorizontalRules(in tv: UITextView) {
             tv.subviews
-                .filter { $0.tag == Self.checkboxOverlayTag }
+                .filter { $0.tag == Self.hrOverlayTag }
                 .forEach { $0.removeFromSuperview() }
 
+            guard tv.text.contains("---") else { return }
             tv.layoutManager.ensureLayout(for: tv.textContainer)
 
             let ns = tv.textStorage.string as NSString
@@ -1258,152 +1378,91 @@ struct MarkdownEditorView: UIViewRepresentable {
                 let lineRange = ns.lineRange(for: NSRange(location: pos, length: 0))
                 guard lineRange.length > 0 else { break }
                 let line = ns.substring(with: lineRange)
-
-                if line.hasPrefix("- [ ]") || line.hasPrefix("- [x]") {
-                    let isChecked = line.hasPrefix("- [x]")
-
+                if line.trimmingCharacters(in: .whitespacesAndNewlines) == "---" {
                     let glyphIdx = tv.layoutManager.glyphIndexForCharacter(at: lineRange.location)
                     let lineFragRect = tv.layoutManager.lineFragmentRect(
                         forGlyphAt: glyphIdx, effectiveRange: nil)
-                    let lineY = lineFragRect.origin.y + tv.textContainerInset.top
-                    let lineH = lineFragRect.height
+                    let lineY  = lineFragRect.origin.y + tv.textContainerInset.top
+                    let lineH  = lineFragRect.height
+                    let midY   = lineY + lineH / 2
+                    let xLeft  = tv.textContainerInset.left + 16
+                    let xRight = tv.bounds.width - tv.textContainerInset.right - 16
 
-                    // --- Circle toggle button ---
-                    let circleSize: CGFloat = 18
-                    let circleBtn = UIButton(type: .custom)
-                    circleBtn.frame = CGRect(
-                        x: tv.textContainerInset.left + 1,
-                        y: lineY + (lineH - circleSize) / 2,
-                        width: circleSize, height: circleSize)
-                    circleBtn.tag = Self.checkboxOverlayTag
-                    let symCfg   = UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)
-                    let symName  = isChecked ? "checkmark.circle.fill" : "circle"
-                    let symColor : UIColor = isChecked
-                        ? MarkdownTextStorage.checkColor
-                        : MarkdownTextStorage.uncheckColor
-                    circleBtn.setImage(
-                        UIImage(systemName: symName, withConfiguration: symCfg)?
-                            .withTintColor(symColor, renderingMode: .alwaysOriginal),
-                        for: .normal)
-                    let captureLoc = lineRange.location
-                    let captureLen = lineRange.length
-                    circleBtn.addAction(UIAction { [weak self, weak tv] _ in
-                        guard let self, let tv else { return }
-                        let nsNow  = tv.text as NSString
-                        let safeL  = min(captureLen, nsNow.length - captureLoc)
-                        guard safeL > 0, captureLoc + safeL <= nsNow.length else { return }
-                        let lr     = NSRange(location: captureLoc, length: safeL)
-                        let cur    = nsNow.substring(with: lr)
-                        if cur.hasPrefix("- [ ]") {
-                            tv.textStorage.replaceCharacters(in: lr, with: "- [x]" + cur.dropFirst(5))
-                        } else if cur.hasPrefix("- [x]") {
-                            tv.textStorage.replaceCharacters(in: lr, with: "- [ ]" + cur.dropFirst(5))
-                        }
-                        self.text = tv.text; self.scheduleSave(tv.text)
-                    }, for: .touchUpInside)
-                    tv.addSubview(circleBtn)
-
-                    // --- Right-edge send / retry button (unchecked lines only) ---
-                    guard !isChecked else {
-                        pos = lineRange.location + lineRange.length
-                        if lineRange.length == 0 { break }
-                        continue
-                    }
-                    let rawTitle = String(line.dropFirst(6))
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !rawTitle.isEmpty else {
-                        pos = lineRange.location + lineRange.length
-                        if lineRange.length == 0 { break }
-                        continue
-                    }
-
-                    let hasSentThings   = rawTitle.hasSuffix("🔵") && !rawTitle.hasSuffix("⚠️🔵")
-                    let hasSentTweek    = rawTitle.hasSuffix("🪶") && !rawTitle.hasSuffix("⚠️🪶")
-                    let hasWarnThings   = rawTitle.hasSuffix("⚠️🔵")
-                    let hasWarnTweek    = rawTitle.hasSuffix("⚠️🪶")
-
-                    if hasSentThings || hasSentTweek {
-                        // Already sent — no button.
-                    } else if hasWarnThings || hasWarnTweek {
-                        // Retry button — orange exclamationmark.circle
-                        let retryApp: SendApp = hasWarnThings ? .things : .tweek
-                        let cleanTitle = stripBadges(from: rawTitle)
-                        let btnSize: CGFloat = 16
-                        let retryBtn = UIButton(type: .custom)
-                        retryBtn.frame = CGRect(
-                            x: tv.bounds.width - tv.textContainerInset.right - btnSize - 4,
-                            y: lineY + (lineH - btnSize) / 2,
-                            width: btnSize, height: btnSize)
-                        retryBtn.tag = Self.checkboxOverlayTag
-                        let rCfg = UIImage.SymbolConfiguration(pointSize: 12, weight: .light)
-                        retryBtn.setImage(
-                            UIImage(systemName: "exclamationmark.circle", withConfiguration: rCfg)?
-                                .withTintColor(UIColor.systemOrange, renderingMode: .alwaysOriginal),
-                            for: .normal)
-                        retryBtn.addAction(UIAction { [weak self, weak tv] _ in
-                            guard let self, let tv else { return }
-                            // Strip the warning badge from backing store before retrying.
-                            let nsNow  = tv.text as NSString
-                            let safeL  = min(captureLen, nsNow.length - captureLoc)
-                            guard safeL > 0, captureLoc + safeL <= nsNow.length else { return }
-                            let lr     = NSRange(location: captureLoc, length: safeL)
-                            let rawLine = nsNow.substring(with: lr)
-                            let stripped = self.stripBadges(from: rawLine)
-                            tv.textStorage.replaceCharacters(in: lr, with: stripped + "\n")
-                            self.text = tv.text; self.scheduleSave(tv.text)
-                            let newNs       = tv.text as NSString
-                            let newLineRange = newNs.lineRange(for: NSRange(location: captureLoc, length: 0))
-                            let date = self.noteDate()
-                            switch retryApp {
-                            case .things:
-                                self.sendToThings(taskTitle: cleanTitle, date: date,
-                                                   lineLocation: newLineRange.location,
-                                                   lineLength: newLineRange.length, in: tv)
-                            case .tweek:
-                                self.sendToTweek(taskTitle: cleanTitle, date: date,
-                                                  lineLocation: newLineRange.location,
-                                                  lineLength: newLineRange.length, in: tv)
-                            }
-                        }, for: .touchUpInside)
-                        tv.addSubview(retryBtn)
-
-                    } else {
-                        // Send UIMenu button — arrow.up.right.circle with Things + Tweek options
-                        let sendSize: CGFloat = 16
-                        let sendBtn = UIButton(type: .custom)
-                        sendBtn.frame = CGRect(
-                            x: tv.bounds.width - tv.textContainerInset.right - sendSize - 4,
-                            y: lineY + (lineH - sendSize) / 2,
-                            width: sendSize, height: sendSize)
-                        sendBtn.tag = Self.checkboxOverlayTag
-                        let sCfg = UIImage.SymbolConfiguration(pointSize: 12, weight: .light)
-                        sendBtn.setImage(
-                            UIImage(systemName: "arrow.up.right.circle", withConfiguration: sCfg)?
-                                .withTintColor(UIColor.systemBlue.withAlphaComponent(0.55),
-                                               renderingMode: .alwaysOriginal),
-                            for: .normal)
-                        let captureTitle = rawTitle
-                        sendBtn.menu = UIMenu(title: "", children: [
-                            UIAction(title: "Things  🔵", image: nil) { [weak self, weak tv] _ in
-                                guard let self, let tv else { return }
-                                self.sendToThings(taskTitle: captureTitle, date: self.noteDate(),
-                                                   lineLocation: captureLoc, lineLength: captureLen,
-                                                   in: tv)
-                            },
-                            UIAction(title: "Tweek  🪶", image: nil) { [weak self, weak tv] _ in
-                                guard let self, let tv else { return }
-                                self.sendToTweek(taskTitle: captureTitle, date: self.noteDate(),
-                                                  lineLocation: captureLoc, lineLength: captureLen,
-                                                  in: tv)
-                            },
-                        ])
-                        sendBtn.showsMenuAsPrimaryAction = true
-                        tv.addSubview(sendBtn)
-                    }
+                    let rule = UIView(frame: CGRect(x: xLeft, y: midY - 0.5,
+                                                    width: max(0, xRight - xLeft), height: 1))
+                    rule.backgroundColor = UIColor.separator
+                    rule.isUserInteractionEnabled = false
+                    rule.tag = Self.hrOverlayTag
+                    tv.addSubview(rule)
                 }
-
                 pos = lineRange.location + lineRange.length
-                if lineRange.length == 0 { break }
+            }
+        }
+
+        // MARK: - Checkbox SF Symbol overlays
+        //
+        // For each checkbox line (☐/☑ + text), MarkdownTextStorage hides the ☐/☑ glyph
+        // (hiddenFont + clear) and sets .checkboxState. We scan that attribute here and
+        // place a CheckboxOverlay (UIImageView, non-interactive) at the line-fragment's
+        // left edge. The overlay scrolls with the text view because it is a subview of
+        // UITextView (a UIScrollView) in content-coordinate space.
+        //
+        // Tap detection: handleTap hit-tests overlay.frame.contains(point) first.
+        // CheckboxOverlay.lineCharStart records the character index so we can find the
+        // right line to toggle.
+
+        func refreshCheckboxOverlays(in tv: UITextView) {
+            // Remove existing overlays
+            tv.subviews
+                .compactMap { $0 as? CheckboxOverlay }
+                .forEach { $0.removeFromSuperview() }
+
+            guard tv.textStorage.length > 0 else { return }
+            tv.layoutManager.ensureLayout(for: tv.textContainer)
+
+            let storage   = tv.textStorage
+            let fullRange = NSRange(location: 0, length: storage.length)
+
+            storage.enumerateAttribute(.checkboxState, in: fullRange, options: []) { value, attrRange, _ in
+                guard let checked = value as? Bool else { return }
+
+                // The ☐/☑ character at attrRange.location has hiddenFont (0.1pt), so the
+                // layout manager assigns it a null glyph. Querying lineFragmentUsedRect on a
+                // null glyph can return a rect with origin.y = 0, collapsing every subsequent
+                // overlay onto the first line. Instead, anchor on the first VISIBLE text
+                // character (2 positions past the hidden ☐ and space).
+                let textCharIdx = min(attrRange.location + 2, storage.length - 1)
+                let textGlyphRange = tv.layoutManager.glyphRange(
+                    forCharacterRange: NSRange(location: textCharIdx, length: 1),
+                    actualCharacterRange: nil)
+                guard textGlyphRange.location != NSNotFound,
+                      textGlyphRange.location < tv.layoutManager.numberOfGlyphs else { return }
+
+                let lineUsedRect = tv.layoutManager.lineFragmentUsedRect(
+                    forGlyphAt: textGlyphRange.location, effectiveRange: nil)
+
+                let iconSize: CGFloat = 18
+                let x = tv.textContainerInset.left
+                // Use lineFragmentUsedRect (not lineFragmentRect) for vertical centering.
+                // lineHeightMultiple = 1.4 adds extra space at the top of lineFragmentRect;
+                // the used rect hugs the actual glyphs and produces correct icon alignment.
+                let y = lineUsedRect.origin.y + tv.textContainerInset.top
+                       + (lineUsedRect.height - iconSize) / 2
+
+                let symConfig = UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+                let symName   = checked ? "checkmark.square.fill" : "square"
+                let tint      = checked
+                    ? UIColor.systemGreen
+                    : UIColor(red: 0.9, green: 0.5, blue: 0.1, alpha: 1)
+
+                let overlay = CheckboxOverlay(frame: CGRect(x: x, y: y,
+                                                            width: iconSize, height: iconSize))
+                overlay.image = UIImage(systemName: symName, withConfiguration: symConfig)?
+                    .withTintColor(tint, renderingMode: .alwaysOriginal)
+                overlay.contentMode       = .scaleAspectFit
+                overlay.isUserInteractionEnabled = false
+                overlay.lineCharStart     = attrRange.location
+                tv.addSubview(overlay)
             }
         }
 
@@ -1411,31 +1470,36 @@ struct MarkdownEditorView: UIViewRepresentable {
 
         func insertCheckboxAndSend(to app: SendApp) {
             guard let tv = textView else { return }
+
+            // Restore first responder if UIMenu's keyboard-hide notification fired first.
+            suppressResignOnHide = true
+            tv.becomeFirstResponder()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.suppressResignOnHide = false
+            }
+
             let cursorRange = tv.selectedRange
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
             let line = ns.substring(with: lineRange)
 
             // Task title = current line content (stripped of any existing checkbox prefix)
             var rawTitle = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if rawTitle.hasPrefix("- [ ] ") { rawTitle = String(rawTitle.dropFirst(6)) }
-            else if rawTitle.hasPrefix("- [x] ") { rawTitle = String(rawTitle.dropFirst(6)) }
+            if rawTitle.hasPrefix("☐ ") { rawTitle = String(rawTitle.dropFirst(2)) }
+            else if rawTitle.hasPrefix("☑ ") { rawTitle = String(rawTitle.dropFirst(2)) }
 
-            // Insert checkbox prefix if not already present
-            let alreadyCheckbox = line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ")
+            // Insert checkbox prefix if not already present (cursor to line start, then insertText)
+            let alreadyCheckbox = line.hasPrefix("☐ ") || line.hasPrefix("☑ ")
             if !alreadyCheckbox {
-                if let insertPos = tv.position(from: tv.beginningOfDocument,
-                                                offset: lineRange.location),
-                   let r = tv.textRange(from: insertPos, to: insertPos) {
-                    tv.replace(r, withText: "- [ ] ")
-                }
+                tv.selectedRange = NSRange(location: lineRange.location, length: 0)
+                tv.insertText("☐ ")
             }
             text = tv.text; scheduleSave(tv.text)
 
             guard !rawTitle.isEmpty else { return }   // nothing to send on an empty line
 
             // Recompute line range after insertion
-            let newNs        = tv.text as NSString
+            let newNs        = tv.textStorage.string as NSString
             let newLineRange = newNs.lineRange(for: NSRange(location: lineRange.location, length: 0))
             let date = noteDate()
             switch app {
@@ -1487,47 +1551,17 @@ struct MarkdownEditorView: UIViewRepresentable {
                         if error == nil && code == 200 {
                             self.appendBadge(" 🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
                         } else {
-                            self.openThingsURLScheme(taskTitle: taskTitle, date: date,
-                                                     lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                            // Server unreachable — badge only, no app switch
+                            self.appendBadge(" ⚠️🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
                         }
                     }
                 }.resume()
             } else {
-                openThingsURLScheme(taskTitle: taskTitle, date: date,
-                                    lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                // No server URL configured — badge only
+                appendBadge(" ⚠️🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
             }
         }
 
-        private func openThingsURLScheme(taskTitle: String,
-                                          date: String?,
-                                          lineLocation: Int,
-                                          lineLength: Int,
-                                          in tv: UITextView) {
-#if targetEnvironment(simulator)
-            return
-#endif
-            var comps = URLComponents(string: "things:///add")!
-            var items: [URLQueryItem] = [
-                URLQueryItem(name: "title", value: taskTitle),
-                URLQueryItem(name: "notes", value: "From Trace"),
-                URLQueryItem(name: "show-quick-entry", value: "false"),
-            ]
-            if let d = date, !d.isEmpty {
-                items.append(URLQueryItem(name: "when", value: d))
-            }
-            comps.queryItems = items
-            guard let url = comps.url else {
-                appendBadge(" ⚠️🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                return
-            }
-            UIApplication.shared.open(url, options: [:]) { [weak self, weak tv] success in
-                guard let self, let tv else { return }
-                DispatchQueue.main.async {
-                    self.appendBadge(success ? " 🔵" : " ⚠️🔵",
-                                     lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                }
-            }
-        }
 
         private func sendToTweek(taskTitle: String,
                                   date: String?,
@@ -1566,7 +1600,7 @@ struct MarkdownEditorView: UIViewRepresentable {
 
         /// Appends a badge string to the task line, stripping any prior badge first.
         private func appendBadge(_ badge: String, lineLocation: Int, lineLength: Int, in tv: UITextView) {
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let safeLen = min(lineLength, ns.length - lineLocation)
             guard safeLen > 0, lineLocation + safeLen <= ns.length else { return }
             let lr = NSRange(location: lineLocation, length: safeLen)
@@ -1582,7 +1616,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         private func checkForTextExpansion(_ tv: UITextView) {
             let cursorLoc = tv.selectedRange.location
             guard cursorLoc >= 3 else { return }
-            let ns = tv.text as NSString
+            let ns = tv.textStorage.string as NSString
             let startLoc = cursorLoc - 3
             let last3 = ns.substring(with: NSRange(location: startLoc, length: 3))
             guard last3 == "xdt" else { return }

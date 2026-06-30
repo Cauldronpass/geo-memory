@@ -15,17 +15,27 @@ final class MarkdownTextStorage: NSTextStorage {
     private let backing = NSMutableAttributedString()
 
     // MARK: - Style constants
-    static let bodyFont     = UIFont.systemFont(ofSize: 16)
-    static let boldFont     = UIFont.systemFont(ofSize: 16, weight: .semibold)
-    static let checkboxFont = UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+    static let bodyFont = UIFont.systemFont(ofSize: 16)
+    static let boldFont = UIFont.systemFont(ofSize: 16, weight: .semibold)
 
     static let textColor:    UIColor = .label
     static let dimColor:     UIColor = .tertiaryLabel
     static let linkColor:    UIColor = .systemBlue
     static let checkColor:   UIColor = .systemGreen
     static let uncheckColor: UIColor = UIColor(red: 0.9, green: 0.5, blue: 0.1, alpha: 1)
-    // Tiny invisible font used to hide markdown syntax markers (**, *, etc.)
+    // Tiny invisible font used to hide markdown syntax markers (**, *, ☐, ☑, etc.)
     static let hiddenFont:   UIFont  = UIFont.systemFont(ofSize: 0.1)
+    // Left indent reserved for the SF Symbol checkbox overlay (18pt icon + 4pt gap)
+    static let checkboxIndent: CGFloat = 22
+
+    // Base paragraph style — 1.4x line height for comfortable reading.
+    // Any custom paragraph style (checkboxes, HR) must also set lineHeightMultiple
+    // to avoid losing this spacing when it overrides the base.
+    static var baseParagraphStyle: NSParagraphStyle {
+        let para = NSMutableParagraphStyle()
+        para.lineHeightMultiple = 1.4
+        return para
+    }
 
     // MARK: - Required NSTextStorage overrides
 
@@ -54,7 +64,25 @@ final class MarkdownTextStorage: NSTextStorage {
     // MARK: - Process editing
 
     override func processEditing() {
-        applyStyles()
+        // Restyle only on character edits, and re-notify the layout manager afterward.
+        //
+        // applyStyles() rewrites attributes through the private `backing` store, which emits no
+        // change notifications. The framework therefore only repaints glyphs inside the user's
+        // own edited range; anything applyStyles recolored outside it — most visibly the
+        // line-start ☐ while you type to its right — keeps a stale (blank) glyph until the line
+        // is edited directly. Re-issuing `edited(.editedAttributes,…)` over the edited paragraph
+        // tells the layout manager to repaint the whole affected line, box included.
+        //
+        // Guarding on `.editedCharacters` is what prevents recursion: the `.editedAttributes`
+        // edit we add below comes back through processEditing once with `.editedCharacters` NOT
+        // set, so applyStyles + the re-notify are skipped and the pass terminates. (This is the
+        // standard NSTextStorage syntax-highlighter pattern. Do NOT poke the layout manager
+        // directly here — invalidateDisplay/invalidateLayout mid-cycle hangs or corrupts layout.)
+        if editedMask.contains(.editedCharacters) {
+            applyStyles()
+            let para = (backing.string as NSString).paragraphRange(for: editedRange)
+            edited(.editedAttributes, range: para, changeInLength: 0)
+        }
         super.processEditing()
     }
 
@@ -65,10 +93,11 @@ final class MarkdownTextStorage: NSTextStorage {
         guard backing.length > 0 else { return }
         let full = NSRange(location: 0, length: backing.length)
 
-        // Reset to base
+        // Reset to base — includes 1.4x line height for comfortable reading
         backing.setAttributes([
             .font: Self.bodyFont,
-            .foregroundColor: Self.textColor
+            .foregroundColor: Self.textColor,
+            .paragraphStyle: Self.baseParagraphStyle
         ], range: full)
 
         (backing.string as NSString).enumerateSubstrings(
@@ -82,15 +111,29 @@ final class MarkdownTextStorage: NSTextStorage {
     // MARK: - Per-line styling
 
     private func styleLine(_ line: String, in range: NSRange) {
+        // Horizontal rule — hide `---` text; Coordinator overlays a UIView separator (tag 9_003)
+        if line.trimmingCharacters(in: .whitespacesAndNewlines) == "---" {
+            backing.addAttributes([
+                .font: Self.hiddenFont,
+                .foregroundColor: UIColor.clear
+            ], range: range)
+            // Fixed 24pt height gives the overlay line a comfortable slot
+            let para = NSMutableParagraphStyle()
+            para.minimumLineHeight = 24
+            para.maximumLineHeight = 24
+            backing.addAttribute(.paragraphStyle, value: para, range: range)
+            return
+        }
         // Headings — dim markers, apply larger semibold font to text
         if line.hasPrefix("### ") { styleHeading(line, in: range, level: 3); return }
         if line.hasPrefix("## ")  { styleHeading(line, in: range, level: 2); return }
         if line.hasPrefix("# ")   { styleHeading(line, in: range, level: 1); return }
-        // Checkboxes must be checked before generic bullets
-        if line.hasPrefix("- [x]") { styleCheckbox(checked: true,  line: line, in: range); return }
-        if line.hasPrefix("- [ ]") { styleCheckbox(checked: false, line: line, in: range); return }
-        if line.hasPrefix("• ")   { styleBulletPrefix(in: range) }
-        if line.hasPrefix("- ")   { styleBulletPrefix(in: range) }
+        // Checkboxes — ☑ / ☐ stored as Unicode; hidden glyph + SF Symbol overlay
+        if line.hasPrefix("☑ ") { styleCheckboxLine(checked: true,  line: line, in: range); return }
+        if line.hasPrefix("☐ ") { styleCheckboxLine(checked: false, line: line, in: range); return }
+        if line.hasPrefix("\u{2022} ")      { styleBulletPrefix(in: range) }
+        else if line.contains("\u{2022} ") { styleIndentedBulletPrefix(line, in: range) }
+        if line.hasPrefix("- ")            { styleBulletPrefix(in: range) }
         applyBold(in: line, lineRange: range)
         applyItalic(in: line, lineRange: range)
         applyHighlight(in: line, lineRange: range)
@@ -130,27 +173,63 @@ final class MarkdownTextStorage: NSTextStorage {
                              range: NSRange(location: range.location, length: 2))
     }
 
+    /// Dims the "• " in an indented bullet like "  • item".
+    /// Finds the UTF-16 offset of • within the line and dims it + the following space.
+    private func styleIndentedBulletPrefix(_ line: String, in range: NSRange) {
+        guard let bulletRange = line.range(of: "\u{2022} ") else { return }
+        // String.UTF16View.Index IS String.Index — distance gives the UTF-16 offset directly.
+        let utf16Offset = line.utf16.distance(from: line.utf16.startIndex,
+                                              to: bulletRange.lowerBound)
+        let nsOffset = range.location + utf16Offset
+        guard nsOffset + 2 <= range.location + range.length else { return }
+        backing.addAttribute(.foregroundColor, value: Self.dimColor,
+                             range: NSRange(location: nsOffset, length: 2))
+    }
+
     // MARK: Checkbox
+    // ☐ (U+2610) = unchecked, ☑ (U+2611) = checked.
+    // Both characters are stored as-is in the backing string so the file format is
+    // unchanged. However, U+2610/U+2611 are absent from SF Pro — CoreText falls back
+    // to a font that renders them as a "W"-like glyph. We avoid the problem entirely
+    // by hiding the character (hiddenFont + clear color) and letting MarkdownEditorView
+    // overlay an SF Symbol UIImageView at the glyph's line-fragment position.
+    //
+    // .checkboxState (Bool) is written onto the hidden character so that
+    // refreshCheckboxOverlays can find every checkbox line via enumerateAttribute.
+    // The paragraph indent (firstLineHeadIndent + headIndent = 22pt) pushes task text
+    // to the right of the 18pt icon, matching the same pattern used for --- HR overlays.
 
-    private func styleCheckbox(checked: Bool, line: String, in range: NSRange) {
-        // "- [ ] " or "- [x] " = 6 chars
-        let prefixLen = min(6, range.length)
-        let prefixRange = NSRange(location: range.location, length: prefixLen)
-        let color = checked ? Self.checkColor : Self.uncheckColor
+    private func styleCheckboxLine(checked: Bool, line: String, in range: NSRange) {
+        guard range.length >= 2 else { return }
 
+        // Indent the whole line to leave room for the SF Symbol icon at the left margin.
+        let para = NSMutableParagraphStyle()
+        para.lineHeightMultiple  = 1.4          // preserve base line height
+        para.firstLineHeadIndent = Self.checkboxIndent
+        para.headIndent          = Self.checkboxIndent
+        backing.addAttribute(.paragraphStyle, value: para, range: range)
+
+        // Hide ☐/☑ and tag it so refreshCheckboxOverlays can locate it.
         backing.addAttributes([
-            .foregroundColor: color,
-            .font: Self.checkboxFont
-        ], range: prefixRange)
+            .font:          Self.hiddenFont,
+            .foregroundColor: UIColor.clear,
+            .checkboxState: checked
+        ], range: NSRange(location: range.location, length: 1))
 
-        let textStart = range.location + prefixLen
-        let textLen   = range.length - prefixLen
+        // Hide the trailing space too — it has no visible role now that we indent.
+        backing.addAttributes([
+            .font:           Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ], range: NSRange(location: range.location + 1, length: 1))
+
+        let textStart = range.location + 2
+        let textLen   = range.length - 2
         guard textLen > 0 else { return }
         let textRange = NSRange(location: textStart, length: textLen)
 
         if checked {
             backing.addAttributes([
-                .foregroundColor: Self.dimColor,
+                .foregroundColor:    Self.dimColor,
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
                 .strikethroughColor: Self.dimColor
             ], range: textRange)
@@ -409,4 +488,7 @@ extension NSAttributedString.Key {
     static let imageNoteStorePath = NSAttributedString.Key("com.david.trace.imageNoteStorePath")
     /// Stores the NoteStore-relative path of a PDF. Set by MarkdownTextStorage on `📎 [desc](path)` spans.
     static let pdfNoteStorePath   = NSAttributedString.Key("com.david.trace.pdfNoteStorePath")
+    /// Bool — true = checked, false = unchecked. Set on the hidden ☐/☑ character.
+    /// Read by MarkdownEditorView.refreshCheckboxOverlays to place SF Symbol overlays.
+    static let checkboxState      = NSAttributedString.Key("com.david.trace.checkboxState")
 }

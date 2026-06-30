@@ -87,6 +87,7 @@ struct PlacesView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Search places", text: $searchText)
                     .autocorrectionDisabled()
+                    .onSubmit { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
                 if !searchText.isEmpty {
                     Button { searchText = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -199,6 +200,7 @@ struct PlacesView: View {
                     }
                 }
                 .refreshable { await notion.fetchPlaces() }
+                .scrollDismissesKeyboard(.immediately)
             }
         }
         .navigationTitle("Places")

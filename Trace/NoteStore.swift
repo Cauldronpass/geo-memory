@@ -21,7 +21,15 @@ class NoteStore {
     /// The resolved container path, for display in Settings debug panel.
     var containerPath: String = "resolving…"
 
+    /// True when running in Simulator (iCloud unavailable) — uses app Documents folder instead.
+    private(set) var isLocalMode: Bool = false
+
     init() {
+#if targetEnvironment(simulator)
+        // Simulator never has iCloud — skip the blocking container lookup entirely
+        // and go straight to local mode so the UI is ready immediately on launch.
+        activateLocalMode()
+#else
         // url(forUbiquityContainerIdentifier:) is a blocking call — must run on a GCD thread,
         // NOT inside Swift's cooperative thread pool (Task.detached), which causes thread starvation.
         DispatchQueue.global(qos: .userInitiated).async {
@@ -32,13 +40,86 @@ class NoteStore {
             if let url {
                 try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             }
-            let path = url?.path ?? "nil — iCloud container not found"
-            DispatchQueue.main.async {
-                self.documentsURL = url
-                self.hasAccess = url != nil
-                self.containerPath = path
+
+            if let url {
+                // iCloud available — normal path
+                DispatchQueue.main.async {
+                    self.documentsURL = url
+                    self.hasAccess = true
+                    self.isLocalMode = false
+                    self.containerPath = url.path
+                }
+            } else {
+                // iCloud unavailable — fall back to local Documents directory.
+                DispatchQueue.main.async { self.activateLocalMode() }
             }
         }
+#endif
+    }
+
+    private func activateLocalMode() {
+        let localRoot = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("TraceNotes")
+        try? FileManager.default.createDirectory(at: localRoot, withIntermediateDirectories: true)
+        documentsURL = localRoot
+        hasAccess = true
+        isLocalMode = true
+        containerPath = localRoot.path + " (LOCAL — no iCloud)"
+        seedLocalContent(at: localRoot)
+    }
+
+    // MARK: - Simulator test content
+    // Seeds a sample daily note + a scratch note in the local store so there's something
+    // to tap and edit in the Simulator without needing TestFlight or iCloud.
+    // Safe to call repeatedly — skips files that already exist.
+
+    private func seedLocalContent(at root: URL) {
+        let calDir = root.appendingPathComponent("Calendar")
+        try? FileManager.default.createDirectory(at: calDir, withIntermediateDirectories: true)
+
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd"
+        let today = fmt.string(from: Date())
+        let dailyFile = calDir.appendingPathComponent("\(today).md")
+
+        // Always overwrite during development so seed changes take effect on next launch.
+        // Switch to the fileExists guard once the content is stable.
+
+        let sample = """
+        # \(today)
+
+        **Morning note** — seeded test note for Simulator.
+
+        ## Heading 2
+
+        ### Heading 3
+
+        ---
+
+        Plain paragraph. **Bold** and *italic* and ==highlighted==.
+
+        ---
+
+        • Bullet item one
+        • Bullet item two
+        • Bullet item three
+
+        ---
+
+        - [ ] Unchecked task — tap the circle to check
+        - [x] Already done — strike-through rendered
+        - [ ] Another task to send to Things
+
+        ---
+
+        Notes:
+        • Type --- on its own line, then Return → horizontal rule
+        • Tap → toolbar button to indent a bullet, then Return continues at that indent
+        • Tap ☐ toolbar button to insert a checkbox
+        """
+        try? sample.write(to: dailyFile, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Daily notes

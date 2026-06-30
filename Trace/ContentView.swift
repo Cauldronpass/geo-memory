@@ -20,6 +20,7 @@ struct ContentView: View {
     @State private var showingWorkoutFromURL = false
     @State private var showingAddDocument = false
     @State private var pendingIncomingDocument: IncomingDocument? = nil
+    @State private var isKeyboardVisible = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -47,7 +48,7 @@ struct ContentView: View {
                     .tag(4)
             }
 
-            if selectedTab != 0 {
+            if selectedTab != 0 && !isKeyboardVisible {
                 Button(action: { showingActionSheet = true }) {
                     Image(systemName: "plus")
                         .font(.title2.bold())
@@ -179,6 +180,13 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .traceOpenRightDrawer)) { _ in
             withAnimation(.easeInOut(duration: 0.3)) { showingDrawer = true }
+        }
+        // Hide FAB while the keyboard is visible (e.g. when editing a note)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.15)) { isKeyboardVisible = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.15)) { isKeyboardVisible = false }
         }
         .sheet(isPresented: $showingGeofenceCheckIn) {
             if let place = geofencePlace {
