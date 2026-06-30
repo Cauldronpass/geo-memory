@@ -101,6 +101,7 @@ struct MarkdownEditorView: UIViewRepresentable {
             coord.refreshThumbnails(in: tvForThumb)
             coord.refreshHorizontalRules(in: tvForThumb)
             coord.refreshCheckboxOverlays(in: tvForThumb)
+            coord.refreshFoldOverlays(in: tvForThumb)
         }
 
         return tv
@@ -145,6 +146,7 @@ struct MarkdownEditorView: UIViewRepresentable {
             extCoord.refreshHorizontalRules(in: tv)
             extCoord.refreshThumbnails(in: tv)
             extCoord.refreshCheckboxOverlays(in: tv)
+            extCoord.refreshFoldOverlays(in: tv)
         }
     }
 
@@ -438,6 +440,13 @@ struct MarkdownEditorView: UIViewRepresentable {
             var lineCharStart: Int = 0
         }
 
+        /// UIImageView subclass for the fold triangle shown on bullets that have children.
+        /// isUserInteractionEnabled = false so taps fall through to UITextView → handleTap.
+        private final class FoldOverlay: UIImageView {
+            /// Character index of the parent • in the text storage.
+            var bulletCharStart: Int = 0
+        }
+
         init(text: Binding<String>,
              onSave: ((String) -> Void)?,
              onFocusChange: ((Bool) -> Void)?,
@@ -457,6 +466,7 @@ struct MarkdownEditorView: UIViewRepresentable {
             refreshThumbnails(in: tv)
             refreshHorizontalRules(in: tv)
             refreshCheckboxOverlays(in: tv)
+            refreshFoldOverlays(in: tv)
             checkForTextExpansion(tv)
         }
 
@@ -1155,6 +1165,18 @@ struct MarkdownEditorView: UIViewRepresentable {
 
             let point = gr.location(in: tv)
 
+            // Fold triangle tap — toggle fold state on the parent bullet.
+            // Must be checked before checkboxes since both use overlay hit-tests.
+            let foldOverlays = tv.subviews.compactMap({ $0 as? FoldOverlay })
+            // Expand hit zone to full row height — the visual chevron is only 16pt wide
+            // but the tap needs to land anywhere on the same row.
+            if let overlay = foldOverlays.first(where: {
+                point.y >= $0.frame.minY && point.y <= $0.frame.maxY
+            }) {
+                toggleFold(at: overlay.bulletCharStart, in: tv)
+                return
+            }
+
             // Checkbox toggle — primary detection via overlay frame hit-test.
             // The ☐/☑ glyph itself is invisible (hiddenFont + clear); CheckboxOverlay is
             // what the user sees. isUserInteractionEnabled = false on the overlay means the
@@ -1462,6 +1484,145 @@ struct MarkdownEditorView: UIViewRepresentable {
                 overlay.contentMode       = .scaleAspectFit
                 overlay.isUserInteractionEnabled = false
                 overlay.lineCharStart     = attrRange.location
+                tv.addSubview(overlay)
+            }
+        }
+
+        // MARK: - Foldable bullets
+
+        /// Toggles the fold state of the bullet whose • is at bulletCharIdx,
+        /// then re-styles the document and re-places fold triangle overlays.
+        /// No character change occurs — fold state is attribute-only and session-only
+        /// (not persisted to disk).
+        ///
+        /// NOTIFICATION STRATEGY — .editedAttributes + explicit invalidateLayout:
+        ///   In TextKit 1, .editedAttributes notifies the LM about attribute changes,
+        ///   but only triggers DISPLAY invalidation (glyph redraw) — NOT LAYOUT
+        ///   invalidation (line fragment re-computation). Since hidePara only changes
+        ///   line HEIGHT, we must call lm.invalidateLayout() explicitly in
+        ///   applyStylesAndNotify() after endEditing() so ensureLayout() re-measures
+        ///   the 1pt child lines. Without this, fold appears to do nothing.
+        ///
+        ///   .editedCharacters over the full range causes UITextView to call
+        ///   _fixSelectionAfterChange, repositioning the cursor to position 0.
+        ///   We avoid .editedCharacters and instead use invalidateLayout directly.
+        ///
+        /// WHY deferred cursor restore:
+        ///   shouldRecognizeSimultaneouslyWith = true means UITextView's internal tap
+        ///   gesture fires alongside ours. It places the cursor at the tap point AFTER
+        ///   our handler returns. We defer our restore to the next run loop cycle so it
+        ///   wins over UITextView's simultaneous cursor placement.
+        private func toggleFold(at bulletCharIdx: Int, in tv: UITextView) {
+            guard let storage = tv.textStorage as? MarkdownTextStorage else { return }
+            let savedRange = tv.selectedRange
+            storage.toggleFoldState(at: bulletCharIdx)
+            // applyStylesAndNotify: hides children via backing attributes, fires
+            // .editedAttributes, then explicitly calls lm.invalidateLayout() so that
+            // ensureLayout() below re-computes 1pt line heights for hidden children.
+            storage.applyStylesAndNotify()
+            refreshFoldOverlays(in: tv)   // ensureLayout → new 1pt line rects → overlays
+            tv.setNeedsLayout()           // recompute contentSize from new LM layout
+            tv.setNeedsDisplay()          // repaint with new line heights
+            let savedLen = storage.length
+            DispatchQueue.main.async { [weak tv] in
+                guard let tv else { return }
+                if savedRange.location <= savedLen &&
+                   savedRange.location + savedRange.length <= savedLen {
+                    tv.selectedRange = savedRange
+                }
+            }
+        }
+
+        /// Scans the text for bullet lines that have indented children and places a
+        /// FoldOverlay (chevron.right / chevron.down) immediately left of each parent •.
+        /// Called after every text change and after fold toggles, identical to
+        /// refreshCheckboxOverlays in structure and call sites.
+        func refreshFoldOverlays(in tv: UITextView) {
+            tv.subviews
+                .compactMap { $0 as? FoldOverlay }
+                .forEach { $0.removeFromSuperview() }
+
+            guard tv.textStorage.length > 0 else { return }
+            tv.layoutManager.ensureLayout(for: tv.textContainer)
+
+            let ns = tv.textStorage.string as NSString
+            let totalLen = ns.length
+
+            // Build a flat list of every line with its indent level and bullet info.
+            struct LineInfo {
+                let range: NSRange
+                let indentLevel: Int
+                let isBullet: Bool
+                let bulletCharIndex: Int   // absolute char index of •; -1 if not a bullet
+            }
+            var allLines: [LineInfo] = []
+            var pos = 0
+            while pos < totalLen {
+                let lineRange = ns.lineRange(for: NSRange(location: pos, length: 0))
+                guard lineRange.length > 0 else { break }
+                let line = ns.substring(with: lineRange)
+                let leadingSpaces = line.prefix(while: { $0 == " " }).count
+                let level = leadingSpaces / 2
+                let trimmed = String(line.dropFirst(leadingSpaces))
+                let isBullet = trimmed.hasPrefix("\u{2022} ")
+                allLines.append(LineInfo(
+                    range: lineRange,
+                    indentLevel: level,
+                    isBullet: isBullet,
+                    bulletCharIndex: isBullet ? lineRange.location + leadingSpaces : -1
+                ))
+                pos = lineRange.location + lineRange.length
+            }
+
+            // Place a fold triangle on every bullet whose immediate next line has a
+            // strictly greater indent (i.e., it has at least one child).
+            for (i, info) in allLines.enumerated() {
+                guard info.isBullet, info.bulletCharIndex >= 0 else { continue }
+                let hasChildren = (i + 1 < allLines.count)
+                               && (allLines[i + 1].indentLevel > info.indentLevel)
+                guard hasChildren else { continue }
+
+                let bulletIdx = info.bulletCharIndex
+                guard bulletIdx < tv.textStorage.length else { continue }
+                let isFolded = tv.textStorage.attribute(
+                    .foldState, at: bulletIdx, effectiveRange: nil) as? Bool ?? false
+
+                // Y: anchor on the first VISIBLE text character after "• " — same
+                // strategy as refreshCheckboxOverlays. Avoids querying the • glyph
+                // directly (hiddenFont / null-glyph issues on checkbox lines) and
+                // avoids location(forGlyphAt:) which triggers partial glyph generation
+                // that leaves the layout manager in an inconsistent state, causing
+                // UITextView to mis-place the cursor on subsequent taps near line end.
+                let textCharIdx = min(bulletIdx + 2, tv.textStorage.length - 1)
+                let textGlyphRange = tv.layoutManager.glyphRange(
+                    forCharacterRange: NSRange(location: textCharIdx, length: 1),
+                    actualCharacterRange: nil)
+                guard textGlyphRange.location != NSNotFound,
+                      textGlyphRange.location < tv.layoutManager.numberOfGlyphs else { continue }
+
+                let lineFragRect = tv.layoutManager.lineFragmentUsedRect(
+                    forGlyphAt: textGlyphRange.location, effectiveRange: nil)
+
+                // X: estimate from indent level — 2 spaces per level, ~4.5pt/space.
+                // Triangle sits just left of the indented •.
+                let triangleSize: CGFloat = 16
+                let spaceWidth: CGFloat = 4.5
+                let indentOffset = CGFloat(info.indentLevel * 2) * spaceWidth
+                let x = max(0, tv.textContainerInset.left + indentOffset - triangleSize)
+                let y = lineFragRect.origin.y + tv.textContainerInset.top
+                       + (lineFragRect.height - triangleSize) / 2
+
+                let symName = isFolded ? "chevron.right" : "chevron.down"
+                let symConfig = UIImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+
+                let overlay = FoldOverlay(frame: CGRect(x: x, y: y,
+                                                        width: triangleSize,
+                                                        height: triangleSize))
+                overlay.image = UIImage(systemName: symName, withConfiguration: symConfig)?
+                    .withTintColor(.tertiaryLabel, renderingMode: .alwaysOriginal)
+                overlay.contentMode = .scaleAspectFit
+                overlay.isUserInteractionEnabled = false
+                overlay.bulletCharStart = bulletIdx
                 tv.addSubview(overlay)
             }
         }

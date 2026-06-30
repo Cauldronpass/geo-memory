@@ -93,6 +93,19 @@ final class MarkdownTextStorage: NSTextStorage {
         guard backing.length > 0 else { return }
         let full = NSRange(location: 0, length: backing.length)
 
+        // --- Snapshot fold state BEFORE attribute reset ---
+        // .foldState is a Bool custom attribute stored on parent • characters.
+        // The setAttributes reset below wipes all custom attributes; we re-apply
+        // folded ones after the per-line styling pass so fold state survives every
+        // keystroke. NSAttributedString keeps attributes aligned with their characters
+        // as the string is edited, so the character indices here are always current.
+        var foldedCharIndices = Set<Int>()
+        backing.enumerateAttribute(.foldState, in: full, options: []) { value, range, _ in
+            if value as? Bool == true {
+                foldedCharIndices.insert(range.location)
+            }
+        }
+
         // Reset to base — includes 1.4x line height for comfortable reading
         backing.setAttributes([
             .font: Self.bodyFont,
@@ -100,11 +113,144 @@ final class MarkdownTextStorage: NSTextStorage {
             .paragraphStyle: Self.baseParagraphStyle
         ], range: full)
 
+        // Collect per-line metadata while running the normal styling pass.
+        // We need the full line list afterward to identify child ranges for folding.
+        //
+        // TWO ranges per line:
+        //   subRange      — content only, NO trailing newline (what enumerateSubstrings gives)
+        //   enclosingRange — content + trailing newline / line terminator
+        //
+        // CRITICAL: fold-hiding paragraph style MUST be applied to enclosingRange, not subRange.
+        // NSTextStorage.processEditing() calls fixParagraphStyleAttribute() which inspects the
+        // paragraph terminator (\n). If \n retains baseParagraphStyle (from the reset), fix-attrs
+        // overwrites the whole child paragraph back to baseParagraphStyle — erasing hidePara and
+        // making the fold invisible. Applying hidePara to enclosingRange (so \n also has hidePara)
+        // causes fix-attrs to extend hidePara instead, keeping the 1pt line height. This is the
+        // root cause of "folding does nothing" and was confirmed by seeing setAttributes() above
+        // get called via fixParagraphStyleAttribute during super.processEditing().
+        struct LineInfo {
+            let range: NSRange          // subRange (content only, no \n) — used for styleLine
+            let enclosingRange: NSRange // full range incl. \n — used for fold-hiding paragraph style
+            let indentLevel: Int
+            let isBullet: Bool
+            let bulletCharIndex: Int    // absolute index of • in backing; -1 if not a bullet
+        }
+        var lineInfos: [LineInfo] = []
+
         (backing.string as NSString).enumerateSubstrings(
             in: full, options: .byLines
-        ) { [weak self] sub, subRange, _, _ in
+        ) { [weak self] sub, subRange, enclosingRange, _ in
             guard let self, let line = sub else { return }
+            let leadingSpaces = line.prefix(while: { $0 == " " }).count
+            let level = leadingSpaces / 2
+            let trimmed = String(line.dropFirst(leadingSpaces))
+            let isBullet = trimmed.hasPrefix("\u{2022} ")
+            lineInfos.append(LineInfo(
+                range: subRange,
+                enclosingRange: enclosingRange,
+                indentLevel: level,
+                isBullet: isBullet,
+                bulletCharIndex: isBullet ? (subRange.location + leadingSpaces) : -1
+            ))
             self.styleLine(line, in: subRange)
+        }
+
+        // Re-apply fold state and hide child lines for each folded parent bullet.
+        // "Children" = consecutive lines after the parent whose indent level is
+        // strictly greater. They get 0.1pt height + clear color (same trick as
+        // the --- HR reserved slot, just at near-zero instead of 24pt).
+        guard !foldedCharIndices.isEmpty else { return }
+
+        let hidePara: NSMutableParagraphStyle = {
+            let p = NSMutableParagraphStyle()
+            // 1.0pt — functionally invisible on Retina (0.5 physical pixels) but
+            // avoids pathological TextKit 1 layout behaviour that 0.1pt can trigger.
+            p.minimumLineHeight = 1.0
+            p.maximumLineHeight = 1.0
+            return p
+        }()
+
+        for (i, info) in lineInfos.enumerated() {
+            guard info.isBullet, info.bulletCharIndex >= 0 else { continue }
+            guard foldedCharIndices.contains(info.bulletCharIndex) else { continue }
+
+            // Restore .foldState on this parent • character
+            backing.addAttribute(.foldState, value: true,
+                                 range: NSRange(location: info.bulletCharIndex, length: 1))
+
+            // Hide all consecutive child lines.
+            // Use enclosingRange (with \n) for ALL attributes so that the paragraph
+            // terminator has hidePara — fixParagraphStyleAttribute will then extend
+            // hidePara across the whole paragraph rather than restoring baseParagraphStyle.
+            var j = i + 1
+            while j < lineInfos.count && lineInfos[j].indentLevel > info.indentLevel {
+                backing.addAttributes([
+                    .paragraphStyle:  hidePara,
+                    .foregroundColor: UIColor.clear,
+                    .font:            Self.hiddenFont
+                ], range: lineInfos[j].enclosingRange)
+                j += 1
+            }
+        }
+    }
+
+    // MARK: - Fold toggle support
+
+    /// Flips the .foldState Bool attribute on a bullet's • character in the backing store.
+    /// Call applyStylesAndNotify() immediately after to re-layout.
+    func toggleFoldState(at characterIndex: Int) {
+        guard characterIndex < backing.length else { return }
+        let current = backing.attribute(.foldState, at: characterIndex,
+                                       effectiveRange: nil) as? Bool ?? false
+        backing.addAttribute(.foldState, value: !current,
+                             range: NSRange(location: characterIndex, length: 1))
+    }
+
+    /// Runs a full applyStyles() pass then fires an .editedAttributes notification
+    /// so the layout manager re-measures line fragment rects (paragraph heights).
+    ///
+    /// WHY .editedAttributes (not .editedCharacters):
+    ///   WWDC 2018 Session 221 + Apple docs: BOTH masks cause the LM to invalidate
+    ///   glyphs and re-layout line fragment rects. .editedAttributes is sufficient
+    ///   for paragraph-style / line-height changes. Using .editedCharacters over the
+    ///   full document range has a severe side-effect: UITextView internally calls
+    ///   _fixSelectionAfterChange with the full range and repositions the cursor to
+    ///   position 0 (first row). That's the "cursor stuck at top" bug. .editedAttributes
+    ///   does not trigger _fixSelectionAfterChange, so the cursor stays put.
+    ///
+    /// WHY applyStyles() does NOT run a second time (unlike the .editedCharacters path):
+    ///   processEditing() only re-runs applyStyles() when editedMask has .editedCharacters.
+    ///   With .editedAttributes only, processEditing falls through to super.processEditing()
+    ///   which notifies the LM. That is exactly what we want: the LM sees the fold-hiding
+    ///   attributes that applyStyles() just wrote to backing.
+    ///
+    /// WHY the caller also needs tv.setNeedsDisplay():
+    ///   UITextView's display layer does not automatically redraw on attribute-only LM
+    ///   notifications the same way it does after character edits. Without an explicit
+    ///   setNeedsDisplay() call in the Coordinator, the LM's new 1pt line heights are
+    ///   computed but the on-screen pixels are never refreshed (fold appears to do nothing).
+    func applyStylesAndNotify() {
+        guard backing.length > 0 else { return }
+        applyStyles()   // writes fold-hiding paragraph styles + clear color to backing
+        let full = NSRange(location: 0, length: backing.length)
+        beginEditing()
+        edited(.editedAttributes, range: full, changeInLength: 0)
+        endEditing()    // → processEditing → super.processEditing() → LM notified
+        //
+        // WHY the explicit invalidateLayout call below is required:
+        //
+        // In TextKit 1, .editedAttributes notifies the LM about attribute changes.
+        // However, the LM's response to .editedAttributes is to invalidate DISPLAY
+        // (glyph redraw) — NOT LAYOUT (line fragment rect re-computation). Paragraph
+        // style changes (hidePara: minimumLineHeight = maximumLineHeight = 1pt) only
+        // affect LINE HEIGHT, which requires layout re-computation. Without this call,
+        // ensureLayout() in refreshFoldOverlays finds no pending layout work and returns
+        // immediately using the old (22pt) line heights — fold appears to do nothing.
+        //
+        // Calling invalidateLayout AFTER endEditing() (i.e., after processEditing
+        // completes) is safe — we are no longer inside the notification pipeline.
+        for lm in layoutManagers {
+            lm.invalidateLayout(forCharacterRange: full, actualCharacterRange: nil)
         }
     }
 
@@ -491,4 +637,7 @@ extension NSAttributedString.Key {
     /// Bool — true = checked, false = unchecked. Set on the hidden ☐/☑ character.
     /// Read by MarkdownEditorView.refreshCheckboxOverlays to place SF Symbol overlays.
     static let checkboxState      = NSAttributedString.Key("com.david.trace.checkboxState")
+    /// Bool — true = folded (children hidden). Set on the parent • character by
+    /// toggleFoldState(); snapshotted and restored across every applyStyles() pass.
+    static let foldState          = NSAttributedString.Key("com.david.trace.foldState")
 }

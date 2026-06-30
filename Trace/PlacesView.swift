@@ -24,6 +24,7 @@ struct PlacesView: View {
     @State private var checkInPlace: Place? = nil
     @State private var showingAddPlace   = false
     @State private var showingVisits     = false
+    @FocusState private var isSearchFocused: Bool
 
     private var availableCategories: [String] {
         Array(Set(notion.places.compactMap { $0.category.isEmpty ? nil : $0.category })).sorted()
@@ -87,9 +88,10 @@ struct PlacesView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Search places", text: $searchText)
                     .autocorrectionDisabled()
-                    .onSubmit { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+                    .focused($isSearchFocused)
+                    .onSubmit { isSearchFocused = false }
                 if !searchText.isEmpty {
-                    Button { searchText = "" } label: {
+                    Button { searchText = ""; isSearchFocused = false } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
@@ -207,6 +209,10 @@ struct PlacesView: View {
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
         .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { isSearchFocused = false }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button { showingVisits = true } label: {
                     Image(systemName: "clock.arrow.circlepath")
