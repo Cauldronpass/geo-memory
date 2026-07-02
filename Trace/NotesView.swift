@@ -79,6 +79,20 @@ struct NotesView: View {
     }
 }
 
+// MARK: - WikiLinkTarget
+// Discriminated union used by onWikiTap to present the right detail sheet.
+
+enum WikiLinkTarget: Identifiable {
+    case place(Place)
+    case person(Person)
+    var id: String {
+        switch self {
+        case .place(let p):  return "place-\(p.id)"
+        case .person(let p): return "person-\(p.id)"
+        }
+    }
+}
+
 // MARK: - NoteTab enum
 
 enum NoteTab: String, CaseIterable, Identifiable {
@@ -135,6 +149,8 @@ struct DailyNoteTab: View {
     @State private var showingMonthNote: Bool = false
     // E1 — block promote
     @State private var longPressedBlock: BlockInfo? = nil
+    // E6b — wikilink tap navigation
+    @State private var wikiLinkTarget: WikiLinkTarget? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -180,7 +196,9 @@ struct DailyNoteTab: View {
                         placeholder: "Nothing here yet — start writing.",
                         timestampTrigger: $timestampTrigger,
                         onFocusChange: { isEditorFocused = $0 },
-                        onBlockLongPress: { info in longPressedBlock = info }
+                        onBlockLongPress: { info in longPressedBlock = info },
+                        onWikiTap: { name in resolveWikiLink(name) },
+                        wikiSuggestions: { query in wikiSuggestions(for: query) }
                     )
                 }
             }
@@ -232,6 +250,19 @@ struct DailyNoteTab: View {
         .sheet(item: $selectedPanelVisit) { visit in
             VisitDetailView(visit: visit)
                 .environment(notion)
+        }
+        .sheet(item: $wikiLinkTarget) { target in
+            NavigationStack {
+                switch target {
+                case .place(let place):
+                    PlaceDetailView(place: place)
+                        .environment(NotionService.shared)
+                        .environment(LocationManager.shared)
+                case .person(let person):
+                    PersonDetailView(personID: person.id, personName: person.name)
+                        .environment(NotionService.shared)
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { note in
             // Only reload for external writes (e.g. from capture drawer).
@@ -541,6 +572,40 @@ struct DailyNoteTab: View {
                 : "# \(dateStr)\n\n\(text)"
             try? noteStore.writeFile(path, content: fileContent)
             datesWithNotes.insert(dateStr)
+        }
+    }
+
+    /// Returns autocomplete candidates for a [[wikilink]] partial name.
+    /// Places (mappin icon) first, then people (person icon), max 8 total.
+    private func wikiSuggestions(for query: String) -> [(name: String, isPlace: Bool)] {
+        let q = query.lowercased()
+        var results: [(name: String, isPlace: Bool)] = []
+        // Places from Notion
+        let placeMatches = notion.places
+            .map { $0.name }
+            .filter { q.isEmpty || $0.lowercased().contains(q) }
+            .sorted()
+            .map { (name: $0, isPlace: true) }
+        results.append(contentsOf: placeMatches)
+        // People from Notion
+        let peopleMatches = notion.people
+            .map { $0.name }
+            .filter { name in
+                (q.isEmpty || name.lowercased().contains(q)) &&
+                !results.contains(where: { $0.name == name })
+            }
+            .sorted()
+            .map { (name: $0, isPlace: false) }
+        results.append(contentsOf: peopleMatches)
+        return Array(results.prefix(8))
+    }
+
+    /// Resolves a tapped [[name]] to the right detail sheet.
+    private func resolveWikiLink(_ name: String) {
+        if let place = notion.places.first(where: { $0.name == name }) {
+            wikiLinkTarget = .place(place)
+        } else if let person = notion.people.first(where: { $0.name == name }) {
+            wikiLinkTarget = .person(person)
         }
     }
 
@@ -1082,6 +1147,7 @@ struct NoteEditorView: View {
     @State private var showingRename = false
     @State private var renameText = ""
     @State private var showingLinkedPlace: Place? = nil
+    @State private var wikiLinkTarget: WikiLinkTarget? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(NotionService.self) private var notion
 
@@ -1139,6 +1205,19 @@ struct NoteEditorView: View {
                     PlaceDetailView(place: place)
                 }
             }
+            .sheet(item: $wikiLinkTarget) { target in
+                NavigationStack {
+                    switch target {
+                    case .place(let place):
+                        PlaceDetailView(place: place)
+                            .environment(NotionService.shared)
+                            .environment(LocationManager.shared)
+                    case .person(let person):
+                        PersonDetailView(personID: person.id, personName: person.name)
+                            .environment(NotionService.shared)
+                    }
+                }
+            }
     }
 
     @ViewBuilder
@@ -1173,7 +1252,9 @@ struct NoteEditorView: View {
                 MarkdownEditorView(
                     text: $content,
                     onSave: { newText in save(newText) },
-                    relativePath: relativePath
+                    relativePath: relativePath,
+                    onWikiTap: { name in resolveWikiLink(name) },
+                    wikiSuggestions: { query in wikiSuggestions(for: query) }
                 )
             }
         }
@@ -1271,6 +1352,38 @@ struct NoteEditorView: View {
             try? noteStore.writeFile(relativePath, content: text)
         }
     }
+
+    /// Returns autocomplete candidates for a [[wikilink]] partial name.
+    /// Places (mappin icon) first, then people (person icon), max 8 total.
+    private func wikiSuggestions(for query: String) -> [(name: String, isPlace: Bool)] {
+        let q = query.lowercased()
+        var results: [(name: String, isPlace: Bool)] = []
+        let placeMatches = notion.places
+            .map { $0.name }
+            .filter { q.isEmpty || $0.lowercased().contains(q) }
+            .sorted()
+            .map { (name: $0, isPlace: true) }
+        results.append(contentsOf: placeMatches)
+        let peopleMatches = notion.people
+            .map { $0.name }
+            .filter { name in
+                (q.isEmpty || name.lowercased().contains(q)) &&
+                !results.contains(where: { $0.name == name })
+            }
+            .sorted()
+            .map { (name: $0, isPlace: false) }
+        results.append(contentsOf: peopleMatches)
+        return Array(results.prefix(8))
+    }
+
+    private func resolveWikiLink(_ name: String) {
+        if let place = notion.places.first(where: { $0.name == name }) {
+            wikiLinkTarget = .place(place)
+        } else if let person = notion.people.first(where: { $0.name == name }) {
+            wikiLinkTarget = .person(person)
+        }
+    }
+
 }
 
 

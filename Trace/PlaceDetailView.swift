@@ -10,6 +10,7 @@ struct PlaceDetailView: View {
     @State private var selectedTab = 0
     @State private var placeNoteContent: String = ""
     @State private var placeNoteLoaded = false
+    @State private var wikiLinkTarget: WikiLinkTarget? = nil
     @State private var showingCheckIn = false
     @State private var editingVisit: Visit? = nil
     @State private var showingEditPlace = false
@@ -426,8 +427,42 @@ struct PlaceDetailView: View {
                     NotificationCenter.default.post(name: .noteStorePlaceNoteDidChange, object: place.name)
                 }
             },
-            placeholder: "Notes about \(place.name)…"
+            placeholder: "Notes about \(place.name)…",
+            onWikiTap: { name in
+                if let p = notionService.places.first(where: { $0.name == name }) {
+                    wikiLinkTarget = .place(p)
+                } else if let p = notionService.people.first(where: { $0.name == name }) {
+                    wikiLinkTarget = .person(p)
+                }
+            },
+            wikiSuggestions: { query in
+                let q = query.lowercased()
+                let places = notionService.places
+                    .map { $0.name }
+                    .filter { q.isEmpty || $0.lowercased().contains(q) }
+                    .sorted()
+                    .map { (name: $0, isPlace: true) }
+                let people = notionService.people
+                    .map { $0.name }
+                    .filter { n in (q.isEmpty || n.lowercased().contains(q)) && !places.contains(where: { $0.name == n }) }
+                    .sorted()
+                    .map { (name: $0, isPlace: false) }
+                return Array((places + people).prefix(8))
+            }
         )
+        .sheet(item: $wikiLinkTarget) { target in
+            NavigationStack {
+                switch target {
+                case .place(let p):
+                    PlaceDetailView(place: p)
+                        .environment(notionService)
+                        .environment(locationManager)
+                case .person(let p):
+                    PersonDetailView(personID: p.id, personName: p.name)
+                        .environment(notionService)
+                }
+            }
+        }
         .ignoresSafeArea(.keyboard)
         .onAppear {
             guard !placeNoteLoaded else { return }

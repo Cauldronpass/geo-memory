@@ -544,7 +544,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 72;
+				CURRENT_PROJECT_VERSION = 75;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -558,6 +558,7 @@
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Trace uses your location to show nearby places and auto check-in.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Trace saves captured photos to your photo library.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "uses photos to attach images to your notes.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Trace uses Reminders to send tasks to Tweek.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -589,7 +590,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 72;
+				CURRENT_PROJECT_VERSION = 75;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -603,6 +604,7 @@
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Trace uses your location to show nearby places and auto check-in.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Trace saves captured photos to your photo library.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "uses photos to attach images to your notes.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Trace uses Reminders to send tasks to Tweek.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

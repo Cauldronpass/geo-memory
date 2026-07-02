@@ -57,6 +57,9 @@ final class ThingsService {
     // MARK: - Fetch
 
     func fetch() async {
+        #if targetEnvironment(simulator)
+        return  // Mini server unreachable from simulator; skip to avoid 8-second timeout
+        #endif
         guard let rawURL = UserDefaults.standard.string(forKey: "things_api_url"),
               !rawURL.isEmpty else { return }
 

@@ -83,6 +83,13 @@ struct BilliardsView: View {
                                     NavigationLink(destination: BilliardsSessionDetailView(session: session)) {
                                         SessionRow(session: session)
                                     }
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button(role: .destructive) {
+                                            Task { try? await notion.deleteBilliardsSession(id: session.id) }
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                                 }
                             } header: {
                                 Text(group.date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
@@ -311,6 +318,13 @@ private struct SessionRow: View {
 
 struct BilliardsSessionDetailView: View {
     let session: BilliardsSession
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+    @State private var showDeleteConfirm = false
+    @State private var isDeleting = false
+    @State private var isEditingNotes = false
+    @State private var draftNotes = ""
+    @State private var isSavingNotes = false
 
     private var resultColor: Color {
         switch session.result {
@@ -318,6 +332,11 @@ struct BilliardsSessionDetailView: View {
         case "Loss": return .red
         default:     return .secondary
         }
+    }
+
+    // Live notes: prefer in-memory updated value from notion store over stale session copy
+    private var liveNotes: String {
+        notion.billiardsSessions.first(where: { $0.id == session.id })?.notes ?? session.notes ?? ""
     }
 
     var body: some View {
@@ -375,18 +394,90 @@ struct BilliardsSessionDetailView: View {
                 }
             }
 
-            // Notes
-            if let notes = session.notes, !notes.isEmpty {
-                Section("Notes") {
-                    Text(notes)
+            // Notes — always visible, tappable to edit
+            Section {
+                if isEditingNotes {
+                    TextEditor(text: $draftNotes)
+                        .frame(minHeight: 100)
                         .font(.body)
-                        .foregroundStyle(.primary)
+                } else {
+                    Button {
+                        draftNotes = liveNotes
+                        isEditingNotes = true
+                    } label: {
+                        if liveNotes.isEmpty {
+                            Text("Add notes…")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            Text(liveNotes)
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if isEditingNotes {
+                    HStack {
+                        Button("Cancel") {
+                            isEditingNotes = false
+                        }
+                        .foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            isSavingNotes = true
+                            Task {
+                                try? await notion.updateBilliardsSessionNotes(id: session.id, notes: draftNotes)
+                                isSavingNotes = false
+                                isEditingNotes = false
+                            }
+                        } label: {
+                            if isSavingNotes {
+                                ProgressView().scaleEffect(0.8)
+                            } else {
+                                Text("Save").bold()
+                            }
+                        }
+                        .disabled(isSavingNotes)
+                    }
+                }
+            } header: {
+                Text("Notes")
+            }
+
+            // Delete
+            Section {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        if isDeleting {
+                            ProgressView()
+                        } else {
+                            Text("Delete Match")
+                        }
+                        Spacer()
+                    }
                 }
             }
         }
         .navigationTitle("\(session.format) · \(session.date.formatted(.dateTime.month(.abbreviated).day()))")
         .navigationBarTitleDisplayMode(.inline)
         .drawerToolbar()
+        .confirmationDialog("Delete this match?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                isDeleting = true
+                Task {
+                    try? await notion.deleteBilliardsSession(id: session.id)
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This cannot be undone.")
+        }
     }
 
     private func detailRow(label: String, value: String) -> some View {

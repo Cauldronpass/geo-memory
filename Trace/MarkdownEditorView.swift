@@ -5,6 +5,192 @@ import VisionKit
 import UniformTypeIdentifiers
 import PDFKit
 import AVFoundation
+import EventKit
+
+// MARK: - Tag index
+
+/// Persists the set of known hashtags to UserDefaults.
+/// Seeded by scanning all NoteStore files on first launch; maintained incrementally.
+final class TagIndex {
+    static let shared = TagIndex()
+    private let key = "traceTagIndex"
+
+    private(set) var tags: [String] = []
+
+    private init() { load() }
+
+    func load() {
+        tags = UserDefaults.standard.stringArray(forKey: key) ?? []
+        if tags.isEmpty { seedFromNotes() }
+    }
+
+    func add(_ tag: String) {
+        let t = tag.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, !tags.contains(t) else { return }
+        tags.append(t)
+        tags.sort()
+        save()
+    }
+
+    func save() {
+        UserDefaults.standard.set(tags, forKey: key)
+    }
+
+    /// Returns tags whose name starts with `partial` (case-insensitive), up to 8.
+    func matches(_ partial: String) -> [String] {
+        let q = partial.lowercased()
+        let filtered = q.isEmpty ? tags : tags.filter { $0.hasPrefix(q) }
+        return Array(filtered.prefix(8))
+    }
+
+    /// One-time scan of all NoteStore markdown files to seed the index.
+    private func seedFromNotes() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let regex = try? NSRegularExpression(pattern: #"(?<![&\w])#([a-zA-Z][a-zA-Z0-9_]*)"#)
+            var found = Set<String>()
+            guard let root = NoteStore.shared.containerURL else { return }
+            if let enumerator = FileManager.default.enumerator(
+                at: root, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) {
+                for case let url as URL in enumerator {
+                    guard url.pathExtension == "md",
+                          let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                    let ns = content as NSString
+                    let range = NSRange(location: 0, length: ns.length)
+                    regex?.enumerateMatches(in: content, range: range) { m, _, _ in
+                        if let m, let r = Range(m.range(at: 1), in: content) {
+                            found.insert(String(content[r]).lowercased())
+                        }
+                    }
+                }
+            }
+            DispatchQueue.main.async {
+                self.tags = found.sorted()
+                self.save()
+            }
+        }
+    }
+}
+
+// MARK: - Toolbar customization model
+
+/// Identifies each toolbar slot. Raw value is persisted to UserDefaults.
+enum ToolbarItemID: String, CaseIterable, Identifiable {
+    case bold        = "bold"
+    case strike      = "strike"
+    case highlight   = "highlight"
+    case bullet      = "bullet"
+    case checkbox    = "checkbox"
+    case outdent     = "outdent"
+    case indent      = "indent"
+    case attach      = "attach"
+    case link        = "link"
+    case heading     = "heading"
+    case date        = "date"
+    case undo        = "undo"
+    case redo        = "redo"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .bold:      return "Bold (B)"
+        case .strike:    return "Strikethrough (~~)"
+        case .highlight: return "Highlight (==)"
+        case .bullet:    return "Bullet (−)"
+        case .checkbox:  return "Checkbox (☐)"
+        case .outdent:   return "Outdent (←)"
+        case .indent:    return "Indent (→)"
+        case .attach:    return "Attach (📎)"
+        case .link:      return "Link (🔗)"
+        case .heading:   return "Heading (#)"
+        case .date:      return "Date (📅)"
+        case .undo:      return "Undo"
+        case .redo:      return "Redo"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .bold:      return "bold"
+        case .strike:    return "strikethrough"
+        case .highlight: return "highlighter"
+        case .bullet:    return "list.bullet"
+        case .checkbox:  return "checkmark.square"
+        case .outdent:   return "decrease.indent"
+        case .indent:    return "increase.indent"
+        case .attach:    return "paperclip"
+        case .link:      return "link"
+        case .heading:   return "number"
+        case .date:      return "calendar"
+        case .undo:      return "arrow.uturn.backward"
+        case .redo:      return "arrow.uturn.forward"
+        }
+    }
+}
+
+private let kToolbarOrderKey = "markdownToolbarOrder"
+
+/// Returns the user's saved toolbar order, or the default order if none saved.
+func loadToolbarOrder() -> [ToolbarItemID] {
+    if let saved = UserDefaults.standard.array(forKey: kToolbarOrderKey) as? [String] {
+        let mapped = saved.compactMap { ToolbarItemID(rawValue: $0) }
+        // If new items were added since the order was saved, append them at the end
+        let missing = ToolbarItemID.allCases.filter { !mapped.contains($0) }
+        return mapped + missing
+    }
+    return [.undo, .redo, .bold, .strike, .highlight, .bullet, .checkbox,
+            .outdent, .indent, .attach, .link, .heading, .date]
+}
+
+func saveToolbarOrder(_ order: [ToolbarItemID]) {
+    UserDefaults.standard.set(order.map(\.rawValue), forKey: kToolbarOrderKey)
+}
+
+// MARK: - Toolbar customize sheet
+
+struct ToolbarCustomizeSheet: View {
+    @State private var items: [ToolbarItemID]
+    var onDone: ([ToolbarItemID]) -> Void
+
+    init(current: [ToolbarItemID], onDone: @escaping ([ToolbarItemID]) -> Void) {
+        _items = State(initialValue: current)
+        self.onDone = onDone
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(items) { item in
+                        Label(item.label, systemImage: item.systemImage)
+                            .font(.body)
+                    }
+                    .onMove { from, to in
+                        items.move(fromOffsets: from, toOffset: to)
+                    }
+                } header: {
+                    Text("Drag to reorder toolbar buttons")
+                        .textCase(nil)
+                }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("Customize Toolbar")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        saveToolbarOrder(items)
+                        onDone(items)
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+    }
+}
 
 // MARK: - MarkdownEditorView
 //
@@ -14,7 +200,8 @@ import AVFoundation
 //   • Scrollable toolbar: B · I · ~~ · H · # · − · → · ← · ☐ · 📎 · 🔗 ‖ Done
 //   • Auto-save: 0.8 s debounce after last keystroke
 //   • Checkbox tap: tapping the circle overlay toggles - [ ] ↔ - [x]
-//   • ☐ toolbar tap: UIMenu (no first-responder change) → Keep local / Things / Tweek
+//   • ☐ toolbar tap: UIMenu → Keep local / Things / Tweek
+//     Picking Things/Tweek inserts ☐ and stores .sendTarget; Return fires the send.
 //   • Link tap: opens URLs (http/https and custom schemes) via UIApplication.open
 //   • Placeholder label shown when text is empty
 //   • Timestamp insert: triggered externally via timestampTrigger binding
@@ -33,6 +220,13 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// NoteStore relative path for this note (e.g. "Notes/Daily/2026-06-28.md").
     /// Used to extract the note date for task scheduling when sending to Things / Tweek.
     var relativePath: String? = nil
+    /// Called when the user taps a [[wikilink]] span. Receives the inner name string
+    /// (e.g. "Blue Bottle Coffee"). Parent view is responsible for navigation/lookup.
+    var onWikiTap: ((String) -> Void)? = nil
+    /// Called with the partial name as the user types inside [[ ...]].
+    /// Returns matched items: `name` is inserted into the text; `isPlace` selects the pill icon.
+    /// Parent view provides this — filters Places (mappin icon) and People (person icon).
+    var wikiSuggestions: ((String) -> [(name: String, isPlace: Bool)])? = nil
 
     // MARK: Make
 
@@ -51,7 +245,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         tv.textColor              = .label
         tv.font                   = MarkdownTextStorage.bodyFont
         tv.textContainerInset     = UIEdgeInsets(top: 14, left: 12, bottom: 60, right: 12)
-        tv.autocorrectionType     = .default
+        tv.autocorrectionType     = .no   // disabled — pill bar is the autocomplete surface
         tv.autocapitalizationType = .sentences
         tv.keyboardDismissMode    = .interactive
         tv.alwaysBounceVertical   = true
@@ -152,13 +346,18 @@ struct MarkdownEditorView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         let c = Coordinator(text: $text, onSave: onSave, onFocusChange: onFocusChange, onBlockLongPress: onBlockLongPress)
-        c.relativePath = relativePath
+        c.relativePath    = relativePath
+        c.onWikiTap       = onWikiTap
+        c.wikiSuggestions = wikiSuggestions
+        c.parentView      = self
         return c
     }
 
     func updateUIView(_ tv: UITextView, context: Context) {
-        // Keep relativePath in sync if the caller changes it after initial creation.
-        context.coordinator.relativePath = relativePath
+        // Keep relativePath, onWikiTap, and wikiSuggestions in sync after initial creation.
+        context.coordinator.relativePath    = relativePath
+        context.coordinator.onWikiTap       = onWikiTap
+        context.coordinator.wikiSuggestions = wikiSuggestions
         _updateUIView(tv, context: context)
     }
 
@@ -191,8 +390,13 @@ struct MarkdownEditorView: UIViewRepresentable {
     // The Done button is always pinned to the trailing edge.
     // Formatting buttons scroll horizontally so all 9 fit on any screen width.
 
-    private func makeScrollToolbar(_ coordinator: Coordinator) -> UIView {
-        let container = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 44))
+    private func makeScrollToolbar(_ coordinator: Coordinator) -> UIInputView {
+        // UIInputView (not plain UIView) + allowsSelfSizing = false locks the bar to a fixed
+        // 44pt height. A plain UIView lets iOS recalculate intrinsic height during layout passes,
+        // which causes the bar to jump vertically as the keyboard height changes.
+        let container = UIInputView(frame: CGRect(x: 0, y: 0, width: 320, height: 44),
+                                    inputViewStyle: .keyboard)
+        container.allowsSelfSizing = false
         container.autoresizingMask = [.flexibleWidth]
         container.backgroundColor = UIColor.systemGroupedBackground
 
@@ -212,7 +416,18 @@ struct MarkdownEditorView: UIViewRepresentable {
         doneBtn.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(doneBtn)
 
-        // Thin separator between scroll area and Done
+        // Customize button — slider.horizontal.3 icon, left of Done
+        let customizeBtn = UIButton(type: .system)
+        let symCfg = UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        customizeBtn.setImage(UIImage(systemName: "slider.horizontal.3", withConfiguration: symCfg), for: .normal)
+        customizeBtn.tintColor = .secondaryLabel
+        customizeBtn.addTarget(coordinator,
+                               action: #selector(Coordinator.showToolbarCustomize),
+                               for: .touchUpInside)
+        customizeBtn.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(customizeBtn)
+
+        // Thin separator between scroll area and customize/Done cluster
         let sep = UIView()
         sep.backgroundColor = UIColor.separator
         sep.translatesAutoresizingMaskIntoConstraints = false
@@ -235,38 +450,20 @@ struct MarkdownEditorView: UIViewRepresentable {
         stack.translatesAutoresizingMaskIntoConstraints = false
         scrollView.addSubview(stack)
 
-        // Order: B · ~~ · H · − · ☐(UIMenu) · ← · → · 📎(UIMenu) · 🔗 · # · 📅
-        let leadingItems: [(title: String, bold: Bool, action: Selector)] = [
-            ("B",   true,  #selector(Coordinator.insertBold)),
-            ("~~",  false, #selector(Coordinator.insertStrike)),
-            ("H",   false, #selector(Coordinator.insertHighlight)),
-            ("−",   false, #selector(Coordinator.insertBullet)),
-            // ☐ is added below as a UIMenu button
-            ("←",   false, #selector(Coordinator.outdentLine)),
-            ("→",   false, #selector(Coordinator.indentLine)),
-        ]
-        let trailingItems: [(title: String, bold: Bool, action: Selector)] = [
-            ("🔗",  false, #selector(Coordinator.insertLink)),
-            ("#",   false, #selector(Coordinator.insertHeading)),
-            ("📅",  false, #selector(Coordinator.insertDate)),
-        ]
-        for (i, item) in leadingItems.enumerated() {
-            stack.addArrangedSubview(
-                makeToolbarButton(item.title, bold: item.bold,
-                                  coordinator: coordinator, action: item.action)
-            )
-            // Insert ☐ UIMenu after the − button (index 3)
-            if i == 3 {
+        // Data-driven toolbar — order comes from UserDefaults (user-customizable).
+        // Special cases: .checkbox and .attach use UIMenu buttons; all others are plain buttons.
+        let order = loadToolbarOrder()
+        for itemID in order {
+            switch itemID {
+            case .checkbox:
                 stack.addArrangedSubview(makeCheckboxMenuButton(coordinator: coordinator))
+            case .attach:
+                stack.addArrangedSubview(makeAttachMenuButton(coordinator: coordinator))
+            default:
+                if let btn = makeSymbolToolbarButton(itemID, coordinator: coordinator) {
+                    stack.addArrangedSubview(btn)
+                }
             }
-        }
-        // 📎 uses UIMenu — no presenting VC needed, no keyboard conflicts
-        stack.addArrangedSubview(makeAttachMenuButton(coordinator: coordinator))
-        for item in trailingItems {
-            stack.addArrangedSubview(
-                makeToolbarButton(item.title, bold: item.bold,
-                                  coordinator: coordinator, action: item.action)
-            )
         }
 
         NSLayoutConstraint.activate([
@@ -276,17 +473,23 @@ struct MarkdownEditorView: UIViewRepresentable {
             border.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             border.heightAnchor.constraint(equalToConstant: 0.5),
 
-            // Done button
+            // Done button — rightmost
             doneBtn.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
             doneBtn.centerYAnchor.constraint(equalTo: container.centerYAnchor),
 
-            // Separator
-            sep.trailingAnchor.constraint(equalTo: doneBtn.leadingAnchor, constant: -8),
+            // Customize button — left of Done
+            customizeBtn.trailingAnchor.constraint(equalTo: doneBtn.leadingAnchor, constant: -8),
+            customizeBtn.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            customizeBtn.widthAnchor.constraint(equalToConstant: 32),
+            customizeBtn.heightAnchor.constraint(equalToConstant: 43),
+
+            // Separator — left of customize button
+            sep.trailingAnchor.constraint(equalTo: customizeBtn.leadingAnchor, constant: -6),
             sep.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             sep.widthAnchor.constraint(equalToConstant: 0.5),
             sep.heightAnchor.constraint(equalToConstant: 22),
 
-            // Scroll view
+            // Scroll view (formatting buttons)
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: sep.leadingAnchor, constant: -4),
             scrollView.topAnchor.constraint(equalTo: border.bottomAnchor),
@@ -300,7 +503,45 @@ struct MarkdownEditorView: UIViewRepresentable {
             stack.heightAnchor.constraint(equalTo: scrollView.heightAnchor),
         ])
 
+        coordinator.formattingBarView = container
+        coordinator.formattingStack   = stack
+        coordinator.toolbarContainer  = container
+
         return container
+    }
+
+    /// Builds a single toolbar button from a ToolbarItemID using SF Symbols.
+    /// Returns nil for .checkbox and .attach (those use UIMenu buttons built elsewhere).
+    private func makeSymbolToolbarButton(_ itemID: ToolbarItemID,
+                                         coordinator: Coordinator) -> UIButton? {
+        let action: Selector
+        switch itemID {
+        case .bold:      action = #selector(Coordinator.insertBold)
+        case .strike:    action = #selector(Coordinator.insertStrike)
+        case .highlight: action = #selector(Coordinator.insertHighlight)
+        case .bullet:    action = #selector(Coordinator.insertBullet)
+        case .outdent:   action = #selector(Coordinator.outdentLine)
+        case .indent:    action = #selector(Coordinator.indentLine)
+        case .link:      action = #selector(Coordinator.insertLink)
+        case .heading:   action = #selector(Coordinator.insertHeading)
+        case .date:      action = #selector(Coordinator.insertDate)
+        case .undo:      action = #selector(Coordinator.performUndo)
+        case .redo:      action = #selector(Coordinator.performRedo)
+        case .checkbox, .attach: return nil
+        }
+        let symCfg = UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        let btn = UIButton(type: .system)
+        if let img = UIImage(systemName: itemID.systemImage, withConfiguration: symCfg) {
+            btn.setImage(img, for: .normal)
+            btn.tintColor = .label
+        } else {
+            btn.setTitle(itemID.rawValue, for: .normal)
+        }
+        btn.addTarget(coordinator, action: action, for: .touchUpInside)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+        btn.heightAnchor.constraint(equalToConstant: 43).isActive = true
+        return btn
     }
 
     // 📎 attach button — UIMenu so it appears contextually without a presenting VC,
@@ -411,6 +652,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         var onSave: ((String) -> Void)?
         var onFocusChange: ((Bool) -> Void)?
         var onBlockLongPress: ((BlockInfo) -> Void)?
+        var onWikiTap: ((String) -> Void)?
         weak var textView: UITextView?
         private var saveWork: DispatchWorkItem?
         var lastTimestampTrigger: Date?
@@ -423,6 +665,29 @@ struct MarkdownEditorView: UIViewRepresentable {
         /// Set while a UIMenu action is restoring focus so the late-arriving
         /// keyboardDidHideNotification doesn't undo the re-focus.
         var suppressResignOnHide = false
+
+        // MARK: - E6a: [[wikilink]] autocomplete
+        var wikiSuggestions: ((String) -> [(name: String, isPlace: Bool)])?
+        /// The formatting toolbar UIInputView — swapped back in when suggestions close.
+        weak var formattingBarView: UIInputView?
+        /// The formatting stack — rebuilt when toolbar order changes.
+        weak var formattingStack: UIStackView?
+        /// The toolbar container view — needed to present the customize sheet.
+        weak var toolbarContainer: UIView?
+        /// Suggestion bar — its own UIInputView, hot-swapped via reloadInputViews().
+        /// Owned here (strong ref) so it persists between show/hide cycles.
+        private var _suggestionBarView: UIInputView?
+        private weak var _suggestionScrollView: UIScrollView?
+        private weak var _suggestionStack: UIStackView?
+        /// Character location of the `[[` that opened the current autocomplete session.
+        private var wikilinkOpenLoc: Int? = nil
+        /// Character location of the `#` that opened the current tag autocomplete session.
+        private var hashtagOpenLoc: Int? = nil
+        /// Back-reference to the SwiftUI view, used when rebuilding the toolbar after reorder.
+        var parentView: MarkdownEditorView?
+
+        /// EKEventStore for writing to Apple Reminders (Tweek sync target). One instance per coordinator.
+        private let eventStore = EKEventStore()
 
         /// Cache of loaded UIImages keyed by NoteStore path, for fast thumbnail redraws.
         private var thumbnailImageCache: [String: UIImage] = [:]
@@ -468,6 +733,11 @@ struct MarkdownEditorView: UIViewRepresentable {
             refreshCheckboxOverlays(in: tv)
             refreshFoldOverlays(in: tv)
             checkForTextExpansion(tv)
+            checkForWikilink(in: tv)
+        }
+
+        func textViewDidChangeSelection(_ tv: UITextView) {
+            checkForWikilink(in: tv)
         }
 
         func textViewDidBeginEditing(_ tv: UITextView) {
@@ -539,12 +809,44 @@ struct MarkdownEditorView: UIViewRepresentable {
             // We return false and call replaceCharacters directly, which means
             // textViewDidChange never fires — so we call refreshCheckboxOverlays
             // explicitly here to place the overlay for the newly inserted ☐.
+            //
+            // If the ☐ carries a .sendTarget attribute (set by the toolbar UIMenu),
+            // Return fires the send instead of auto-continuing with a new checkbox.
             if line.hasPrefix("☐ ") || line.hasPrefix("☑ ") {
                 let content = String(line.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
                 if content.isEmpty {
                     tv.textStorage.replaceCharacters(in: lineRange, with: "\n")
                     tv.selectedRange = NSRange(location: lineRange.location + 1, length: 0)
                 } else {
+                    let checkboxIdx = lineRange.location
+                    let sendTarget = (tv.textStorage as? MarkdownTextStorage)?.getSendTarget(at: checkboxIdx)
+                    if let target = sendTarget {
+                        // Capture line coords before modifying text — appendBadge uses them async.
+                        let capturedLoc = lineRange.location
+                        let capturedLen = lineRange.length
+                        // Clear sendTarget immediately so the new ☐ written by appendBadge's
+                        // replaceCharacters cannot inherit the attribute (NSMutableAttributedString
+                        // copies attributes from the first character of the replaced range).
+                        // Without this, applyStyles() snapshots and restores the inherited
+                        // sendTarget on every keystroke, causing every subsequent Return to fire
+                        // another send (Bug: double-send / duplicate tasks).
+                        (tv.textStorage as? MarkdownTextStorage)?.setSendTarget(nil, at: checkboxIdx)
+                        // Plain newline; no checkbox continuation.
+                        tv.textStorage.replaceCharacters(in: range, with: "\n")
+                        tv.selectedRange = NSRange(location: range.location + 1, length: 0)
+                        self.text = tv.text; scheduleSave(tv.text)
+                        refreshCheckboxOverlays(in: tv)
+                        let date = noteDate()
+                        if target == "things" {
+                            sendToThings(taskTitle: content, date: date,
+                                         lineLocation: capturedLoc, lineLength: capturedLen, in: tv)
+                        } else {
+                            sendToTweek(taskTitle: content, date: date,
+                                        lineLocation: capturedLoc, lineLength: capturedLen, in: tv)
+                        }
+                        return false
+                    }
+                    // No send target — normal checkbox auto-continue.
                     tv.textStorage.replaceCharacters(in: range, with: "\n☐ ")
                     tv.selectedRange = NSRange(location: range.location + 3, length: 0)
                 }
@@ -649,6 +951,18 @@ struct MarkdownEditorView: UIViewRepresentable {
                 }
                 if let path = attrs[.pdfNoteStorePath] as? String {
                     handleAttachmentLongPress(at: charIndex, path: path, isImage: false)
+                    return
+                }
+                // Wikilink long-press — select the name text between [[ and ]] so the
+                // user can retype it. .wikiTarget is on the name span only; effectiveRange
+                // gives the exact selection without needing to find the brackets manually.
+                if attrs[.wikiTarget] != nil {
+                    var nameRange = NSRange(location: 0, length: 0)
+                    _ = tv.textStorage.attribute(.wikiTarget, at: charIndex,
+                                                 effectiveRange: &nameRange)
+                    if nameRange.length > 0 {
+                        tv.selectedRange = nameRange
+                    }
                     return
                 }
             }
@@ -1026,14 +1340,76 @@ struct MarkdownEditorView: UIViewRepresentable {
         }
 
         @objc func insertDate() {
+            guard let tv = textView else { return }
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.dateFormat = "MMMM d, yyyy"
-            insertAtCursor(formatter.string(from: Date()))
+            let dateStr = formatter.string(from: Date()) + " "
+            let insertLoc: Int
+            if tv.isFirstResponder, let sel = tv.selectedTextRange {
+                insertLoc = tv.offset(from: tv.beginningOfDocument, to: sel.end)
+            } else {
+                insertLoc = tv.textStorage.length
+            }
+            let safeLoc = min(insertLoc, tv.textStorage.length)
+            tv.textStorage.replaceCharacters(in: NSRange(location: safeLoc, length: 0), with: dateStr)
+            tv.selectedRange = NSRange(location: safeLoc + (dateStr as NSString).length, length: 0)
+            text = tv.text
+            scheduleSave(tv.text)
         }
 
         @objc func dismissKeyboard() {
             textView?.resignFirstResponder()
+        }
+
+        @objc func performUndo() {
+            textView?.undoManager?.undo()
+        }
+
+        @objc func performRedo() {
+            textView?.undoManager?.redo()
+        }
+
+        @objc func showToolbarCustomize() {
+            guard let container = toolbarContainer,
+                  let windowScene = container.window?.windowScene,
+                  let root = windowScene.keyWindow?.rootViewController else { return }
+            // Find the topmost presented VC
+            var top = root
+            while let presented = top.presentedViewController { top = presented }
+
+            let currentOrder = loadToolbarOrder()
+            let sheet = UIHostingController(rootView: ToolbarCustomizeSheet(current: currentOrder) { [weak self] newOrder in
+                guard let self else { return }
+                top.dismiss(animated: true)
+                self.rebuildFormattingStack(order: newOrder)
+            })
+            sheet.modalPresentationStyle = .pageSheet
+            if let det = sheet.sheetPresentationController {
+                det.detents = [.medium()]
+                det.prefersGrabberVisible = true
+            }
+            top.present(sheet, animated: true)
+        }
+
+        private func rebuildFormattingStack(order: [ToolbarItemID]) {
+            guard let stack = formattingStack,
+                  let pv = parentView else { return }
+            // Remove all existing buttons
+            stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            // Re-add in new order
+            for itemID in order {
+                switch itemID {
+                case .checkbox:
+                    stack.addArrangedSubview(pv.makeCheckboxMenuButton(coordinator: self))
+                case .attach:
+                    stack.addArrangedSubview(pv.makeAttachMenuButton(coordinator: self))
+                default:
+                    if let btn = pv.makeSymbolToolbarButton(itemID, coordinator: self) {
+                        stack.addArrangedSubview(btn)
+                    }
+                }
+            }
         }
 
         /// Called when the software keyboard fully hides (interactive swipe dismiss).
@@ -1220,6 +1596,12 @@ struct MarkdownEditorView: UIViewRepresentable {
             if let path = tapAttrs[.pdfNoteStorePath] as? String,
                let url = NoteStore.shared.resolvedURL(for: path) {
                 showPDFViewer(at: url)
+                return
+            }
+            // Wikilink tap — fire onWikiTap with the inner name.
+            // The [[...]] brackets are hidden; .wikiTarget is set on the visible name span.
+            if let name = tapAttrs[.wikiTarget] as? String {
+                onWikiTap?(name)
                 return
             }
         }
@@ -1632,7 +2014,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         func insertCheckboxAndSend(to app: SendApp) {
             guard let tv = textView else { return }
 
-            // Restore first responder if UIMenu's keyboard-hide notification fired first.
+            // UIMenu tap hides the keyboard before the action fires — restore first responder.
             suppressResignOnHide = true
             tv.becomeFirstResponder()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
@@ -1644,44 +2026,40 @@ struct MarkdownEditorView: UIViewRepresentable {
             let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
             let line = ns.substring(with: lineRange)
 
-            // Task title = current line content (stripped of any existing checkbox prefix)
-            var rawTitle = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if rawTitle.hasPrefix("☐ ") { rawTitle = String(rawTitle.dropFirst(2)) }
-            else if rawTitle.hasPrefix("☑ ") { rawTitle = String(rawTitle.dropFirst(2)) }
-
-            // Insert checkbox prefix if not already present (cursor to line start, then insertText)
+            // Insert ☐ prefix if the line isn't already a checkbox.
             let alreadyCheckbox = line.hasPrefix("☐ ") || line.hasPrefix("☑ ")
             if !alreadyCheckbox {
                 tv.selectedRange = NSRange(location: lineRange.location, length: 0)
                 tv.insertText("☐ ")
             }
-            text = tv.text; scheduleSave(tv.text)
 
-            guard !rawTitle.isEmpty else { return }   // nothing to send on an empty line
+            // Store the send destination on the ☐ character so that the Return-key
+            // handler can fire the send after the user finishes typing the task title.
+            let checkboxIdx = lineRange.location
+            let targetStr = app == .things ? "things" : "tweek"
+            (tv.textStorage as? MarkdownTextStorage)?.setSendTarget(targetStr, at: checkboxIdx)
 
-            // Recompute line range after insertion
-            let newNs        = tv.textStorage.string as NSString
-            let newLineRange = newNs.lineRange(for: NSRange(location: lineRange.location, length: 0))
-            let date = noteDate()
-            switch app {
-            case .things:
-                sendToThings(taskTitle: rawTitle, date: date,
-                             lineLocation: newLineRange.location,
-                             lineLength: newLineRange.length, in: tv)
-            case .tweek:
-                sendToTweek(taskTitle: rawTitle, date: date,
-                             lineLocation: newLineRange.location,
-                             lineLength: newLineRange.length, in: tv)
-            }
+            // Place cursor at end of line content so the user can type immediately.
+            let updatedNs = tv.textStorage.string as NSString
+            let updatedLineRange = updatedNs.lineRange(for: NSRange(location: checkboxIdx, length: 0))
+            let updatedLine = updatedNs.substring(with: updatedLineRange)
+            let trailingNewline = updatedLine.hasSuffix("\n") ? 1 : 0
+            tv.selectedRange = NSRange(
+                location: updatedLineRange.location + (updatedLine as NSString).length - trailingNewline,
+                length: 0)
+
+            text = tv.text
+            scheduleSave(tv.text)
         }
 
         // MARK: - E11 / Tweek: Send task to external app
         //
-        // Things:  Mini server first (POST /add, 4-second timeout), URL scheme fallback.
-        // Tweek:   Mini server only (POST /tweek-add, 4-second timeout), no URL scheme fallback.
+        // Things: things:/// URL scheme — opens Things directly, user sees task land immediately.
+        // Tweek:  EventKit → Apple Reminders (no app switch; Tweek syncs the list automatically).
+        //         Target list name stored in UserDefaults key "tweek_reminders_list" (default "Reminders").
         // On success: appends ` 🔵` / ` 🪶`.
         // On failure: appends ` ⚠️🔵` / ` ⚠️🪶` — tap the orange retry button to retry.
-        // Simulator: both paths skipped to avoid error noise during development.
+        // Simulator: both paths skipped to avoid noise during development.
 
         private func sendToThings(taskTitle: String,
                                    date: String?,
@@ -1689,40 +2067,56 @@ struct MarkdownEditorView: UIViewRepresentable {
                                    lineLength: Int,
                                    in tv: UITextView) {
 #if targetEnvironment(simulator)
-            return   // skip network calls in simulator
+            return
 #endif
-            let baseURL = UserDefaults.standard.string(forKey: "things_api_url") ?? ""
-            let token   = UserDefaults.standard.string(forKey: "things_api_token") ?? ""
+            // Build things:///add URL. URLComponents percent-encodes query values automatically.
+            var components = URLComponents(string: "things:///add")!
+            var queryItems = [
+                URLQueryItem(name: "title", value: taskTitle),
+                URLQueryItem(name: "notes", value: "From Trace")
+            ]
+            if let d = date, !d.isEmpty {
+                // Things accepts ISO date strings (yyyy-MM-dd) directly in the "when" parameter.
+                queryItems.append(URLQueryItem(name: "when", value: d))
+            }
+            components.queryItems = queryItems
 
-            if !baseURL.isEmpty, let serverURL = URL(string: baseURL + "/add") {
-                var request = URLRequest(url: serverURL,
-                                         cachePolicy: .reloadIgnoringLocalCacheData,
-                                         timeoutInterval: 4)
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-                var body: [String: String] = ["title": taskTitle, "notes": "From Trace"]
-                if let d = date, !d.isEmpty { body["date"] = d }
-                request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-                URLSession.shared.dataTask(with: request) { [weak self, weak tv] _, response, error in
-                    DispatchQueue.main.async {
-                        guard let self, let tv else { return }
-                        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                        if error == nil && code == 200 {
-                            self.appendBadge(" 🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                        } else {
-                            // Server unreachable — badge only, no app switch
-                            self.appendBadge(" ⚠️🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                        }
-                    }
-                }.resume()
-            } else {
-                // No server URL configured — badge only
+            guard let url = components.url else {
                 appendBadge(" ⚠️🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                return
+            }
+
+            UIApplication.shared.open(url, options: [:]) { [weak self, weak tv] success in
+                DispatchQueue.main.async {
+                    guard let self, let tv else { return }
+                    self.appendBadge(success ? " 🔵" : " ⚠️🔵",
+                                     lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                }
             }
         }
 
+        // Requests Reminders write access, respecting iOS 17 writeOnly vs older .authorized.
+        private func requestRemindersAccess(completion: @escaping (Bool) -> Void) {
+            if #available(iOS 17.0, *) {
+                switch EKEventStore.authorizationStatus(for: .reminder) {
+                case .fullAccess:
+                    completion(true)
+                case .notDetermined:
+                    eventStore.requestFullAccessToReminders { granted, _ in completion(granted) }
+                default:
+                    completion(false)
+                }
+            } else {
+                switch EKEventStore.authorizationStatus(for: .reminder) {
+                case .authorized:
+                    completion(true)
+                case .notDetermined:
+                    eventStore.requestAccess(to: .reminder) { granted, _ in completion(granted) }
+                default:
+                    completion(false)
+                }
+            }
+        }
 
         private func sendToTweek(taskTitle: String,
                                   date: String?,
@@ -1732,34 +2126,47 @@ struct MarkdownEditorView: UIViewRepresentable {
 #if targetEnvironment(simulator)
             return
 #endif
-            let baseURL = UserDefaults.standard.string(forKey: "things_api_url") ?? ""
-            let token   = UserDefaults.standard.string(forKey: "things_api_token") ?? ""
-
-            guard !baseURL.isEmpty, let serverURL = URL(string: baseURL + "/tweek-add") else {
-                appendBadge(" ⚠️🪶", lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                return
-            }
-            var request = URLRequest(url: serverURL,
-                                     cachePolicy: .reloadIgnoringLocalCacheData,
-                                     timeoutInterval: 4)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-            var body: [String: String] = ["title": taskTitle]
-            if let d = date, !d.isEmpty { body["date"] = d }
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-            URLSession.shared.dataTask(with: request) { [weak self, weak tv] _, response, error in
+            requestRemindersAccess { [weak self, weak tv] granted in
                 DispatchQueue.main.async {
                     guard let self, let tv else { return }
-                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                    self.appendBadge(error == nil && code == 200 ? " 🪶" : " ⚠️🪶",
-                                     lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                    guard granted else {
+                        self.appendBadge(" ⚠️🪶", lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                        return
+                    }
+
+                    let reminder = EKReminder(eventStore: self.eventStore)
+                    reminder.title = taskTitle
+
+                    // Find the Reminders list Tweek is watching. Configurable via
+                    // UserDefaults key "tweek_reminders_list"; falls back to default list.
+                    let listName = UserDefaults.standard.string(forKey: "tweek_reminders_list") ?? "Tweek Inbox"
+                    let lists = self.eventStore.calendars(for: .reminder)
+                    reminder.calendar = lists.first(where: { $0.title == listName })
+                                     ?? self.eventStore.defaultCalendarForNewReminders()
+
+                    if let d = date, !d.isEmpty {
+                        let fmt = DateFormatter()
+                        fmt.locale = Locale(identifier: "en_US_POSIX")
+                        fmt.dateFormat = "yyyy-MM-dd"
+                        if let due = fmt.date(from: d) {
+                            reminder.dueDateComponents = Calendar.current.dateComponents(
+                                [.year, .month, .day], from: due)
+                        }
+                    }
+
+                    do {
+                        try self.eventStore.save(reminder, commit: true)
+                        self.appendBadge(" 🪶", lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                    } catch {
+                        self.appendBadge(" ⚠️🪶", lineLocation: lineLocation, lineLength: lineLength, in: tv)
+                    }
                 }
-            }.resume()
+            }
         }
 
         /// Appends a badge string to the task line, stripping any prior badge first.
+        /// Shifts the cursor forward by the length delta so it stays on the correct line
+        /// when the Return-key flow has already moved it to the line below.
         private func appendBadge(_ badge: String, lineLocation: Int, lineLength: Int, in tv: UITextView) {
             let ns = tv.textStorage.string as NSString
             let safeLen = min(lineLength, ns.length - lineLocation)
@@ -1767,9 +2174,21 @@ struct MarkdownEditorView: UIViewRepresentable {
             let lr = NSRange(location: lineLocation, length: safeLen)
             let currentLine = ns.substring(with: lr)
             let stripped = stripBadges(from: currentLine)
-            tv.textStorage.replaceCharacters(in: lr, with: stripped + badge + "\n")
+            let replacement = stripped + badge + "\n"
+            let delta = (replacement as NSString).length - safeLen
+            let cursorBefore = tv.selectedRange.location
+            tv.textStorage.replaceCharacters(in: lr, with: replacement)
+            // If the cursor sits past the replaced range, shift it by the length change.
+            if delta != 0 && cursorBefore >= lineLocation + safeLen {
+                tv.selectedRange = NSRange(location: cursorBefore + delta, length: 0)
+            }
             text = tv.text
             scheduleSave(tv.text)
+            // Refresh overlays so the checkbox icon repositions correctly now that the
+            // line is longer (the badge characters shift the line fragment used rect).
+            // Without this, the stale overlay can drift over the badge emoji until the
+            // next textViewDidChange fires (Bug: badge hidden after append).
+            refreshCheckboxOverlays(in: tv)
         }
 
         // MARK: - E5: Text expansion — `xdt` → today's date
@@ -1791,6 +2210,299 @@ struct MarkdownEditorView: UIViewRepresentable {
             tv.selectedRange = NSRange(location: startLoc + (dateStr as NSString).length, length: 0)
             text = tv.text
             scheduleSave(tv.text)
+        }
+
+        // MARK: - E6a: [[wikilink]] autocomplete
+
+        /// Entry point — called from textViewDidChange and textViewDidChangeSelection.
+        private func checkForWikilink(in tv: UITextView) {
+            // Priority 1: wikilink [[
+            if wikiSuggestions != nil, let ctx = wikilinkContext(in: tv) {
+                hashtagOpenLoc = nil
+                wikilinkOpenLoc = ctx.openBracketLoc
+                let items = wikiSuggestions?(ctx.partialName) ?? []
+                if items.isEmpty { hideWikiSuggestions() } else { showWikiSuggestions(items) }
+                return
+            }
+            // Priority 2: hashtag #
+            if let ctx = hashtagContext(in: tv) {
+                wikilinkOpenLoc = nil
+                hashtagOpenLoc = ctx.hashLoc
+                showTagSuggestions(partial: ctx.partial)
+                return
+            }
+            // Nothing active
+            hideWikiSuggestions()
+        }
+
+        /// Scans backwards from the cursor to find an unclosed `[[` on the current line.
+        /// Returns the partial name typed after `[[` and the absolute character index of `[[`.
+        private func wikilinkContext(in tv: UITextView) -> (partialName: String, openBracketLoc: Int)? {
+            let cursorLoc = tv.selectedRange.location
+            guard tv.selectedRange.length == 0, cursorLoc >= 2 else { return nil }
+            let ns = tv.textStorage.string as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: cursorLoc, length: 0))
+            let headLen = cursorLoc - lineRange.location
+            guard headLen >= 2 else { return nil }
+            let head = ns.substring(with: NSRange(location: lineRange.location, length: headLen)) as NSString
+            // Scan backwards for "[[" (0x5B 0x5B)
+            var i = head.length - 2
+            while i >= 0 {
+                if head.character(at: i) == 0x5B && head.character(at: i + 1) == 0x5B {
+                    let afterOpen = head.substring(from: i + 2)
+                    // If "]]" appears after "[[", the link is already closed — no autocomplete
+                    if !afterOpen.contains("]]") {
+                        return (partialName: afterOpen, openBracketLoc: lineRange.location + i)
+                    }
+                    break
+                }
+                i -= 1
+            }
+            return nil
+        }
+
+        // MARK: - Suggestion bar swap helpers
+        //
+        // The suggestion bar is a completely separate UIInputView hot-swapped via
+        // tv.reloadInputViews(). Because both bars have the same fixed 44pt height
+        // the keyboard position never changes — no jumping, no resize layout pass.
+
+        @discardableResult
+        private func ensureSuggestionBar() -> UIInputView {
+            if let bar = _suggestionBarView { return bar }
+
+            let bar = UIInputView(frame: CGRect(x: 0, y: 0, width: 320, height: 44),
+                                  inputViewStyle: .keyboard)
+            bar.allowsSelfSizing = false
+            bar.autoresizingMask = [.flexibleWidth]
+            bar.backgroundColor  = UIColor.systemGroupedBackground
+
+            let border = UIView()
+            border.backgroundColor = UIColor.separator
+            border.translatesAutoresizingMaskIntoConstraints = false
+            bar.addSubview(border)
+
+            let scroll = UIScrollView()
+            scroll.showsHorizontalScrollIndicator = false
+            scroll.showsVerticalScrollIndicator   = false
+            scroll.alwaysBounceHorizontal         = true
+            scroll.alwaysBounceVertical           = false
+            scroll.isDirectionalLockEnabled       = true   // prevents diagonal drift; pills only scroll L/R
+            scroll.translatesAutoresizingMaskIntoConstraints = false
+            bar.addSubview(scroll)
+
+            let stack = UIStackView()
+            stack.axis      = .horizontal
+            stack.spacing   = 8
+            stack.alignment = .center
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            scroll.addSubview(stack)
+
+            NSLayoutConstraint.activate([
+                border.topAnchor.constraint(equalTo: bar.topAnchor),
+                border.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
+                border.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+                border.heightAnchor.constraint(equalToConstant: 0.5),
+
+                scroll.topAnchor.constraint(equalTo: border.bottomAnchor),
+                scroll.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
+                scroll.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+                scroll.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
+
+                stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+                stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+                stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 8),
+                stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -8),
+                stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+            ])
+
+            _suggestionBarView    = bar
+            _suggestionScrollView = scroll
+            _suggestionStack      = stack
+            return bar
+        }
+
+        private func installSuggestionBar() {
+            guard let tv = textView, let bar = _suggestionBarView else { return }
+            // Lock dismiss mode so scrolling doesn't drag the pill bar up/down with the keyboard.
+            tv.keyboardDismissMode = .none
+            guard tv.inputAccessoryView !== bar else { return }
+            UIView.performWithoutAnimation {
+                tv.inputAccessoryView = bar
+                tv.reloadInputViews()
+            }
+        }
+
+        private func removeSuggestionBar() {
+            guard let tv = textView, let fmtBar = formattingBarView else { return }
+            // Restore interactive dismiss now that suggestions are gone.
+            tv.keyboardDismissMode = .interactive
+            guard tv.inputAccessoryView !== fmtBar else { return }
+            UIView.performWithoutAnimation {
+                tv.inputAccessoryView = fmtBar
+                tv.reloadInputViews()
+            }
+        }
+
+        private func showWikiSuggestions(_ items: [(name: String, isPlace: Bool)]) {
+            ensureSuggestionBar()
+            guard let suggStack = _suggestionStack,
+                  let suggScroll = _suggestionScrollView else { return }
+
+            // Rebuild pills
+            suggStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            for item in items {
+                var cfg = UIButton.Configuration.filled()
+                cfg.title = item.name
+                cfg.baseForegroundColor = UIColor.label
+                cfg.baseBackgroundColor = UIColor.secondarySystemFill
+                cfg.cornerStyle = .capsule
+                cfg.buttonSize  = .small
+                cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                    var a = attrs; a.font = UIFont.systemFont(ofSize: 13); return a
+                }
+                // Icon: mappin for places, person for people
+                let iconName = item.isPlace ? "mappin.circle.fill" : "person.circle.fill"
+                cfg.image = UIImage(systemName: iconName)?
+                    .withTintColor(item.isPlace ? .systemBlue : .systemPurple,
+                                   renderingMode: .alwaysOriginal)
+                cfg.imagePadding   = 4
+                cfg.imagePlacement = .leading
+                let capName = item.name
+                let btn = UIButton(configuration: cfg,
+                                   primaryAction: UIAction { [weak self, weak tv = textView] _ in
+                    guard let self, let tv else { return }
+                    self.applyWikiSuggestion(capName, in: tv)
+                })
+                suggStack.addArrangedSubview(btn)
+            }
+            suggScroll.setContentOffset(.zero, animated: false)
+            installSuggestionBar()
+        }
+
+        private func hideWikiSuggestions() {
+            wikilinkOpenLoc = nil
+            removeSuggestionBar()
+        }
+
+        /// Completes the wikilink: replaces `[[partial` with `[[name]]` and hides the bar.
+        private func applyWikiSuggestion(_ name: String, in tv: UITextView) {
+            let cursorLoc = tv.selectedRange.location
+            guard let openLoc = wikilinkOpenLoc, openLoc <= cursorLoc else { return }
+            let replaceRange = NSRange(location: openLoc, length: cursorLoc - openLoc)
+            let replacement = "[[\(name)]]"
+            tv.textStorage.replaceCharacters(in: replaceRange, with: replacement)
+            let newLoc = openLoc + (replacement as NSString).length
+            tv.selectedRange = NSRange(location: newLoc, length: 0)
+            text = tv.text
+            scheduleSave(tv.text)
+            hideWikiSuggestions()
+        }
+
+        // MARK: - Hashtag autocomplete
+
+        /// Scans backwards from cursor for an unclosed `#word` context on the current line.
+        /// Returns the partial tag text (after `#`) and the absolute location of `#`.
+        /// The `#` must be at the start of text or preceded by a space/newline.
+        private func hashtagContext(in tv: UITextView) -> (partial: String, hashLoc: Int)? {
+            let cursorLoc = tv.selectedRange.location
+            guard tv.selectedRange.length == 0, cursorLoc >= 1 else { return nil }
+            let ns = tv.textStorage.string as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: cursorLoc, length: 0))
+            let headLen = cursorLoc - lineRange.location
+            guard headLen >= 1 else { return nil }
+            let head = ns.substring(with: NSRange(location: lineRange.location, length: headLen)) as NSString
+            // Scan backwards for '#'
+            var i = head.length - 1
+            while i >= 0 {
+                let c = head.character(at: i)
+                if c == 0x23 { // '#'
+                    // Must be preceded by whitespace or be at line start
+                    let preceded = i == 0 || head.character(at: i - 1) == 0x20 || head.character(at: i - 1) == 0x0A
+                    guard preceded else { return nil }
+                    let partial = head.substring(from: i + 1)
+                    // Only word chars allowed in partial (no spaces — space ends the tag)
+                    if partial.contains(" ") { return nil }
+                    return (partial: partial, hashLoc: lineRange.location + i)
+                }
+                // If we hit a space, # must be further left — but partial already has no space rule above handles it
+                if head.character(at: i) == 0x20 { break }
+                i -= 1
+            }
+            return nil
+        }
+
+        private func showTagSuggestions(partial: String) {
+            ensureSuggestionBar()
+            guard let suggStack = _suggestionStack,
+                  let suggScroll = _suggestionScrollView else { return }
+
+            let matches = TagIndex.shared.matches(partial)
+            let showCreate = !partial.isEmpty && !matches.contains(partial.lowercased())
+
+            // Rebuild pills
+            suggStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+            for tag in matches {
+                var cfg = UIButton.Configuration.filled()
+                cfg.title = "#\(tag)"
+                cfg.baseForegroundColor = .white
+                cfg.baseBackgroundColor = UIColor.systemPurple
+                cfg.cornerStyle = .capsule
+                cfg.buttonSize  = .small
+                cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                    var a = attrs; a.font = UIFont.systemFont(ofSize: 13); return a
+                }
+                let captured = tag
+                let btn = UIButton(configuration: cfg,
+                                   primaryAction: UIAction { [weak self, weak tv = textView] _ in
+                    guard let self, let tv else { return }
+                    self.applyTagSuggestion(captured, in: tv)
+                })
+                suggStack.addArrangedSubview(btn)
+            }
+
+            if showCreate {
+                var cfg = UIButton.Configuration.filled()
+                cfg.title = "Create #\(partial)"
+                cfg.baseForegroundColor = .white
+                cfg.baseBackgroundColor = UIColor.systemPurple.withAlphaComponent(0.5)
+                cfg.cornerStyle = .capsule
+                cfg.buttonSize  = .small
+                cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                    var a = attrs; a.font = UIFont.systemFont(ofSize: 13, weight: .medium); return a
+                }
+                let newTag = partial.lowercased()
+                let btn = UIButton(configuration: cfg,
+                                   primaryAction: UIAction { [weak self, weak tv = textView] _ in
+                    guard let self, let tv else { return }
+                    TagIndex.shared.add(newTag)
+                    self.applyTagSuggestion(newTag, in: tv)
+                })
+                suggStack.addArrangedSubview(btn)
+            }
+
+            if suggStack.arrangedSubviews.isEmpty {
+                removeSuggestionBar()
+                return
+            }
+
+            suggScroll.setContentOffset(.zero, animated: false)
+            installSuggestionBar()
+        }
+
+        private func applyTagSuggestion(_ tag: String, in tv: UITextView) {
+            let cursorLoc = tv.selectedRange.location
+            guard let openLoc = hashtagOpenLoc, openLoc <= cursorLoc else { return }
+            let replaceRange = NSRange(location: openLoc, length: cursorLoc - openLoc)
+            let replacement = "#\(tag)"
+            tv.textStorage.replaceCharacters(in: replaceRange, with: replacement)
+            let newLoc = openLoc + (replacement as NSString).length
+            tv.selectedRange = NSRange(location: newLoc, length: 0)
+            text = tv.text
+            scheduleSave(tv.text)
+            hashtagOpenLoc = nil
+            hideWikiSuggestions()
         }
 
         // MARK: - Presenting helpers

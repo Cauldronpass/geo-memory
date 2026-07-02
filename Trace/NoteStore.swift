@@ -21,6 +21,9 @@ class NoteStore {
     /// The resolved container path, for display in Settings debug panel.
     var containerPath: String = "resolving…"
 
+    /// Public accessor for the resolved documents root — used by TagIndex for note scanning.
+    var containerURL: URL? { documentsURL }
+
     /// True when running in Simulator (iCloud unavailable) — uses app Documents folder instead.
     private(set) var isLocalMode: Bool = false
 

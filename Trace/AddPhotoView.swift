@@ -249,7 +249,7 @@ struct AddPhotoView: View {
             let photoPath = try NoteStore.shared.writePhoto(data, category: "Visits", filename: filename)
 
             // Write Inbox note with photo reference and any user notes
-            var inboxLines = ["# Photo — \(type.label)", "", "![](\(photoPath))"]
+            var inboxLines = ["# Photo — \(type.label)", "", "![\(type.label)](\(photoPath))"]
             if let place = selectedPlace {
                 inboxLines += ["", "**Place:** \(place.name)"]
             }

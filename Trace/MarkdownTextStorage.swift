@@ -93,16 +93,21 @@ final class MarkdownTextStorage: NSTextStorage {
         guard backing.length > 0 else { return }
         let full = NSRange(location: 0, length: backing.length)
 
-        // --- Snapshot fold state BEFORE attribute reset ---
-        // .foldState is a Bool custom attribute stored on parent • characters.
-        // The setAttributes reset below wipes all custom attributes; we re-apply
-        // folded ones after the per-line styling pass so fold state survives every
-        // keystroke. NSAttributedString keeps attributes aligned with their characters
-        // as the string is edited, so the character indices here are always current.
+        // --- Snapshot fold state and sendTarget BEFORE attribute reset ---
+        // Both are custom attributes that survive the setAttributes reset by being
+        // snapshotted here and restored after the per-line styling pass.
+        // NSAttributedString keeps attribute ranges aligned with their characters
+        // as the string is edited, so character indices here are always current.
         var foldedCharIndices = Set<Int>()
         backing.enumerateAttribute(.foldState, in: full, options: []) { value, range, _ in
             if value as? Bool == true {
                 foldedCharIndices.insert(range.location)
+            }
+        }
+        var sendTargets = [Int: String]()   // character index of ☐ → "things" | "tweek"
+        backing.enumerateAttribute(.sendTarget, in: full, options: []) { value, range, _ in
+            if let target = value as? String {
+                sendTargets[range.location] = target
             }
         }
 
@@ -155,6 +160,14 @@ final class MarkdownTextStorage: NSTextStorage {
             self.styleLine(line, in: subRange)
         }
 
+        // Restore sendTarget attributes — must run before the fold guard so it
+        // fires even when no bullets are folded.
+        for (idx, target) in sendTargets {
+            guard idx < backing.length else { continue }
+            backing.addAttribute(.sendTarget, value: target,
+                                 range: NSRange(location: idx, length: 1))
+        }
+
         // Re-apply fold state and hide child lines for each folded parent bullet.
         // "Children" = consecutive lines after the parent whose indent level is
         // strictly greater. They get 0.1pt height + clear color (same trick as
@@ -204,6 +217,30 @@ final class MarkdownTextStorage: NSTextStorage {
                                        effectiveRange: nil) as? Bool ?? false
         backing.addAttribute(.foldState, value: !current,
                              range: NSRange(location: characterIndex, length: 1))
+    }
+
+    // MARK: - Send-target support
+
+    /// Stores (or clears) a send destination on the ☐/☑ character at characterIndex.
+    /// Pass nil to remove. Writes directly to backing — does NOT trigger processEditing.
+    /// applyStyles() snapshots and restores this on every subsequent keystroke.
+    func setSendTarget(_ target: String?, at characterIndex: Int) {
+        guard characterIndex < backing.length else { return }
+        if let target = target {
+            backing.addAttribute(.sendTarget, value: target,
+                                 range: NSRange(location: characterIndex, length: 1))
+        } else {
+            backing.removeAttribute(.sendTarget,
+                                    range: NSRange(location: characterIndex, length: 1))
+        }
+    }
+
+    /// Returns the stored send destination ("things" or "tweek") for the ☐/☑ at
+    /// characterIndex, or nil if none is set.
+    func getSendTarget(at characterIndex: Int) -> String? {
+        guard characterIndex < backing.length else { return nil }
+        return backing.attribute(.sendTarget, at: characterIndex,
+                                 effectiveRange: nil) as? String
     }
 
     /// Runs a full applyStyles() pass then fires an .editedAttributes notification
@@ -282,8 +319,12 @@ final class MarkdownTextStorage: NSTextStorage {
         if line.hasPrefix("- ")            { styleBulletPrefix(in: range) }
         applyBold(in: line, lineRange: range)
         applyItalic(in: line, lineRange: range)
+        applyStrike(in: line, lineRange: range)
         applyHighlight(in: line, lineRange: range)
+        applyHashtags(in: line, lineRange: range)
         applyLinks(in: line, lineRange: range)
+        applyMarkdownLinks(in: line, lineRange: range)
+        applyWikilinks(in: line, lineRange: range)
         applyImageLinks(in: line, lineRange: range)
         applyThumbnailImageLinks(in: line, lineRange: range)
         applyPDFLinks(in: line, lineRange: range)
@@ -431,6 +472,50 @@ final class MarkdownTextStorage: NSTextStorage {
         }
     }
 
+    // MARK: Strikethrough — ~~text~~
+    // Hides the ~~ markers, applies strikethrough to inner text.
+
+    private func applyStrike(in line: String, lineRange: NSRange) {
+        guard line.contains("~~"),
+              let regex = try? NSRegularExpression(pattern: #"~~(.+?)~~"#) else { return }
+        let ns = line as NSString
+        let hidden: [NSAttributedString.Key: Any] = [
+            .font: Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ]
+        for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            guard m.range.length >= 5 else { continue }
+            let base = lineRange.location + m.range.location
+            let len  = m.range.length
+            backing.addAttributes(hidden, range: NSRange(location: base, length: 2))
+            backing.addAttributes([
+                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                .foregroundColor: Self.dimColor
+            ], range: NSRange(location: base + 2, length: len - 4))
+            backing.addAttributes(hidden, range: NSRange(location: base + len - 2, length: 2))
+        }
+    }
+
+    // MARK: Hashtags — #tag
+    // Colors the entire #tag span purple. Markers are NOT hidden — #tag is the visible form.
+    // Pattern: # preceded by start-of-line or whitespace, followed by a letter then word chars.
+
+    private static let hashtagRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: #"(?:^|(?<=\s))#([a-zA-Z][a-zA-Z0-9_]*)"#,
+                                 options: .anchorsMatchLines)
+
+    private func applyHashtags(in line: String, lineRange: NSRange) {
+        guard line.contains("#"), let regex = Self.hashtagRegex else { return }
+        let ns = line as NSString
+        for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            let base = lineRange.location + m.range.location
+            let len  = m.range.length
+            backing.addAttribute(.foregroundColor,
+                                 value: UIColor.systemPurple,
+                                 range: NSRange(location: base, length: len))
+        }
+    }
+
     // MARK: Highlight — ==text==
     // Hides the == markers, applies yellow background to inner text.
 
@@ -489,6 +574,105 @@ final class MarkdownTextStorage: NSTextStorage {
         }
     }
 
+    // MARK: Wikilinks — [[name]]
+    // Hides `[[` and `]]` (2 chars each); colors the inner name in linkColor.
+    // Adds .wikiTarget attribute on the name span so handleTap/handleLongPress can
+    // detect it without a second regex pass. .wikiTarget is re-derived from text on
+    // every applyStyles() pass (unlike .sendTarget which is user-set state), so no
+    // snapshot/restore needed.
+
+    private func applyWikilinks(in line: String, lineRange: NSRange) {
+        guard line.contains("[["),
+              let regex = try? NSRegularExpression(
+                  pattern: #"\[\[([^\]]+)\]\]"#) else { return }
+        let ns = line as NSString
+        let hidden: [NSAttributedString.Key: Any] = [
+            .font: Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ]
+        for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            guard m.numberOfRanges >= 2, m.range.length >= 5 else { continue }
+            let nameRange = m.range(at: 1)
+            guard nameRange.location != NSNotFound, nameRange.length > 0 else { continue }
+            let name = ns.substring(with: nameRange)
+            let base = lineRange.location + m.range.location
+            let total = m.range.length
+
+            // Hide opening [[
+            let openRange = NSRange(location: base, length: 2)
+            backing.removeAttribute(.link, range: openRange)
+            backing.addAttributes(hidden, range: openRange)
+
+            // Color the name span and tag it for tap detection.
+            // Remove .link first — NSDataDetector (applyLinks) may have matched the name
+            // text if it looks like a domain. We handle wikilink taps via .wikiTarget, not
+            // UITextView's native link menu.
+            let nameBase = lineRange.location + nameRange.location
+            let nameNsRange = NSRange(location: nameBase, length: nameRange.length)
+            backing.removeAttribute(.link, range: nameNsRange)
+            backing.addAttributes([
+                .foregroundColor: Self.linkColor,
+                .wikiTarget:      name
+            ], range: nameNsRange)
+
+            // Hide closing ]]
+            let closeRange = NSRange(location: base + total - 2, length: 2)
+            backing.removeAttribute(.link, range: closeRange)
+            backing.addAttributes(hidden, range: closeRange)
+        }
+    }
+
+    // MARK: Markdown links — [label](url)
+    // Hides `[`, `]`, and `(url)`; colors label in linkColor; sets .link on label so
+    // UITextView's shouldInteractWith fires on tap (same path as bare http:// URLs).
+    // Runs after applyLinks so NSDataDetector's .link on the raw URL is removed from the
+    // hidden `](url)` suffix — without this removal, the hidden suffix is still tappable.
+    // Negative lookbehind (?<![!]) prevents matching `![desc](path)` image links.
+
+    private func applyMarkdownLinks(in line: String, lineRange: NSRange) {
+        guard line.contains("["),
+              let regex = try? NSRegularExpression(
+                  pattern: #"(?<![!])\[([^\]]+)\]\(([^)]+)\)"#) else { return }
+        let ns = line as NSString
+        let hidden: [NSAttributedString.Key: Any] = [
+            .font: Self.hiddenFont,
+            .foregroundColor: UIColor.clear
+        ]
+        for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            guard m.numberOfRanges >= 3 else { continue }
+            let labelRange = m.range(at: 1)
+            let urlRange   = m.range(at: 2)
+            guard labelRange.location != NSNotFound,
+                  urlRange.location   != NSNotFound else { continue }
+            let urlStr = ns.substring(with: urlRange)
+            let base   = lineRange.location + m.range.location
+            let total  = m.range.length
+
+            // Hide opening `[`
+            let openBracket = NSRange(location: base, length: 1)
+            backing.removeAttribute(.link, range: openBracket)
+            backing.addAttributes(hidden, range: openBracket)
+
+            // Color label in linkColor + set .link so shouldInteractWith fires on tap
+            let labelBase = lineRange.location + labelRange.location
+            var labelAttrs: [NSAttributedString.Key: Any] = [.foregroundColor: Self.linkColor]
+            if let url = URL(string: urlStr) { labelAttrs[.link] = url }
+            backing.addAttributes(labelAttrs,
+                                  range: NSRange(location: labelBase, length: labelRange.length))
+
+            // Hide `](url)` — from `]` after label to end of match.
+            // Also removes .link that applyLinks may have set on the raw URL inside the parens.
+            let afterLabelInLine    = labelRange.location + labelRange.length
+            let afterLabelInBacking = lineRange.location + afterLabelInLine
+            let suffixLen = (m.range.location + total) - afterLabelInLine
+            if suffixLen > 0 {
+                let suffixRange = NSRange(location: afterLabelInBacking, length: suffixLen)
+                backing.removeAttribute(.link, range: suffixRange)
+                backing.addAttributes(hidden, range: suffixRange)
+            }
+        }
+    }
+
     // MARK: Image links — ![desc](path)
     // Hides `![` and `](path)`, shows desc in orange with .imageNoteStorePath attribute.
     // Tapping the visible desc in MarkdownEditorView's handleTap reads this attribute to open
@@ -523,12 +707,23 @@ final class MarkdownTextStorage: NSTextStorage {
                     .imageNoteStorePath: path
                 ], range: NSRange(location: descBase, length: descRange.length))
             } else {
-                // Empty desc — un-hide `![` and show in orange so line isn't invisible
+                // Empty desc — derive a display label from the filename in the path.
+                // `![` stays hidden; we un-hide just the filename portion from the `](path)` suffix.
+                let filename = (path as NSString).lastPathComponent
+                let filenameOffsetInPath = path.count - filename.count
+                // Hide `![](` + path-prefix-up-to-filename  (base … base + 4 + filenameOffsetInPath)
+                let prefixLen = 4 + filenameOffsetInPath   // "![" + "](" + dirs
+                backing.addAttributes(hidden, range: NSRange(location: base, length: prefixLen))
+                // Show filename in orange, tappable
+                let filenameBase = base + prefixLen
                 backing.addAttributes([
-                    .font: Self.bodyFont,
                     .foregroundColor: orange,
                     .imageNoteStorePath: path
-                ], range: NSRange(location: base, length: 2))
+                ], range: NSRange(location: filenameBase, length: filename.count))
+                // Hide closing `)`
+                backing.addAttributes(hidden,
+                                      range: NSRange(location: filenameBase + filename.count, length: 1))
+                continue   // suffix already handled above — skip the generic suffix block
             }
 
             // Hide `](path)` — everything after the desc to end of match
@@ -640,4 +835,14 @@ extension NSAttributedString.Key {
     /// Bool — true = folded (children hidden). Set on the parent • character by
     /// toggleFoldState(); snapshotted and restored across every applyStyles() pass.
     static let foldState          = NSAttributedString.Key("com.david.trace.foldState")
+    /// String ("things" or "tweek") — pending send destination for this checkbox.
+    /// Set by insertCheckboxAndSend() when the user picks from the toolbar UIMenu.
+    /// Consumed by the Return-key handler in shouldChangeTextIn to fire the send.
+    /// Snapshotted and restored across every applyStyles() pass.
+    static let sendTarget         = NSAttributedString.Key("com.david.trace.sendTarget")
+    /// String — the inner name of a [[wikilink]] span (e.g. "Blue Bottle Coffee").
+    /// Set by applyWikilinks() on the visible name characters (between the hidden [[ and ]]).
+    /// Re-derived from text on every applyStyles() pass; no snapshot/restore needed.
+    /// Read by handleTap (navigate) and handleLongPress (select name for editing).
+    static let wikiTarget         = NSAttributedString.Key("com.david.trace.wikiTarget")
 }
