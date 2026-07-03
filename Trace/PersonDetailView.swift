@@ -2,6 +2,8 @@ import SwiftUI
 import CoreLocation
 import PhotosUI
 
+// MARK: - PersonDetailView
+
 struct PersonDetailView: View {
     @Environment(NotionService.self) private var notion
     @Environment(\.dismiss) private var dismiss
@@ -13,21 +15,52 @@ struct PersonDetailView: View {
     @State private var detail: PersonDetail?
     @State private var isLoading = true
     @State private var loadError: String?
-    @State private var newNote = ""
-    @State private var isSavingNote = false
-    @State private var noteSaved = false
+    @State private var selectedTab: PersonTab = .info
+
+    // Info tab
     @State private var selectedStrength = "new"
     @State private var strengthLoaded = false
     @State private var phoneForAction: String? = nil
-    @State private var showAllVisits = false
-    @State private var showingEdit = false
-    @State private var showingPlacePicker = false
     @State private var selectedPlace: Place? = nil
-    @State private var selectedVisit: Visit? = nil
+    @State private var showingPlacePicker = false
     @State private var isCreatingPlace = false
     @State private var createPlaceError: String? = nil
 
+    // Activity tab
+    @State private var showAllVisits = false
+    @State private var selectedVisit: Visit? = nil
+
+    // Log tab — agenda
+    @State private var agendaItems: [String] = []
+    @State private var isAddingAgendaItem = false
+    @State private var newAgendaItem = ""
+    @State private var isSavingAgenda = false
+    @State private var editingAgendaItem: String? = nil   // the original text of the item being edited
+    @State private var editingAgendaText: String = ""
+
+    // Log tab — interactions
+    @State private var interactions: [Interaction] = []
+    @State private var isLoadingInteractions = false
+    @State private var showAllInteractions = false
+    @State private var selectedInteraction: Interaction? = nil
+    @State private var showingLogInteraction = false
+
+    // Notes tab
+    @State private var newNote = ""
+    @State private var isSavingNote = false
+    @State private var noteSaved = false
+
+    // Edit sheet
+    @State private var showingEdit = false
+
     private let strengthOptions = ["new", "active", "dormant"]
+
+    private enum PersonTab: String, CaseIterable {
+        case info = "Info"
+        case activity = "Activity"
+        case log = "Log"
+        case notes = "Notes"
+    }
 
     private var sharedVisits: [Visit] {
         notion.visits
@@ -69,7 +102,19 @@ struct PersonDetailView: View {
                     }
                 }
             }
-            .task { await loadDetail() }
+            .task {
+                await loadDetail()
+                await loadInteractions()
+            }
+            .sheet(item: $selectedInteraction) { interaction in
+                InteractionDetailSheet(interaction: interaction)
+            }
+            .sheet(isPresented: $showingLogInteraction) {
+                LogInteractionSheet(personID: personID, personName: personName) {
+                    Task { await loadInteractions() }
+                }
+                .environment(notion)
+            }
             .sheet(isPresented: $showingEdit) {
                 if let d = detail {
                     PersonEditSheet(personID: personID, detail: d)
@@ -98,205 +143,36 @@ struct PersonDetailView: View {
         }
     }
 
+    // MARK: - Card Body
+
     @ViewBuilder
     private func cardBody(_ d: PersonDetail) -> some View {
         Form {
-            // Hero section — photo right, action buttons left
+            // Hero — always visible
             Section {
                 heroSection(d)
             }
             .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
             .listRowBackground(Color.clear)
 
-            // Identity
+            // Tab picker
             Section {
-                if let rel = d.relationship {
-                    row("Relationship", value: rel.capitalized)
-                }
-
-                HStack {
-                    Text("Status").foregroundStyle(.secondary)
-                    Spacer()
-                    Picker("", selection: $selectedStrength) {
-                        ForEach(strengthOptions, id: \.self) { s in
-                            Text(s.capitalized).tag(s)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .onChange(of: selectedStrength) { _, newVal in
-                        guard strengthLoaded else { return }
-                        Task { try? await notion.updatePersonStatus(id: personID, relationshipStrength: newVal) }
+                Picker("", selection: $selectedTab) {
+                    ForEach(PersonTab.allCases, id: \.self) { tab in
+                        Text(tab.rawValue).tag(tab)
                     }
                 }
-
-                if let co = d.companyContext, !co.isEmpty {
-                    row("Company / Context", value: co)
-                }
-                if let city = d.city, !city.isEmpty {
-                    row("City", value: city)
-                }
-                if let bday = d.birthday {
-                    row("Birthday", value: bday.formatted(.dateTime.month(.wide).day()))
-                }
-                if let met = d.howWeMet, !met.isEmpty {
-                    row("How We Met", value: met)
-                }
-                if let phone = d.phone, !phone.isEmpty {
-                    Button { phoneForAction = phone } label: {
-                        HStack {
-                            Text("Phone").foregroundStyle(.secondary)
-                            Spacer()
-                            Text(phone).foregroundStyle(.blue)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-                if let email = d.email, !email.isEmpty {
-                    Button {
-                        if let url = URL(string: "mailto:\(email)") { openURL(url) }
-                    } label: {
-                        HStack {
-                            Text("Email").foregroundStyle(.secondary)
-                            Spacer()
-                            Text(email).foregroundStyle(.blue)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-                if let address = d.address, !address.isEmpty {
-                    Button {
-                        let encoded = address.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-                        if let url = URL(string: "maps://?q=\(encoded)") { openURL(url) }
-                    } label: {
-                        HStack(alignment: .top) {
-                            Text("Address").foregroundStyle(.secondary)
-                            Spacer()
-                            Text(address).foregroundStyle(.blue).multilineTextAlignment(.trailing)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
+                .pickerStyle(.segmented)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
+            .listRowBackground(Color.clear)
 
-            // Place
-            Section("Place") {
-                placeSection(d)
-            }
-
-            // Tags
-            if !d.tags.isEmpty {
-                Section("Tags") {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(d.tags, id: \.self) { tag in
-                                Text(tag)
-                                    .font(.caption)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .background(Color.accentColor.opacity(0.12))
-                                    .foregroundStyle(Color.accentColor)
-                                    .clipShape(Capsule())
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                }
-            }
-
-            // Activity
-            Section {
-                HStack(spacing: 20) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(sharedVisits.count)")
-                            .font(.title2.bold())
-                        Text("visits together")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let lv = d.lastVisitDate {
-                        Divider().frame(height: 36)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(lv.formatted(.dateTime.month(.abbreviated).day().year()))
-                                .font(.subheadline.weight(.medium))
-                            Text("last seen")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-
-                if sharedVisits.isEmpty {
-                    Text("No visits together yet")
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
-                        .padding(.vertical, 4)
-                } else {
-                    let visitsToShow = showAllVisits ? sharedVisits : Array(sharedVisits.prefix(5))
-                    ForEach(visitsToShow) { visit in
-                        Button { selectedVisit = visit } label: {
-                            HStack(alignment: .center) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(visit.placeName)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.primary)
-                                    Text(visit.date.formatted(.dateTime.month(.abbreviated).day().year()))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if let rating = visit.rating, rating > 0 {
-                                    Text(String(repeating: "★", count: min(rating, 7)))
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                }
-                                Image(systemName: "chevron.right")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .padding(.vertical, 2)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if sharedVisits.count > 5 {
-                        Button(showAllVisits ? "Show less" : "Show all \(sharedVisits.count) visits") {
-                            showAllVisits.toggle()
-                        }
-                        .font(.subheadline)
-                        .foregroundStyle(.blue)
-                        .padding(.vertical, 2)
-                    }
-                }
-            } header: {
-                Text("Activity")
-            }
-
-            // Notes
-            Section("Notes") {
-                if let existing = d.notes, !existing.isEmpty {
-                    Text(existing)
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
-                }
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: $newNote)
-                        .frame(minHeight: 80)
-                    if newNote.isEmpty {
-                        Text("Add a note…")
-                            .foregroundStyle(Color(.placeholderText))
-                            .font(.body)
-                            .padding(.top, 8)
-                            .padding(.leading, 5)
-                            .allowsHitTesting(false)
-                    }
-                }
-                if !newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button(isSavingNote ? "Saving…" : noteSaved ? "Saved" : "Save note") {
-                        saveNote()
-                    }
-                    .disabled(isSavingNote || noteSaved)
-                }
+            // Tab content
+            switch selectedTab {
+            case .info:         infoTab(d)
+            case .activity:     activityTab(d)
+            case .log:          logTab(d)
+            case .notes:        notesTab(d)
             }
         }
         .confirmationDialog("", isPresented: Binding(
@@ -316,12 +192,340 @@ struct PersonDetailView: View {
         }
     }
 
+    // MARK: - Info Tab
+
+    @ViewBuilder
+    private func infoTab(_ d: PersonDetail) -> some View {
+        Section {
+            if let rel = d.relationship {
+                row("Relationship", value: rel.capitalized)
+            }
+            HStack {
+                Text("Status").foregroundStyle(.secondary)
+                Spacer()
+                Picker("", selection: $selectedStrength) {
+                    ForEach(strengthOptions, id: \.self) { s in
+                        Text(s.capitalized).tag(s)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: selectedStrength) { _, newVal in
+                    guard strengthLoaded else { return }
+                    Task { try? await notion.updatePersonStatus(id: personID, relationshipStrength: newVal) }
+                }
+            }
+            if let co = d.companyContext, !co.isEmpty { row("Company", value: co) }
+            if let city = d.city, !city.isEmpty { row("City", value: city) }
+            if let bday = d.birthday {
+                row("Birthday", value: bday.formatted(.dateTime.month(.wide).day()))
+            }
+            if let met = d.howWeMet, !met.isEmpty { row("How We Met", value: met) }
+        }
+
+        Section("Contact") {
+            if let phone = d.phone, !phone.isEmpty {
+                Button { phoneForAction = phone } label: {
+                    HStack {
+                        Text("Phone").foregroundStyle(.secondary)
+                        Spacer()
+                        Text(phone).foregroundStyle(.blue)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            if let email = d.email, !email.isEmpty {
+                Button {
+                    if let url = URL(string: "mailto:\(email)") { openURL(url) }
+                } label: {
+                    HStack {
+                        Text("Email").foregroundStyle(.secondary)
+                        Spacer()
+                        Text(email).foregroundStyle(.blue)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            if let address = d.address, !address.isEmpty {
+                Button {
+                    let encoded = address.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+                    if let url = URL(string: "maps://?q=\(encoded)") { openURL(url) }
+                } label: {
+                    HStack(alignment: .top) {
+                        Text("Address").foregroundStyle(.secondary)
+                        Spacer()
+                        Text(address).foregroundStyle(.blue).multilineTextAlignment(.trailing)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+
+        Section("Place") {
+            placeSection(d)
+        }
+
+        if !d.tags.isEmpty {
+            Section("Tags") {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(d.tags, id: \.self) { tag in
+                            Text(tag)
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.accentColor.opacity(0.12))
+                                .foregroundStyle(Color.accentColor)
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            }
+        }
+    }
+
+    // MARK: - Activity Tab
+
+    @ViewBuilder
+    private func activityTab(_ d: PersonDetail) -> some View {
+        Section {
+            HStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(sharedVisits.count)")
+                        .font(.title2.bold())
+                    Text("visits together")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let lv = d.lastVisitDate {
+                    Divider().frame(height: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(lv.formatted(.dateTime.month(.abbreviated).day().year()))
+                            .font(.subheadline.weight(.medium))
+                        Text("last seen")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+
+        Section {
+            if sharedVisits.isEmpty {
+                Text("No visits together yet")
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                    .padding(.vertical, 4)
+            } else {
+                let visitsToShow = showAllVisits ? sharedVisits : Array(sharedVisits.prefix(5))
+                ForEach(visitsToShow) { visit in
+                    Button { selectedVisit = visit } label: {
+                        HStack(alignment: .center) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(visit.placeName)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.primary)
+                                Text(visit.date.formatted(.dateTime.month(.abbreviated).day().year()))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let rating = visit.rating, rating > 0 {
+                                Text(String(repeating: "★", count: min(rating, 7)))
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if sharedVisits.count > 5 {
+                    Button(showAllVisits ? "Show less" : "Show all \(sharedVisits.count) visits") {
+                        showAllVisits.toggle()
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.blue)
+                    .padding(.vertical, 2)
+                }
+            }
+        } header: {
+            Text("Visits")
+        }
+    }
+
+    // MARK: - Log Tab (Agenda + Interactions)
+
+    @ViewBuilder
+    private func logTab(_ d: PersonDetail) -> some View {
+        // Agenda
+        Section {
+            if agendaItems.isEmpty && !isAddingAgendaItem {
+                Text("Nothing queued")
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+            } else {
+                ForEach(agendaItems, id: \.self) { item in
+                    Group {
+                        if editingAgendaItem == item {
+                            TextField("", text: $editingAgendaText)
+                                .font(.subheadline)
+                                .onSubmit { commitAgendaEdit(original: item) }
+                        } else {
+                            Text(item)
+                                .font(.subheadline)
+                                .onTapGesture(count: 2) {
+                                    editingAgendaItem = item
+                                    editingAgendaText = item
+                                }
+                        }
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            agendaItems.removeAll { $0 == item }
+                            editingAgendaItem = nil
+                            persistAgenda()
+                        } label: {
+                            Label("Done", systemImage: "checkmark")
+                        }
+                    }
+                }
+            }
+            if isAddingAgendaItem {
+                HStack {
+                    TextField("Add item…", text: $newAgendaItem)
+                        .onSubmit { commitAgendaItem() }
+                    Button("Add") { commitAgendaItem() }
+                        .disabled(newAgendaItem.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .foregroundStyle(.blue)
+                }
+            }
+        } header: {
+            HStack {
+                Text("Agenda")
+                if isSavingAgenda {
+                    ProgressView().scaleEffect(0.7).padding(.leading, 4)
+                }
+                Spacer()
+                Button {
+                    isAddingAgendaItem = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .disabled(isAddingAgendaItem)
+            }
+        }
+
+        // Interactions
+        Section {
+            if isLoadingInteractions {
+                ProgressView().frame(maxWidth: .infinity)
+            } else if interactions.isEmpty {
+                Text("No interactions logged yet")
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                    .padding(.vertical, 4)
+            } else {
+                let shown = showAllInteractions ? interactions : Array(interactions.prefix(5))
+                ForEach(shown) { interaction in
+                    Button { selectedInteraction = interaction } label: {
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Label(interaction.type.capitalized,
+                                          systemImage: interactionIcon(interaction.type))
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    Text(interaction.date.formatted(.dateTime.month(.abbreviated).day().year()))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let notes = interaction.notes, !notes.isEmpty {
+                                    Text(notes)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                            }
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 3)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if interactions.count > 5 {
+                    Button(showAllInteractions ? "Show less" : "Show all \(interactions.count)") {
+                        showAllInteractions.toggle()
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.blue)
+                    .padding(.vertical, 2)
+                }
+            }
+        } header: {
+            HStack {
+                Text("Interactions")
+                Spacer()
+                Button {
+                    showingLogInteraction = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - Notes Tab
+
+    @ViewBuilder
+    private func notesTab(_ d: PersonDetail) -> some View {
+        Section {
+            if let existing = d.notes, !existing.isEmpty {
+                Text(existing)
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+            }
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $newNote)
+                    .frame(minHeight: 80)
+                if newNote.isEmpty {
+                    Text("Add a note…")
+                        .foregroundStyle(Color(.placeholderText))
+                        .font(.body)
+                        .padding(.top, 8)
+                        .padding(.leading, 5)
+                        .allowsHitTesting(false)
+                }
+            }
+            if !newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button(isSavingNote ? "Saving…" : noteSaved ? "Saved" : "Save note") {
+                    saveNote()
+                }
+                .disabled(isSavingNote || noteSaved)
+            }
+        } header: {
+            Text("Notes")
+        }
+    }
+
     // MARK: - Hero Section
 
     @ViewBuilder
     private func heroSection(_ d: PersonDetail) -> some View {
         HStack(alignment: .center, spacing: 20) {
-            // Action buttons — left side
             VStack(alignment: .leading, spacing: 10) {
                 if let phone = d.phone, !phone.isEmpty {
                     let digits = phone.filter { $0.isNumber || $0 == "+" }
@@ -338,10 +542,7 @@ struct PersonDetailView: View {
                     }
                 }
             }
-
             Spacer()
-
-            // Photo — right side, large
             Group {
                 if let urlStr = d.photoURL, let url = URL(string: urlStr) {
                     AsyncImage(url: url) { phase in
@@ -385,7 +586,6 @@ struct PersonDetailView: View {
     private func placeSection(_ d: PersonDetail) -> some View {
         if let placeID = d.homePlaceID,
            let place = notion.places.first(where: { normalizeID($0.id) == normalizeID(placeID) }) {
-            // Linked place row
             Button {
                 selectedPlace = place
             } label: {
@@ -409,7 +609,6 @@ struct PersonDetailView: View {
                 }
             }
             .buttonStyle(.plain)
-            // Unlink option
             Button(role: .destructive) {
                 Task {
                     try? await notion.linkPersonToPlace(personID: personID, placeID: nil)
@@ -419,7 +618,6 @@ struct PersonDetailView: View {
                 Text("Unlink Place").font(.subheadline)
             }
         } else {
-            // Not linked yet
             Button("Link to Existing Place") {
                 showingPlacePicker = true
             }
@@ -441,8 +639,119 @@ struct PersonDetailView: View {
         }
     }
 
+    // MARK: - Helpers
+
+    @ViewBuilder
+    private func row(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).multilineTextAlignment(.trailing)
+        }
+    }
+
+    @ViewBuilder
+    private func initialsCircle(_ name: String, size: CGFloat = 80) -> some View {
+        let parts = name.split(separator: " ")
+        let initials = parts.count >= 2
+            ? String(parts[0].prefix(1)) + String(parts[1].prefix(1))
+            : String(name.prefix(2)).uppercased()
+        Circle()
+            .fill(Color.purple.opacity(0.15))
+            .frame(width: size, height: size)
+            .overlay(
+                Text(initials)
+                    .font(.system(size: size * 0.33, weight: .medium))
+                    .foregroundStyle(.purple)
+            )
+    }
+
     private func normalizeID(_ id: String) -> String {
         id.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
+    private func interactionIcon(_ type: String) -> String {
+        switch type.lowercased() {
+        case "call":    return "phone"
+        case "email":   return "envelope"
+        case "meeting": return "person.2"
+        case "coffee":  return "cup.and.saucer"
+        case "social":  return "figure.socialdance"
+        default:        return "bubble.left"
+        }
+    }
+
+    // MARK: - Agenda
+
+    private func commitAgendaEdit(original: String) {
+        let trimmed = editingAgendaText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, let idx = agendaItems.firstIndex(of: original) {
+            agendaItems[idx] = trimmed
+            persistAgenda()
+        }
+        editingAgendaItem = nil
+        editingAgendaText = ""
+    }
+
+    private func commitAgendaItem() {
+        let trimmed = newAgendaItem.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        agendaItems.append(trimmed)
+        newAgendaItem = ""
+        isAddingAgendaItem = false
+        persistAgenda()
+    }
+
+    private func persistAgenda() {
+        let combined = agendaItems.joined(separator: "\n")
+        isSavingAgenda = true
+        Task {
+            try? await notion.updatePersonAgenda(id: personID, agenda: combined)
+            isSavingAgenda = false
+        }
+    }
+
+    // MARK: - Data loading
+
+    private func loadDetail() async {
+        isLoading = true
+        strengthLoaded = false
+        do {
+            let d = try await notion.fetchPersonDetail(id: personID)
+            detail = d
+            selectedStrength = d.relationshipStrength ?? "new"
+            agendaItems = (d.agenda ?? "")
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map(String.init)
+        } catch {
+            loadError = error.localizedDescription
+        }
+        isLoading = false
+        try? await Task.sleep(for: .milliseconds(300))
+        strengthLoaded = true
+    }
+
+    private func loadInteractions() async {
+        isLoadingInteractions = true
+        interactions = (try? await notion.fetchInteractions(personID: personID)) ?? []
+        isLoadingInteractions = false
+    }
+
+    private func saveNote() {
+        let trimmed = newNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        isSavingNote = true
+        Task {
+            do {
+                try await notion.appendPersonNotes(id: personID, text: trimmed)
+                newNote = ""
+                noteSaved = true
+                try? await Task.sleep(for: .seconds(1.5))
+                noteSaved = false
+                await loadDetail()
+            } catch { }
+            isSavingNote = false
+        }
     }
 
     private func createPlaceFromAddress(_ address: String, for d: PersonDetail) async {
@@ -476,65 +785,6 @@ struct PersonDetailView: View {
             createPlaceError = error.localizedDescription
         }
         isCreatingPlace = false
-    }
-
-    // MARK: - Helpers
-
-    @ViewBuilder
-    private func row(_ label: String, value: String) -> some View {
-        HStack {
-            Text(label).foregroundStyle(.secondary)
-            Spacer()
-            Text(value).multilineTextAlignment(.trailing)
-        }
-    }
-
-    private func loadDetail() async {
-        isLoading = true
-        strengthLoaded = false
-        do {
-            let d = try await notion.fetchPersonDetail(id: personID)
-            detail = d
-            selectedStrength = d.relationshipStrength ?? "new"
-        } catch {
-            loadError = error.localizedDescription
-        }
-        isLoading = false
-        try? await Task.sleep(for: .milliseconds(300))
-        strengthLoaded = true
-    }
-
-    @ViewBuilder
-    private func initialsCircle(_ name: String, size: CGFloat = 80) -> some View {
-        let parts = name.split(separator: " ")
-        let initials = parts.count >= 2
-            ? String(parts[0].prefix(1)) + String(parts[1].prefix(1))
-            : String(name.prefix(2)).uppercased()
-        Circle()
-            .fill(Color.purple.opacity(0.15))
-            .frame(width: size, height: size)
-            .overlay(
-                Text(initials)
-                    .font(.system(size: size * 0.33, weight: .medium))
-                    .foregroundStyle(.purple)
-            )
-    }
-
-    private func saveNote() {
-        let trimmed = newNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        isSavingNote = true
-        Task {
-            do {
-                try await notion.appendPersonNotes(id: personID, text: trimmed)
-                newNote = ""
-                noteSaved = true
-                try? await Task.sleep(for: .seconds(1.5))
-                noteSaved = false
-                await loadDetail()
-            } catch { }
-            isSavingNote = false
-        }
     }
 }
 
@@ -574,7 +824,6 @@ struct PersonEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                // Photo section
                 Section {
                     HStack {
                         Spacer()
@@ -774,6 +1023,140 @@ struct PersonEditSheet: View {
         } catch {
             errorMessage = error.localizedDescription
             isSaving = false
+        }
+    }
+}
+
+// MARK: - Interaction Detail Sheet
+
+private struct InteractionDetailSheet: View {
+    let interaction: Interaction
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    LabeledContent("Type", value: interaction.type.capitalized)
+                    LabeledContent("Date", value: interaction.date.formatted(.dateTime.month(.wide).day().year()))
+                }
+                if let notes = interaction.notes, !notes.isEmpty {
+                    Section("Notes") {
+                        Text(notes).font(.body)
+                    }
+                }
+                Section {
+                    Button {
+                        let cleanID = interaction.id.replacingOccurrences(of: "-", with: "")
+                        if let url = URL(string: "https://notion.so/\(cleanID)") {
+                            openURL(url)
+                        }
+                    } label: {
+                        Label("Open in Notion", systemImage: "arrow.up.right.square")
+                            .foregroundStyle(.blue)
+                    }
+                }
+            }
+            .navigationTitle(interaction.summary.isEmpty ? interaction.type.capitalized : interaction.summary)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Log Interaction Sheet
+
+private struct LogInteractionSheet: View {
+    let personID: String
+    let personName: String
+    let onSaved: () -> Void
+
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+
+    private let typeOptions = ["call", "email", "meeting", "coffee", "social", "other"]
+
+    @State private var selectedType = "call"
+    @State private var date = Date()
+    @State private var notes = ""
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Type") {
+                    Picker("Type", selection: $selectedType) {
+                        ForEach(typeOptions, id: \.self) { t in
+                            Text(t.capitalized).tag(t)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                }
+                Section("Date") {
+                    DatePicker("Date", selection: $date, displayedComponents: .date)
+                        .datePickerStyle(.compact)
+                        .labelsHidden()
+                }
+                Section("Notes (optional)") {
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: $notes)
+                            .frame(minHeight: 80)
+                        if notes.isEmpty {
+                            Text("What did you talk about?")
+                                .foregroundStyle(Color(.placeholderText))
+                                .font(.body)
+                                .padding(.top, 8)
+                                .padding(.leading, 5)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                }
+                if let err = errorMessage {
+                    Section { Text(err).foregroundStyle(.red).font(.caption) }
+                }
+            }
+            .navigationTitle("Log Interaction")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isSaving {
+                        ProgressView().scaleEffect(0.8)
+                    } else {
+                        Button("Save") { save() }
+                    }
+                }
+            }
+        }
+    }
+
+    private func save() {
+        isSaving = true
+        Task {
+            do {
+                try await notion.createInteraction(
+                    personID: personID,
+                    summary: "\(selectedType.capitalized) with \(personName)",
+                    date: date,
+                    type: selectedType,
+                    notes: notes
+                )
+                onSaved()
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                isSaving = false
+            }
         }
     }
 }

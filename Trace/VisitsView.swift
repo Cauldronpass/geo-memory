@@ -193,6 +193,13 @@ struct VisitsView: View {
                                         VisitRow(visit: visit)
                                     }
                                     .buttonStyle(.plain)
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button(role: .destructive) {
+                                            Task { try? await notion.deleteVisit(id: visit.id) }
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                                 }
                             }
                             .searchable(text: $searchText, prompt: "Search visits")

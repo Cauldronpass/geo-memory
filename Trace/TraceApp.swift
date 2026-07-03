@@ -113,6 +113,22 @@ extension Notification.Name {
     static let traceWorkoutPrompt   = Notification.Name("TraceWorkoutPrompt")
     static let traceOpenLeftDrawer  = Notification.Name("TraceOpenLeftDrawer")
     static let traceOpenRightDrawer = Notification.Name("TraceOpenRightDrawer")
+    static let traceLifeDeepLink     = Notification.Name("TraceLifeDeepLink")
+    static let tracePeopleVisible    = Notification.Name("TracePeopleVisible")
+    static let tracePeopleHidden     = Notification.Name("TracePeopleHidden")
+    static let tracePlacesShowVisits = Notification.Name("TracePlacesShowVisits")
+    static let traceActivityVisible  = Notification.Name("TraceActivityVisible")
+    static let traceActivityHidden   = Notification.Name("TraceActivityHidden")
+    static let traceNotesNewNote     = Notification.Name("TraceNotesNewNote")
+    static let traceNotesRefresh     = Notification.Name("TraceNotesRefresh")
+    static let traceNotesOpenDay      = Notification.Name("TraceNotesOpenDay")
+    static let traceNotesOpenPlaceNote = Notification.Name("TraceNotesOpenPlaceNote")
+}
+
+// MARK: - Life tab sections (shared between ContentView long-press and LifeView navigation)
+
+enum LifeSection: Hashable {
+    case activity, trips, fitness, billiards, people
 }
 
 // MARK: - UNUserNotificationCenterDelegate

@@ -21,8 +21,9 @@ class NotionService {
     private let capturesDBID   = "7e292efac9754d7f8e5fceef5e9dc0e2"
     private let peopleDBID     = "50261ebf9c3c49bc926542e3ccfaa4aa"
     private let workoutsDBID   = "b7dab8c1a46542ab83c442e1b76f002a"
-    private let billiardsDBID  = "b2dac41eca9c4a898bf914639950e3d0"
-    private let dayNotesDBID   = "da0768bf98ae4ab09e341a80131d4b52"
+    private let billiardsDBID      = "b2dac41eca9c4a898bf914639950e3d0"
+    private let dayNotesDBID       = "da0768bf98ae4ab09e341a80131d4b52"
+    private let interactionsDBID   = "aba9fb80603141188861c12abc95dcad"
     private let notionVersion = "2022-06-28"
     private let baseURL = "https://api.notion.com/v1"
 
@@ -375,7 +376,8 @@ class NotionService {
                   let props = page["properties"] as? [String: Any],
                   let name = title(props["Name"]) else { return nil }
             let relationship = select(props["Relationship"])
-            return Person(id: id, name: name, relationship: relationship)
+            let agenda = richText(props["Agenda"])
+            return Person(id: id, name: name, relationship: relationship, agenda: agenda)
         }
     }
 
@@ -703,7 +705,7 @@ class NotionService {
         let data = try await post("\(baseURL)/pages", body: body)
         let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         let id = result["id"] as? String ?? UUID().uuidString
-        let person = Person(id: id, name: name)
+        let person = Person(id: id, name: name, agenda: nil)
         people.append(person)
         people.sort { $0.name < $1.name }
         return person
@@ -978,6 +980,7 @@ class NotionService {
             relationshipStrength: select(props["Relationship Strength"]),
             howWeMet: richText(props["How We Met"]),
             notes: richText(props["Notes"]),
+            agenda: richText(props["Agenda"]),
             tags: tags,
             birthday: birthday,
             phone: phone,
@@ -989,6 +992,14 @@ class NotionService {
             lastInteractionDate: lastInteractionDate,
             homePlaceID: homePlaceID
         )
+    }
+
+    func updatePersonAgenda(id: String, agenda: String) async throws {
+        let body: [String: Any] = agenda.isEmpty
+            ? ["properties": ["Agenda": ["rich_text": []]]]
+            : ["properties": ["Agenda": ["rich_text": [["text": ["content": String(agenda.prefix(2000))]]]]]]
+        _ = try await patch("\(baseURL)/pages/\(id)", body: body)
+        personDetailCache.removeValue(forKey: id)
     }
 
     // MARK: - Day Notes — computed index
@@ -1229,6 +1240,65 @@ class NotionService {
             skipEnrichment: checkbox(props["Skip Enrichment"]),
             enrichmentStatus: selectProp(props["Enrichment Status"])
         )
+    }
+
+    // MARK: - Interactions
+
+    /// Fetches all interactions for a given person, newest first.
+    func fetchInteractions(personID: String) async throws -> [Interaction] {
+        var all: [Interaction] = []
+        var cursor: String? = nil
+        repeat {
+            var body: [String: Any] = [
+                "filter": ["property": "Person", "relation": ["contains": personID]],
+                "sorts": [["property": "Date", "direction": "descending"]],
+                "page_size": 100
+            ]
+            if let cursor { body["start_cursor"] = cursor }
+            let data = try await post("\(baseURL)/databases/\(interactionsDBID)/query", body: body)
+            let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            let pages = result["results"] as? [[String: Any]] ?? []
+            all += pages.compactMap { parseInteraction($0) }
+            cursor = result["has_more"] as? Bool == true ? result["next_cursor"] as? String : nil
+        } while cursor != nil
+        return all
+    }
+
+    /// Creates a new interaction record linked to the given person.
+    @discardableResult
+    func createInteraction(personID: String, summary: String, date: Date, type: String, notes: String) async throws -> Interaction {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withFullDate]
+        var props: [String: Any] = [
+            "Summary": ["title": [["text": ["content": summary.isEmpty ? "\(type.capitalized)" : summary]]]] ,
+            "Date":    ["date": ["start": iso.string(from: date)]],
+            "Type":    ["select": ["name": type]],
+            "Person":  ["relation": [["id": personID]]]
+        ]
+        if !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            props["Notes"] = ["rich_text": [["text": ["content": String(notes.prefix(2000))]]]]
+        }
+        let body: [String: Any] = ["parent": ["database_id": interactionsDBID], "properties": props]
+        let data = try await post("\(baseURL)/pages", body: body)
+        let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        return parseInteraction(result) ?? Interaction(
+            id: result["id"] as? String ?? UUID().uuidString,
+            summary: summary, date: date, type: type, notes: notes.isEmpty ? nil : notes,
+            personIDs: [personID], visitID: nil
+        )
+    }
+
+    private func parseInteraction(_ page: [String: Any]) -> Interaction? {
+        guard let id = page["id"] as? String,
+              let props = page["properties"] as? [String: Any] else { return nil }
+        let summary  = title(props["Summary"]) ?? ""
+        let date     = dateProp(props["Date"]) ?? Date()
+        let type     = select(props["Type"]) ?? "other"
+        let notes    = richText(props["Notes"])
+        let personIDs = ((props["Person"] as? [String: Any])?["relation"] as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? []
+        let visitID   = ((props["Related Visit"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String
+        return Interaction(id: id, summary: summary, date: date, type: type,
+                           notes: notes, personIDs: personIDs, visitID: visitID)
     }
 
     // MARK: - Toggle Frequent

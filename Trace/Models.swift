@@ -52,6 +52,7 @@ struct Person: Identifiable, Codable {
     let id: String
     var name: String
     var relationship: String?
+    var agenda: String?     // Newline-delimited; fetched alongside name/relationship in fetchPeople
 }
 
 struct PersonDetail: Identifiable {
@@ -63,6 +64,7 @@ struct PersonDetail: Identifiable {
     var relationshipStrength: String?
     var howWeMet: String?
     var notes: String?
+    var agenda: String?              // Newline-delimited agenda items (Notion "Agenda" rich_text field)
     var tags: [String]
     var birthday: Date?
     var phone: String?
@@ -73,6 +75,16 @@ struct PersonDetail: Identifiable {
     var lastVisitDate: Date?
     var lastInteractionDate: Date?
     var homePlaceID: String?         // Relation to Places DB ("Home Place" property)
+}
+
+struct Interaction: Identifiable {
+    let id: String
+    var summary: String
+    var date: Date
+    var type: String        // call / email / meeting / coffee / other (Notion select values)
+    var notes: String?
+    var personIDs: [String] // relation to People DB
+    var visitID: String?    // Related Visit relation (optional)
 }
 
 struct QueuedItem: Identifiable, Codable {

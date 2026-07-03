@@ -252,6 +252,9 @@ struct PlacesView: View {
             VisitsView()
                 .environment(NotionService.shared)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .tracePlacesShowVisits)) { _ in
+            showingVisits = true
+        }
         .sheet(item: $checkInPlace) { place in
             CheckInView(preselectedPlace: place)
                 .environment(NotionService.shared)

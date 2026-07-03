@@ -601,6 +601,13 @@ struct PlaceDetailView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                Task { try? await notionService.deleteVisit(id: visit.id) }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                         Divider()
                     }
                 }

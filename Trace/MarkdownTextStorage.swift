@@ -324,10 +324,11 @@ final class MarkdownTextStorage: NSTextStorage {
         applyHashtags(in: line, lineRange: range)
         applyLinks(in: line, lineRange: range)
         applyMarkdownLinks(in: line, lineRange: range)
-        applyWikilinks(in: line, lineRange: range)
         applyImageLinks(in: line, lineRange: range)
         applyThumbnailImageLinks(in: line, lineRange: range)
         applyPDFLinks(in: line, lineRange: range)
+        // Wikilinks run last so nothing after them can override the hidden [[ / ]] attrs.
+        applyWikilinks(in: line, lineRange: range)
     }
 
     // MARK: Heading — # / ## / ###
@@ -360,8 +361,8 @@ final class MarkdownTextStorage: NSTextStorage {
                              range: NSRange(location: range.location, length: 2))
     }
 
-    /// Dims the "• " in an indented bullet like "  • item".
-    /// Finds the UTF-16 offset of • within the line and dims it + the following space.
+    /// Dims the "• " in an indented bullet like "  • item" and applies a hanging indent
+    /// so that wrapped continuation lines align with the content start (not the left margin).
     private func styleIndentedBulletPrefix(_ line: String, in range: NSRange) {
         guard let bulletRange = line.range(of: "\u{2022} ") else { return }
         // String.UTF16View.Index IS String.Index — distance gives the UTF-16 offset directly.
@@ -369,8 +370,22 @@ final class MarkdownTextStorage: NSTextStorage {
                                               to: bulletRange.lowerBound)
         let nsOffset = range.location + utf16Offset
         guard nsOffset + 2 <= range.location + range.length else { return }
+
+        // Dim the bullet glyph and its trailing space.
         backing.addAttribute(.foregroundColor, value: Self.dimColor,
                              range: NSRange(location: nsOffset, length: 2))
+
+        // Hanging indent: measure "  • " (indent spaces + bullet + space) so that any
+        // continuation lines start at the same x-position as the first content character.
+        // firstLineHeadIndent stays 0 (the spaces render normally on the first line);
+        // headIndent shifts continuation lines rightward by the same visual width.
+        let prefixStr = (line as NSString).substring(to: utf16Offset + 2)  // e.g. "  • "
+        let prefixWidth = (prefixStr as NSString).size(
+            withAttributes: [.font: Self.bodyFont]).width
+        let para = NSMutableParagraphStyle()
+        para.lineHeightMultiple = 1.4   // preserve base line height
+        para.headIndent = prefixWidth
+        backing.addAttribute(.paragraphStyle, value: para, range: range)
     }
 
     // MARK: Checkbox
@@ -599,8 +614,10 @@ final class MarkdownTextStorage: NSTextStorage {
             let total = m.range.length
 
             // Hide opening [[
+            // Strip any residual .link or .foregroundColor set by applyLinks before hiding.
             let openRange = NSRange(location: base, length: 2)
-            backing.removeAttribute(.link, range: openRange)
+            backing.removeAttribute(.link,            range: openRange)
+            backing.removeAttribute(.foregroundColor, range: openRange)
             backing.addAttributes(hidden, range: openRange)
 
             // Color the name span and tag it for tap detection.
@@ -616,8 +633,13 @@ final class MarkdownTextStorage: NSTextStorage {
             ], range: nameNsRange)
 
             // Hide closing ]]
+            // Strip residual .link, .foregroundColor, and .wikiTarget (the name addAttributes
+            // above writes just up to nameNsRange.length, but we defensively clear adjacent
+            // attributes on the 2-char close range before applying hidden.)
             let closeRange = NSRange(location: base + total - 2, length: 2)
-            backing.removeAttribute(.link, range: closeRange)
+            backing.removeAttribute(.link,            range: closeRange)
+            backing.removeAttribute(.foregroundColor, range: closeRange)
+            backing.removeAttribute(.wikiTarget,      range: closeRange)
             backing.addAttributes(hidden, range: closeRange)
         }
     }
@@ -845,4 +867,9 @@ extension NSAttributedString.Key {
     /// Re-derived from text on every applyStyles() pass; no snapshot/restore needed.
     /// Read by handleTap (navigate) and handleLongPress (select name for editing).
     static let wikiTarget         = NSAttributedString.Key("com.david.trace.wikiTarget")
+    /// Bool marker — set alongside .backgroundColor on search-result highlight spans.
+    /// Lets applySearchHighlights clear only its own marks without touching markdown bg attrs.
+    /// processEditing() does NOT call applyStyles() for attribute-only edits, so these are
+    /// safe from the MarkdownTextStorage restyle cycle (wipe on user edit is intentional).
+    static let searchHighlight    = NSAttributedString.Key("com.david.trace.searchHighlight")
 }

@@ -43,6 +43,9 @@ final class TagIndex {
         return Array(filtered.prefix(8))
     }
 
+    /// Returns all known tags, sorted alphabetically. Used by the Notes list filter chip row.
+    func allTags() -> [String] { tags }
+
     /// One-time scan of all NoteStore markdown files to seed the index.
     private func seedFromNotes() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -227,6 +230,10 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// Returns matched items: `name` is inserted into the text; `isPlace` selects the pill icon.
     /// Parent view provides this — filters Places (mappin icon) and People (person icon).
     var wikiSuggestions: ((String) -> [(name: String, isPlace: Bool)])? = nil
+    /// When set, matching spans are painted with an orange background and the view
+    /// scrolls to the first hit. Purely visual — never touches the saved file.
+    /// Supports the same token syntax as GlobalSearchView: plain text and #tag.
+    var searchQuery: String? = nil
 
     // MARK: Make
 
@@ -359,6 +366,58 @@ struct MarkdownEditorView: UIViewRepresentable {
         context.coordinator.onWikiTap       = onWikiTap
         context.coordinator.wikiSuggestions = wikiSuggestions
         _updateUIView(tv, context: context)
+        // Apply search highlights after the text storage settles.
+        if let query = searchQuery, !query.isEmpty {
+            DispatchQueue.main.async {
+                self.applySearchHighlights(to: tv, query: query)
+                self.scrollToFirstMatch(in: tv, query: query)
+            }
+        }
+    }
+
+    // MARK: - Search highlight helpers
+
+    /// Paints an orange background on every token match. Uses .searchHighlight to
+    /// mark spans so they can be cleared without touching other .backgroundColor attrs.
+    private func applySearchHighlights(to tv: UITextView, query: String) {
+        let storage   = tv.textStorage
+        let fullRange = NSRange(location: 0, length: storage.length)
+        // Clear previous search highlights only
+        storage.enumerateAttribute(.searchHighlight, in: fullRange, options: []) { val, range, _ in
+            if val != nil {
+                storage.removeAttribute(.backgroundColor,  range: range)
+                storage.removeAttribute(.searchHighlight,  range: range)
+            }
+        }
+        let tokens    = query.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        let terms     = tokens.map { $0.lowercased() }   // keeps the # for tag tokens
+        let nsText    = (storage.string.lowercased() as NSString)
+        let color     = UIColor.systemOrange.withAlphaComponent(0.38)
+        for term in terms {
+            var searchRange = NSRange(location: 0, length: nsText.length)
+            while searchRange.length > 0 {
+                let found = nsText.range(of: term, options: [], range: searchRange)
+                guard found.location != NSNotFound else { break }
+                storage.addAttribute(.backgroundColor, value: color,  range: found)
+                storage.addAttribute(.searchHighlight, value: true,   range: found)
+                let next = found.location + found.length
+                searchRange = NSRange(location: next, length: nsText.length - next)
+            }
+        }
+    }
+
+    /// Scrolls to the first occurrence of any token in the query.
+    private func scrollToFirstMatch(in tv: UITextView, query: String) {
+        let tokens  = query.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        let nsText  = tv.text.lowercased() as NSString
+        for token in tokens {
+            let found = nsText.range(of: token.lowercased())
+            guard found.location != NSNotFound else { continue }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                tv.scrollRangeToVisible(found)
+            }
+            return
+        }
     }
 
     // MARK: - Placeholder helpers

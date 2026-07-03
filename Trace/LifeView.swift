@@ -2,66 +2,72 @@ import SwiftUI
 
 struct LifeView: View {
     @Environment(NotionService.self) private var notion
+    @State private var path: [LifeSection] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
-                LifeMenuRow(icon: "calendar", color: .indigo, title: "Activity", subtitle: "Visits, workouts & billiards") {
-                    LifeCalendarView().environment(notion)
+                NavigationLink(value: LifeSection.activity) {
+                    LifeMenuRowContent(icon: "calendar", color: .indigo, title: "Activity", subtitle: "Visits, workouts & billiards")
                 }
-                LifeMenuRow(icon: "airplane", color: .blue, title: "Trips", subtitle: "Upcoming & past trips") {
-                    LifePlaceholderView(title: "Trips", icon: "airplane")
+                NavigationLink(value: LifeSection.trips) {
+                    LifeMenuRowContent(icon: "airplane", color: .blue, title: "Trips", subtitle: "Upcoming & past trips")
                 }
-                LifeMenuRow(icon: "figure.run", color: .orange, title: "Fitness", subtitle: "Workouts & OrangeTheory") {
-                    FitnessView()
+                NavigationLink(value: LifeSection.fitness) {
+                    LifeMenuRowContent(icon: "figure.run", color: .orange, title: "Fitness", subtitle: "Workouts & OrangeTheory")
                 }
-                LifeMenuRow(icon: "8.circle.fill", color: .black, title: "Billiards", subtitle: "Match journal & season stats") {
-                    BilliardsView()
-                        .environment(notion)
+                NavigationLink(value: LifeSection.billiards) {
+                    LifeMenuRowContent(icon: "8.circle.fill", color: .black, title: "Billiards", subtitle: "Match journal & season stats")
                 }
-                LifeMenuRow(icon: "person.2.fill", color: .purple, title: "People", subtitle: "Personal contacts & connections") {
-                    LifePeopleView()
-                }
-                LifeMenuRow(icon: "mappin.and.ellipse", color: .red, title: "Places", subtitle: "Your saved places") {
-                    PlacesView()
-                        .environment(notion)
-                        .environment(LocationManager.shared)
+                NavigationLink(value: LifeSection.people) {
+                    LifeMenuRowContent(icon: "person.2.fill", color: .purple, title: "People", subtitle: "Personal contacts & connections")
                 }
             }
             .navigationTitle("Life")
             .drawerToolbar()
+            .navigationDestination(for: LifeSection.self) { section in
+                switch section {
+                case .activity:  LifeCalendarView().environment(notion)
+                case .trips:     LifePlaceholderView(title: "Trips", icon: "airplane")
+                case .fitness:   FitnessView()
+                case .billiards: BilliardsView().environment(notion)
+                case .people:    LifePeopleView()
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .traceLifeDeepLink)) { notif in
+            if let section = notif.userInfo?["section"] as? LifeSection {
+                path = [section]
+            }
         }
     }
 }
 
-// MARK: - Menu Row
+// MARK: - Menu Row Content
 
-struct LifeMenuRow<Destination: View>: View {
+struct LifeMenuRowContent: View {
     let icon: String
     let color: Color
     let title: String
     let subtitle: String
-    @ViewBuilder let destination: () -> Destination
 
     var body: some View {
-        NavigationLink(destination: destination()) {
-            HStack(spacing: 14) {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(color)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.body)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(color)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.vertical, 4)
         }
+        .padding(.vertical, 4)
     }
 }
 
@@ -85,10 +91,25 @@ struct LifePlaceholderView: View {
 
 // MARK: - People List
 
+private enum PeopleFilter: Equatable {
+    case all
+    case agenda
+    case relationship(String)
+
+    var label: String {
+        switch self {
+        case .all:                return "All"
+        case .agenda:             return "Agenda"
+        case .relationship(let r): return r.capitalized
+        }
+    }
+}
+
 struct LifePeopleView: View {
     @Environment(NotionService.self) private var notion
     @State private var searchText = ""
-    @State private var selectedRelationship: String? = nil
+    @State private var activeFilter: PeopleFilter = .all
+    @State private var showingFilter = false
     @State private var selectedPerson: Person? = nil
     @State private var showAddPerson = false
 
@@ -100,50 +121,75 @@ struct LifePeopleView: View {
         notion.people.filter { person in
             let matchesSearch = searchText.isEmpty
                 || person.name.localizedCaseInsensitiveContains(searchText)
-            let matchesType = selectedRelationship == nil
-                || person.relationship == selectedRelationship
-            return matchesSearch && matchesType
+            let matchesFilter: Bool
+            switch activeFilter {
+            case .all:
+                matchesFilter = true
+            case .agenda:
+                matchesFilter = !(person.agenda ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .relationship(let r):
+                matchesFilter = person.relationship == r
+            }
+            return matchesSearch && matchesFilter
         }
     }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Search bar
-                HStack {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search people", text: $searchText)
-                        .autocorrectionDisabled()
-                    if !searchText.isEmpty {
-                        Button { searchText = "" } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                // Search bar + filter button
+                HStack(spacing: 8) {
+                    HStack {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Search people", text: $searchText)
+                            .autocorrectionDisabled()
+                        if !searchText.isEmpty {
+                            Button { searchText = "" } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .padding(10)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    // Filter button with active badge
+                    Button { showingFilter = true } label: {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: activeFilter == .all
+                                  ? "line.3.horizontal.decrease.circle"
+                                  : "line.3.horizontal.decrease.circle.fill")
+                                .font(.system(size: 22))
+                                .foregroundStyle(activeFilter == .all ? Color(.secondaryLabel) : .purple)
+                            if activeFilter != .all {
+                                Circle()
+                                    .fill(Color.purple)
+                                    .frame(width: 8, height: 8)
+                                    .offset(x: 3, y: -3)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
-                .padding(10)
-                .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
                 .padding(.horizontal)
                 .padding(.top, 12)
                 .padding(.bottom, 8)
 
-                // Filter pills
-                if !relationshipTypes.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            PeoplePill(label: "All", isActive: selectedRelationship == nil) {
-                                selectedRelationship = nil
-                            }
-                            ForEach(relationshipTypes, id: \.self) { type in
-                                PeoplePill(label: type, isActive: selectedRelationship == type) {
-                                    selectedRelationship = selectedRelationship == type ? nil : type
-                                }
-                            }
-                        }
-                        .padding(.horizontal)
-                        .padding(.bottom, 8)
+                // Active filter label
+                if activeFilter != .all {
+                    HStack {
+                        Text("Showing: \(activeFilter.label)")
+                            .font(.caption)
+                            .foregroundStyle(.purple)
+                        Spacer()
+                        Button("Clear") { activeFilter = .all }
+                            .font(.caption)
+                            .foregroundStyle(.purple)
                     }
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
                 }
 
                 // People list
@@ -165,7 +211,17 @@ struct LifePeopleView: View {
                                     Text(person.name)
                                         .foregroundStyle(.primary)
                                         .font(.body)
-                                    if let rel = person.relationship {
+                                    // Agenda filter: show first item as subtitle
+                                    if activeFilter == .agenda,
+                                       let agenda = person.agenda,
+                                       let firstItem = agenda
+                                            .split(separator: "\n", omittingEmptySubsequences: true)
+                                            .first {
+                                        Text(firstItem)
+                                            .font(.caption)
+                                            .foregroundStyle(.purple)
+                                            .lineLimit(1)
+                                    } else if let rel = person.relationship {
                                         Text(rel)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
@@ -185,6 +241,13 @@ struct LifePeopleView: View {
                             Divider().padding(.leading, 60)
                         }
                     }
+
+                    if filtered.isEmpty {
+                        Text(activeFilter == .agenda ? "No one has agenda items" : "No results")
+                            .foregroundStyle(.secondary)
+                            .font(.subheadline)
+                            .padding()
+                    }
                 }
                 .background(Color(.secondarySystemGroupedBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -196,12 +259,21 @@ struct LifePeopleView: View {
         .navigationTitle("People")
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showAddPerson = true } label: {
-                    Image(systemName: "plus")
+        .onAppear {
+            NotificationCenter.default.post(name: .tracePeopleVisible, object: nil)
+        }
+        .onDisappear {
+            NotificationCenter.default.post(name: .tracePeopleHidden, object: nil)
+        }
+        .confirmationDialog("Filter People", isPresented: $showingFilter, titleVisibility: .visible) {
+            Button(activeFilter == .all ? "✓ All" : "All") { activeFilter = .all }
+            Button(activeFilter == .agenda ? "✓ Agenda" : "Agenda") { activeFilter = .agenda }
+            ForEach(relationshipTypes, id: \.self) { type in
+                Button(activeFilter == .relationship(type) ? "✓ \(type.capitalized)" : type.capitalized) {
+                    activeFilter = .relationship(type)
                 }
             }
+            Button("Cancel", role: .cancel) { }
         }
         .sheet(item: $selectedPerson) { person in
             PersonDetailView(personID: person.id, personName: person.name)
@@ -211,27 +283,6 @@ struct LifePeopleView: View {
             AddPersonView()
                 .environment(notion)
         }
-    }
-}
-
-// MARK: - People Filter Pill
-
-struct PeoplePill: View {
-    let label: String
-    let isActive: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(.subheadline)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(isActive ? Color.purple : Color(.secondarySystemGroupedBackground))
-                .foregroundStyle(isActive ? .white : .primary)
-                .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -442,6 +493,8 @@ struct LifeCalendarView: View {
         .navigationTitle("Activity")
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
+        .onAppear  { NotificationCenter.default.post(name: .traceActivityVisible, object: nil) }
+        .onDisappear { NotificationCenter.default.post(name: .traceActivityHidden, object: nil) }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
@@ -836,6 +889,259 @@ struct MixedDayPickerSheet: View {
             Circle()
                 .fill(entry.color)
                 .frame(width: 32, height: 32)
+        }
+    }
+}
+
+// MARK: - FAB: Log Interaction (people picker + type + notes)
+
+struct FABLogInteractionSheet: View {
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var searchText = ""
+    @State private var selectedPerson: Person? = nil
+    @State private var selectedType = "call"
+    @State private var date = Date()
+    @State private var notes = ""
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    private let typeOptions = ["call", "email", "meeting", "coffee", "social", "other"]
+
+    private var filteredPeople: [Person] {
+        searchText.isEmpty ? notion.people
+            : notion.people.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            if selectedPerson == nil {
+                // Step 1: pick person
+                List {
+                    ForEach(filteredPeople) { person in
+                        Button {
+                            selectedPerson = person
+                        } label: {
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(Color.purple.opacity(0.15))
+                                    .frame(width: 32, height: 32)
+                                    .overlay(
+                                        Text(String(person.name.prefix(1)))
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(.purple)
+                                    )
+                                Text(person.name).foregroundStyle(.primary)
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .searchable(text: $searchText, prompt: "Search people")
+                .navigationTitle("Log Interaction")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                }
+            } else {
+                // Step 2: log details
+                Form {
+                    Section {
+                        Button { selectedPerson = nil } label: {
+                            HStack {
+                                Text(selectedPerson!.name).foregroundStyle(.primary)
+                                Spacer()
+                                Text("Change").font(.caption).foregroundStyle(.blue)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    } header: { Text("Person") }
+
+                    Section("Type") {
+                        Picker("Type", selection: $selectedType) {
+                            ForEach(typeOptions, id: \.self) { Text($0.capitalized).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    }
+                    Section("Date") {
+                        DatePicker("", selection: $date, displayedComponents: .date)
+                            .datePickerStyle(.compact).labelsHidden()
+                    }
+                    Section("Notes (optional)") {
+                        ZStack(alignment: .topLeading) {
+                            TextEditor(text: $notes).frame(minHeight: 80)
+                            if notes.isEmpty {
+                                Text("What did you talk about?")
+                                    .foregroundStyle(Color(.placeholderText))
+                                    .font(.body).padding(.top, 8).padding(.leading, 5)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    }
+                    if let err = errorMessage {
+                        Section { Text(err).foregroundStyle(.red).font(.caption) }
+                    }
+                }
+                .navigationTitle("Log Interaction")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        if isSaving { ProgressView().scaleEffect(0.8) }
+                        else { Button("Save") { save() } }
+                    }
+                }
+            }
+        }
+    }
+
+    private func save() {
+        guard let person = selectedPerson else { return }
+        isSaving = true
+        Task {
+            do {
+                try await notion.createInteraction(
+                    personID: person.id,
+                    summary: "\(selectedType.capitalized) with \(person.name)",
+                    date: date, type: selectedType, notes: notes
+                )
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                isSaving = false
+            }
+        }
+    }
+}
+
+// MARK: - FAB: Add Agenda Item (people picker + text)
+
+struct FABAddAgendaSheet: View {
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var searchText = ""
+    @State private var selectedPerson: Person? = nil
+    @State private var itemText = ""
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    private var filteredPeople: [Person] {
+        searchText.isEmpty ? notion.people
+            : notion.people.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            if selectedPerson == nil {
+                List {
+                    ForEach(filteredPeople) { person in
+                        Button {
+                            selectedPerson = person
+                        } label: {
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(Color.purple.opacity(0.15))
+                                    .frame(width: 32, height: 32)
+                                    .overlay(
+                                        Text(String(person.name.prefix(1)))
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(.purple)
+                                    )
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(person.name).foregroundStyle(.primary)
+                                    if let agenda = person.agenda,
+                                       let first = agenda.split(separator: "\n", omittingEmptySubsequences: true).first {
+                                        Text(first).font(.caption).foregroundStyle(.purple).lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .searchable(text: $searchText, prompt: "Search people")
+                .navigationTitle("Add Agenda Item")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                }
+            } else {
+                Form {
+                    Section {
+                        Button { selectedPerson = nil } label: {
+                            HStack {
+                                Text(selectedPerson!.name).foregroundStyle(.primary)
+                                Spacer()
+                                Text("Change").font(.caption).foregroundStyle(.blue)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    } header: { Text("Person") }
+
+                    Section("Item") {
+                        TextField("What do you want to bring up?", text: $itemText)
+                            .onSubmit { save() }
+                    }
+
+                    // Show existing agenda items for context
+                    if let person = selectedPerson,
+                       let agenda = person.agenda,
+                       !agenda.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        let items = agenda.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+                        Section("Already queued") {
+                            ForEach(items, id: \.self) {
+                                Text($0).font(.subheadline).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    if let err = errorMessage {
+                        Section { Text(err).foregroundStyle(.red).font(.caption) }
+                    }
+                }
+                .navigationTitle("Add Agenda Item")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        if isSaving { ProgressView().scaleEffect(0.8) }
+                        else {
+                            Button("Add") { save() }
+                                .disabled(itemText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func save() {
+        guard let person = selectedPerson else { return }
+        let trimmed = itemText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        isSaving = true
+        Task {
+            do {
+                let existing = (person.agenda ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let combined = existing.isEmpty ? trimmed : "\(existing)\n\(trimmed)"
+                try await notion.updatePersonAgenda(id: person.id, agenda: combined)
+                // Update local cache so filter reflects immediately
+                if let idx = notion.people.firstIndex(where: { $0.id == person.id }) {
+                    notion.people[idx].agenda = combined
+                }
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                isSaving = false
+            }
         }
     }
 }

@@ -11,9 +11,18 @@ import SwiftUI
 
 struct NotesView: View {
 
+    @Environment(NotionService.self) private var notion
     @State private var noteStore = NoteStore.shared
     @State private var selectedTab: NoteTab = .daily
     @State private var showCalendar = false
+    @State private var showingSearch = false
+    @State private var showingFABNewNote = false
+    @State private var fabNewNoteName = ""
+    @State private var isCreatingFABNote = false
+    @State private var fabNoteSubfolder: String = "Notes/Horizons"
+    @State private var showingFABDailyPicker = false
+    @State private var fabDailyDate: Date = Date()
+    @State private var showingFABPlacePicker = false
 
     var body: some View {
         NavigationStack {
@@ -25,9 +34,78 @@ struct NotesView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    EmptyView()
+                    Button { showingSearch = true } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
                 }
             }
+            .sheet(isPresented: $showingSearch) {
+                GlobalSearchView()
+            }
+            .sheet(isPresented: $showingFABNewNote) {
+                NewNoteSheet(name: $fabNewNoteName, isCreating: isCreatingFABNote) {
+                    createFABNote()
+                }
+            }
+            .sheet(isPresented: $showingFABPlacePicker) {
+                FABPlaceNoteSheet(places: notion.places) { place in
+                    selectedTab = .places
+                    let filename = "\(place.name).md"
+                    NotificationCenter.default.post(
+                        name: .traceNotesOpenPlaceNote,
+                        object: nil,
+                        userInfo: ["filename": filename, "placeName": place.name]
+                    )
+                }
+            }
+            .sheet(isPresented: $showingFABDailyPicker) {
+                FABDailyPickerSheet(selectedDate: $fabDailyDate) { date in
+                    selectedTab = .daily
+                    showCalendar = false
+                    NotificationCenter.default.post(
+                        name: .traceNotesOpenDay,
+                        object: nil,
+                        userInfo: ["date": date]
+                    )
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .traceNotesNewNote)) { notif in
+            let type = notif.userInfo?["type"] as? String ?? "horizons"
+            switch type {
+            case "daily":
+                fabDailyDate = Date()
+                showingFABDailyPicker = true
+            case "projects":
+                selectedTab = .projects
+                fabNoteSubfolder = "Notes/Projects"
+                fabNewNoteName = ""
+                showingFABNewNote = true
+            case "places":
+                selectedTab = .places
+                showingFABPlacePicker = true
+            default: // "horizons"
+                selectedTab = .horizons
+                fabNoteSubfolder = "Notes/Horizons"
+                fabNewNoteName = ""
+                showingFABNewNote = true
+            }
+        }
+    }
+
+    private func createFABNote() {
+        let name = fabNewNoteName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        isCreatingFABNote = true
+        Task {
+            let path = "\(fabNoteSubfolder)/\(name).md"
+            try? noteStore.writeFile(path, content: "# \(name)\n")
+            await MainActor.run {
+                showingFABNewNote = false
+                fabNewNoteName = ""
+                isCreatingFABNote = false
+            }
+            NotificationCenter.default.post(name: .traceNotesRefresh, object: nil)
         }
     }
 
@@ -263,6 +341,11 @@ struct DailyNoteTab: View {
                         .environment(NotionService.shared)
                 }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .traceNotesOpenDay)) { notif in
+            guard let date = notif.userInfo?["date"] as? Date else { return }
+            selectedDate = date
+            load()
         }
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { note in
             // Only reload for external writes (e.g. from capture drawer).
@@ -956,6 +1039,9 @@ struct NoteFileListTab: View {
     @State private var newNoteName = ""
     @State private var isCreating = false
     @State private var fileToMove: String? = nil
+    @State private var fileContents: [String: String] = [:]
+    @State private var isSearching: Bool = false
+    @State private var searchText: String = ""
 
     var body: some View {
         Group {
@@ -981,44 +1067,75 @@ struct NoteFileListTab: View {
                     ToolbarItem(placement: .navigationBarTrailing) { newNoteButton }
                 }
             } else {
-                List(files, id: \.self) { filename in
-                    Button {
-                        selectedFile = filename
-                    } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                                .foregroundStyle(.secondary)
-                            Text(filename.replacingOccurrences(of: ".md", with: ""))
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.tertiary)
-                                .font(.caption)
-                        }
+                VStack(spacing: 0) {
+                    if isSearching {
+                        searchBar
+                        Divider()
                     }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            deleteFile(filename)
-                        } label: {
-                            Label("Delete", systemImage: "trash")
+                    let shown = displayedFiles
+                    if shown.isEmpty {
+                        ContentUnavailableView(
+                            "No Matching Notes",
+                            systemImage: "magnifyingglass",
+                            description: Text("No notes match your search.")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        List(shown, id: \.self) { filename in
+                            Button {
+                                selectedFile = filename
+                            } label: {
+                                HStack {
+                                    Image(systemName: "doc.text")
+                                        .foregroundStyle(.secondary)
+                                    Text(filename.replacingOccurrences(of: ".md", with: ""))
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.tertiary)
+                                        .font(.caption)
+                                }
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    deleteFile(filename)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                Button {
+                                    fileToMove = filename
+                                } label: {
+                                    Label("Move", systemImage: "folder.badge.arrow.right")
+                                }
+                                .tint(.indigo)
+                            }
                         }
-                    }
-                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                        Button {
-                            fileToMove = filename
-                        } label: {
-                            Label("Move", systemImage: "folder.badge.arrow.right")
-                        }
-                        .tint(.indigo)
+                        .listStyle(.plain)
                     }
                 }
-                .listStyle(.plain)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) { newNoteButton }
+                    ToolbarItem(placement: .navigationBarTrailing) { searchToggleButton }
                 }
             }
         }
         .task { loadFiles() }
+        .onReceive(NotificationCenter.default.publisher(for: .traceNotesRefresh)) { _ in loadFiles() }
+        .onReceive(NotificationCenter.default.publisher(for: .traceNotesOpenPlaceNote)) { notif in
+            guard subfolder == "Notes/Places",
+                  let filename = notif.userInfo?["filename"] as? String,
+                  let placeName = notif.userInfo?["placeName"] as? String else { return }
+            // Create file if it doesn't exist, then open it
+            Task {
+                if !files.contains(filename) {
+                    try? noteStore.writeFile("Notes/Places/\(filename)", content: "# \(placeName)\n")
+                    files = (try? noteStore.listFiles(in: subfolder)) ?? []
+                }
+                await MainActor.run { selectedFile = filename }
+            }
+        }
         .sheet(isPresented: $showingNewNote) {
             NewNoteSheet(name: $newNoteName, isCreating: isCreating) {
                 createNote()
@@ -1040,6 +1157,17 @@ struct NoteFileListTab: View {
             showingNewNote = true
         } label: {
             Image(systemName: "square.and.pencil")
+        }
+    }
+
+    private var searchToggleButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isSearching.toggle()
+                if !isSearching { searchText = "" }
+            }
+        } label: {
+            Image(systemName: isSearching ? "magnifyingglass.circle.fill" : "magnifyingglass")
         }
     }
 
@@ -1083,7 +1211,143 @@ struct NoteFileListTab: View {
         Task {
             files = (try? noteStore.listFiles(in: subfolder)) ?? []
             isLoading = false
+            loadFileContents()
         }
+    }
+
+    /// Reads every file in the current subfolder into fileContents so tag chip
+    /// filtering can run synchronously against local strings.
+    private func loadFileContents() {
+        var contents: [String: String] = [:]
+        for filename in files {
+            contents[filename] = (try? noteStore.readFile("\(subfolder)/\(filename)")) ?? ""
+        }
+        fileContents = contents
+    }
+
+    // MARK: - Search helpers
+
+    /// Files visible after applying the search bar text.
+    /// #tag tokens require the tag in note content; plain tokens match filename or content.
+    /// AND logic across all tokens.
+    private var displayedFiles: [String] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return files }
+
+        let tokens = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        let tagTokens   = tokens.filter {  $0.hasPrefix("#") }.map { $0.dropFirst().lowercased() }
+        let plainTokens = tokens.filter { !$0.hasPrefix("#") }.map { $0.lowercased() }
+
+        return files.filter { filename in
+            let content     = (fileContents[filename] ?? "").lowercased()
+            let nameLower   = filename.lowercased().replacingOccurrences(of: ".md", with: "")
+            let tagsMatch   = tagTokens.allSatisfy   { content.contains("#\($0)") }
+            let plainMatch  = plainTokens.allSatisfy { nameLower.contains($0) || content.contains($0) }
+            return tagsMatch && plainMatch
+        }
+    }
+
+    /// Inline search bar shown below the nav bar when isSearching is true.
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .font(.subheadline)
+            TextField("Search notes, #tags…", text: $searchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+}
+
+// MARK: - FAB Daily Date Picker Sheet
+
+private struct FABDailyPickerSheet: View {
+    @Binding var selectedDate: Date
+    let onOpen: (Date) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    DatePicker("Date", selection: $selectedDate, displayedComponents: .date)
+                        .datePickerStyle(.graphical)
+                }
+            }
+            .navigationTitle("Open Daily Note")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Open") {
+                        onOpen(selectedDate)
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+}
+
+// MARK: - FAB Place Note Picker Sheet
+
+private struct FABPlaceNoteSheet: View {
+    let places: [Place]
+    let onSelect: (Place) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+
+    private var filteredPlaces: [Place] {
+        if searchText.isEmpty { return places.sorted { $0.name < $1.name } }
+        return places
+            .filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+            .sorted { $0.name < $1.name }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(filteredPlaces, id: \.id) { place in
+                Button {
+                    onSelect(place)
+                    dismiss()
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(place.name)
+                            .foregroundStyle(.primary)
+                        if !place.category.isEmpty {
+                            Text(place.category)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .searchable(text: $searchText, prompt: "Search places")
+            .navigationTitle("Place Note")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
@@ -1138,6 +1402,8 @@ struct NoteEditorView: View {
     let title: String
     /// Provide this when showing inline (not pushed). Called instead of dismiss() on back/delete/rename/move.
     var onBack: (() -> Void)? = nil
+    /// When set, matching tokens are highlighted in orange and the view scrolls to the first hit.
+    var searchQuery: String? = nil
 
     @State private var noteStore = NoteStore.shared
     @State private var content: String = ""
@@ -1254,7 +1520,8 @@ struct NoteEditorView: View {
                     onSave: { newText in save(newText) },
                     relativePath: relativePath,
                     onWikiTap: { name in resolveWikiLink(name) },
-                    wikiSuggestions: { query in wikiSuggestions(for: query) }
+                    wikiSuggestions: { query in wikiSuggestions(for: query) },
+                    searchQuery: searchQuery
                 )
             }
         }
@@ -1609,6 +1876,7 @@ struct HorizonsNoteTab: View {
             }
         }
         .task { loadFiles() }
+        .onReceive(NotificationCenter.default.publisher(for: .traceNotesRefresh)) { _ in loadFiles() }
         .sheet(isPresented: $showingNewNote) {
             NewNoteSheet(name: $newNoteName, isCreating: isCreating) {
                 createNote()
@@ -1920,6 +2188,284 @@ struct BlockPromoteSheet: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Global Search
+
+private enum SearchScope: String, CaseIterable, Identifiable {
+    case all      = "All"
+    case daily    = "Daily"
+    case horizons = "Horizons"
+    case projects = "Projects"
+    case places   = "Places"
+    var id: String { rawValue }
+
+    var subfolders: [(label: String, path: String)] {
+        switch self {
+        case .all:
+            return [("Daily","Calendar"),("Horizons","Notes/Horizons"),
+                    ("Projects","Notes/Projects"),("Places","Notes/Places")]
+        case .daily:    return [("Daily",    "Calendar")]
+        case .horizons: return [("Horizons", "Notes/Horizons")]
+        case .projects: return [("Projects", "Notes/Projects")]
+        case .places:   return [("Places",   "Notes/Places")]
+        }
+    }
+}
+
+private struct GlobalSearchResult: Identifiable {
+    let id = UUID()
+    let filename: String
+    let subfolder: String
+    let displayName: String
+    let scopeLabel: String
+    let snippet: String
+    let content: String          // full file text — used for expand-on-tap matching lines
+}
+
+struct GlobalSearchView: View {
+
+    @State private var searchText = ""
+    @State private var scope: SearchScope = .all
+    @State private var results: [GlobalSearchResult] = []
+    @State private var isRunning = false
+    @State private var selectedResult: GlobalSearchResult? = nil
+    @State private var expandedResultID: UUID? = nil
+    @Environment(\.dismiss) private var dismiss
+    private let noteStore = NoteStore.shared
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let result = selectedResult {
+                    NoteEditorView(
+                        relativePath: "\(result.subfolder)/\(result.filename)",
+                        title: result.displayName,
+                        onBack: { selectedResult = nil },
+                        searchQuery: searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    )
+                } else {
+                    VStack(spacing: 0) {
+                        searchBarRow
+                        scopePickerRow
+                        Divider()
+                        resultsBody
+                    }
+                }
+            }
+            .navigationTitle("Search")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .onChange(of: searchText) { _, _ in expandedResultID = nil; runSearch() }
+        .onChange(of: scope)      { _, _ in expandedResultID = nil; runSearch() }
+    }
+
+    // MARK: - Sub-views
+
+    private var searchBarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search notes, #tags…", text: $searchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+            if !searchText.isEmpty {
+                Button { searchText = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private var scopePickerRow: some View {
+        Picker("Scope", selection: $scope) {
+            ForEach(SearchScope.allCases) { s in
+                Text(s.rawValue).tag(s)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+    }
+
+    @ViewBuilder
+    private var resultsBody: some View {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isRunning {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if !trimmed.isEmpty && results.isEmpty {
+            ContentUnavailableView(
+                "No Results",
+                systemImage: "magnifyingglass",
+                description: Text("No notes match \"\(trimmed)\".")
+            )
+        } else {
+            List(results) { result in
+                resultRow(result)
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    // MARK: - Result row
+
+    @ViewBuilder
+    private func resultRow(_ result: GlobalSearchResult) -> some View {
+        let isExpanded = expandedResultID == result.id
+        VStack(alignment: .leading, spacing: 0) {
+            // Always-visible header row
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    expandedResultID = isExpanded ? nil : result.id
+                }
+            } label: {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(result.displayName)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text(result.scopeLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.75)))
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+
+            // Expanded: matching lines + Open button
+            if isExpanded {
+                let terms = searchTerms(from: searchText)
+                let lines = matchingLines(in: result.content, tokens: terms)
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(highlighted(line, tokens: terms))
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(.secondarySystemBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                    Button {
+                        selectedResult = result
+                    } label: {
+                        Text("Open note")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+                }
+                .padding(.bottom, 8)
+            }
+        }
+    }
+
+    // MARK: - Expand helpers
+
+    /// Lowercased token list (keeps # prefix for tag tokens).
+    private func searchTerms(from query: String) -> [String] {
+        query.components(separatedBy: .whitespaces).filter { !$0.isEmpty }.map { $0.lowercased() }
+    }
+
+    /// Returns all non-empty lines containing any token, capped at 6.
+    private func matchingLines(in content: String, tokens: [String]) -> [String] {
+        guard !tokens.isEmpty else { return [] }
+        let lines = content.components(separatedBy: "\n")
+        var matched: [String] = []
+        for line in lines {
+            let lower = line.lowercased()
+            if tokens.contains(where: { lower.contains($0) }) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty { matched.append(trimmed) }
+            }
+        }
+        return Array(matched.prefix(6))
+    }
+
+    /// Returns an `AttributedString` with every token occurrence highlighted in orange.
+    private func highlighted(_ text: String, tokens: [String]) -> AttributedString {
+        var attr = AttributedString(text)
+        for token in tokens where !token.isEmpty {
+            var start = attr.startIndex
+            while start < attr.endIndex {
+                guard let range = attr[start...].range(of: token, options: .caseInsensitive) else { break }
+                attr[range].backgroundColor = .orange.opacity(0.38)
+                start = range.upperBound
+            }
+        }
+        return attr
+    }
+
+    // MARK: - Search logic
+
+    private func runSearch() {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { results = []; return }
+        isRunning = true
+        Task {
+            let found = await performSearch(query: query, scope: scope)
+            await MainActor.run { results = found; isRunning = false }
+        }
+    }
+
+    private func performSearch(query: String, scope: SearchScope) async -> [GlobalSearchResult] {
+        let tokens      = query.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        let tagTokens   = tokens.filter {  $0.hasPrefix("#") }.map { String($0.dropFirst()).lowercased() }
+        let plainTokens = tokens.filter { !$0.hasPrefix("#") }.map { $0.lowercased() }
+
+        var found: [GlobalSearchResult] = []
+        for (label, path) in scope.subfolders {
+            let files = (try? noteStore.listFiles(in: path)) ?? []
+            for filename in files {
+                guard filename.hasSuffix(".md") else { continue }
+                let content      = (try? noteStore.readFile("\(path)/\(filename)")) ?? ""
+                let contentLower = content.lowercased()
+                let nameLower    = filename.lowercased().replacingOccurrences(of: ".md", with: "")
+
+                let tagsMatch  = tagTokens.allSatisfy   { contentLower.contains("#\($0)") }
+                let plainMatch = plainTokens.allSatisfy { nameLower.contains($0) || contentLower.contains($0) }
+                guard tagsMatch && plainMatch else { continue }
+
+                let allTerms = plainTokens + tagTokens.map { "#\($0)" }
+                found.append(GlobalSearchResult(
+                    filename: filename,
+                    subfolder: path,
+                    displayName: nameLower,
+                    scopeLabel: label,
+                    snippet: extractSnippet(from: content, tokens: allTerms),
+                    content: content
+                ))
+            }
+        }
+        return found
+    }
+
+    private func extractSnippet(from content: String, tokens: [String]) -> String {
+        let lines = content.components(separatedBy: "\n")
+        for token in tokens where !token.isEmpty {
+            if let line = lines.first(where: { $0.lowercased().contains(token) }) {
+                return String(line.trimmingCharacters(in: .whitespaces).prefix(120))
+            }
+        }
+        return String((lines.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "").prefix(120))
     }
 }
 
