@@ -27,6 +27,10 @@ class NoteStore {
     /// True when running in Simulator (iCloud unavailable) — uses app Documents folder instead.
     private(set) var isLocalMode: Bool = false
 
+    /// Watches the iCloud container for externally-delivered file changes (e.g. from Mac app).
+    private var metadataQuery: NSMetadataQuery?
+    private var metadataObserver: Any?
+
     init() {
 #if targetEnvironment(simulator)
         // Simulator never has iCloud — skip the blocking container lookup entirely
@@ -51,6 +55,7 @@ class NoteStore {
                     self.hasAccess = true
                     self.isLocalMode = false
                     self.containerPath = url.path
+                    self.startObservingICloudChanges()
                 }
             } else {
                 // iCloud unavailable — fall back to local Documents directory.
@@ -123,6 +128,59 @@ class NoteStore {
         • Tap ☐ toolbar button to insert a checkbox
         """
         try? sample.write(to: dailyFile, atomically: true, encoding: .utf8)
+    }
+
+    // MARK: - iCloud change observation
+    //
+    // NSMetadataQuery watches the ubiquitous Documents scope and fires when iCloud
+    // delivers a file written by another device (e.g. the Mac app). We translate
+    // those events into the same NotificationCenter posts the views already observe,
+    // so no view-layer changes are needed.
+
+    private func startObservingICloudChanges() {
+        let query = NSMetadataQuery()
+        query.notificationBatchingInterval = 1.0
+        query.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
+        // Watch all .md files in the container
+        query.predicate = NSPredicate(format: "%K LIKE '*.md'", NSMetadataItemFSNameKey)
+
+        metadataObserver = NotificationCenter.default.addObserver(
+            forName: .NSMetadataQueryDidUpdate,
+            object: query,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleMetadataUpdate(notification)
+        }
+
+        metadataQuery = query
+        query.start()
+    }
+
+    private func handleMetadataUpdate(_ notification: Notification) {
+        guard let query = notification.object as? NSMetadataQuery else { return }
+        query.disableUpdates()
+        defer { query.enableUpdates() }
+
+        let changed = (notification.userInfo?[NSMetadataQueryUpdateChangedItemsKey] as? [NSMetadataItem]) ?? []
+        let added   = (notification.userInfo?[NSMetadataQueryUpdateAddedItemsKey]   as? [NSMetadataItem]) ?? []
+
+        for item in changed + added {
+            guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String else { continue }
+            let filename = (path as NSString).lastPathComponent
+
+            if path.contains("/Calendar/") {
+                NotificationCenter.default.post(
+                    name: .noteStoreCalendarDidChange,
+                    object: "Calendar/\(filename)"
+                )
+            } else if path.contains("/Notes/Places/") {
+                let placeName = filename.replacingOccurrences(of: ".md", with: "")
+                NotificationCenter.default.post(
+                    name: .noteStorePlaceNoteDidChange,
+                    object: placeName
+                )
+            }
+        }
     }
 
     // MARK: - Daily notes

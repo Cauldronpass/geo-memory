@@ -55,6 +55,7 @@
 		63DCBCB42FDEF667009EBC1B /* Trace.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Trace.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		63FF43EB2FEE24B000EAC44A /* Trace.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Trace.entitlements; sourceTree = "<group>"; };
 		63FF43F82FF1E4C500EAC44A /* TraceShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TraceShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		63FF44122FF7655C00EAC44A /* TraceMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TraceMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -86,6 +87,18 @@
 			);
 			target = 63FF43F72FF1E4C500EAC44A /* TraceShareExtension */;
 		};
+		63FF441F2FF766E200EAC44A /* Exceptions for "Trace" folder in "TraceMac" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				GeofenceManager.swift,
+				GooglePlacesService.swift,
+				Models.swift,
+				NoteStore.swift,
+				NotionService.swift,
+				PlaceHelpers.swift,
+			);
+			target = 63FF44112FF7655C00EAC44A /* TraceMac */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -102,6 +115,7 @@
 			exceptions = (
 				638DB08E2FE252C700A0523F /* Exceptions for "Trace" folder in "Trace" target */,
 				63FF440D2FF1E9FB00EAC44A /* Exceptions for "Trace" folder in "TraceShareExtension" target */,
+				63FF441F2FF766E200EAC44A /* Exceptions for "Trace" folder in "TraceMac" target */,
 			);
 			path = Trace;
 			sourceTree = "<group>";
@@ -112,6 +126,11 @@
 				63FF44062FF1E4C500EAC44A /* Exceptions for "TraceShareExtension" folder in "TraceShareExtension" target */,
 			);
 			path = TraceShareExtension;
+			sourceTree = "<group>";
+		};
+		63FF44132FF7655C00EAC44A /* TraceMac */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TraceMac;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -141,6 +160,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		63FF440F2FF7655C00EAC44A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -162,6 +188,7 @@
 				63DCBCB62FDEF667009EBC1B /* Trace */,
 				638DB1CF2FE881FF00A0523F /* TraceWidget */,
 				63FF43F92FF1E4C500EAC44A /* TraceShareExtension */,
+				63FF44132FF7655C00EAC44A /* TraceMac */,
 				638DB1C12FE7852500A0523F /* Frameworks */,
 				63DCBCB52FDEF667009EBC1B /* Products */,
 			);
@@ -173,6 +200,7 @@
 				63DCBCB42FDEF667009EBC1B /* Trace.app */,
 				638DB1CA2FE881FF00A0523F /* TraceWidgetExtension.appex */,
 				63FF43F82FF1E4C500EAC44A /* TraceShareExtension.appex */,
+				63FF44122FF7655C00EAC44A /* TraceMac.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -249,6 +277,28 @@
 			productReference = 63FF43F82FF1E4C500EAC44A /* TraceShareExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		63FF44112FF7655C00EAC44A /* TraceMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 63FF441A2FF7655E00EAC44A /* Build configuration list for PBXNativeTarget "TraceMac" */;
+			buildPhases = (
+				63FF440E2FF7655C00EAC44A /* Sources */,
+				63FF440F2FF7655C00EAC44A /* Frameworks */,
+				63FF44102FF7655C00EAC44A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				63FF44132FF7655C00EAC44A /* TraceMac */,
+			);
+			name = TraceMac;
+			packageProductDependencies = (
+			);
+			productName = TraceMac;
+			productReference = 63FF44122FF7655C00EAC44A /* TraceMac.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -269,6 +319,9 @@
 						CreatedOnToolsVersion = 26.5;
 						LastSwiftMigration = 2650;
 					};
+					63FF44112FF7655C00EAC44A = {
+						CreatedOnToolsVersion = 26.5;
+					};
 				};
 			};
 			buildConfigurationList = 63DCBCAF2FDEF667009EBC1B /* Build configuration list for PBXProject "Trace" */;
@@ -288,6 +341,7 @@
 				63DCBCB32FDEF667009EBC1B /* Trace */,
 				638DB1C92FE881FF00A0523F /* TraceWidgetExtension */,
 				63FF43F72FF1E4C500EAC44A /* TraceShareExtension */,
+				63FF44112FF7655C00EAC44A /* TraceMac */,
 			);
 		};
 /* End PBXProject section */
@@ -308,6 +362,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		63FF43F62FF1E4C500EAC44A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		63FF44102FF7655C00EAC44A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -338,6 +399,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		63FF440E2FF7655C00EAC44A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -361,7 +429,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = TraceWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 76;
+				CURRENT_PROJECT_VERSION = 77;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceWidget/Info.plist;
@@ -392,7 +460,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = TraceWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 76;
+				CURRENT_PROJECT_VERSION = 77;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceWidget/Info.plist;
@@ -546,7 +614,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 76;
+				CURRENT_PROJECT_VERSION = 77;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -592,7 +660,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace/Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 76;
+				CURRENT_PROJECT_VERSION = 77;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -637,7 +705,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = TraceShareExtension/TraceShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 76;
+				CURRENT_PROJECT_VERSION = 77;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceShareExtension/Info.plist;
@@ -668,7 +736,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = TraceShareExtension/TraceShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 76;
+				CURRENT_PROJECT_VERSION = 77;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceShareExtension/Info.plist;
@@ -689,6 +757,76 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		63FF441B2FF7655E00EAC44A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = TraceMac/TraceMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Trace.TraceMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		63FF441C2FF7655E00EAC44A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = TraceMac/TraceMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Trace.TraceMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};
@@ -727,6 +865,15 @@
 			buildConfigurations = (
 				63FF44042FF1E4C500EAC44A /* Debug */,
 				63FF44052FF1E4C500EAC44A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		63FF441A2FF7655E00EAC44A /* Build configuration list for PBXNativeTarget "TraceMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				63FF441B2FF7655E00EAC44A /* Debug */,
+				63FF441C2FF7655E00EAC44A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
