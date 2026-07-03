@@ -25,6 +25,14 @@ struct TraceMacJournalView: View {
                 emptyMessage: "No project notes yet."
             )
             .environment(noteStore)
+        case .horizons:
+            TraceMacNoteListView(
+                subfolder: "Notes/Horizons",
+                sectionTitle: "Horizons",
+                newNotePrompt: "e.g. Week of July 7",
+                emptyMessage: "No horizon notes yet."
+            )
+            .environment(noteStore)
         case .places:
             TraceMacPlaceNoteView()
                 .environment(noteStore)
@@ -64,13 +72,15 @@ struct TraceMacDailyView: View {
                     .padding(10)
 
                 List(filtered, id: \.self, selection: $selectedFile) { filename in
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(displayName(for: filename))
-                            .font(.body)
-                        Text(filename.replacingOccurrences(of: ".md", with: ""))
+                            .font(.system(.callout, weight: .medium))
+                            .lineLimit(1)
+                        Text(relativeLabel(for: filename))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tertiary)
                     }
+                    .padding(.vertical, 3)
                     .tag(filename)
                 }
                 .listStyle(.sidebar)
@@ -142,11 +152,18 @@ struct TraceMacDailyView: View {
         guard let date = fmt.date(from: dateStr) else { return dateStr }
         let display = DateFormatter()
         display.dateFormat = "EEEE, MMM d"
-        let result = display.string(from: date)
-        // Mark today
-        if Calendar.current.isDateInToday(date) { return "Today — \(result)" }
-        if Calendar.current.isDateInYesterday(date) { return "Yesterday — \(result)" }
-        return result
+        return display.string(from: date)
+    }
+
+    private func relativeLabel(for filename: String) -> String {
+        let dateStr = filename.replacingOccurrences(of: ".md", with: "")
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        guard let date = fmt.date(from: dateStr) else { return "" }
+        if Calendar.current.isDateInToday(date)     { return "Today" }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        let days = Calendar.current.dateComponents([.day], from: date, to: Date()).day ?? 0
+        return "\(days) days ago"
     }
 }
 
@@ -189,6 +206,9 @@ struct TraceMacNoteListView: View {
                 } else {
                     List(filtered, id: \.self, selection: $selectedFile) { filename in
                         Text(filename.replacingOccurrences(of: ".md", with: ""))
+                            .font(.system(.callout, weight: .medium))
+                            .lineLimit(1)
+                            .padding(.vertical, 4)
                             .tag(filename)
                     }
                     .listStyle(.sidebar)
@@ -299,6 +319,9 @@ struct TraceMacPlaceNoteView: View {
                 } else {
                     List(filtered, id: \.self, selection: $selectedFile) { filename in
                         Text(filename.replacingOccurrences(of: ".md", with: ""))
+                            .font(.system(.callout, weight: .medium))
+                            .lineLimit(1)
+                            .padding(.vertical, 4)
                             .tag(filename)
                     }
                     .listStyle(.sidebar)
@@ -402,23 +425,27 @@ struct TraceMacNoteEditor: View {
         VStack(spacing: 0) {
             TextEditor(text: $content)
                 .font(.system(size: 15))
-                .lineSpacing(4)
-                .padding(16)
+                .lineSpacing(5)
+                .padding(.horizontal, 40)
+                .padding(.vertical, 24)
                 .onChange(of: content) { _, newValue in
                     scheduleSave(content: newValue)
                 }
 
             // Footer
+            Divider()
             HStack {
+                let wordCount = content.split(separator: " ").count
+                Text("\(wordCount) words")
+                    .font(.caption2).foregroundStyle(.tertiary)
                 Spacer()
                 if let saved = lastSaved {
                     Text("Saved \(saved.formatted(date: .omitted, time: .shortened))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .padding(.trailing, 12)
-                        .padding(.bottom, 6)
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
         }
         .task(id: relativePath) { await loadContent() }
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { note in

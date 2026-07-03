@@ -10,6 +10,7 @@ enum MacSection: String, CaseIterable, Identifiable {
     case daily     = "Daily"
     case projects  = "Projects"
     case places    = "Places"
+    case horizons  = "Horizons"
     case people    = "People"
     case documents = "Documents"
     case inbox     = "Inbox"
@@ -18,9 +19,10 @@ enum MacSection: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .daily:     return "calendar"
+        case .daily:     return "book.pages"
         case .projects:  return "folder"
         case .places:    return "mappin"
+        case .horizons:  return "calendar.badge.clock"
         case .people:    return "person.2"
         case .documents: return "doc.richtext"
         case .inbox:     return "tray"
@@ -32,10 +34,10 @@ enum MacSection: String, CaseIterable, Identifiable {
 
 struct TraceMacContentView: View {
 
-    @Environment(NoteStore.self)    private var noteStore
+    @Environment(NoteStore.self)     private var noteStore
     @Environment(NotionService.self) private var notionService
 
-    @State private var selectedSection: MacSection? = .daily
+    @Binding var selectedSection: MacSection?
 
     var body: some View {
         NavigationSplitView {
@@ -44,8 +46,7 @@ struct TraceMacContentView: View {
             detail
         }
         .task {
-            // Kick off Notion fetch as soon as the window appears.
-            async let p: () = notionService.fetchPlaces()
+            async let p: ()  = notionService.fetchPlaces()
             async let pe: () = notionService.fetchPeople()
             _ = await (p, pe)
         }
@@ -54,16 +55,30 @@ struct TraceMacContentView: View {
     // MARK: - Sidebar
 
     private var sidebar: some View {
-        List(MacSection.allCases, selection: $selectedSection) { section in
-            Label(section.rawValue, systemImage: section.icon)
-                .tag(section)
+        List(selection: $selectedSection) {
+            Section("Journal") {
+                ForEach([MacSection.daily, .projects, .places, .horizons]) { section in
+                    Label(section.rawValue, systemImage: section.icon)
+                        .tag(section)
+                }
+            }
+            Section("People") {
+                Label(MacSection.people.rawValue, systemImage: MacSection.people.icon)
+                    .tag(MacSection.people)
+            }
+            Section("Library") {
+                Label(MacSection.documents.rawValue, systemImage: MacSection.documents.icon)
+                    .tag(MacSection.documents)
+                Label(MacSection.inbox.rawValue, systemImage: MacSection.inbox.icon)
+                    .tag(MacSection.inbox)
+            }
         }
         .listStyle(.sidebar)
         .navigationTitle("Trace")
-        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
+        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
     }
 
-    // MARK: - Detail placeholder
+    // MARK: - Detail
 
     @ViewBuilder
     private var detail: some View {
@@ -80,40 +95,30 @@ struct TraceMacContentView: View {
             TraceMacJournalView(section: .places)
                 .environment(noteStore)
                 .environment(notionService)
+        case .horizons:
+            TraceMacJournalView(section: .horizons)
+                .environment(noteStore)
+                .environment(notionService)
         case .people:
-            placeholderView(icon: "person.2",    title: "People",       note: "Coming in M4")
+            TraceMacPeopleView()
+                .environment(notionService)
         case .documents:
-            placeholderView(icon: "doc.richtext", title: "Documents",   note: "Coming in M3")
+            TraceMacDocumentsView()
+                .environment(noteStore)
         case .inbox:
-            placeholderView(icon: "tray",        title: "Inbox",        note: "Coming in M6")
+            TraceMacInboxView()
+                .environment(noteStore)
         case nil:
-            placeholderView(icon: "sidebar.left", title: "Trace",       note: "Select a section")
-        }
-    }
-
-    private func placeholderView(icon: String, title: String, note: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 48, weight: .thin))
-                .foregroundStyle(.tertiary)
-            Text(title)
-                .font(.title2)
-                .fontWeight(.medium)
-            Text(note)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            // iCloud connection status
-            if !noteStore.hasAccess {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Connecting to iCloud…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 8)
+            VStack(spacing: 12) {
+                Image(systemName: "mappin.circle")
+                    .font(.system(size: 52, weight: .ultraLight))
+                    .foregroundStyle(.tertiary)
+                Text("Trace")
+                    .font(.title2).fontWeight(.medium)
+                Text("Select a section to get started")
+                    .font(.subheadline).foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

@@ -179,6 +179,11 @@ class NoteStore {
                     name: .noteStorePlaceNoteDidChange,
                     object: placeName
                 )
+            } else if path.contains("/Notes/Inbox/") {
+                NotificationCenter.default.post(
+                    name: .noteStoreInboxDidChange,
+                    object: "Notes/Inbox/\(filename)"
+                )
             }
         }
     }
@@ -397,6 +402,11 @@ class NoteStore {
                 NotificationCenter.default.post(name: .noteStoreCalendarDidChange, object: relativePath)
             }
         }
+        if relativePath.hasPrefix("Notes/Inbox/") {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .noteStoreInboxDidChange, object: relativePath)
+            }
+        }
     }
 
     /// Resolves a relative path (e.g. "Photos/2026/06/photo.jpg") to an absolute file URL.
@@ -443,6 +453,7 @@ extension Notification.Name {
     static let noteStoreCalendarDidChange = Notification.Name("com.david.trace.noteStoreCalendarDidChange")
     /// Posted after a Notes/Places/ file is written. `object` is the place name string.
     static let noteStorePlaceNoteDidChange = Notification.Name("com.david.trace.noteStorePlaceNoteDidChange")
+    static let noteStoreInboxDidChange = Notification.Name("com.david.trace.noteStoreInboxDidChange")
 }
 
 // MARK: - Error

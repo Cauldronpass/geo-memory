@@ -14,5 +14,9 @@
 	<array>
 		<string>iCloud.com.david.Trace</string>
 	</array>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.david.trace</string>
+	</array>
 </dict>
 </plist>
