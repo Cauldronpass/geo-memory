@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 
 // MARK: - Result model
 
@@ -49,7 +48,15 @@ struct OTZone: Decodable {
 enum OTScanService {
 
     private static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
-    private static let model    = "claude-haiku-4-5-20251001"
+    private static let model    = "claude-sonnet-5"
+
+    private static var apiKey: String {
+        #if os(macOS)
+        return UserDefaults(suiteName: "group.com.david.trace")?.string(forKey: "claude_api_key") ?? ""
+        #else
+        return Config.claudeAPIKey
+        #endif
+    }
     private static let prompt   = """
         This is a photo of an OrangeTheory Fitness class summary screen. \
         Extract the following fields and return JSON only, no explanation: \
@@ -62,16 +69,23 @@ enum OTScanService {
         If a field is not visible, use null.
         """
 
-    /// Sends `image` to Claude and returns extracted OT stats.
-    static func scan(image: UIImage) async throws -> OTScanResult {
-        guard let jpeg = image.jpegData(compressionQuality: 0.8) else {
-            throw OTScanError.imageEncodingFailed
-        }
-        let base64 = jpeg.base64EncodedString()
+    /// Detects image format from magic bytes. Anthropic supports jpeg, png, gif, webp.
+    private static func mediaType(for data: Data) -> String {
+        if data.prefix(2) == Data([0xFF, 0xD8])                              { return "image/jpeg" }
+        if data.prefix(4) == Data([0x89, 0x50, 0x4E, 0x47])                 { return "image/png"  }
+        if data.prefix(3) == Data([0x47, 0x49, 0x46])                       { return "image/gif"  }
+        if data.count > 12 && data[8..<12] == Data([0x57, 0x45, 0x42, 0x50]) { return "image/webp" }
+        return "image/jpeg"
+    }
+
+    /// Sends `imageData` to Claude and returns extracted OT stats.
+    /// Accepts any format Anthropic supports (JPEG, PNG, GIF, WebP) — format is auto-detected.
+    static func scan(imageData: Data) async throws -> OTScanResult {
+        let base64 = imageData.base64EncodedString()
 
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 512,
+            "max_tokens": 1024,
             "messages": [
                 [
                     "role": "user",
@@ -80,7 +94,7 @@ enum OTScanService {
                             "type": "image",
                             "source": [
                                 "type": "base64",
-                                "media_type": "image/jpeg",
+                                "media_type": mediaType(for: imageData),
                                 "data": base64
                             ]
                         ],
@@ -95,21 +109,26 @@ enum OTScanService {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.setValue(Config.claudeAPIKey, forHTTPHeaderField: "x-api-key")
+        req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01",        forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json",  forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: req)
 
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let detail = String(data: data, encoding: .utf8) ?? "no body"
-            throw OTScanError.apiError(detail)
+        let rawBody = String(data: data, encoding: .utf8) ?? "no body"
+
+        guard let http = response as? HTTPURLResponse else {
+            throw OTScanError.apiError("No HTTP response")
+        }
+        guard http.statusCode == 200 else {
+            throw OTScanError.apiError("HTTP \(http.statusCode): \(rawBody.prefix(300))")
         }
 
         // Unwrap Claude response envelope → text content
-        let envelope = try JSONDecoder().decode(ClaudeEnvelope.self, from: data)
-        guard let text = envelope.content.first(where: { $0.type == "text" })?.text else {
+        // Use lenient decode so blocks without a `text` field don't crash the decoder
+        guard let envelope = try? JSONDecoder().decode(ClaudeEnvelope.self, from: data),
+              let text = envelope.content.first(where: { $0.type == "text" })?.text else {
             throw OTScanError.noContent
         }
 
@@ -119,7 +138,12 @@ enum OTScanService {
             throw OTScanError.parseError("Response not UTF-8")
         }
 
-        return try JSONDecoder().decode(OTScanResult.self, from: jsonData)
+        do {
+            return try JSONDecoder().decode(OTScanResult.self, from: jsonData)
+        } catch {
+            // Surface the raw text so you can see what Claude actually returned
+            throw OTScanError.parseError("JSON decode failed. Raw: \(jsonString.prefix(400))")
+        }
     }
 
     // MARK: - Private helpers
@@ -143,7 +167,7 @@ private struct ClaudeEnvelope: Decodable {
 
 private struct ClaudeBlock: Decodable {
     let type: String
-    let text: String
+    let text: String?   // optional — non-text blocks (e.g. tool_use) have no text field
 }
 
 // MARK: - Errors

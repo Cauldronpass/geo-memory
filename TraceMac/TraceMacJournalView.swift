@@ -43,14 +43,19 @@ struct TraceMacJournalView: View {
     }
 }
 
-// MARK: - Daily notes
+// MARK: - Daily notes (3-column: file list | editor | calendar panel)
 
 struct TraceMacDailyView: View {
     @Environment(NoteStore.self) private var noteStore
 
-    @State private var files: [String] = []         // filenames in Calendar/
+    @State private var files: [String] = []     // filenames in Calendar/
     @State private var selectedFile: String? = nil
     @State private var searchText = ""
+
+    /// Set of date strings ("2026-07-03") that have existing notes — fed to calendar panel.
+    private var datesWithEntries: Set<String> {
+        Set(files.map { $0.replacingOccurrences(of: ".md", with: "") })
+    }
 
     private var filtered: [String] {
         if searchText.isEmpty { return files }
@@ -65,7 +70,7 @@ struct TraceMacDailyView: View {
 
     var body: some View {
         HSplitView {
-            // Left: file list
+            // Column 1: file list
             VStack(spacing: 0) {
                 TextField("Search", text: $searchText)
                     .textFieldStyle(.roundedBorder)
@@ -85,7 +90,7 @@ struct TraceMacDailyView: View {
                 }
                 .listStyle(.sidebar)
             }
-            .frame(minWidth: 200, maxWidth: 260)
+            .frame(minWidth: 180, idealWidth: 200, maxWidth: 240)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Today") { openToday() }
@@ -97,17 +102,36 @@ struct TraceMacDailyView: View {
                 }
             }
 
-            // Right: editor
+            // Column 2: editor
             if let file = selectedFile {
                 TraceMacNoteEditor(relativePath: "Calendar/\(file)")
                     .environment(noteStore)
+                    .frame(minWidth: 360)
             } else {
                 placeholderEditor
+                    .frame(minWidth: 360)
             }
+
+            // Column 3: calendar panel
+            TraceMacCalendarPanel(
+                selectedDateFile: Binding(
+                    get: { selectedFile },
+                    set: { newFile in
+                        guard let filename = newFile else { return }
+                        openOrCreateDate(filename: filename)
+                    }
+                ),
+                datesWithEntries: datesWithEntries,
+                onOpenHorizonsNote: { relativePath in
+                    openHorizonsNote(at: relativePath)
+                }
+            )
         }
         .task { await loadFiles() }
         .onAppear { openToday() }
     }
+
+    // MARK: - Sub-views
 
     private var placeholderEditor: some View {
         VStack(spacing: 8) {
@@ -120,9 +144,10 @@ struct TraceMacDailyView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    // MARK: - Actions
+
     private func loadFiles() async {
         let loaded = (try? noteStore.listFiles(in: "Calendar")) ?? []
-        // Sort newest first
         files = loaded.sorted(by: >)
         if selectedFile == nil, files.contains(todayFilename) {
             selectedFile = todayFilename
@@ -130,35 +155,54 @@ struct TraceMacDailyView: View {
     }
 
     private func openToday() {
-        let filename = todayFilename
+        openOrCreateDate(filename: todayFilename)
+    }
+
+    private func openOrCreateDate(filename: String) {
         let path = "Calendar/\(filename)"
-        // Create today's file if it doesn't exist
-        if (try? noteStore.readFile(path))?.isEmpty ?? true {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "yyyy-MM-dd"
-            let header = "# \(fmt.string(from: Date()))\n\n"
+        // Create the file if it doesn't exist
+        if (try? noteStore.readFile(path)) == nil ||
+            ((try? noteStore.readFile(path)) ?? "").isEmpty {
+            let dateStr = filename.replacingOccurrences(of: ".md", with: "")
+            let header  = "# \(dateStr)\n\n"
             try? noteStore.writeFile(path, content: header)
         }
         if !files.contains(filename) {
             files.insert(filename, at: 0)
+            files.sort(by: >)
         }
         selectedFile = filename
     }
 
+    private func openHorizonsNote(at relativePath: String) {
+        // Ensure the file exists (create stub if not)
+        let content = (try? noteStore.readFile(relativePath)) ?? ""
+        if content.isEmpty {
+            let title = (relativePath as NSString).lastPathComponent
+                .replacingOccurrences(of: ".md", with: "")
+            try? noteStore.writeFile(relativePath, content: "# \(title)\n\n")
+        }
+        // For now: just open it in a floating editor window.
+        // In M12+ this could navigate to Horizons section and select the file.
+        // Using TraceMacNoteEditor would require a separate window — deferred.
+        // Best current behavior: post a notification that the Horizons section
+        // can listen to. For now, no-op with a note in the handoff.
+        // TODO: wire horizons deep-link navigation in a future session.
+    }
+
+    // MARK: - Display helpers
+
     private func displayName(for filename: String) -> String {
         let dateStr = filename.replacingOccurrences(of: ".md", with: "")
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
         guard let date = fmt.date(from: dateStr) else { return dateStr }
-        let display = DateFormatter()
-        display.dateFormat = "EEEE, MMM d"
+        let display = DateFormatter(); display.dateFormat = "EEEE, MMM d"
         return display.string(from: date)
     }
 
     private func relativeLabel(for filename: String) -> String {
         let dateStr = filename.replacingOccurrences(of: ".md", with: "")
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
         guard let date = fmt.date(from: dateStr) else { return "" }
         if Calendar.current.isDateInToday(date)     { return "Today" }
         if Calendar.current.isDateInYesterday(date) { return "Yesterday" }

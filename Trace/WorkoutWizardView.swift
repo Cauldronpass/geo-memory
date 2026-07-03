@@ -482,12 +482,11 @@ struct WorkoutWizardView: View {
         defer { isScanning = false }
 
         do {
-            guard let data = try await item.loadTransferable(type: Data.self),
-                  let image = UIImage(data: data) else {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
                 scanError = "Could not load photo."
                 return
             }
-            let result = try await OTScanService.scan(image: image)
+            let result = try await OTScanService.scan(imageData: data)
             applyScanResult(result)
             scanComplete = true
         } catch {

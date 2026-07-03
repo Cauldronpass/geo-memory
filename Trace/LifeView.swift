@@ -29,7 +29,7 @@ struct LifeView: View {
                 switch section {
                 case .activity:  LifeCalendarView().environment(notion)
                 case .trips:     LifePlaceholderView(title: "Trips", icon: "airplane")
-                case .fitness:   FitnessView()
+                case .fitness:   FitnessView().environment(notion)
                 case .billiards: BilliardsView().environment(notion)
                 case .people:    LifePeopleView()
                 }

@@ -90,11 +90,13 @@
 		63FF441F2FF766E200EAC44A /* Exceptions for "Trace" folder in "TraceMac" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				BilliardsScanService.swift,
 				GeofenceManager.swift,
 				GooglePlacesService.swift,
 				Models.swift,
 				NoteStore.swift,
 				NotionService.swift,
+				OTScanService.swift,
 				PlaceHelpers.swift,
 			);
 			target = 63FF44112FF7655C00EAC44A /* TraceMac */;

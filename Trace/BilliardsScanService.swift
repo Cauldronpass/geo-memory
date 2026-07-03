@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 
 // MARK: - Result model
 
@@ -42,7 +41,15 @@ struct BilliardsScanResult: Decodable {
 enum BilliardsScanService {
 
     private static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
-    private static let model    = "claude-haiku-4-5-20251001"
+    private static let model    = "claude-sonnet-5"
+
+    private static var apiKey: String {
+        #if os(macOS)
+        return UserDefaults(suiteName: "group.com.david.trace")?.string(forKey: "claude_api_key") ?? ""
+        #else
+        return Config.claudeAPIKey
+        #endif
+    }
     private static let prompt   = """
         This is a photo of an APA (American Poolplayers Association) match scorecard or \
         screenshot from the APA app. Extract the following fields and return JSON only, no explanation. \
@@ -56,9 +63,12 @@ enum BilliardsScanService {
             X goes in player1_score / player2_score and Y goes in player1_needed / player2_needed. \
         Do NOT put the team points value (A) into the score field. \
         \
-        For 8-Ball: each player has a row of small boxes. Count the number of boxes that are \
-        filled/checked/marked — that is player score (games won). The games needed to win is \
-        printed separately as a number near the player's name or skill level. \
+        For 8-Ball — two possible formats: \
+        (1) Paper scorecard: count the number of boxes that are filled/checked/marked in the \
+            player's row — that is games won (score). Games needed is printed near their name or SL. \
+        (2) APA app screenshot: score is shown as "X/Y games" text directly (e.g. "4/4 games" \
+            means score=4, needed=4). Read X as score and Y as needed. \
+            Do NOT confuse the "N Points" team points label with the game score. \
         For 9-Ball: read the "X/Y Ball Points" fraction — X = score, Y = needed. \
         \
         Fields to extract: \
@@ -79,16 +89,23 @@ enum BilliardsScanService {
         If a field is not visible, use null.
         """
 
-    /// Sends `image` to Claude and returns extracted APA scorecard stats.
-    static func scan(image: UIImage) async throws -> BilliardsScanResult {
-        guard let jpeg = image.jpegData(compressionQuality: 0.8) else {
-            throw BilliardsScanError.imageEncodingFailed
-        }
-        let base64 = jpeg.base64EncodedString()
+    /// Detects image format from magic bytes. Anthropic supports jpeg, png, gif, webp.
+    private static func mediaType(for data: Data) -> String {
+        if data.prefix(2) == Data([0xFF, 0xD8])                               { return "image/jpeg" }
+        if data.prefix(4) == Data([0x89, 0x50, 0x4E, 0x47])                  { return "image/png"  }
+        if data.prefix(3) == Data([0x47, 0x49, 0x46])                        { return "image/gif"  }
+        if data.count > 12 && data[8..<12] == Data([0x57, 0x45, 0x42, 0x50]) { return "image/webp" }
+        return "image/jpeg"
+    }
+
+    /// Sends `imageData` to Claude and returns extracted APA scorecard stats.
+    /// Accepts any format Anthropic supports (JPEG, PNG, GIF, WebP) — format is auto-detected.
+    static func scan(imageData: Data) async throws -> BilliardsScanResult {
+        let base64 = imageData.base64EncodedString()
 
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 512,
+            "max_tokens": 1024,
             "messages": [
                 [
                     "role": "user",
@@ -97,7 +114,7 @@ enum BilliardsScanService {
                             "type": "image",
                             "source": [
                                 "type": "base64",
-                                "media_type": "image/jpeg",
+                                "media_type": mediaType(for: imageData),
                                 "data": base64
                             ]
                         ],
@@ -112,20 +129,24 @@ enum BilliardsScanService {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.setValue(Config.claudeAPIKey, forHTTPHeaderField: "x-api-key")
+        req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01",        forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json",  forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: req)
 
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let detail = String(data: data, encoding: .utf8) ?? "no body"
-            throw BilliardsScanError.apiError(detail)
+        let rawBody = String(data: data, encoding: .utf8) ?? "no body"
+
+        guard let http = response as? HTTPURLResponse else {
+            throw BilliardsScanError.apiError("No HTTP response")
+        }
+        guard http.statusCode == 200 else {
+            throw BilliardsScanError.apiError("HTTP \(http.statusCode): \(rawBody.prefix(300))")
         }
 
-        let envelope = try JSONDecoder().decode(BilliardsClaudeEnvelope.self, from: data)
-        guard let text = envelope.content.first(where: { $0.type == "text" })?.text else {
+        guard let envelope = try? JSONDecoder().decode(BilliardsClaudeEnvelope.self, from: data),
+              let text = envelope.content.first(where: { $0.type == "text" })?.text else {
             throw BilliardsScanError.noContent
         }
 
@@ -134,7 +155,11 @@ enum BilliardsScanService {
             throw BilliardsScanError.parseError("Response not UTF-8")
         }
 
-        return try JSONDecoder().decode(BilliardsScanResult.self, from: jsonData)
+        do {
+            return try JSONDecoder().decode(BilliardsScanResult.self, from: jsonData)
+        } catch {
+            throw BilliardsScanError.parseError("JSON decode failed. Raw: \(jsonString.prefix(400))")
+        }
     }
 
     // MARK: - Private helpers
@@ -157,7 +182,7 @@ private struct BilliardsClaudeEnvelope: Decodable {
 
 private struct BilliardsClaudeBlock: Decodable {
     let type: String
-    let text: String
+    let text: String?   // optional — non-text blocks have no text field
 }
 
 // MARK: - Errors

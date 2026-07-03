@@ -12,6 +12,8 @@ enum MacSection: String, CaseIterable, Identifiable {
     case places    = "Places"
     case horizons  = "Horizons"
     case people    = "People"
+    case billiards = "Billiards"
+    case fitness   = "Fitness"
     case documents = "Documents"
     case inbox     = "Inbox"
 
@@ -24,8 +26,24 @@ enum MacSection: String, CaseIterable, Identifiable {
         case .places:    return "mappin"
         case .horizons:  return "calendar.badge.clock"
         case .people:    return "person.2"
+        case .billiards: return "circle.grid.3x3"
+        case .fitness:   return "figure.run"
         case .documents: return "doc.richtext"
         case .inbox:     return "tray"
+        }
+    }
+
+    var iconColor: Color {
+        switch self {
+        case .daily:     return .traceOrange
+        case .projects:  return .blue
+        case .places:    return .green
+        case .horizons:  return .purple
+        case .people:    return .indigo
+        case .billiards: return Color(hex: "2563EB")
+        case .fitness:   return Color(hex: "16A34A")
+        case .documents: return Color(hex: "8B5CF6")
+        case .inbox:     return .gray
         }
     }
 }
@@ -48,7 +66,9 @@ struct TraceMacContentView: View {
         .task {
             async let p: ()  = notionService.fetchPlaces()
             async let pe: () = notionService.fetchPeople()
-            _ = await (p, pe)
+            async let b: ()  = notionService.fetchBilliardsSessions()
+            async let w: ()  = notionService.fetchWorkouts()
+            _ = await (p, pe, b, w)
         }
     }
 
@@ -58,24 +78,33 @@ struct TraceMacContentView: View {
         List(selection: $selectedSection) {
             Section("Journal") {
                 ForEach([MacSection.daily, .projects, .places, .horizons]) { section in
-                    Label(section.rawValue, systemImage: section.icon)
-                        .tag(section)
+                    coloredLabel(section).tag(section)
                 }
             }
             Section("People") {
-                Label(MacSection.people.rawValue, systemImage: MacSection.people.icon)
-                    .tag(MacSection.people)
+                coloredLabel(.people).tag(MacSection.people)
+            }
+            Section("Activity") {
+                coloredLabel(.billiards).tag(MacSection.billiards)
+                coloredLabel(.fitness).tag(MacSection.fitness)
             }
             Section("Library") {
-                Label(MacSection.documents.rawValue, systemImage: MacSection.documents.icon)
-                    .tag(MacSection.documents)
-                Label(MacSection.inbox.rawValue, systemImage: MacSection.inbox.icon)
-                    .tag(MacSection.inbox)
+                coloredLabel(.documents).tag(MacSection.documents)
+                coloredLabel(.inbox).tag(MacSection.inbox)
             }
         }
         .listStyle(.sidebar)
         .navigationTitle("Trace")
         .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
+    }
+
+    private func coloredLabel(_ section: MacSection) -> some View {
+        Label {
+            Text(section.rawValue)
+        } icon: {
+            Image(systemName: section.icon)
+                .foregroundStyle(section.iconColor)
+        }
     }
 
     // MARK: - Detail
@@ -101,6 +130,12 @@ struct TraceMacContentView: View {
                 .environment(notionService)
         case .people:
             TraceMacPeopleView()
+                .environment(notionService)
+        case .billiards:
+            TraceMacBilliardsView()
+                .environment(notionService)
+        case .fitness:
+            TraceMacFitnessView()
                 .environment(notionService)
         case .documents:
             TraceMacDocumentsView()
