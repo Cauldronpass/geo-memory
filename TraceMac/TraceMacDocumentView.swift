@@ -18,6 +18,7 @@ struct TraceMacDocumentsView: View {
     @State private var searchText = ""
     @State private var activeTag: String? = nil
     @State private var categoryFilter = "All"
+    @State private var listCollapsed = false
 
     private let categories = ["All", "Inbox", "Project", "Place", "Other"]
 
@@ -43,9 +44,10 @@ struct TraceMacDocumentsView: View {
     }
 
     var body: some View {
-        HSplitView {
-            leftColumn
-            rightColumn
+        HStack(spacing: 0) {
+            if !listCollapsed { leftColumn }
+            CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
+            rightColumn.frame(maxWidth: .infinity)
         }
         .task {
             if store == nil {
@@ -142,9 +144,11 @@ struct TraceMacDocumentsView: View {
                         .tag(doc)
                 }
                 .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+                .background(Color(nsColor: .windowBackgroundColor))
             }
         }
-        .frame(minWidth: 220, maxWidth: 300)
+        .frame(width: 240)
     }
 
     private func tagChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {

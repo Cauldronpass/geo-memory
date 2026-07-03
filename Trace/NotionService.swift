@@ -1002,6 +1002,31 @@ class NotionService {
         personDetailCache.removeValue(forKey: id)
     }
 
+    func deletePerson(id: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["archived": true])
+        people.removeAll { $0.id == id }
+        personDetailCache.removeValue(forKey: id)
+    }
+
+    func updateInteraction(id: String, summary: String, type: String, date: Date, notes: String) async throws {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withFullDate]
+        var props: [String: Any] = [
+            "Summary": ["title": [["text": ["content": summary.isEmpty ? type.capitalized : summary]]]],
+            "Date":    ["date": ["start": iso.string(from: date)]],
+            "Type":    ["select": ["name": type]]
+        ]
+        let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        props["Notes"] = trimmedNotes.isEmpty
+            ? ["rich_text": []]
+            : ["rich_text": [["text": ["content": String(trimmedNotes.prefix(2000))]]]]
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
+    }
+
+    func deleteInteraction(id: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["archived": true])
+    }
+
     // MARK: - Day Notes — computed index
 
     /// Keyed by "YYYY-M-D" (same format as CalendarGridView.dateKey).

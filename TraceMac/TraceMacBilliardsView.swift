@@ -14,6 +14,7 @@ struct TraceMacBilliardsView: View {
     @State private var showNewSheet = false
     @State private var searchText   = ""
     @State private var isLoading    = false
+    @State private var listCollapsed = false
 
     private var sessions: [BilliardsSession] {
         let sorted = notion.billiardsSessions.sorted { $0.date > $1.date }
@@ -31,36 +32,31 @@ struct TraceMacBilliardsView: View {
     }
 
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             // Left column — session list
-            VStack(spacing: 0) {
-                searchBar
-                Divider()
-                if notion.billiardsSessions.isEmpty && isLoading {
-                    ProgressView("Loading sessions…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if sessions.isEmpty {
-                    emptyState
-                } else {
-                    List(sessions, id: \.id, selection: $selectedID) { session in
-                        BilliardsSessionRow(session: session)
-                            .tag(session.id)
+            if !listCollapsed {
+                VStack(spacing: 0) {
+                    searchBar
+                    Divider()
+                    if notion.billiardsSessions.isEmpty && isLoading {
+                        ProgressView("Loading sessions…")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if sessions.isEmpty {
+                        emptyState
+                    } else {
+                        List(sessions, id: \.id, selection: $selectedID) { session in
+                            BilliardsSessionRow(session: session)
+                                .tag(session.id)
+                        }
+                        .listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
+                        .background(Color(nsColor: .windowBackgroundColor))
                     }
-                    .listStyle(.sidebar)
                 }
+                .frame(width: 260)
             }
-            .frame(minWidth: 240, idealWidth: 280, maxWidth: 320)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showNewSheet = true
-                    } label: {
-                        Label("New Session", systemImage: "plus")
-                    }
-                    .help("Log a billiards session (⌘N)")
-                    .keyboardShortcut("n", modifiers: .command)
-                }
-            }
+
+            CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
 
             // Right column — detail / edit panel
             Group {
@@ -72,6 +68,15 @@ struct TraceMacBilliardsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showNewSheet = true } label: {
+                    Label("New Session", systemImage: "plus")
+                }
+                .help("Log a billiards session (⌘N)")
+                .keyboardShortcut("n", modifiers: .command)
+            }
         }
         .task {
             isLoading = true

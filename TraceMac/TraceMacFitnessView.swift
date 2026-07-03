@@ -18,6 +18,7 @@ struct TraceMacFitnessView: View {
     @State private var searchText    = ""
     @State private var typeFilter:   String? = nil
     @State private var isLoading     = false
+    @State private var listCollapsed = false
 
     private let typeOrder = ["OrangeTheory", "Run", "Bike", "Hike", "Lift"]
 
@@ -57,39 +58,32 @@ struct TraceMacFitnessView: View {
     }
 
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             // Left column — list
-            VStack(spacing: 0) {
-                searchBar
-                if !availableTypes.isEmpty {
-                    typeFilterBar
-                }
-                Divider()
-                if sortedWorkouts.isEmpty && isLoading {
-                    ProgressView("Loading workouts…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if filteredWorkouts.isEmpty {
-                    emptyState
-                } else {
-                    List(filteredWorkouts, id: \.id, selection: $selectedID) { workout in
-                        WorkoutRow(workout: workout)
-                            .tag(workout.id)
+            if !listCollapsed {
+                VStack(spacing: 0) {
+                    searchBar
+                    if !availableTypes.isEmpty { typeFilterBar }
+                    Divider()
+                    if sortedWorkouts.isEmpty && isLoading {
+                        ProgressView("Loading workouts…")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if filteredWorkouts.isEmpty {
+                        emptyState
+                    } else {
+                        List(filteredWorkouts, id: \.id, selection: $selectedID) { workout in
+                            WorkoutRow(workout: workout)
+                                .tag(workout.id)
+                        }
+                        .listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
+                        .background(Color(nsColor: .windowBackgroundColor))
                     }
-                    .listStyle(.sidebar)
                 }
+                .frame(width: 260)
             }
-            .frame(minWidth: 240, idealWidth: 280, maxWidth: 320)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showNewSheet = true
-                    } label: {
-                        Label("Log Workout", systemImage: "plus")
-                    }
-                    .help("Log a workout (⌘N)")
-                    .keyboardShortcut("n", modifiers: .command)
-                }
-            }
+
+            CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
 
             // Right column — detail
             Group {
@@ -102,6 +96,15 @@ struct TraceMacFitnessView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showNewSheet = true } label: {
+                    Label("Log Workout", systemImage: "plus")
+                }
+                .help("Log a workout (⌘N)")
+                .keyboardShortcut("n", modifiers: .command)
+            }
         }
         .task {
             isLoading = true

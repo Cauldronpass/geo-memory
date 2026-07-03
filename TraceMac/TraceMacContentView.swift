@@ -56,12 +56,24 @@ struct TraceMacContentView: View {
     @Environment(NotionService.self) private var notionService
 
     @Binding var selectedSection: MacSection?
+    @State private var pendingHorizonsFile: String? = nil
 
     var body: some View {
-        NavigationSplitView {
+        // Plain HStack instead of NavigationSplitView — eliminates NSSplitView resize
+        // arrows entirely. Sidebar is fixed at 200px; detail fills the rest.
+        HStack(spacing: 0) {
             sidebar
-        } detail: {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
             detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openHorizonsFile)) { note in
+            if let filename = note.userInfo?["filename"] as? String {
+                selectedSection = .horizons
+                pendingHorizonsFile = filename
+            }
         }
         .task {
             async let p: ()  = notionService.fetchPlaces()
@@ -94,16 +106,19 @@ struct TraceMacContentView: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("Trace")
-        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
+        .frame(width: 200)
     }
 
     private func coloredLabel(_ section: MacSection) -> some View {
         Label {
             Text(section.rawValue)
         } icon: {
-            Image(systemName: section.icon)
-                .foregroundStyle(section.iconColor)
+            if section == .billiards {
+                BilliardsRackIcon(color: section.iconColor)
+            } else {
+                Image(systemName: section.icon)
+                    .foregroundStyle(section.iconColor)
+            }
         }
     }
 
@@ -125,7 +140,7 @@ struct TraceMacContentView: View {
                 .environment(noteStore)
                 .environment(notionService)
         case .horizons:
-            TraceMacJournalView(section: .horizons)
+            TraceMacJournalView(section: .horizons, deepLinkFile: $pendingHorizonsFile)
                 .environment(noteStore)
                 .environment(notionService)
         case .people:
@@ -155,5 +170,41 @@ struct TraceMacContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+// MARK: - Custom billiards rack icon (triangle of circles)
+
+struct BilliardsRackIcon: View {
+    var color: Color = .purple
+
+    var body: some View {
+        Canvas { ctx, size in
+            let d: CGFloat = 3.6          // ball diameter
+            let hStep: CGFloat = 4.8      // horizontal center-to-center
+            let vStep: CGFloat = hStep * 0.866  // equilateral triangle row height
+
+            // Rack: 3 rows — 1 ball (top), 2 balls, 3 balls (bottom)
+            let rows: [(count: Int, indent: CGFloat)] = [
+                (1, hStep),        // top
+                (2, hStep / 2),    // middle
+                (3, 0),            // bottom
+            ]
+
+            let rackWidth  = 2 * hStep + d
+            let rackHeight = 2 * vStep + d
+            let ox = (size.width  - rackWidth)  / 2
+            let oy = (size.height - rackHeight) / 2
+
+            for (rowIdx, row) in rows.enumerated() {
+                let y = oy + CGFloat(rowIdx) * vStep
+                for col in 0..<row.count {
+                    let x = ox + row.indent + CGFloat(col) * hStep
+                    let rect = CGRect(x: x, y: y, width: d, height: d)
+                    ctx.fill(Path(ellipseIn: rect), with: .color(color))
+                }
+            }
+        }
+        .frame(width: 18, height: 18)
     }
 }

@@ -40,7 +40,7 @@ struct TraceMacCalendarPanel: View {
 
     private var monthNotePath: String {
         let df = DateFormatter()
-        df.dateFormat = "MMMM yyyy"
+        df.dateFormat = "yyyy-MM"
         return "Notes/Horizons/\(df.string(from: displayMonth)).md"
     }
 
@@ -106,7 +106,7 @@ struct TraceMacCalendarPanel: View {
 
             Spacer(minLength: 0)
         }
-        .frame(minWidth: 220, idealWidth: 240, maxWidth: 260)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
@@ -201,7 +201,7 @@ struct TraceMacCalendarPanel: View {
         return Group {
             if let wn = weekNum, let yr = year {
                 Button {
-                    let path = "Notes/Horizons/Week \(wn) - \(yr).md"
+                    let path = "Notes/Horizons/\(String(format: "%d-W%02d", yr, wn)).md"
                     onOpenHorizonsNote(path)
                 } label: {
                     Text("\(wn)")

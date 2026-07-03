@@ -13,6 +13,7 @@ struct TraceMacInboxView: View {
     @State private var searchText = ""
     @State private var deleteCandidate: InboxFile? = nil
     @State private var showDeleteConfirm = false
+    @State private var listCollapsed = false
 
     private var filtered: [InboxFile] {
         guard !searchText.isEmpty else { return files }
@@ -23,86 +24,93 @@ struct TraceMacInboxView: View {
     }
 
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             // Left: file list
-            VStack(spacing: 0) {
-                TextField("Search inbox", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(10)
-
-                Divider()
-
-                if files.isEmpty {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "tray")
-                            .font(.system(size: 36, weight: .thin))
-                            .foregroundStyle(.tertiary)
-                        Text("Your inbox is clear.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                } else {
-                    List(filtered, selection: $selectedFile) { file in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(file.title)
-                                .font(.body)
-                                .lineLimit(1)
-                            if let date = file.created {
-                                Text(date, style: .date)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+            if !listCollapsed {
+                VStack(spacing: 0) {
+                    TextField("Search inbox", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(10)
+                    Divider()
+                    if files.isEmpty {
+                        Spacer()
+                        VStack(spacing: 8) {
+                            Image(systemName: "tray")
+                                .font(.system(size: 36, weight: .thin))
+                                .foregroundStyle(.tertiary)
+                            Text("Your inbox is clear.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    } else {
+                        List(filtered, selection: $selectedFile) { file in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(file.title)
+                                    .font(.body)
+                                    .lineLimit(1)
+                                if let date = file.created {
+                                    Text(date, style: .date)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                            .tag(file)
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    deleteCandidate = file
+                                    showDeleteConfirm = true
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                         }
-                        .padding(.vertical, 2)
-                        .tag(file)
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                deleteCandidate = file
-                                showDeleteConfirm = true
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
+                        .listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
+                        .background(Color(nsColor: .windowBackgroundColor))
                     }
-                    .listStyle(.sidebar)
                 }
+                .frame(width: 200)
             }
-            .frame(minWidth: 200, maxWidth: 280)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { createNote() } label: {
-                        Label("New", systemImage: "plus")
-                    }
-                    .keyboardShortcut("n", modifiers: .command)
-                }
-                if let file = selectedFile {
-                    ToolbarItem {
-                        Button(role: .destructive) {
-                            deleteCandidate = file
-                            showDeleteConfirm = true
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                        .keyboardShortcut(.delete, modifiers: .command)
-                    }
-                }
-            }
+
+            CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
 
             // Right: editor
-            if let file = selectedFile {
-                TraceMacNoteEditor(relativePath: "Notes/Inbox/\(file.filename)")
-                    .environment(noteStore)
-            } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "tray")
-                        .font(.system(size: 40, weight: .thin))
-                        .foregroundStyle(.tertiary)
-                    Text("Select an item")
-                        .foregroundStyle(.secondary)
+            Group {
+                if let file = selectedFile {
+                    TraceMacNoteEditor(relativePath: "Notes/Inbox/\(file.filename)")
+                        .environment(noteStore)
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "tray")
+                            .font(.system(size: 40, weight: .thin))
+                            .foregroundStyle(.tertiary)
+                        Text("Select an item")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { createNote() } label: {
+                    Label("New", systemImage: "plus")
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            if let file = selectedFile {
+                ToolbarItem {
+                    Button(role: .destructive) {
+                        deleteCandidate = file
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                }
             }
         }
         .task { await loadFiles() }

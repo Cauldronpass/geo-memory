@@ -17,6 +17,8 @@ struct TraceMacApp: App {
                 .environment(notionService)
                 .frame(minWidth: 900, minHeight: 600)
         }
+        .defaultSize(width: 1200, height: 750)
+        .windowResizability(.contentMinSize)
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
         .commands {

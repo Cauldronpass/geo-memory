@@ -4,10 +4,17 @@
 
 import SwiftUI
 
+// MARK: - Notification for Horizons deep-link from calendar panel
+
+extension Notification.Name {
+    static let openHorizonsFile = Notification.Name("trace.openHorizonsFile")
+}
+
 // MARK: - Journal root (dispatches to the right tab)
 
 struct TraceMacJournalView: View {
     let section: MacSection  // .daily, .projects, or .places
+    var deepLinkFile: Binding<String?>? = nil   // set by TraceMacContentView for .horizons deep links
 
     @Environment(NoteStore.self)     private var noteStore
     @Environment(NotionService.self) private var notionService
@@ -30,7 +37,8 @@ struct TraceMacJournalView: View {
                 subfolder: "Notes/Horizons",
                 sectionTitle: "Horizons",
                 newNotePrompt: "e.g. Week of July 7",
-                emptyMessage: "No horizon notes yet."
+                emptyMessage: "No horizon notes yet.",
+                deepLinkFile: deepLinkFile
             )
             .environment(noteStore)
         case .places:
@@ -51,6 +59,10 @@ struct TraceMacDailyView: View {
     @State private var files: [String] = []     // filenames in Calendar/
     @State private var selectedFile: String? = nil
     @State private var searchText = ""
+    @State private var deleteCandidate: String? = nil
+    @State private var showDeleteConfirm = false
+    @State private var fileListCollapsed = false
+    @State private var calendarCollapsed = false
 
     /// Set of date strings ("2026-07-03") that have existing notes — fed to calendar panel.
     private var datesWithEntries: Set<String> {
@@ -68,64 +80,125 @@ struct TraceMacDailyView: View {
         return "\(fmt.string(from: Date())).md"
     }
 
-    var body: some View {
-        HSplitView {
-            // Column 1: file list
-            VStack(spacing: 0) {
-                TextField("Search", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(10)
+    private let calendarGray = Color(nsColor: .controlBackgroundColor)
 
-                List(filtered, id: \.self, selection: $selectedFile) { filename in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(displayName(for: filename))
-                            .font(.system(.callout, weight: .medium))
-                            .lineLimit(1)
-                        Text(relativeLabel(for: filename))
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+    var body: some View {
+        HStack(spacing: 0) {
+
+            // Column 1: file list — white background so it's visually distinct from the
+            // gray nav sidebar to its left. The 1px line in the handle separates it from
+            // the white editor to its right.
+            if !fileListCollapsed {
+                VStack(spacing: 0) {
+                    TextField("Search", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(10)
+                    List(filtered, id: \.self, selection: $selectedFile) { filename in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(displayName(for: filename))
+                                .font(.system(.callout, weight: .medium))
+                                .lineLimit(1)
+                            Text(relativeLabel(for: filename))
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 3)
+                        .tag(filename)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                deleteCandidate = filename
+                                showDeleteConfirm = true
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                     }
-                    .padding(.vertical, 3)
-                    .tag(filename)
+                    .listStyle(.sidebar)
+                    .scrollContentBackground(.hidden)
+                    .background(Color(nsColor: .windowBackgroundColor))
                 }
-                .listStyle(.sidebar)
+                .frame(width: 200)
             }
-            .frame(minWidth: 180, idealWidth: 200, maxWidth: 240)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Today") { openToday() }
-                }
-                ToolbarItem {
-                    Button { openToday() } label: {
-                        Label("New", systemImage: "plus")
-                    }
-                }
-            }
+
+            // Handle: white | 1px line | white — one separator between same-color panels
+            CollapseHandle(
+                isCollapsed: $fileListCollapsed,
+                collapsesRight: false,
+                showLine: true,
+                panelColor: .clear
+            )
 
             // Column 2: editor
-            if let file = selectedFile {
-                TraceMacNoteEditor(relativePath: "Calendar/\(file)")
-                    .environment(noteStore)
-                    .frame(minWidth: 360)
-            } else {
-                placeholderEditor
-                    .frame(minWidth: 360)
-            }
-
-            // Column 3: calendar panel
-            TraceMacCalendarPanel(
-                selectedDateFile: Binding(
-                    get: { selectedFile },
-                    set: { newFile in
-                        guard let filename = newFile else { return }
-                        openOrCreateDate(filename: filename)
-                    }
-                ),
-                datesWithEntries: datesWithEntries,
-                onOpenHorizonsNote: { relativePath in
-                    openHorizonsNote(at: relativePath)
+            Group {
+                if let file = selectedFile {
+                    TraceMacNoteEditor(relativePath: "Calendar/\(file)")
+                        .environment(noteStore)
+                } else {
+                    placeholderEditor
                 }
+            }
+            .frame(maxWidth: .infinity)
+
+            // Calendar collapse handle.
+            // panelColor: calendarGray merges the 12px zone into the calendar panel visually.
+            // The separator is pinned to the LEADING edge (white/gray boundary) — one line only.
+            CollapseHandle(
+                isCollapsed: $calendarCollapsed,
+                collapsesRight: true,
+                showLine: true,
+                lineWidth: 3,
+                panelColor: calendarGray
             )
+
+            // Column 3: calendar — same gray as the handle so they merge visually
+            if !calendarCollapsed {
+                TraceMacCalendarPanel(
+                    selectedDateFile: Binding(
+                        get: { selectedFile },
+                        set: { newFile in
+                            guard let filename = newFile else { return }
+                            openOrCreateDate(filename: filename)
+                        }
+                    ),
+                    datesWithEntries: datesWithEntries,
+                    onOpenHorizonsNote: { relativePath in
+                        openHorizonsNote(at: relativePath)
+                    }
+                )
+                .frame(width: 240)
+            }
+        }
+        // Toolbar lives here so it persists even when file list is collapsed
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Today") { openToday() }
+            }
+            ToolbarItem {
+                Button { openToday() } label: {
+                    Label("New", systemImage: "plus")
+                }
+            }
+            if let file = selectedFile {
+                ToolbarItem {
+                    Button(role: .destructive) {
+                        deleteCandidate = file
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                }
+            }
+        }
+        .confirmationDialog(
+            "Delete \"\(deleteCandidate.map { displayName(for: $0) } ?? "")\"?",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let f = deleteCandidate { deleteNote(f) }
+            }
+            Button("Cancel", role: .cancel) { }
         }
         .task { await loadFiles() }
         .onAppear { openToday() }
@@ -175,19 +248,28 @@ struct TraceMacDailyView: View {
     }
 
     private func openHorizonsNote(at relativePath: String) {
-        // Ensure the file exists (create stub if not)
+        // Create stub if the file doesn't exist yet
         let content = (try? noteStore.readFile(relativePath)) ?? ""
         if content.isEmpty {
             let title = (relativePath as NSString).lastPathComponent
                 .replacingOccurrences(of: ".md", with: "")
             try? noteStore.writeFile(relativePath, content: "# \(title)\n\n")
         }
-        // For now: just open it in a floating editor window.
-        // In M12+ this could navigate to Horizons section and select the file.
-        // Using TraceMacNoteEditor would require a separate window — deferred.
-        // Best current behavior: post a notification that the Horizons section
-        // can listen to. For now, no-op with a note in the handoff.
-        // TODO: wire horizons deep-link navigation in a future session.
+        // Post notification — TraceMacContentView switches to .horizons
+        // and passes the filename down to TraceMacNoteListView for selection.
+        let filename = (relativePath as NSString).lastPathComponent
+        NotificationCenter.default.post(
+            name: .openHorizonsFile,
+            object: nil,
+            userInfo: ["filename": filename]
+        )
+    }
+
+    private func deleteNote(_ filename: String) {
+        try? noteStore.deleteFile("Calendar/\(filename)")
+        files.removeAll { $0 == filename }
+        if selectedFile == filename { selectedFile = nil }
+        deleteCandidate = nil
     }
 
     // MARK: - Display helpers
@@ -211,6 +293,73 @@ struct TraceMacDailyView: View {
     }
 }
 
+// MARK: - Hover-reveal collapse handle
+
+/// A 12-wide hit zone containing a 1px separator and a hover-reveal circle button.
+/// collapsesRight = true  → manages the panel to the RIGHT (e.g. calendar)
+/// collapsesRight = false → manages the panel to the LEFT  (e.g. file list)
+/// 12px HStack element with a hover-reveal circle collapse button.
+///
+/// showLine:    draw a separator at the LEADING edge of the zone (the panel boundary)
+/// lineWidth:   separator width in points (default 1)
+/// panelColor:  fill the zone with this color — use calendarGray on the calendar side
+///              so the 12px zone merges into the 240px calendar panel visually
+struct CollapseHandle: View {
+    @Binding var isCollapsed: Bool
+    let collapsesRight: Bool
+    var showLine: Bool = true
+    var lineWidth: CGFloat = 1
+    var panelColor: Color = .clear
+
+    @State private var isHovering = false
+
+    private var icon: String {
+        collapsesRight
+            ? (isCollapsed ? "chevron.left"  : "chevron.right")
+            : (isCollapsed ? "chevron.right" : "chevron.left")
+    }
+
+    var body: some View {
+        ZStack {
+            panelColor  // fills the zone — blends handle into the adjacent shaded panel
+
+            if showLine {
+                // Separator pinned to the LEADING edge of the zone so it sits exactly
+                // at the panel boundary (white editor → separator → gray calendar).
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor))
+                        .frame(width: lineWidth)
+                    Spacer(minLength: 0)
+                }
+            }
+
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                    isCollapsed.toggle()
+                }
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(Color(nsColor: .windowBackgroundColor))
+                        .overlay(Circle().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.14), radius: 2, x: 0, y: 1)
+                        .frame(width: 18, height: 18)
+                    Image(systemName: icon)
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .opacity(isHovering ? 1 : 0)
+            .animation(.easeInOut(duration: 0.12), value: isHovering)
+        }
+        .frame(width: 12)
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+    }
+}
+
 // MARK: - Generic note list (Projects, custom subfolders)
 
 struct TraceMacNoteListView: View {
@@ -218,6 +367,7 @@ struct TraceMacNoteListView: View {
     let sectionTitle: String
     let newNotePrompt: String
     let emptyMessage: String
+    var deepLinkFile: Binding<String?>? = nil   // non-nil triggers selection + clears itself
 
     @Environment(NoteStore.self) private var noteStore
 
@@ -226,6 +376,9 @@ struct TraceMacNoteListView: View {
     @State private var searchText = ""
     @State private var showingNewNote = false
     @State private var newNoteName = ""
+    @State private var deleteCandidate: String? = nil
+    @State private var showDeleteConfirm = false
+    @State private var fileListCollapsed = false
 
     private var filtered: [String] {
         if searchText.isEmpty { return files }
@@ -233,59 +386,115 @@ struct TraceMacNoteListView: View {
     }
 
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             // Left: file list
-            VStack(spacing: 0) {
-                TextField("Search", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(10)
+            if !fileListCollapsed {
+                VStack(spacing: 0) {
+                    TextField("Search", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(10)
 
-                if files.isEmpty {
-                    Spacer()
-                    Text(emptyMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding()
-                    Spacer()
-                } else {
-                    List(filtered, id: \.self, selection: $selectedFile) { filename in
-                        Text(filename.replacingOccurrences(of: ".md", with: ""))
-                            .font(.system(.callout, weight: .medium))
-                            .lineLimit(1)
-                            .padding(.vertical, 4)
-                            .tag(filename)
+                    if files.isEmpty {
+                        Spacer()
+                        Text(emptyMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding()
+                        Spacer()
+                    } else {
+                        List(filtered, id: \.self, selection: $selectedFile) { filename in
+                            Text(filename.replacingOccurrences(of: ".md", with: ""))
+                                .font(.system(.callout, weight: .medium))
+                                .lineLimit(1)
+                                .padding(.vertical, 4)
+                                .tag(filename)
+                                .contextMenu {
+                                    Button(role: .destructive) {
+                                        deleteCandidate = filename
+                                        showDeleteConfirm = true
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                        }
+                        .listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
+                        .background(Color(nsColor: .windowBackgroundColor))
                     }
-                    .listStyle(.sidebar)
                 }
+                .frame(width: 200)
             }
-            .frame(minWidth: 200, maxWidth: 260)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showingNewNote = true } label: {
-                        Label("New Note", systemImage: "plus")
-                    }
-                }
-            }
-            .sheet(isPresented: $showingNewNote) {
-                newNoteSheet
-            }
+
+            CollapseHandle(
+                isCollapsed: $fileListCollapsed,
+                collapsesRight: false,
+                showLine: true,
+                panelColor: .clear
+            )
 
             // Right: editor
-            if let file = selectedFile {
-                TraceMacNoteEditor(relativePath: "\(subfolder)/\(file)")
-                    .environment(noteStore)
-            } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "doc.text")
-                        .font(.system(size: 40, weight: .thin))
-                        .foregroundStyle(.tertiary)
-                    Text("Select a note or create one")
-                        .foregroundStyle(.secondary)
+            Group {
+                if let file = selectedFile {
+                    TraceMacNoteEditor(relativePath: "\(subfolder)/\(file)")
+                        .environment(noteStore)
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 40, weight: .thin))
+                            .foregroundStyle(.tertiary)
+                        Text("Select a note or create one")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showingNewNote = true } label: {
+                    Label("New Note", systemImage: "plus")
+                }
+            }
+            if let file = selectedFile {
+                ToolbarItem {
+                    Button(role: .destructive) {
+                        deleteCandidate = file
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                }
             }
         }
+        .confirmationDialog(
+            "Delete \"\(deleteCandidate?.replacingOccurrences(of: ".md", with: "") ?? "")\"?",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let f = deleteCandidate { deleteNote(f) }
+            }
+            Button("Cancel", role: .cancel) { }
+        }
+        .sheet(isPresented: $showingNewNote) {
+            newNoteSheet
+        }
         .task { await loadFiles() }
+        .task(id: deepLinkFile?.wrappedValue) {
+            guard let filename = deepLinkFile?.wrappedValue else { return }
+            if files.isEmpty {
+                let loaded = (try? noteStore.listFiles(in: subfolder)) ?? []
+                files = loaded.sorted()
+            }
+            if !files.contains(filename) {
+                files.append(filename)
+                files.sort()
+            }
+            selectedFile = filename
+            deepLinkFile?.wrappedValue = nil
+        }
     }
 
     private var newNoteSheet: some View {
@@ -314,6 +523,13 @@ struct TraceMacNoteListView: View {
         files = loaded.sorted()
     }
 
+    private func deleteNote(_ filename: String) {
+        try? noteStore.deleteFile("\(subfolder)/\(filename)")
+        files.removeAll { $0 == filename }
+        if selectedFile == filename { selectedFile = nil }
+        deleteCandidate = nil
+    }
+
     private func createNote() {
         let name = newNoteName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
@@ -340,6 +556,9 @@ struct TraceMacPlaceNoteView: View {
     @State private var selectedFile: String? = nil
     @State private var searchText = ""
     @State private var showingPlacePicker = false
+    @State private var deleteCandidate: String? = nil
+    @State private var showDeleteConfirm = false
+    @State private var fileListCollapsed = false
 
     private var filtered: [String] {
         if searchText.isEmpty { return files }
@@ -347,56 +566,99 @@ struct TraceMacPlaceNoteView: View {
     }
 
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             // Left: file list
-            VStack(spacing: 0) {
-                TextField("Search", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(10)
+            if !fileListCollapsed {
+                VStack(spacing: 0) {
+                    TextField("Search", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(10)
 
-                if files.isEmpty {
-                    Spacer()
-                    Text("No place notes yet.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                } else {
-                    List(filtered, id: \.self, selection: $selectedFile) { filename in
-                        Text(filename.replacingOccurrences(of: ".md", with: ""))
-                            .font(.system(.callout, weight: .medium))
-                            .lineLimit(1)
-                            .padding(.vertical, 4)
-                            .tag(filename)
+                    if files.isEmpty {
+                        Spacer()
+                        Text("No place notes yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    } else {
+                        List(filtered, id: \.self, selection: $selectedFile) { filename in
+                            Text(filename.replacingOccurrences(of: ".md", with: ""))
+                                .font(.system(.callout, weight: .medium))
+                                .lineLimit(1)
+                                .padding(.vertical, 4)
+                                .tag(filename)
+                                .contextMenu {
+                                    Button(role: .destructive) {
+                                        deleteCandidate = filename
+                                        showDeleteConfirm = true
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                        }
+                        .listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
+                        .background(Color(nsColor: .windowBackgroundColor))
                     }
-                    .listStyle(.sidebar)
                 }
+                .frame(width: 200)
             }
-            .frame(minWidth: 200, maxWidth: 260)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showingPlacePicker = true } label: {
-                        Label("New Place Note", systemImage: "plus")
-                    }
-                }
-            }
-            .sheet(isPresented: $showingPlacePicker) {
-                placePickerSheet
-            }
+
+            CollapseHandle(
+                isCollapsed: $fileListCollapsed,
+                collapsesRight: false,
+                showLine: true,
+                panelColor: .clear
+            )
 
             // Right: editor
-            if let file = selectedFile {
-                TraceMacNoteEditor(relativePath: "Notes/Places/\(file)")
-                    .environment(noteStore)
-            } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "mappin")
-                        .font(.system(size: 40, weight: .thin))
-                        .foregroundStyle(.tertiary)
-                    Text("Select a place note or create one")
-                        .foregroundStyle(.secondary)
+            Group {
+                if let file = selectedFile {
+                    TraceMacNoteEditor(relativePath: "Notes/Places/\(file)")
+                        .environment(noteStore)
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "mappin")
+                            .font(.system(size: 40, weight: .thin))
+                            .foregroundStyle(.tertiary)
+                        Text("Select a place note or create one")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showingPlacePicker = true } label: {
+                    Label("New Place Note", systemImage: "plus")
+                }
+            }
+            if let file = selectedFile {
+                ToolbarItem {
+                    Button(role: .destructive) {
+                        deleteCandidate = file
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                }
+            }
+        }
+        .confirmationDialog(
+            "Delete \"\(deleteCandidate?.replacingOccurrences(of: ".md", with: "") ?? "")\"?",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let f = deleteCandidate { deletePlaceNote(f) }
+            }
+            Button("Cancel", role: .cancel) { }
+        }
+        .sheet(isPresented: $showingPlacePicker) {
+            placePickerSheet
         }
         .task { await loadFiles() }
     }
@@ -439,6 +701,13 @@ struct TraceMacPlaceNoteView: View {
         files = loaded.sorted()
     }
 
+    private func deletePlaceNote(_ filename: String) {
+        try? noteStore.deleteFile("Notes/Places/\(filename)")
+        files.removeAll { $0 == filename }
+        if selectedFile == filename { selectedFile = nil }
+        deleteCandidate = nil
+    }
+
     private func createPlaceNote(for placeName: String) {
         let filename = "\(placeName).md"
         let path = "Notes/Places/\(filename)"
@@ -451,6 +720,66 @@ struct TraceMacPlaceNoteView: View {
         }
         selectedFile = filename
         showingPlacePicker = false
+    }
+}
+
+// MARK: - AppKit text editor (no scrollbar)
+
+/// NSViewRepresentable wrapper around NSTextView that explicitly disables the vertical
+/// scroller. SwiftUI's TextEditor ignores .scrollIndicators(.hidden) on macOS when the
+/// system is configured to "Always show scroll bars."
+private struct MacTextEditor: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        let tv = scrollView.documentView as! NSTextView
+
+        let paraStyle = NSMutableParagraphStyle()
+        paraStyle.lineSpacing = 5
+
+        tv.isEditable        = true
+        tv.isRichText        = false
+        tv.allowsUndo        = true
+        tv.font              = .systemFont(ofSize: 15)
+        tv.textColor         = .labelColor
+        tv.backgroundColor   = .clear
+        tv.textContainerInset = NSSize(width: 40, height: 24)
+        tv.defaultParagraphStyle = paraStyle
+        tv.typingAttributes = [
+            .font: NSFont.systemFont(ofSize: 15),
+            .paragraphStyle: paraStyle,
+            .foregroundColor: NSColor.labelColor
+        ]
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.delegate = context.coordinator
+
+        scrollView.hasVerticalScroller   = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers    = false
+        scrollView.backgroundColor       = .clear
+        scrollView.drawsBackground       = false
+
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        let tv = scrollView.documentView as! NSTextView
+        guard tv.string != text else { return }
+        let ranges = tv.selectedRanges
+        tv.string = text
+        tv.selectedRanges = ranges
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        func textDidChange(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            if self.text.wrappedValue != tv.string { self.text.wrappedValue = tv.string }
+        }
     }
 }
 
@@ -467,11 +796,7 @@ struct TraceMacNoteEditor: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TextEditor(text: $content)
-                .font(.system(size: 15))
-                .lineSpacing(5)
-                .padding(.horizontal, 40)
-                .padding(.vertical, 24)
+            MacTextEditor(text: $content)
                 .onChange(of: content) { _, newValue in
                     scheduleSave(content: newValue)
                 }
