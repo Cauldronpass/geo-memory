@@ -296,12 +296,36 @@ struct CheckInView: View {
             await notionService.fetchPlaces()
             await notionService.fetchVisits()
             withAnimation { showSuccess = true }
+            logToWeeklyNote(place: place)
             try? await Task.sleep(for: .seconds(1.2))
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    private func logToWeeklyNote(place: Place) {
+        let timeFmt = DateFormatter()
+        timeFmt.locale = Locale(identifier: "en_US_POSIX")
+        timeFmt.timeZone = TimeZone.current
+        timeFmt.dateFormat = "h:mm a"
+        let timeStr = timeFmt.string(from: checkInDate)
+
+        var parts: [String] = ["\(timeStr) — [[\(place.name)]]"]
+
+        let companions = personIDs.compactMap { id in
+            notionService.people.first { $0.id == id }?.name
+        }
+        if !companions.isEmpty {
+            parts.append("with \(companions.joined(separator: ", "))")
+        }
+
+        if let r = rating, r > 0 {
+            parts.append(String(repeating: "★", count: r))
+        }
+
+        try? NoteStore.shared.appendToWeeklyCheckInLog(parts.joined(separator: " "), date: checkInDate)
     }
 }
 

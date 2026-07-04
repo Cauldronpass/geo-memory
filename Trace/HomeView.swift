@@ -66,7 +66,6 @@ struct HomeView: View {
     @State private var monthNoteContent: String = ""
     @State private var showNotesView: Bool = false
     @State private var showingMoveDailyNote: Bool = false
-    @State private var moveDailyNoteDate: Date = Date()
     @State private var showingVisitsView: Bool = false
     @State private var showingQuickAppend: Bool = false
     @State private var showingWeekNote: Bool = false
@@ -643,7 +642,6 @@ struct HomeView: View {
                 // Move-to-tomorrow only relevant on the daily card
                 if notePageIndex == 0 {
                     Button {
-                        moveDailyNoteDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
                         showingMoveDailyNote = true
                     } label: {
                         Image(systemName: "arrow.right.square")
@@ -727,12 +725,8 @@ struct HomeView: View {
             }
         }
         .sheet(isPresented: $showingMoveDailyNote) {
-            MoveDailyNoteSheet(targetDate: $moveDailyNoteDate) {
-                Task {
-                    try? NoteStore.shared.moveDailyNote(from: Date(), to: moveDailyNoteDate)
-                    notePlanContent = (try? NoteStore.shared.readDailyNote()) ?? ""
-                    showingMoveDailyNote = false
-                }
+            MoveDailyContentSheet(sourceDate: Date(), sourceContent: notePlanContent) { newContent in
+                notePlanContent = newContent
             }
         }
     }

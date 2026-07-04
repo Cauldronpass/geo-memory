@@ -6,6 +6,29 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+// MARK: - Photo helpers (mirrors PersonDetailView.swift — keep in sync)
+
+/// Returns a filesystem-safe filename stem from a person's name.
+private func sanitizedPersonFilename(_ name: String) -> String {
+    let bad = CharacterSet(charactersIn: "/\\:*?\"<>|")
+    return name.components(separatedBy: bad).joined(separator: "_")
+}
+
+/// Returns the canonical NoteStore path for a person's photo if the file exists locally;
+/// otherwise returns the fallback URL (a legacy Notion external URL).
+/// Checks .jpg, .jpeg, .png, and .heic so the extension of the source file doesn't matter.
+private func resolvePersonPhoto(name: String, fallbackURL: String?) -> String? {
+    let stem = sanitizedPersonFilename(name)
+    for ext in ["jpg", "jpeg", "png", "heic"] {
+        let path = "Photos/People/\(stem).\(ext)"
+        if let url = NoteStore.shared.resolvedURL(for: path),
+           FileManager.default.fileExists(atPath: url.path) {
+            return path
+        }
+    }
+    return fallbackURL
+}
+
 // MARK: - Root
 
 struct TraceMacPeopleView: View {
@@ -25,6 +48,7 @@ struct TraceMacPeopleView: View {
     @State private var listCollapsed = false
     @State private var isUploadingPhoto = false
     @State private var avatarHovering = false
+    @State private var showArchived = false
 
     enum PeopleTab: String, CaseIterable {
         case info     = "Info"
@@ -34,7 +58,9 @@ struct TraceMacPeopleView: View {
     }
 
     private var filteredPeople: [Person] {
-        let sorted = notionService.people.sorted { $0.name < $1.name }
+        let sorted = notionService.people
+            .filter { showArchived ? $0.isArchived : !$0.isArchived }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         guard !searchText.isEmpty else { return sorted }
         return sorted.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
@@ -95,13 +121,27 @@ struct TraceMacPeopleView: View {
 
     private var peopleList: some View {
         VStack(spacing: 0) {
-            TextField("Search", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .padding(10)
+            HStack(spacing: 6) {
+                TextField("Search", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                Button {
+                    showArchived.toggle()
+                    selectedID = nil
+                } label: {
+                    Image(systemName: showArchived ? "archivebox.fill" : "archivebox")
+                        .foregroundStyle(showArchived ? Color.accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(showArchived ? "Showing archived — click to return" : "Show archived")
+            }
+            .padding(10)
+            if showArchived {
+                Text("Archived").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.bottom, 4)
+            }
             Divider()
             if filteredPeople.isEmpty {
                 Spacer()
-                Text(notionService.people.isEmpty ? "No people yet." : "No matches.")
+                Text(showArchived ? "No archived people." : notionService.people.isEmpty ? "No people yet." : "No matches.")
                     .font(.callout).foregroundStyle(.secondary)
                 Spacer()
             } else {
@@ -202,10 +242,20 @@ struct TraceMacPeopleView: View {
             } label: {
                 ZStack {
                     Group {
-                        if let url = d.photoURL, let resolved = resolvedPhotoURL(url) {
-                            AsyncImage(url: resolved) { phase in
-                                if let img = phase.image { img.resizable().scaledToFill() }
-                                else { initialsCircle(d.name, size: 72) }
+                        if let urlString = d.photoURL {
+                            if urlString.hasPrefix("Photos/"),
+                               let fileURL = NoteStore.shared.resolvedURL(for: urlString),
+                               let nsImg = NSImage(contentsOf: fileURL) {
+                                Image(nsImage: nsImg)
+                                    .resizable()
+                                    .scaledToFill()
+                            } else if let webURL = URL(string: urlString) {
+                                AsyncImage(url: webURL) { phase in
+                                    if let img = phase.image { img.resizable().scaledToFill() }
+                                    else { initialsCircle(d.name, size: 72) }
+                                }
+                            } else {
+                                initialsCircle(d.name, size: 72)
                             }
                         } else {
                             initialsCircle(d.name, size: 72)
@@ -297,13 +347,14 @@ struct TraceMacPeopleView: View {
 
     @ViewBuilder
     private func strengthBadge(_ strength: String) -> some View {
-        let color: Color = strength == "active" ? .green : strength == "dormant" ? .orange : .secondary
-        Text(strength.capitalized)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(color.opacity(0.12))
-            .foregroundStyle(color)
-            .clipShape(Capsule())
+        if strength == "archived" {
+            Text("Archived")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(Color.secondary.opacity(0.12))
+                .foregroundStyle(Color.secondary)
+                .clipShape(Capsule())
+        }
     }
 
     @ViewBuilder
@@ -346,19 +397,16 @@ struct TraceMacPeopleView: View {
         isUploadingPhoto = true
         Task {
             defer { isUploadingPhoto = false }
+            // Delete the old NoteStore photo before writing the new one.
+            if let oldPath = d.photoURL, oldPath.hasPrefix("Photos/") {
+                try? NoteStore.shared.deleteFile(oldPath)
+            }
             let ext = fileURL.pathExtension.lowercased()
-            let filename = "person-\(d.id)-\(Int(Date().timeIntervalSince1970)).\(ext.isEmpty ? "jpg" : ext)"
-            guard let relativePath = try? NoteStore.shared.writePhoto(data, category: "People", filename: filename) else { return }
-            try? await notionService.enrichPerson(
-                id: d.id,
-                relationship: nil,
-                relationshipStrength: nil,
-                companyContext: nil,
-                city: nil,
-                howWeMet: nil,
-                tags: d.tags,       // preserve existing tags — they're always written
-                photoURL: relativePath
-            )
+            let safeName = sanitizedPersonFilename(d.name)
+            let filename = "\(safeName).\(ext.isEmpty ? "jpg" : ext)"
+            // Write to NoteStore (iCloud). resolvePersonPhoto picks this up at next load.
+            // Photo is NOT written to Notion — NoteStore is the sole photo store.
+            guard (try? NoteStore.shared.writePhoto(data, category: "People", filename: filename)) != nil else { return }
             await reloadDetail(id: d.id)
         }
     }
@@ -371,14 +419,22 @@ struct TraceMacPeopleView: View {
         interactions = []
         async let d = notionService.fetchPersonDetail(id: id)
         async let i = notionService.fetchInteractions(personID: id)
-        detail = try? await d
+        var fetched = try? await d
+        if let f = fetched {
+            fetched?.photoURL = resolvePersonPhoto(name: f.name, fallbackURL: f.photoURL)
+        }
+        detail = fetched
         interactions = (try? await i) ?? []
         isLoading = false
     }
 
     private func reloadDetail(id: String) async {
         notionService.personDetailCache.removeValue(forKey: id)
-        detail = try? await notionService.fetchPersonDetail(id: id)
+        var d = try? await notionService.fetchPersonDetail(id: id)
+        if let fetched = d {
+            d?.photoURL = resolvePersonPhoto(name: fetched.name, fallbackURL: fetched.photoURL)
+        }
+        detail = d
     }
 
     private func deletePerson(_ d: PersonDetail) {
@@ -397,20 +453,17 @@ struct MacInfoTab: View {
     let notionService: NotionService
     let onDeletePerson: () -> Void
 
-    @State private var selectedStrength: String
-    @State private var strengthLoaded = false
+    @State private var isArchived: Bool
     @State private var editPhone: String
     @State private var editEmail: String
     @State private var editAddress: String
     @State private var isSavingContact = false
 
-    private let strengthOptions = ["new", "active", "dormant"]
-
     init(detail: PersonDetail, notionService: NotionService, onDeletePerson: @escaping () -> Void) {
         self.detail = detail
         self.notionService = notionService
         self.onDeletePerson = onDeletePerson
-        _selectedStrength = State(initialValue: detail.relationshipStrength ?? "new")
+        _isArchived  = State(initialValue: detail.isArchived)
         _editPhone   = State(initialValue: detail.phone   ?? "")
         _editEmail   = State(initialValue: detail.email   ?? "")
         _editAddress = State(initialValue: detail.address ?? "")
@@ -422,10 +475,7 @@ struct MacInfoTab: View {
 
                 // Identity fields
                 infoSection {
-                    if let rel = detail.relationship {
-                        infoRow("Relationship", value: rel.capitalized)
-                    }
-                    infoRowPicker
+                    infoRow("Relationship", value: detail.relationship.map { $0.capitalized } ?? "None")
                     if let co = detail.companyContext, !co.isEmpty { infoRow("Company", value: co) }
                     if let city = detail.city, !city.isEmpty { infoRow("City", value: city) }
                     if let bday = detail.birthday {
@@ -487,47 +537,40 @@ struct MacInfoTab: View {
                 // Delete
                 HStack {
                     Spacer()
+                    // Archive toggle icon
+                    Button {
+                        let newVal = !isArchived
+                        isArchived = newVal
+                        Task {
+                            try? await notionService.updatePersonStatus(
+                                id: detail.id,
+                                relationshipStrength: newVal ? "archived" : ""
+                            )
+                        }
+                    } label: {
+                        Image(systemName: isArchived ? "archivebox.fill" : "archivebox")
+                            .font(.system(size: 13))
+                            .foregroundStyle(isArchived ? Color.accentColor : Color.secondary.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                    .help(isArchived ? "Unarchive person" : "Archive person")
+
+                    Divider()
+                        .frame(height: 14)
+                        .padding(.horizontal, 8)
+
                     Button(role: .destructive, action: onDeletePerson) {
                         Image(systemName: "trash")
                             .font(.system(size: 13))
                             .foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.plain)
-                    .help("Delete person (archives in Notion)")
+                    .help("Delete person")
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
             }
         }
-        .onAppear {
-            Task.detached {
-                try? await Task.sleep(for: .milliseconds(300))
-                await MainActor.run { strengthLoaded = true }
-            }
-        }
-    }
-
-    // MARK: - Status picker row
-
-    private var infoRowPicker: some View {
-        HStack {
-            Text("Status")
-                .foregroundStyle(.secondary)
-                .font(.callout)
-            Spacer()
-            Picker("", selection: $selectedStrength) {
-                ForEach(strengthOptions, id: \.self) { s in
-                    Text(s.capitalized).tag(s)
-                }
-            }
-            .pickerStyle(.menu)
-            .onChange(of: selectedStrength) { _, newVal in
-                guard strengthLoaded else { return }
-                Task { try? await notionService.updatePersonStatus(id: detail.id, relationshipStrength: newVal) }
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
     }
 
     // MARK: - Place section
@@ -1069,7 +1112,7 @@ struct AddPersonSheet: View {
     @State private var isSaving = false
     @State private var error: String? = nil
 
-    private let relationships = ["Friend", "Family", "Colleague", "Acquaintance", "Client", "Mentor", "Pool Team", "Other"]
+    private let relationships = ["Friend", "Family", "Colleague", "Acquaintance", "Client", "Mentor", "Business", "Pool Team", "Other"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1145,12 +1188,12 @@ struct MacPersonEditSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    private let relationships = ["colleague", "friend", "family", "neighbor", "client", "mentor", "Pool Team", "other"]
-    private let strengthOptions = ["new", "active", "dormant"]
+    private let relationships = ["colleague", "friend", "family", "neighbor", "client", "mentor", "business", "Pool Team", "other"]
     private let tagOptions = ["Family", "Business", "Friend", "Network", "Work", "Pool", "Reference"]
 
+    @State private var name = ""
     @State private var relationship = ""
-    @State private var relationshipStrength = "new"
+    @State private var isArchived = false
     @State private var phone = ""
     @State private var email = ""
     @State private var companyContext = ""
@@ -1180,14 +1223,15 @@ struct MacPersonEditSheet: View {
             Divider()
 
             Form {
+                Section("Name") {
+                    TextField("Full name", text: $name)
+                }
                 Section("Identity") {
                     Picker("Category", selection: $relationship) {
                         Text("None").tag("")
                         ForEach(relationships, id: \.self) { r in Text(r.capitalized).tag(r) }
                     }
-                    Picker("Status", selection: $relationshipStrength) {
-                        ForEach(strengthOptions, id: \.self) { s in Text(s.capitalized).tag(s) }
-                    }
+                    Toggle("Archived", isOn: $isArchived)
                     TextField("Company / Context", text: $companyContext)
                     TextField("City", text: $city)
                     TextField("How We Met", text: $howWeMet)
@@ -1253,8 +1297,9 @@ struct MacPersonEditSheet: View {
     }
 
     private func prefill() {
+        name = detail.name
         relationship = detail.relationship ?? ""
-        relationshipStrength = detail.relationshipStrength ?? "new"
+        isArchived = detail.isArchived
         phone = detail.phone ?? ""
         email = detail.email ?? ""
         companyContext = detail.companyContext ?? ""
@@ -1267,11 +1312,13 @@ struct MacPersonEditSheet: View {
 
     private func save() async {
         isSaving = true
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
         do {
             try await notionService.enrichPerson(
                 id: personID,
+                name: trimmedName == detail.name ? nil : trimmedName,
                 relationship: relationship,
-                relationshipStrength: relationshipStrength,
+                relationshipStrength: isArchived ? "archived" : "",
                 companyContext: companyContext,
                 city: city,
                 howWeMet: howWeMet,

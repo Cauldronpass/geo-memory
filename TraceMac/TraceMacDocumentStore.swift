@@ -18,6 +18,7 @@ struct TraceMacDocument: Identifiable, Hashable {
     var tags: [String]           // from sidecar frontmatter
     var created: Date?           // from sidecar or filesystem
     var linkedNote: String?      // from sidecar `linked_note` field
+    var people: [String]         // from sidecar `people` field
 
     var isPDF: Bool   { fileExtension == "pdf" }
     var isImage: Bool { ["jpg","jpeg","png","heic","gif","webp"].contains(fileExtension) }
@@ -110,7 +111,8 @@ class TraceMacDocumentStore {
                     title: sidecar?.title ?? derivedTitle,
                     tags: sidecar?.tags ?? [],
                     created: sidecar?.created ?? fsDate,
-                    linkedNote: sidecar?.linkedNote
+                    linkedNote: sidecar?.linkedNote,
+                    people: sidecar?.people ?? []
                 )
                 result.append(doc)
             }
@@ -129,17 +131,34 @@ class TraceMacDocumentStore {
 
     // MARK: - Sidecar write
 
-    func saveSidecar(for doc: TraceMacDocument, title: String, tags: [String], linkedNote: String?) throws {
+    func saveSidecar(for doc: TraceMacDocument, title: String, tags: [String], linkedNote: String?, people: [String]) throws {
         let tagLine = tags.isEmpty ? "[]" : "[" + tags.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.joined(separator: ", ") + "]"
+        let peopleLine = people.isEmpty ? "[]" : "[" + people.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: ", ") + "]"
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
         let dateStr = doc.created.map { fmt.string(from: $0) } ?? fmt.string(from: Date())
         var content = "---\ntitle: \(title)\ntags: \(tagLine)\ncreated: \(dateStr)\n"
-        if let note = linkedNote, !note.isEmpty {
-            content += "linked_note: \(note)\n"
-        }
+        if let note = linkedNote, !note.isEmpty { content += "linked_note: \(note)\n" }
+        if !people.isEmpty { content += "people: \(peopleLine)\n" }
         content += "---\n"
         try noteStore.writeFile(doc.sidecarPath, content: content)
+    }
+
+    /// Moves a document (and its sidecar) to a different category subfolder.
+    func moveDocument(_ doc: TraceMacDocument, to newCategory: String) throws {
+        let newRelativePath = "Documents/\(newCategory)/\(doc.filename)"
+        let newSidecarPath: String = {
+            let base = newRelativePath.hasSuffix(".\(doc.fileExtension)")
+                ? String(newRelativePath.dropLast(doc.fileExtension.count + 1))
+                : newRelativePath
+            return "\(base).md"
+        }()
+        // Move the binary document file using the iCloud-safe mover
+        try noteStore.moveItem(from: doc.relativePath, to: newRelativePath)
+        // Move sidecar if it exists (text file — moveFile is fine)
+        if let sidecar = try? noteStore.readFile(doc.sidecarPath), !sidecar.isEmpty {
+            try? noteStore.moveFile(from: doc.sidecarPath, to: newSidecarPath)
+        }
     }
 
     // MARK: - Import
@@ -177,6 +196,7 @@ class TraceMacDocumentStore {
         var tags: [String]
         var created: Date?
         var linkedNote: String?
+        var people: [String]
     }
 
     private func parseSidecar(at relativePath: String) -> SidecarData? {
@@ -196,7 +216,7 @@ class TraceMacDocumentStore {
         }
         guard !yamlLines.isEmpty else { return nil }
 
-        var data = SidecarData(tags: [])
+        var data = SidecarData(tags: [], people: [])
         let dateFmt = DateFormatter()
         dateFmt.dateFormat = "yyyy-MM-dd"
 
@@ -218,6 +238,13 @@ class TraceMacDocumentStore {
                 data.created = dateFmt.date(from: value)
             case "linked_note":
                 data.linkedNote = value
+            case "people":
+                let stripped = value
+                    .trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                data.people = stripped.components(separatedBy: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
             default:
                 break
             }

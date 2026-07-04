@@ -277,6 +277,75 @@ class NoteStore {
         return try readFile("Calendar/\(formatter.string(from: date)).md")
     }
 
+    // MARK: - Weekly check-in log
+
+    /// Appends a check-in entry to the current week's Horizons note under a "Check-in Log:" section.
+    /// Creates the note with a bullet-list template if it doesn't exist yet.
+    /// New days get their own bold sub-header; multiple check-ins on the same day stack beneath it.
+    func appendToWeeklyCheckInLog(_ line: String, date: Date = Date()) throws {
+        guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
+
+        // ISO week path: Notes/Horizons/YYYY-Www.md
+        var isoCal = Calendar(identifier: .iso8601)
+        isoCal.timeZone = TimeZone.current
+        let week = isoCal.component(.weekOfYear, from: date)
+        let year = isoCal.component(.yearForWeekOfYear, from: date)
+        let filename = String(format: "%d-W%02d.md", year, week)
+        let relativePath = "Notes/Horizons/\(filename)"
+
+        // Day sub-header: "**Monday (07-06)**"
+        let dayFmt = DateFormatter()
+        dayFmt.locale = Locale(identifier: "en_US_POSIX")
+        dayFmt.timeZone = TimeZone.current
+        dayFmt.dateFormat = "EEEE (MM-dd)"
+        let dayHeader = "**\(dayFmt.string(from: date))**"
+
+        // Template for new weekly notes
+        let weekLabel = String(format: "Week %d — %d", week, year)
+        let template = "# \(weekLabel)\n\n• \n• \n• \n• \n• \n• \n\n---\n\nCheck-in Log:\n"
+
+        // Ensure Horizons folder exists
+        let horizonsURL = documentsURL.appendingPathComponent("Notes/Horizons")
+        try FileManager.default.createDirectory(at: horizonsURL, withIntermediateDirectories: true)
+
+        let fileURL = documentsURL.appendingPathComponent(relativePath)
+        var content: String
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            content = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? template
+        } else {
+            content = template
+        }
+
+        // Ensure Check-in Log section exists at the bottom
+        let logMarker = "Check-in Log:"
+        if !content.contains(logMarker) {
+            if !content.hasSuffix("\n") { content += "\n" }
+            content += "\n---\n\nCheck-in Log:\n"
+        }
+
+        // Ensure today's day header exists in the log section
+        if let logRange = content.range(of: logMarker) {
+            let afterLog = String(content[logRange.upperBound...])
+            if !afterLog.contains(dayHeader) {
+                if !content.hasSuffix("\n") { content += "\n" }
+                content += "\n\(dayHeader)\n"
+            }
+        }
+
+        // Append the check-in line
+        if !content.hasSuffix("\n") { content += "\n" }
+        content += "\(line)\n"
+
+        var coordinatorError: NSError?
+        var writeError: Error?
+        NSFileCoordinator().coordinate(
+            writingItemAt: fileURL, options: .forReplacing, error: &coordinatorError
+        ) { url in
+            do { try content.write(to: url, atomically: true, encoding: .utf8) } catch { writeError = error }
+        }
+        if let err = coordinatorError ?? writeError { throw err }
+    }
+
     // MARK: - Place notes
 
     func placeNoteFilename(for placeName: String) -> String {
@@ -425,6 +494,29 @@ class NoteStore {
         let content = try readFile(sourcePath)
         try writeFile(destPath, content: content)
         try deleteFile(sourcePath)
+    }
+
+    /// iCloud-safe binary move — works for PDFs, images, and any non-text file.
+    /// Uses NSFileCoordinator to coordinate both source (moving) and dest (replacing).
+    func moveItem(from sourcePath: String, to destPath: String) throws {
+        guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
+        let src = documentsURL.appendingPathComponent(sourcePath)
+        let dst = documentsURL.appendingPathComponent(destPath)
+        try FileManager.default.createDirectory(
+            at: dst.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var coordinatorError: NSError?
+        var moveError: Error?
+        NSFileCoordinator().coordinate(
+            writingItemAt: src, options: .forMoving,
+            writingItemAt: dst, options: .forReplacing,
+            error: &coordinatorError
+        ) { srcURL, dstURL in
+            do { try FileManager.default.moveItem(at: srcURL, to: dstURL) }
+            catch { moveError = error }
+        }
+        if let err = coordinatorError ?? moveError { throw err }
     }
 
     func listFiles(in subfolder: String) throws -> [String] {

@@ -86,6 +86,7 @@ struct LifePlaceholderView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
+        .lifeJumpMenu()
     }
 }
 
@@ -259,6 +260,7 @@ struct LifePeopleView: View {
         .navigationTitle("People")
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
+        .lifeJumpMenu()
         .onAppear {
             NotificationCenter.default.post(name: .tracePeopleVisible, object: nil)
         }
@@ -493,6 +495,7 @@ struct LifeCalendarView: View {
         .navigationTitle("Activity")
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
+        .lifeJumpMenu()
         .onAppear  { NotificationCenter.default.post(name: .traceActivityVisible, object: nil) }
         .onDisappear { NotificationCenter.default.post(name: .traceActivityHidden, object: nil) }
         .toolbar {

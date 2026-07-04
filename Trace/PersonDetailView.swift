@@ -2,6 +2,97 @@ import SwiftUI
 import CoreLocation
 import PhotosUI
 
+// MARK: - Person photo helpers
+
+private func personInitials(_ name: String) -> String {
+    let parts = name.split(separator: " ")
+    if parts.count >= 2 {
+        return String(parts[0].prefix(1)) + String(parts[1].prefix(1))
+    }
+    return String(name.prefix(2)).uppercased()
+}
+
+/// Returns a filesystem-safe filename stem from a person's name (e.g. "Bryan Weiss").
+func sanitizedPersonFilename(_ name: String) -> String {
+    let bad = CharacterSet(charactersIn: "/\\:*?\"<>|")
+    return name.components(separatedBy: bad).joined(separator: "_")
+}
+
+/// Returns the canonical NoteStore path for a person's photo if the file exists locally;
+/// otherwise returns `fallbackURL` (a legacy Notion external URL).
+/// Checks .jpg, .jpeg, .png, and .heic so the extension of the source file doesn't matter.
+func resolvePersonPhoto(name: String, fallbackURL: String?) -> String? {
+    let stem = sanitizedPersonFilename(name)
+    for ext in ["jpg", "jpeg", "png", "heic"] {
+        let path = "Photos/People/\(stem).\(ext)"
+        if let url = NoteStore.shared.resolvedURL(for: path),
+           FileManager.default.fileExists(atPath: url.path) {
+            return path
+        }
+    }
+    return fallbackURL
+}
+
+/// Loads a person photo from either a NoteStore relative path ("Photos/People/xxx.jpg")
+/// or a remote https:// URL. Triggers iCloud file download when needed.
+private struct PersonPhotoCircle: View {
+    let urlString: String
+    let size: CGFloat
+    let initials: String
+
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+            } else {
+                Circle()
+                    .fill(Color.purple.opacity(0.15))
+                    .frame(width: size, height: size)
+                    .overlay(
+                        Text(initials)
+                            .font(.system(size: size * 0.33, weight: .medium))
+                            .foregroundStyle(.purple)
+                    )
+            }
+        }
+        .task(id: urlString) {
+            image = await load()
+        }
+    }
+
+    private func load() async -> UIImage? {
+        if urlString.hasPrefix("Photos/") {
+            return await loadNoteStorePhoto()
+        }
+        guard let url = URL(string: urlString),
+              let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+        return UIImage(data: data)
+    }
+
+    private func loadNoteStorePhoto() async -> UIImage? {
+        guard let fileURL = NoteStore.shared.resolvedURL(for: urlString) else { return nil }
+        // Queue an iCloud download if the file is a cloud-only placeholder.
+        try? FileManager.default.startDownloadingUbiquitousItem(at: fileURL)
+        // Poll with backoff — iCloud downloads typically take a few seconds.
+        // Total wait ceiling: ~17 s before giving up.
+        let delays: [UInt64] = [300, 500, 1_000, 1_500, 2_000, 3_000, 4_000, 5_000]
+        for delay in delays {
+            if let data = try? Data(contentsOf: fileURL),
+               let img = UIImage(data: data) {
+                return img
+            }
+            try? await Task.sleep(nanoseconds: delay * 1_000_000)
+        }
+        return (try? Data(contentsOf: fileURL)).flatMap { UIImage(data: $0) }
+    }
+}
+
 // MARK: - PersonDetailView
 
 struct PersonDetailView: View {
@@ -18,8 +109,7 @@ struct PersonDetailView: View {
     @State private var selectedTab: PersonTab = .info
 
     // Info tab
-    @State private var selectedStrength = "new"
-    @State private var strengthLoaded = false
+    @State private var isArchived = false
     @State private var phoneForAction: String? = nil
     @State private var selectedPlace: Place? = nil
     @State private var showingPlacePicker = false
@@ -45,15 +135,12 @@ struct PersonDetailView: View {
     @State private var selectedInteraction: Interaction? = nil
     @State private var showingLogInteraction = false
 
-    // Notes tab
-    @State private var newNote = ""
-    @State private var isSavingNote = false
-    @State private var noteSaved = false
+    // Notes tab — NoteStore-backed markdown file
+    @State private var noteStoreText = ""
+    @State private var isLoadingNoteStore = false
 
     // Edit sheet
     @State private var showingEdit = false
-
-    private let strengthOptions = ["new", "active", "dormant"]
 
     private enum PersonTab: String, CaseIterable {
         case info = "Info"
@@ -90,6 +177,19 @@ struct PersonDetailView: View {
                     HStack(spacing: 16) {
                         if detail != nil {
                             Button("Edit") { showingEdit = true }
+                            Button {
+                                let newVal = !isArchived
+                                isArchived = newVal
+                                Task {
+                                    try? await notion.updatePersonStatus(
+                                        id: personID,
+                                        relationshipStrength: newVal ? "archived" : ""
+                                    )
+                                }
+                            } label: {
+                                Image(systemName: isArchived ? "archivebox.fill" : "archivebox")
+                                    .foregroundStyle(isArchived ? Color.accentColor : .secondary)
+                            }
                         }
                         Button {
                             let cleanID = personID.replacingOccurrences(of: "-", with: "")
@@ -175,6 +275,9 @@ struct PersonDetailView: View {
             case .notes:        notesTab(d)
             }
         }
+        .onChange(of: selectedTab) { _, tab in
+            if tab == .notes { loadNoteStoreNote() }
+        }
         .confirmationDialog("", isPresented: Binding(
             get: { phoneForAction != nil },
             set: { if !$0 { phoneForAction = nil } }
@@ -197,23 +300,7 @@ struct PersonDetailView: View {
     @ViewBuilder
     private func infoTab(_ d: PersonDetail) -> some View {
         Section {
-            if let rel = d.relationship {
-                row("Relationship", value: rel.capitalized)
-            }
-            HStack {
-                Text("Status").foregroundStyle(.secondary)
-                Spacer()
-                Picker("", selection: $selectedStrength) {
-                    ForEach(strengthOptions, id: \.self) { s in
-                        Text(s.capitalized).tag(s)
-                    }
-                }
-                .pickerStyle(.menu)
-                .onChange(of: selectedStrength) { _, newVal in
-                    guard strengthLoaded else { return }
-                    Task { try? await notion.updatePersonStatus(id: personID, relationshipStrength: newVal) }
-                }
-            }
+            row("Relationship", value: d.relationship.map { $0.capitalized } ?? "None")
             if let co = d.companyContext, !co.isEmpty { row("Company", value: co) }
             if let city = d.city, !city.isEmpty { row("City", value: city) }
             if let bday = d.birthday {
@@ -492,32 +579,26 @@ struct PersonDetailView: View {
 
     @ViewBuilder
     private func notesTab(_ d: PersonDetail) -> some View {
-        Section {
-            if let existing = d.notes, !existing.isEmpty {
-                Text(existing)
-                    .foregroundStyle(.secondary)
-                    .font(.subheadline)
+        if isLoadingNoteStore {
+            Section {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
             }
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $newNote)
-                    .frame(minHeight: 80)
-                if newNote.isEmpty {
-                    Text("Add a note…")
-                        .foregroundStyle(Color(.placeholderText))
-                        .font(.body)
-                        .padding(.top, 8)
-                        .padding(.leading, 5)
-                        .allowsHitTesting(false)
-                }
+        } else {
+            Section {
+                MarkdownEditorView(
+                    text: $noteStoreText,
+                    onSave: { content in
+                        let path = "Notes/People/\(personName).md"
+                        try? NoteStore.shared.writeFile(path, content: content)
+                    },
+                    placeholder: "Notes about \(personName)…",
+                    relativePath: "Notes/People/\(personName).md"
+                )
+                .frame(minHeight: 420)
+                .listRowInsets(EdgeInsets())
             }
-            if !newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button(isSavingNote ? "Saving…" : noteSaved ? "Saved" : "Save note") {
-                    saveNote()
-                }
-                .disabled(isSavingNote || noteSaved)
-            }
-        } header: {
-            Text("Notes")
         }
     }
 
@@ -543,20 +624,10 @@ struct PersonDetailView: View {
                 }
             }
             Spacer()
-            Group {
-                if let urlStr = d.photoURL, let url = URL(string: urlStr) {
-                    AsyncImage(url: url) { phase in
-                        if let img = phase.image {
-                            img.resizable().scaledToFill()
-                        } else {
-                            initialsCircle(d.name, size: 120)
-                        }
-                    }
-                    .frame(width: 120, height: 120)
-                    .clipShape(Circle())
-                } else {
-                    initialsCircle(d.name, size: 120)
-                }
+            if let urlStr = d.photoURL, !urlStr.isEmpty {
+                PersonPhotoCircle(urlString: urlStr, size: 120, initials: personInitials(d.name))
+            } else {
+                initialsCircle(d.name, size: 120)
             }
         }
         .padding(.vertical, 4)
@@ -715,11 +786,14 @@ struct PersonDetailView: View {
 
     private func loadDetail() async {
         isLoading = true
-        strengthLoaded = false
         do {
-            let d = try await notion.fetchPersonDetail(id: personID)
+            // Always bypass the cache so photos/edits made on other devices are visible immediately.
+            notion.personDetailCache.removeValue(forKey: personID)
+            var d = try await notion.fetchPersonDetail(id: personID)
+            // NoteStore photo (Photos/People/<Name>.jpg) takes precedence over any Notion external URL.
+            d.photoURL = resolvePersonPhoto(name: d.name, fallbackURL: d.photoURL)
             detail = d
-            selectedStrength = d.relationshipStrength ?? "new"
+            isArchived = d.isArchived
             agendaItems = (d.agenda ?? "")
                 .split(separator: "\n", omittingEmptySubsequences: true)
                 .map(String.init)
@@ -727,8 +801,6 @@ struct PersonDetailView: View {
             loadError = error.localizedDescription
         }
         isLoading = false
-        try? await Task.sleep(for: .milliseconds(300))
-        strengthLoaded = true
     }
 
     private func loadInteractions() async {
@@ -737,20 +809,13 @@ struct PersonDetailView: View {
         isLoadingInteractions = false
     }
 
-    private func saveNote() {
-        let trimmed = newNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        isSavingNote = true
+    private func loadNoteStoreNote() {
+        guard !isLoadingNoteStore else { return }
+        isLoadingNoteStore = true
         Task {
-            do {
-                try await notion.appendPersonNotes(id: personID, text: trimmed)
-                newNote = ""
-                noteSaved = true
-                try? await Task.sleep(for: .seconds(1.5))
-                noteSaved = false
-                await loadDetail()
-            } catch { }
-            isSavingNote = false
+            let path = "Notes/People/\(personName).md"
+            noteStoreText = (try? NoteStore.shared.readFile(path)) ?? ""
+            isLoadingNoteStore = false
         }
     }
 
@@ -797,12 +862,12 @@ struct PersonEditSheet: View {
     let personID: String
     let detail: PersonDetail
 
-    private let relationships = ["colleague", "friend", "family", "neighbor", "client", "mentor", "Pool Team", "other"]
-    private let strengthOptions = ["new", "active", "dormant"]
+    private let relationships = ["colleague", "friend", "family", "neighbor", "client", "mentor", "business", "Pool Team", "other"]
     private let tagOptions = ["Family", "Business", "Friend", "Network", "Work", "Pool", "Reference"]
 
+    @State private var name = ""
     @State private var relationship = ""
-    @State private var relationshipStrength = "new"
+    @State private var isArchived = false
     @State private var phone = ""
     @State private var email = ""
     @State private var companyContext = ""
@@ -819,7 +884,6 @@ struct PersonEditSheet: View {
     @State private var photoItem: PhotosPickerItem? = nil
     @State private var pickedImage: UIImage? = nil
     @State private var isUploadingPhoto = false
-    @State private var uploadedPhotoURL: String? = nil
 
     var body: some View {
         NavigationStack {
@@ -828,23 +892,20 @@ struct PersonEditSheet: View {
                     HStack {
                         Spacer()
                         ZStack(alignment: .bottomTrailing) {
-                            Group {
-                                if let img = pickedImage {
-                                    Image(uiImage: img)
-                                        .resizable().scaledToFill()
-                                } else if let url = detail.photoURL, let photoURL = URL(string: url) {
-                                    AsyncImage(url: photoURL) { phase in
-                                        switch phase {
-                                        case .success(let img): img.resizable().scaledToFill()
-                                        default: personInitialsView
-                                        }
-                                    }
-                                } else {
-                                    personInitialsView
-                                }
+                            if let img = pickedImage {
+                                Image(uiImage: img)
+                                    .resizable().scaledToFill()
+                                    .frame(width: 90, height: 90)
+                                    .clipShape(Circle())
+                            } else if let url = detail.photoURL, !url.isEmpty {
+                                PersonPhotoCircle(
+                                    urlString: url,
+                                    size: 90,
+                                    initials: personInitials(detail.name)
+                                )
+                            } else {
+                                personInitialsView
                             }
-                            .frame(width: 90, height: 90)
-                            .clipShape(Circle())
 
                             PhotosPicker(selection: $photoItem, matching: .images) {
                                 Image(systemName: isUploadingPhoto ? "arrow.triangle.2.circlepath" : "camera.fill")
@@ -863,12 +924,17 @@ struct PersonEditSheet: View {
                     if isUploadingPhoto {
                         HStack {
                             ProgressView().scaleEffect(0.8)
-                            Text("Uploading photo…").font(.caption).foregroundStyle(.secondary)
+                            Text("Saving photo…").font(.caption).foregroundStyle(.secondary)
                         }
-                    } else if uploadedPhotoURL != nil {
+                    } else if pickedImage != nil {
                         Label("Photo ready to save", systemImage: "checkmark.circle.fill")
                             .font(.caption).foregroundStyle(.green)
                     }
+                }
+
+                Section("Name") {
+                    TextField("Full name", text: $name)
+                        .autocorrectionDisabled()
                 }
 
                 Section("Identity") {
@@ -878,11 +944,7 @@ struct PersonEditSheet: View {
                             Text(r.capitalized).tag(r)
                         }
                     }
-                    Picker("Status", selection: $relationshipStrength) {
-                        ForEach(strengthOptions, id: \.self) { s in
-                            Text(s.capitalized).tag(s)
-                        }
-                    }
+                    Toggle("Archived", isOn: $isArchived)
                     TextField("Company / Context", text: $companyContext)
                     TextField("City", text: $city)
                     TextField("How We Met", text: $howWeMet)
@@ -927,8 +989,16 @@ struct PersonEditSheet: View {
                     guard let data = try? await newItem.loadTransferable(type: Data.self),
                           let image = UIImage(data: data) else { return }
                     pickedImage = image
-                    let filename = "person-\(personID)-\(Int(Date().timeIntervalSince1970)).jpg"
-                    uploadedPhotoURL = try? NoteStore.shared.writePhoto(data, category: "People", filename: filename)
+                    // Use person name as filename so Photos/People/ stays legible.
+                    // Delete the old photo file if it was a NoteStore-relative path.
+                    if let oldPath = detail.photoURL, oldPath.hasPrefix("Photos/") {
+                        try? NoteStore.shared.deleteFile(oldPath)
+                    }
+                    let safeName = sanitizedPersonFilename(detail.name)
+                    let filename = "\(safeName).jpg"
+                    // Write to NoteStore (iCloud). Not stored in Notion — resolvePersonPhoto
+                    // picks this file up by name at next load.
+                    _ = try? NoteStore.shared.writePhoto(data, category: "People", filename: filename)
                 }
             }
             .alert("Add Tag", isPresented: $showingAddTag) {
@@ -983,8 +1053,9 @@ struct PersonEditSheet: View {
     }
 
     private func prefill() {
+        name = detail.name
         relationship = detail.relationship ?? ""
-        relationshipStrength = detail.relationshipStrength ?? "new"
+        isArchived = detail.isArchived
         phone = detail.phone ?? ""
         email = detail.email ?? ""
         companyContext = detail.companyContext ?? ""
@@ -1005,19 +1076,22 @@ struct PersonEditSheet: View {
 
     private func save() async {
         isSaving = true
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
         do {
             try await notion.enrichPerson(
                 id: personID,
+                name: trimmedName == detail.name ? nil : trimmedName,
                 relationship: relationship,
-                relationshipStrength: relationshipStrength,
+                relationshipStrength: isArchived ? "archived" : "",
                 companyContext: companyContext,
                 city: city,
                 howWeMet: howWeMet,
                 tags: Array(selectedTags),
                 phone: phone,
                 email: email,
-                address: address,
-                photoURL: uploadedPhotoURL
+                address: address
+                // photoURL intentionally omitted — photo lives in NoteStore at
+                // Photos/People/<Name>.jpg and is resolved at load time, not stored in Notion.
             )
             dismiss()
         } catch {

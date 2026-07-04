@@ -104,6 +104,7 @@ struct BilliardsView: View {
         .navigationTitle("Billiards")
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
+        .lifeJumpMenu()
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {

@@ -23,21 +23,21 @@ struct QuickAppendSheet: View {
     // MARK: - Destination
 
     enum NoteDestination: Equatable {
-        case daily, inbox, bucket(String)
+        case daily, inbox, project(String)
 
         var label: String {
             switch self {
-            case .daily:            return "Daily Note"
-            case .inbox:            return "Inbox"
-            case .bucket(let name): return name
+            case .daily:             return "Daily Note"
+            case .inbox:             return "Inbox"
+            case .project(let name): return name
             }
         }
 
         var icon: String {
             switch self {
-            case .daily:  return "calendar"
-            case .inbox:  return "tray"
-            case .bucket: return "folder"
+            case .daily:   return "calendar"
+            case .inbox:   return "tray"
+            case .project: return "folder"
             }
         }
     }
@@ -60,10 +60,10 @@ struct QuickAppendSheet: View {
                         if !availableBuckets.isEmpty {
                             Menu {
                                 ForEach(availableBuckets, id: \.self) { name in
-                                    Button(name) { destination = .bucket(name) }
+                                    Button(name) { destination = .project(name) }
                                 }
                             } label: {
-                                Label("Bucket", systemImage: "folder")
+                                Label("Project", systemImage: "folder")
                             }
                         }
                     } label: {
@@ -120,7 +120,7 @@ struct QuickAppendSheet: View {
     // MARK: - Helpers
 
     private func loadBuckets() {
-        let files = (try? NoteStore.shared.listFiles(in: "Notes/Buckets")) ?? []
+        let files = (try? NoteStore.shared.listFiles(in: "Notes/Projects")) ?? []
         availableBuckets = files
             .filter { $0.hasSuffix(".md") }
             .map { String($0.dropLast(3)) }
@@ -141,8 +141,8 @@ struct QuickAppendSheet: View {
                     let ts = inboxTimestamp()
                     try NoteStore.shared.writeFile("Notes/Inbox/\(ts).md", content: trimmed)
 
-                case .bucket(let name):
-                    let path = "Notes/Buckets/\(name).md"
+                case .project(let name):
+                    let path = "Notes/Projects/\(name).md"
                     let existing = (try? NoteStore.shared.readFile(path)) ?? "# \(name)\n\n"
                     let separator = existing.hasSuffix("\n") ? "\n" : "\n\n"
                     try NoteStore.shared.writeFile(path, content: existing + separator + trimmed)

@@ -6,12 +6,10 @@ struct PersonEnrichSheet: View {
 
     let person: Person
 
-    private let relationships = ["colleague", "friend", "family", "neighbor", "client", "mentor", "Pool Team", "other"]
-    private let strengthOptions = ["new", "active", "dormant"]
+    private let relationships = ["colleague", "friend", "family", "neighbor", "client", "mentor", "business", "Pool Team", "other"]
     private let tagOptions = ["Family", "Business", "Friend", "Network", "Work", "Pool", "Reference"]
 
     @State private var relationship = ""
-    @State private var relationshipStrength = "new"
     @State private var phone = ""
     @State private var email = ""
     @State private var companyContext = ""
@@ -32,11 +30,6 @@ struct PersonEnrichSheet: View {
                         Text("—").tag("")
                         ForEach(relationships, id: \.self) { r in
                             Text(r.capitalized).tag(r)
-                        }
-                    }
-                    Picker("Status", selection: $relationshipStrength) {
-                        ForEach(strengthOptions, id: \.self) { s in
-                            Text(s.capitalized).tag(s)
                         }
                     }
                     TextField("Company / Context", text: $companyContext)
@@ -131,7 +124,7 @@ struct PersonEnrichSheet: View {
                 try await notion.enrichPerson(
                     id: person.id,
                     relationship: relationship.isEmpty ? nil : relationship,
-                    relationshipStrength: relationshipStrength.isEmpty ? nil : relationshipStrength,
+                    relationshipStrength: nil,
                     companyContext: companyContext.isEmpty ? nil : companyContext,
                     city: city.isEmpty ? nil : city,
                     howWeMet: howWeMet.isEmpty ? nil : howWeMet,

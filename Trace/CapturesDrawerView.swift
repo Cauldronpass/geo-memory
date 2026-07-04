@@ -75,7 +75,6 @@ struct CapturesDrawerView: View {
     @State private var showingActions = false
     @State private var showingPlacePicker = false
     @State private var selectedPlaceForMove: Place? = nil
-    @State private var showingBucketPicker = false
     @State private var showingProjectPicker = false
     @State private var showingDatePicker = false
     @State private var moveTargetDate: Date = Date()
@@ -137,7 +136,6 @@ struct CapturesDrawerView: View {
                     moveTargetDate = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
                     showingDatePicker = true
                 }
-                Button("Move to Bucket Note…") { showingBucketPicker = true }
                 Button("Move to Project Note…") { showingProjectPicker = true }
                 // If the capture already has a place attached, route directly — no picker needed.
                 if let placeName = note.placeNameInBody {
@@ -159,13 +157,6 @@ struct CapturesDrawerView: View {
             InboxMoveDateSheet(targetDate: $moveTargetDate) {
                 if let note = actionNote { moveToDailyNote(note, date: moveTargetDate) }
                 showingDatePicker = false
-            }
-        }
-        // Bucket picker sheet
-        .sheet(isPresented: $showingBucketPicker) {
-            InboxNoteFilePickerSheet(subfolder: "Notes/Buckets", title: "Move to Bucket") { filename in
-                if let note = actionNote { moveToFile(note, path: "Notes/Buckets/\(filename)") }
-                showingBucketPicker = false
             }
         }
         // Project picker sheet

@@ -16,6 +16,7 @@ enum MacSection: String, CaseIterable, Identifiable {
     case fitness   = "Fitness"
     case documents = "Documents"
     case inbox     = "Inbox"
+    case archive   = "Archive"
 
     var id: String { rawValue }
 
@@ -30,6 +31,7 @@ enum MacSection: String, CaseIterable, Identifiable {
         case .fitness:   return "figure.run"
         case .documents: return "doc.richtext"
         case .inbox:     return "tray"
+        case .archive:   return "archivebox"
         }
     }
 
@@ -44,6 +46,7 @@ enum MacSection: String, CaseIterable, Identifiable {
         case .fitness:   return Color(hex: "16A34A")
         case .documents: return Color(hex: "8B5CF6")
         case .inbox:     return .gray
+        case .archive:   return Color(hex: "92400E")
         }
     }
 }
@@ -104,6 +107,9 @@ struct TraceMacContentView: View {
                 coloredLabel(.documents).tag(MacSection.documents)
                 coloredLabel(.inbox).tag(MacSection.inbox)
             }
+            Section("Archive") {
+                coloredLabel(.archive).tag(MacSection.archive)
+            }
         }
         .listStyle(.sidebar)
         .frame(width: 200)
@@ -158,6 +164,10 @@ struct TraceMacContentView: View {
         case .inbox:
             TraceMacInboxView()
                 .environment(noteStore)
+        case .archive:
+            TraceMacArchiveView()
+                .environment(noteStore)
+                .environment(notionService)
         case nil:
             VStack(spacing: 12) {
                 Image(systemName: "mappin.circle")

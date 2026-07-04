@@ -37,7 +37,7 @@ struct ContentView: View {
             .first?.screen.bounds.width ?? 393
     }
 
-    private enum FABContext { case places, people, activity, notes, global }
+    private enum FABContext { case places, people, activity, notes, life, global }
     private var fabContext: FABContext {
         if isPeopleContext   { return .people }
         if isActivityContext { return .activity }
@@ -51,6 +51,7 @@ struct ContentView: View {
         case .people:   return "People"
         case .activity: return "Activity"
         case .notes:    return "Notes"
+        case .life:     return "Life"
         case .global:   return "What would you like to do?"
         }
     }
@@ -72,6 +73,14 @@ struct ContentView: View {
         Button("Log Workout")   { showingFABLogWorkout = true }
         Button("Log Billiards") { showingFABLogBilliards = true }
         Button("Log Visit")     { showingCheckIn = true }
+        Button("Cancel", role: .cancel) { }
+    }
+    @ViewBuilder private var fabLifeButtons: some View {
+        Button("Activity")  { deepLinkLife(.activity) }
+        Button("Trips")     { deepLinkLife(.trips) }
+        Button("Fitness")   { deepLinkLife(.fitness) }
+        Button("Billiards") { deepLinkLife(.billiards) }
+        Button("People")    { deepLinkLife(.people) }
         Button("Cancel", role: .cancel) { }
     }
     @ViewBuilder private var fabNotesButtons: some View {
@@ -97,6 +106,7 @@ struct ContentView: View {
         case .people:   fabPeopleButtons
         case .activity: fabActivityButtons
         case .notes:    fabNotesButtons
+        case .life:     fabLifeButtons
         case .global:   fabGlobalButtons
         }
     }
@@ -469,6 +479,33 @@ struct DrawerButtons: View {
             }
         }
         .padding(.horizontal, 16)
+    }
+}
+
+// MARK: - Life section jump menu
+// Shown in the nav bar of each Life section view so you can jump sideways
+// without navigating back to the Life list first.
+
+extension View {
+    func lifeJumpMenu() -> some View {
+        self.toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button { NotificationCenter.default.post(name: .traceLifeDeepLink, object: nil, userInfo: ["section": LifeSection.activity]) }
+                        label: { Label("Activity", systemImage: "calendar") }
+                    Button { NotificationCenter.default.post(name: .traceLifeDeepLink, object: nil, userInfo: ["section": LifeSection.trips]) }
+                        label: { Label("Trips", systemImage: "airplane") }
+                    Button { NotificationCenter.default.post(name: .traceLifeDeepLink, object: nil, userInfo: ["section": LifeSection.fitness]) }
+                        label: { Label("Fitness", systemImage: "figure.run") }
+                    Button { NotificationCenter.default.post(name: .traceLifeDeepLink, object: nil, userInfo: ["section": LifeSection.billiards]) }
+                        label: { Label("Billiards", systemImage: "8.circle.fill") }
+                    Button { NotificationCenter.default.post(name: .traceLifeDeepLink, object: nil, userInfo: ["section": LifeSection.people]) }
+                        label: { Label("People", systemImage: "person.2.fill") }
+                } label: {
+                    Image(systemName: "square.grid.2x2")
+                }
+            }
+        }
     }
 }
 

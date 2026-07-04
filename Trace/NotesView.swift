@@ -214,8 +214,7 @@ struct DailyNoteTab: View {
     @State private var selectedPanelVisit: Visit? = nil
     @State private var displayMonth: Date = Date()
     @State private var datesWithNotes: Set<String> = []
-    @State private var showingMoveDaily: Bool = false
-    @State private var moveTargetDate: Date = Date()
+    @State private var showingMoveContent: Bool = false
     @State private var timestampTrigger: Date? = nil
     @State private var showingClearConfirm: Bool = false
     @State private var isEditorFocused: Bool = false
@@ -360,20 +359,16 @@ struct DailyNoteTab: View {
             guard changedPath == currentPath else { return }
             load()
         }
-        .sheet(isPresented: $showingMoveDaily) {
-            MoveDailyNoteSheet(targetDate: $moveTargetDate) {
-                Task {
-                    try? noteStore.moveDailyNote(from: selectedDate, to: moveTargetDate)
-                    content = (try? noteStore.readDailyNote(date: selectedDate)) ?? ""
-                    showingMoveDaily = false
-                    // Remove dot if note is now empty
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = "yyyy-MM-dd"
-                    if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        datesWithNotes.remove(formatter.string(from: selectedDate))
-                    }
-                    datesWithNotes.insert(formatter.string(from: moveTargetDate))
+        .sheet(isPresented: $showingMoveContent) {
+            MoveDailyContentSheet(sourceDate: selectedDate, sourceContent: content) { newContent in
+                content = newContent
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.dateFormat = "yyyy-MM-dd"
+                if newContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    datesWithNotes.remove(formatter.string(from: selectedDate))
                 }
+                loadDatesWithNotes()
             }
         }
         .confirmationDialog(
@@ -420,8 +415,7 @@ struct DailyNoteTab: View {
             }
 
             Button {
-                moveTargetDate = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) ?? selectedDate
-                showingMoveDaily = true
+                showingMoveContent = true
             } label: {
                 Image(systemName: "arrow.right.square")
                     .font(.subheadline)
@@ -1654,46 +1648,441 @@ struct NoteEditorView: View {
 }
 
 
-// MARK: - Move Daily Note Sheet (move a date's note content to another date)
+// MARK: - Move Daily Content Sheet
 
-struct MoveDailyNoteSheet: View {
-    @Binding var targetDate: Date
-    let onMove: () -> Void
+struct MoveDailyContentSheet: View {
+
+    let sourceDate: Date
+    let sourceContent: String
+    /// Called after a successful move. Receives the new content of the source note (empty = fully moved).
+    let onMoved: (String) -> Void
+
     @Environment(\.dismiss) private var dismiss
+    @Environment(NotionService.self) private var notion
+    private var noteStore: NoteStore { NoteStore.shared }
+
+    // MARK: - Destination type
+
+    enum Dest: String, CaseIterable {
+        case day, visit, project, horizon, place
+
+        var label: String {
+            switch self {
+            case .day:     return "Another Day"
+            case .visit:   return "Visit"
+            case .project: return "Project"
+            case .horizon: return "Horizon"
+            case .place:   return "Place"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .day:     return "calendar"
+            case .visit:   return "checkmark.circle"
+            case .project: return "folder"
+            case .horizon: return "square.stack"
+            case .place:   return "mappin"
+            }
+        }
+    }
+
+    @State private var dest: Dest = .day
+    @State private var targetDate: Date = Date()
+    @State private var searchText = ""
+    @State private var files: [String] = []          // used by project + horizon (existing files)
+    @State private var selectedFile: String? = nil   // filename (with .md) for day/project/horizon
+    @State private var selectedVisit: Visit? = nil
+    @State private var selectedPlace: Place? = nil
+    @State private var isMoving = false
+    @State private var errorMessage: String? = nil
+
+    // MARK: - Horizon helpers (mirrors HorizonsNoteTab logic)
+
+    private static let isoCal: Calendar = {
+        var c = Calendar(identifier: .iso8601)
+        c.locale = Locale(identifier: "en_US_POSIX")
+        return c
+    }()
+
+    private var currentWeekFilename: String {
+        let week = Self.isoCal.component(.weekOfYear, from: Date())
+        let year = Self.isoCal.component(.yearForWeekOfYear, from: Date())
+        return String(format: "%d-W%02d.md", year, week)
+    }
+
+    private var currentMonthFilename: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM"
+        return "\(f.string(from: Date())).md"
+    }
+
+    private var weekLabel: String {
+        let week = Self.isoCal.component(.weekOfYear, from: Date())
+        let year = Self.isoCal.component(.yearForWeekOfYear, from: Date())
+        return String(format: "Week %d · %d", week, year)
+    }
+
+    private var monthLabel: String {
+        Date().formatted(.dateTime.month(.wide).year())
+    }
+
+    /// Past horizon files not pinned as current week/month
+    private var pastHorizonFiles: [String] {
+        files.filter { $0 != currentWeekFilename && $0 != currentMonthFilename }
+             .sorted(by: >)
+    }
+
+    // MARK: - canMove
+
+    private var canMove: Bool {
+        switch dest {
+        case .day:     return true
+        case .visit:   return selectedVisit != nil
+        case .place:   return selectedPlace != nil
+        default:       return selectedFile != nil   // project, horizon
+        }
+    }
+
+    // MARK: - Body
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    DatePicker(
-                        "Move to",
-                        selection: $targetDate,
-                        displayedComponents: .date
-                    )
-                    .datePickerStyle(.graphical)
+            VStack(spacing: 0) {
+                destPicker
+                Divider()
+                Group {
+                    switch dest {
+                    case .day:     dayPicker
+                    case .visit:   visitList
+                    case .horizon: horizonList
+                    case .place:   placeList
+                    case .project: projectFileList
+                    }
                 }
-                Section {
-                    Text("The note's content will be appended to the selected day and cleared from the current day.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                if let err = errorMessage {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal)
+                        .padding(.bottom, 8)
                 }
             }
-            .navigationTitle("Move Note to Date")
+            .navigationTitle("Move Note To…")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Move") {
-                        onMove()
+                    if isMoving {
+                        ProgressView()
+                    } else {
+                        Button("Move") {
+                            Task { await performMove() }
+                        }
+                        .fontWeight(.semibold)
+                        .disabled(!canMove)
                     }
-                    .fontWeight(.semibold)
                 }
             }
         }
+        .onChange(of: dest) { _, _ in
+            selectedFile = nil
+            selectedVisit = nil
+            selectedPlace = nil
+            searchText = ""
+            loadFiles()
+        }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+
+    // MARK: - Destination picker
+
+    private var destPicker: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Dest.allCases, id: \.rawValue) { d in
+                    Button { dest = d } label: {
+                        Label(d.label, systemImage: d.icon)
+                            .font(.subheadline.weight(dest == d ? .semibold : .regular))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(dest == d ? Color.accentColor : Color(.secondarySystemFill), in: Capsule())
+                            .foregroundStyle(dest == d ? .white : .primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+    }
+
+    // MARK: - Day picker
+
+    private var dayPicker: some View {
+        Form {
+            Section {
+                DatePicker("Move to", selection: $targetDate, displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+            }
+            Section {
+                Text("Content will be appended to the selected day and cleared from the current day.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Visit list
+
+    private var filteredVisits: [Visit] {
+        let sorted = notion.visits.sorted { $0.date > $1.date }
+        if searchText.isEmpty { return Array(sorted.prefix(40)) }
+        return sorted.filter { $0.placeName.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var visitList: some View {
+        List(filteredVisits) { visit in
+            Button { selectedVisit = visit } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(visit.placeName).foregroundStyle(.primary)
+                        Text(visit.date.formatted(.dateTime.month(.abbreviated).day().year()))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if selectedVisit?.id == visit.id {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .searchable(text: $searchText, prompt: "Search visits")
+    }
+
+    // MARK: - Horizon list (pinned current period + existing past)
+
+    private var horizonList: some View {
+        List {
+            Section("This Period") {
+                horizonPinnedRow(filename: currentWeekFilename,
+                                 label: weekLabel,
+                                 icon: "calendar.badge.clock")
+                horizonPinnedRow(filename: currentMonthFilename,
+                                 label: monthLabel,
+                                 icon: "calendar")
+            }
+            if !pastHorizonFiles.isEmpty {
+                Section("Past") {
+                    ForEach(pastHorizonFiles, id: \.self) { file in
+                        Button { selectedFile = file } label: {
+                            HStack {
+                                Image(systemName: "doc.text").foregroundStyle(.secondary)
+                                Text(file.replacingOccurrences(of: ".md", with: "")).foregroundStyle(.primary)
+                                Spacer()
+                                if selectedFile == file {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private func horizonPinnedRow(filename: String, label: String, icon: String) -> some View {
+        Button { selectedFile = filename } label: {
+            HStack {
+                Image(systemName: icon).foregroundStyle(.secondary)
+                Text(label).foregroundStyle(.primary)
+                Spacer()
+                if selectedFile == filename {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                }
+            }
+        }
+    }
+
+    // MARK: - Place list (all Notion places, auto-creates note)
+
+    private var filteredPlaces: [Place] {
+        let sorted = notion.places.sorted { $0.name < $1.name }
+        if searchText.isEmpty { return sorted }
+        return sorted.filter { $0.name.localizedCaseInsensitiveContains(searchText) ||
+                               $0.city.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var placeList: some View {
+        Group {
+            if notion.places.isEmpty {
+                ContentUnavailableView(
+                    "No Places",
+                    systemImage: "mappin",
+                    description: Text("Add places to your system first.")
+                )
+            } else {
+                List(filteredPlaces) { place in
+                    Button { selectedPlace = place } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(place.name).foregroundStyle(.primary)
+                                if !place.city.isEmpty {
+                                    Text(place.city).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            if selectedPlace?.id == place.id {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                            }
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .searchable(text: $searchText, prompt: "Search places")
+            }
+        }
+        .task {
+            if notion.places.isEmpty { await notion.fetchPlaces() }
+        }
+    }
+
+    // MARK: - Project file list
+
+    private var filteredProjectFiles: [String] {
+        let names = files.map { $0.replacingOccurrences(of: ".md", with: "") }
+        if searchText.isEmpty { return names }
+        return names.filter { $0.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    @ViewBuilder
+    private var projectFileList: some View {
+        if files.isEmpty {
+            ContentUnavailableView(
+                "No Project Notes",
+                systemImage: "folder",
+                description: Text("Create a project note first, then move content into it.")
+            )
+        } else {
+            List(filteredProjectFiles, id: \.self) { name in
+                Button { selectedFile = name + ".md" } label: {
+                    HStack {
+                        Image(systemName: "folder").foregroundStyle(.secondary)
+                        Text(name).foregroundStyle(.primary)
+                        Spacer()
+                        if selectedFile == name + ".md" {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                        }
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .searchable(text: $searchText, prompt: "Search project notes")
+        }
+    }
+
+    // MARK: - Actions
+
+    private func loadFiles() {
+        let subfolder: String
+        switch dest {
+        case .project: subfolder = "Notes/Projects"
+        case .horizon: subfolder = "Notes/Horizons"
+        default: return
+        }
+        Task {
+            let list = (try? noteStore.listFiles(in: subfolder)) ?? []
+            await MainActor.run { files = list.filter { $0.hasSuffix(".md") } }
+        }
+    }
+
+    private func performMove() async {
+        isMoving = true
+        errorMessage = nil
+        do {
+            switch dest {
+            case .day:
+                try noteStore.moveDailyNote(from: sourceDate, to: targetDate)
+                let newContent = (try? noteStore.readDailyNote(date: sourceDate)) ?? ""
+                await MainActor.run { onMoved(newContent); dismiss() }
+
+            case .visit:
+                guard let visit = selectedVisit else { return }
+                try await notion.appendVisitNotes(visitID: visit.id, text: stripped(sourceContent))
+                try clearSource()
+                await MainActor.run { onMoved(""); dismiss() }
+
+            case .horizon:
+                guard let file = selectedFile else { return }
+                try appendToNoteStoreFile(subfolder: "Notes/Horizons", filename: file,
+                                          header: file.replacingOccurrences(of: ".md", with: ""))
+                try clearSource()
+                await MainActor.run { onMoved(""); dismiss() }
+
+            case .place:
+                guard let place = selectedPlace else { return }
+                let filename = "\(place.name).md"
+                try appendToNoteStoreFile(subfolder: "Notes/Places", filename: filename,
+                                          header: place.name)
+                try clearSource()
+                await MainActor.run { onMoved(""); dismiss() }
+
+            case .project:
+                guard let file = selectedFile else { return }
+                try appendToNoteStoreFile(subfolder: "Notes/Projects", filename: file,
+                                          header: file.replacingOccurrences(of: ".md", with: ""))
+                try clearSource()
+                await MainActor.run { onMoved(""); dismiss() }
+            }
+        } catch {
+            await MainActor.run { errorMessage = error.localizedDescription; isMoving = false }
+        }
+    }
+
+    /// Appends stripped content to a NoteStore file, creating it with a `# Header` if it doesn't exist.
+    private func appendToNoteStoreFile(subfolder: String, filename: String, header: String) throws {
+        let path = "\(subfolder)/\(filename)"
+        let text = stripped(sourceContent)
+        let existing = (try? noteStore.readFile(path)) ?? ""
+        let updated: String
+        if existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            updated = "# \(header)\n\n\(text)"
+        } else {
+            updated = existing + "\n\n" + text
+        }
+        try noteStore.writeFile(path, content: updated)
+    }
+
+    /// Clears the source daily note file.
+    private func clearSource() throws {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        try noteStore.writeFile("Calendar/\(f.string(from: sourceDate)).md", content: "")
+    }
+
+    /// Strips the leading `# YYYY-MM-DD` date header from a daily note.
+    private func stripped(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        if let first = lines.first,
+           first.hasPrefix("# "),
+           first.dropFirst(2).range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil {
+            lines.removeFirst()
+            while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                lines.removeFirst()
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 }
 

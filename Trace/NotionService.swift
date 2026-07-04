@@ -376,8 +376,9 @@ class NotionService {
                   let props = page["properties"] as? [String: Any],
                   let name = title(props["Name"]) else { return nil }
             let relationship = select(props["Relationship"])
+            let relationshipStrength = select(props["Relationship Strength"])
             let agenda = richText(props["Agenda"])
-            return Person(id: id, name: name, relationship: relationship, agenda: agenda)
+            return Person(id: id, name: name, relationship: relationship, relationshipStrength: relationshipStrength, agenda: agenda)
         }
     }
 
@@ -796,6 +797,21 @@ class NotionService {
         ])
     }
 
+    /// Appends text to a visit's Notes field (used when moving daily note content to a visit).
+    func appendVisitNotes(visitID: String, text: String) async throws {
+        let data = try await get("\(baseURL)/pages/\(visitID)")
+        let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let props = result["properties"] as? [String: Any] ?? [:]
+        let existing = (richText(props["Notes"]) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let combined = existing.isEmpty ? text : existing + "\n\n" + text
+        _ = try await patch("\(baseURL)/pages/\(visitID)", body: [
+            "properties": ["Notes": ["rich_text": [["text": ["content": String(combined.prefix(2000))]]]]]
+        ])
+        if let idx = visits.firstIndex(where: { $0.id == visitID }) {
+            visits[idx].notes = combined
+        }
+    }
+
     /// Fetches captures linked to a specific visit that have GPS coordinates (for Spots Map).
     func fetchCapturesForVisit(visitID: String) async throws -> [Capture] {
         let body: [String: Any] = [
@@ -856,6 +872,7 @@ class NotionService {
     }
 
     func enrichPerson(id: String,
+                      name: String? = nil,
                       relationship: String?,
                       relationshipStrength: String?,
                       companyContext: String?,
@@ -867,6 +884,9 @@ class NotionService {
                       address: String? = nil,
                       photoURL: String? = nil) async throws {
         var props: [String: Any] = [:]
+        if let n = name, !n.isEmpty {
+            props["Name"] = ["title": [["text": ["content": n]]]]
+        }
         if let r = relationship {
             props["Relationship"] = r.isEmpty ? ["select": NSNull()] : ["select": ["name": r]]
         }
@@ -910,10 +930,21 @@ class NotionService {
     }
 
     func updatePersonStatus(id: String, relationshipStrength: String) async throws {
+        // Empty string means "clear the field" (unarchive with no status set)
+        let selectValue: Any = relationshipStrength.isEmpty
+            ? NSNull()
+            : ["name": relationshipStrength]
         _ = try await patch("\(baseURL)/pages/\(id)", body: [
-            "properties": ["Relationship Strength": ["select": ["name": relationshipStrength]]]
+            "properties": ["Relationship Strength": ["select": selectValue]]
         ])
         personDetailCache.removeValue(forKey: id)
+        // Keep local list in sync so the people list filters update without a full reload
+        let newStrength: String? = relationshipStrength.isEmpty ? nil : relationshipStrength
+        await MainActor.run {
+            if let idx = people.firstIndex(where: { $0.id == id }) {
+                people[idx].relationshipStrength = newStrength
+            }
+        }
     }
 
     func appendPersonNotes(id: String, text: String) async throws {

@@ -52,7 +52,10 @@ struct Person: Identifiable, Codable {
     let id: String
     var name: String
     var relationship: String?
+    var relationshipStrength: String?   // "new", "active", "dormant", or "archived"
     var agenda: String?     // Newline-delimited; fetched alongside name/relationship in fetchPeople
+
+    var isArchived: Bool { relationshipStrength == "archived" }
 }
 
 struct PersonDetail: Identifiable {
@@ -62,6 +65,7 @@ struct PersonDetail: Identifiable {
     var companyContext: String?
     var relationship: String?
     var relationshipStrength: String?
+    var isArchived: Bool { relationshipStrength == "archived" }
     var howWeMet: String?
     var notes: String?
     var agenda: String?              // Newline-delimited agenda items (Notion "Agenda" rich_text field)

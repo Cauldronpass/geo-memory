@@ -54,60 +54,59 @@ struct FitnessView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if isLoading && notion.workouts.isEmpty {
-                    ProgressView("Loading…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if showCalendar {
-                    ScrollView {
-                        FitnessCalendarView(workouts: sortedWorkouts)
-                            .environment(notion)
-                            .padding(.vertical)
-                    }
-                } else {
-                    List {
-                        statsSection
-                        if !sortedWorkouts.isEmpty {
-                            typeFilterSection
-                        }
-                        workoutsSection
-                    }
-                    .listStyle(.insetGrouped)
+        Group {
+            if isLoading && notion.workouts.isEmpty {
+                ProgressView("Loading…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if showCalendar {
+                ScrollView {
+                    FitnessCalendarView(workouts: sortedWorkouts)
+                        .environment(notion)
+                        .padding(.vertical)
                 }
-            }
-            .navigationTitle("Fitness")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showWizard = true } label: { Image(systemName: "plus") }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        withAnimation { showCalendar.toggle() }
-                    } label: {
-                        Image(systemName: showCalendar ? "list.bullet" : "calendar")
+            } else {
+                List {
+                    statsSection
+                    if !sortedWorkouts.isEmpty {
+                        typeFilterSection
                     }
+                    workoutsSection
                 }
-            }
-            .task {
-                isLoading = true
-                await notion.fetchWorkouts()
-                isLoading = false
-            }
-            .refreshable { await notion.fetchWorkouts() }
-            .sheet(isPresented: $showWizard) {
-                WorkoutWizardView().environment(notion)
-            }
-            .sheet(item: $selectedWorkout) { w in
-                WorkoutDetailView(workout: w).environment(notion)
-            }
-            .sheet(item: $selectedPeriod) { period in
-                PeriodWorkoutListSheet(period: period, workouts: workoutsIn(period))
-                    .environment(notion)
+                .listStyle(.insetGrouped)
             }
         }
+        .navigationTitle("Fitness")
+        .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
+        .lifeJumpMenu()
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showWizard = true } label: { Image(systemName: "plus") }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    withAnimation { showCalendar.toggle() }
+                } label: {
+                    Image(systemName: showCalendar ? "list.bullet" : "calendar")
+                }
+            }
+        }
+        .task {
+            isLoading = true
+            await notion.fetchWorkouts()
+            isLoading = false
+        }
+        .refreshable { await notion.fetchWorkouts() }
+        .sheet(isPresented: $showWizard) {
+            WorkoutWizardView().environment(notion)
+        }
+        .sheet(item: $selectedWorkout) { w in
+            WorkoutDetailView(workout: w).environment(notion)
+        }
+        .sheet(item: $selectedPeriod) { period in
+            PeriodWorkoutListSheet(period: period, workouts: workoutsIn(period))
+                .environment(notion)
+        }
     }
 
     // MARK: - Stats
