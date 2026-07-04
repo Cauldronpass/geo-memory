@@ -110,6 +110,11 @@ struct TraceMacPeopleView: View {
             if notionService.visits.isEmpty { await notionService.fetchVisits() }
             if notionService.places.isEmpty { await notionService.fetchPlaces() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .selectPerson)) { note in
+            if let id = note.userInfo?["id"] as? String {
+                selectedID = id
+            }
+        }
         .onChange(of: selectedID) { _, newID in
             guard let id = newID else { detail = nil; interactions = []; return }
             selectedTab = .info

@@ -205,8 +205,8 @@ struct TraceMacCalendarPanel: View {
                     onOpenHorizonsNote(path)
                 } label: {
                     Text("\(wn)")
-                        .font(.system(size: 9, weight: .regular))
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Color.traceOrange)
                         .frame(width: 24)
                 }
                 .buttonStyle(.plain)

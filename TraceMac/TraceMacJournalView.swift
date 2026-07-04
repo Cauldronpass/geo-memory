@@ -3,11 +3,15 @@
 // Mac-only — do not add to iOS, Widget, or Share Extension targets.
 
 import SwiftUI
+import AppKit
 
 // MARK: - Notification for Horizons deep-link from calendar panel
 
 extension Notification.Name {
     static let openHorizonsFile = Notification.Name("trace.openHorizonsFile")
+    static let openWikilink     = Notification.Name("trace.openWikilink")
+    static let selectPerson     = Notification.Name("trace.selectPerson")
+    static let selectPlace      = Notification.Name("trace.selectPlace")
 }
 
 // MARK: - Journal root (dispatches to the right tab)
@@ -61,7 +65,7 @@ struct TraceMacDailyView: View {
     @State private var searchText = ""
     @State private var deleteCandidate: String? = nil
     @State private var showDeleteConfirm = false
-    @State private var fileListCollapsed = false
+    @State private var fileListCollapsed = true
     @State private var calendarCollapsed = false
 
     /// Set of date strings ("2026-07-03") that have existing notes — fed to calendar panel.
@@ -170,6 +174,17 @@ struct TraceMacDailyView: View {
         }
         // Toolbar lives here so it persists even when file list is collapsed
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                        fileListCollapsed.toggle()
+                    }
+                } label: {
+                    Label("Toggle List", systemImage: "sidebar.leading")
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+                .help("Toggle note list (⌘⇧L)")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Today") { openToday() }
             }
@@ -378,6 +393,9 @@ struct TraceMacNoteListView: View {
     @State private var newNoteName = ""
     @State private var deleteCandidate: String? = nil
     @State private var showDeleteConfirm = false
+    @State private var renameCandidate: String? = nil
+    @State private var showRenameSheet = false
+    @State private var renameDraft = ""
     @State private var fileListCollapsed = false
 
     private var filtered: [String] {
@@ -409,6 +427,14 @@ struct TraceMacNoteListView: View {
                                 .padding(.vertical, 4)
                                 .tag(filename)
                                 .contextMenu {
+                                    Button {
+                                        renameCandidate = filename
+                                        renameDraft = filename.replacingOccurrences(of: ".md", with: "")
+                                        showRenameSheet = true
+                                    } label: {
+                                        Label("Rename", systemImage: "pencil")
+                                    }
+                                    Divider()
                                     Button(role: .destructive) {
                                         deleteCandidate = filename
                                         showDeleteConfirm = true
@@ -481,6 +507,9 @@ struct TraceMacNoteListView: View {
         .sheet(isPresented: $showingNewNote) {
             newNoteSheet
         }
+        .sheet(isPresented: $showRenameSheet) {
+            renameSheet
+        }
         .task { await loadFiles() }
         .task(id: deepLinkFile?.wrappedValue) {
             guard let filename = deepLinkFile?.wrappedValue else { return }
@@ -518,9 +547,48 @@ struct TraceMacNoteListView: View {
         .padding(24)
     }
 
+    private var renameSheet: some View {
+        VStack(spacing: 16) {
+            Text("Rename Note")
+                .font(.headline)
+            TextField("Name", text: $renameDraft)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 280)
+                .onSubmit { renameNote() }
+            HStack {
+                Button("Cancel") {
+                    showRenameSheet = false
+                    renameCandidate = nil
+                }
+                Button("Rename") { renameNote() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(24)
+    }
+
     private func loadFiles() async {
         let loaded = (try? noteStore.listFiles(in: subfolder)) ?? []
         files = loaded.sorted()
+    }
+
+    private func renameNote() {
+        guard let old = renameCandidate else { return }
+        let newName = renameDraft.trimmingCharacters(in: .whitespaces)
+        guard !newName.isEmpty else { return }
+        let newFilename = newName + ".md"
+        guard newFilename != old else {
+            showRenameSheet = false; renameCandidate = nil; return
+        }
+        try? noteStore.moveFile(from: "\(subfolder)/\(old)", to: "\(subfolder)/\(newFilename)")
+        if let idx = files.firstIndex(of: old) {
+            files[idx] = newFilename
+            files.sort()
+        }
+        if selectedFile == old { selectedFile = newFilename }
+        showRenameSheet = false
+        renameCandidate = nil
     }
 
     private func deleteNote(_ filename: String) {
@@ -725,60 +793,568 @@ struct TraceMacPlaceNoteView: View {
 
 // MARK: - AppKit text editor (no scrollbar)
 
-/// NSViewRepresentable wrapper around NSTextView that explicitly disables the vertical
-/// scroller. SwiftUI's TextEditor ignores .scrollIndicators(.hidden) on macOS when the
-/// system is configured to "Always show scroll bars."
+// MARK: - Editor command enum
+
+enum MacEditorCommand: Equatable {
+    case bold, italic, strike, highlight
+    case heading, bullet, checkbox
+    case indent, outdent
+    case link, date
+    case undo, redo
+    case applyWikiSuggestion(String)
+}
+
+// MARK: - NSTextView subclass: checkbox click detection
+
+/// Intercepts mouseDown to toggle ☐/☑ when the user clicks the checkbox glyph.
+private final class MarkdownNSTextView: NSTextView {
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let adj = NSPoint(x: point.x - textContainerInset.width,
+                          y: point.y - textContainerInset.height)
+        if let lm = layoutManager, let tc = textContainer {
+            let glyphIdx = lm.glyphIndex(for: adj, in: tc,
+                                          fractionOfDistanceThroughGlyph: nil)
+            let charIdx  = lm.characterIndexForGlyph(at: glyphIdx)
+            if charIdx < (textStorage?.length ?? 0) {
+                // Click on [[wikilink]] → navigate to record.
+                // Single-click navigates and places cursor; Cmd+click navigates without moving cursor.
+                if let target = textStorage?.attribute(.macWikiTarget, at: charIdx,
+                                                       effectiveRange: nil) as? String {
+                    NotificationCenter.default.post(name: .openWikilink, object: nil,
+                                                    userInfo: ["name": target])
+                    if event.modifierFlags.contains(.command) { return }
+                    // Fall through to super so cursor is placed at the click position
+                }
+                // Click on checkbox → toggle
+                if textStorage?.attribute(.macCheckboxState, at: charIdx,
+                                          effectiveRange: nil) != nil {
+                    let ns = (textStorage?.string ?? "") as NSString
+                    let lineRange = ns.lineRange(for: NSRange(location: charIdx, length: 0))
+                    let line = ns.substring(with: lineRange)
+                    if line.hasPrefix("☐ ") {
+                        textStorage?.replaceCharacters(in: lineRange,
+                                                       with: "☑ " + String(line.dropFirst(2)))
+                    } else if line.hasPrefix("☑ ") {
+                        textStorage?.replaceCharacters(in: lineRange,
+                                                       with: "☐ " + String(line.dropFirst(2)))
+                    }
+                    didChangeText()
+                    return
+                }
+            }
+        }
+        super.mouseDown(with: event)
+    }
+}
+
+// MARK: - MacEditorActions (direct command channel — bypasses SwiftUI binding timing)
+
+/// Shared by TraceMacNoteEditor and MacTextEditor. Toolbar buttons call execute(_:) directly;
+/// MacTextEditor wires it to the coordinator in makeNSView. No binding timing issues.
+final class MacEditorActions {
+    var execute: (MacEditorCommand) -> Void = { _ in }
+}
+
+// MARK: - MacTextEditor (NSViewRepresentable)
+
+/// NSTextView backed by MacMarkdownTextStorage with live markdown rendering.
 private struct MacTextEditor: NSViewRepresentable {
     @Binding var text: String
+    let actions: MacEditorActions
+    /// Called when the cursor enters/exits a [[...]] span. Receives the partial name or nil.
+    var onWikilinkQuery: ((String?) -> Void)? = nil
+    /// Called when the user presses Return while a wikilink suggestion is active.
+    var onWikilinkAccept: (() -> Void)? = nil
+
+    // MARK: makeNSView
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        let tv = scrollView.documentView as! NSTextView
+        let storage   = MacMarkdownTextStorage()
+        let manager   = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
 
-        let paraStyle = NSMutableParagraphStyle()
-        paraStyle.lineSpacing = 5
+        let tv = MarkdownNSTextView(frame: .zero, textContainer: container)
+        let paraStyle = MacMarkdownTextStorage.baseParagraphStyle
 
-        tv.isEditable        = true
-        tv.isRichText        = false
-        tv.allowsUndo        = true
-        tv.font              = .systemFont(ofSize: 15)
-        tv.textColor         = .labelColor
-        tv.backgroundColor   = .clear
-        tv.textContainerInset = NSSize(width: 40, height: 24)
-        tv.defaultParagraphStyle = paraStyle
+        tv.isEditable              = true
+        tv.isRichText              = false
+        tv.allowsUndo              = true
+        tv.backgroundColor         = NSColor.clear
+        tv.isVerticallyResizable   = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask        = [.width]
+        tv.minSize                 = NSSize(width: 0, height: 0)
+        tv.maxSize                 = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                            height: CGFloat.greatestFiniteMagnitude)
+        tv.textContainerInset      = NSSize(width: 40, height: 24)
+        tv.defaultParagraphStyle = paraStyle as? NSMutableParagraphStyle
         tv.typingAttributes = [
-            .font: NSFont.systemFont(ofSize: 15),
-            .paragraphStyle: paraStyle,
-            .foregroundColor: NSColor.labelColor
-        ]
+            NSAttributedString.Key.font:            MacMarkdownTextStorage.bodyFont,
+            NSAttributedString.Key.foregroundColor: MacMarkdownTextStorage.textColor,
+            NSAttributedString.Key.paragraphStyle:  paraStyle
+        ] as [NSAttributedString.Key: Any]
         tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled  = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
         tv.delegate = context.coordinator
+        context.coordinator.textView = tv
 
+        // Wire toolbar actions directly to coordinator — no SwiftUI binding round-trip.
+        let coord = context.coordinator
+        actions.execute = { [weak coord] cmd in
+            guard let c = coord, let tv = c.textView else { return }
+            c.execute(cmd, in: tv)
+        }
+        coord.onWikilinkQuery  = onWikilinkQuery
+        coord.onWikilinkAccept = onWikilinkAccept
+
+        let scrollView = NSScrollView()
+        scrollView.documentView          = tv
         scrollView.hasVerticalScroller   = false
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers    = false
-        scrollView.backgroundColor       = .clear
+        scrollView.backgroundColor       = NSColor.clear
         scrollView.drawsBackground       = false
+
+        if !text.isEmpty {
+            storage.replaceCharacters(in: NSRange(location: 0, length: 0), with: text)
+            DispatchQueue.main.async { [weak coord] in
+                guard let c = coord, let tv = c.textView else { return }
+                c.refreshHorizontalRules(in: tv)
+            }
+        }
 
         return scrollView
     }
 
+    // MARK: updateNSView
+
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        let tv = scrollView.documentView as! NSTextView
+        // Re-wire on every update so the closure always reaches the live coordinator.
+        let coord = context.coordinator
+        actions.execute = { [weak coord] cmd in
+            guard let c = coord, let tv = c.textView else { return }
+            c.execute(cmd, in: tv)
+        }
+        coord.onWikilinkQuery  = onWikilinkQuery
+        coord.onWikilinkAccept = onWikilinkAccept
+        guard let tv = scrollView.documentView as? MarkdownNSTextView else { return }
         guard tv.string != text else { return }
-        let ranges = tv.selectedRanges
-        tv.string = text
-        tv.selectedRanges = ranges
+        let savedRange = tv.selectedRange()
+        tv.textStorage?.replaceCharacters(
+            in: NSRange(location: 0, length: tv.textStorage?.length ?? 0),
+            with: text)
+        let newLen = tv.textStorage?.length ?? 0
+        tv.setSelectedRange(NSRange(location: min(savedRange.location, newLen), length: 0))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
+    // MARK: Coordinator
+
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
+        weak var textView: MarkdownNSTextView?
+        /// Last known selection — stored here so commands can use it even after focus leaves the text view.
+        var lastSelection = NSRange(location: 0, length: 0)
+        /// Called when cursor enters/exits a [[...]] span.
+        var onWikilinkQuery: ((String?) -> Void)?
+        /// Called when user presses Return while a suggestion is active.
+        var onWikilinkAccept: (() -> Void)?
+        /// Character position of the opening [[ in the active wikilink session.
+        private var wikilinkOpenLoc: Int? = nil
+        /// Marker subclass for thin NSView separators overlaid on `---` lines.
+        private final class HROverlay: NSView {}
+
         init(text: Binding<String>) { self.text = text }
+
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
-            if self.text.wrappedValue != tv.string { self.text.wrappedValue = tv.string }
+            // Reset typing attributes so new text never inherits markdown styles (bold, color, etc.)
+            tv.typingAttributes = [
+                NSAttributedString.Key.font:            MacMarkdownTextStorage.bodyFont,
+                NSAttributedString.Key.foregroundColor: MacMarkdownTextStorage.textColor,
+                NSAttributedString.Key.paragraphStyle:  MacMarkdownTextStorage.baseParagraphStyle
+            ] as [NSAttributedString.Key: Any]
+            if text.wrappedValue != tv.string { text.wrappedValue = tv.string }
+            DispatchQueue.main.async { [weak self, weak tv] in
+                guard let self, let tv else { return }
+                self.refreshHorizontalRules(in: tv)
+                self.checkForWikilink(in: tv)
+            }
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            lastSelection = tv.selectedRange()
+            checkForWikilink(in: tv)
+        }
+
+        // MARK: - Horizontal rule overlay
+
+        func refreshHorizontalRules(in tv: NSTextView) {
+            tv.subviews
+                .compactMap { $0 as? HROverlay }
+                .forEach { $0.removeFromSuperview() }
+
+            guard tv.string.contains("---"),
+                  let lm = tv.layoutManager,
+                  let tc = tv.textContainer else { return }
+            lm.ensureLayout(for: tc)
+
+            let ns = tv.string as NSString
+            var pos = 0
+            while pos < ns.length {
+                let lineRange = ns.lineRange(for: NSRange(location: pos, length: 0))
+                guard lineRange.length > 0 else { break }
+                let line = ns.substring(with: lineRange)
+                if line.trimmingCharacters(in: .whitespacesAndNewlines) == "---" {
+                    let glyphRange = lm.glyphRange(forCharacterRange: lineRange,
+                                                   actualCharacterRange: nil)
+                    let lineRect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+                    let insetW = tv.textContainerInset.width
+                    let insetH = tv.textContainerInset.height
+                    let midY   = lineRect.origin.y + lineRect.height / 2 + insetH
+                    let xLeft  = insetW + 16
+                    let xRight = tv.bounds.width - insetW - 16
+
+                    let rule = HROverlay(frame: NSRect(x: xLeft, y: midY - 0.5,
+                                                       width: max(0, xRight - xLeft), height: 1.0))
+                    rule.wantsLayer = true
+                    rule.layer?.backgroundColor = NSColor(white: 0.45, alpha: 1).cgColor
+                    tv.addSubview(rule)
+                }
+                pos = lineRange.location + lineRange.length
+            }
+        }
+
+        // MARK: - Wikilink autocomplete detection
+
+        private func checkForWikilink(in tv: NSTextView) {
+            let cursorLoc = tv.selectedRange().location
+            let ns = tv.string as NSString
+
+            // Only check within the current line
+            let lineRange = ns.lineRange(for: NSRange(location: cursorLoc, length: 0))
+            let lineStart = lineRange.location
+            guard cursorLoc > lineStart + 1 else {
+                endWikilinkSession()
+                return
+            }
+
+            // Scan backward from cursor on this line for [[
+            let beforeCursor = ns.substring(with: NSRange(location: lineStart,
+                                                          length: cursorLoc - lineStart))
+            let bns = beforeCursor as NSString
+
+            var scanIdx = bns.length - 2
+            var found: (openLoc: Int, partial: String)? = nil
+            while scanIdx >= 0 {
+                if bns.character(at: scanIdx)     == 91 &&   // '['
+                   bns.character(at: scanIdx + 1) == 91 {   // '['
+                    let partial = bns.substring(from: scanIdx + 2)
+                    if !partial.contains("]]") && !partial.contains("\n") {
+                        found = (lineStart + scanIdx, partial)
+                    }
+                    break
+                }
+                scanIdx -= 1
+            }
+
+            if let ctx = found {
+                wikilinkOpenLoc = ctx.openLoc
+                onWikilinkQuery?(ctx.partial)
+            } else {
+                endWikilinkSession()
+            }
+        }
+
+        private func endWikilinkSession() {
+            guard wikilinkOpenLoc != nil else { return }
+            wikilinkOpenLoc = nil
+            onWikilinkQuery?(nil)
+        }
+
+        private func applyWikiSuggestion(_ name: String, in tv: NSTextView) {
+            let cursorLoc = tv.selectedRange().location
+            guard let openLoc = wikilinkOpenLoc, openLoc <= cursorLoc else { return }
+            let replaceRange = NSRange(location: openLoc, length: cursorLoc - openLoc)
+            let replacement  = "[[\(name)]]"
+            tv.textStorage?.replaceCharacters(in: replaceRange, with: replacement)
+            tv.didChangeText()
+            let newLoc = openLoc + (replacement as NSString).length
+            tv.setSelectedRange(NSRange(location: newLoc, length: 0))
+            text.wrappedValue = tv.string
+            wikilinkOpenLoc = nil
+            onWikilinkQuery?(nil)
+        }
+
+        // MARK: Smart keyboard — auto-list continuation and dash-to-bullet conversion
+
+        func textView(_ tv: NSTextView,
+                      shouldChangeTextIn affectedCharRange: NSRange,
+                      replacementString replacement: String?) -> Bool {
+            guard let replacement else { return true }
+            let ns = tv.string as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: affectedCharRange.location, length: 0))
+            let line = ns.substring(with: lineRange)
+
+            // ── Typing third "-" to complete "---" → create HR and move cursor below ──
+            let lineWithoutNewline0 = line.hasSuffix("\n") ? String(line.dropLast()) : line
+            if replacement == "-" && lineWithoutNewline0 == "--" {
+                tv.textStorage?.replaceCharacters(in: affectedCharRange, with: "-\n")
+                tv.didChangeText()
+                tv.setSelectedRange(NSRange(location: affectedCharRange.location + 2, length: 0))
+                text.wrappedValue = tv.string
+                return false
+            }
+
+            // ── Tab: indent line ──────────────────────────────────────────────────
+            if replacement == "\t" {
+                tv.textStorage?.replaceCharacters(in: lineRange, with: "  " + line)
+                tv.didChangeText()
+                tv.setSelectedRange(NSRange(location: affectedCharRange.location + 2, length: 0))
+                return false
+            }
+
+            // ── Space after lone "-" at line start → bullet ───────────────────────
+            // Checks the character immediately before the cursor is "-" and everything
+            // before it on the line is spaces. Handles both mid-doc and last-line cases.
+            if replacement == " " && affectedCharRange.location > 0 {
+                let dashPos = affectedCharRange.location - 1
+                let charBefore = ns.character(at: dashPos)
+                if charBefore == UInt16(UnicodeScalar("-").value) {
+                    let lineStart = lineRange.location
+                    if dashPos >= lineStart {
+                        let prefix = ns.substring(with: NSRange(location: lineStart,
+                                                                length: dashPos - lineStart))
+                        if prefix.allSatisfy({ $0 == " " }) {
+                            tv.textStorage?.replaceCharacters(
+                                in: NSRange(location: dashPos, length: 1), with: "\u{2022}")
+                            tv.didChangeText()
+                            return true   // let the space insert normally
+                        }
+                    }
+                }
+            }
+
+            // ── Return while wikilink session active → accept top suggestion ──────
+            if replacement == "\n" && wikilinkOpenLoc != nil {
+                onWikilinkAccept?()
+                return false
+            }
+
+            // ── Return key: continue or exit list ─────────────────────────────────
+            guard replacement == "\n" else { return true }
+
+            let lineWithoutNewline = line.hasSuffix("\n") ? String(line.dropLast()) : line
+
+            // Bullet continuation
+            let bulletPrefix = "\u{2022} "
+            if let bulletRange = lineWithoutNewline.range(of: bulletPrefix) {
+                let indent = String(lineWithoutNewline[lineWithoutNewline.startIndex..<bulletRange.lowerBound])
+                let afterBullet = lineWithoutNewline[bulletRange.upperBound...]
+                if afterBullet.trimmingCharacters(in: .whitespaces).isEmpty {
+                    // Empty bullet — exit list
+                    tv.textStorage?.replaceCharacters(in: lineRange, with: "\n")
+                    tv.didChangeText()
+                    tv.setSelectedRange(NSRange(location: lineRange.location + 1, length: 0))
+                } else {
+                    // Continue bullet
+                    let insert = "\n" + indent + bulletPrefix
+                    tv.textStorage?.replaceCharacters(in: affectedCharRange, with: insert)
+                    tv.didChangeText()
+                    tv.setSelectedRange(NSRange(location: affectedCharRange.location + (insert as NSString).length,
+                                                length: 0))
+                }
+                text.wrappedValue = tv.string
+                return false
+            }
+
+            // Dash list continuation ("- item")
+            if let dashRange = lineWithoutNewline.range(of: "- ") {
+                let prefixSlice = lineWithoutNewline[lineWithoutNewline.startIndex..<dashRange.lowerBound]
+                guard prefixSlice.allSatisfy({ $0 == " " }) else { return true }
+                let indent = String(prefixSlice)
+                let afterDash = lineWithoutNewline[dashRange.upperBound...]
+                if afterDash.trimmingCharacters(in: .whitespaces).isEmpty {
+                    tv.textStorage?.replaceCharacters(in: lineRange, with: "\n")
+                    tv.didChangeText()
+                    tv.setSelectedRange(NSRange(location: lineRange.location + 1, length: 0))
+                } else {
+                    let insert = "\n" + indent + "- "
+                    tv.textStorage?.replaceCharacters(in: affectedCharRange, with: insert)
+                    tv.didChangeText()
+                    tv.setSelectedRange(NSRange(location: affectedCharRange.location + (insert as NSString).length,
+                                                length: 0))
+                }
+                text.wrappedValue = tv.string
+                return false
+            }
+
+            // Checkbox continuation
+            let checkPrefixes = ["☐ ", "☑ "]
+            for prefix in checkPrefixes {
+                if lineWithoutNewline.hasPrefix(prefix) {
+                    let afterCheck = lineWithoutNewline.dropFirst(prefix.count)
+                    if afterCheck.trimmingCharacters(in: .whitespaces).isEmpty {
+                        tv.textStorage?.replaceCharacters(in: lineRange, with: "\n")
+                        tv.didChangeText()
+                        tv.setSelectedRange(NSRange(location: lineRange.location + 1, length: 0))
+                    } else {
+                        let insert = "\n☐ "
+                        tv.textStorage?.replaceCharacters(in: affectedCharRange, with: insert)
+                        tv.didChangeText()
+                        tv.setSelectedRange(NSRange(location: affectedCharRange.location + (insert as NSString).length,
+                                                    length: 0))
+                    }
+                    text.wrappedValue = tv.string
+                    return false
+                }
+            }
+
+            return true
+        }
+
+        // MARK: Command execution
+
+        func execute(_ command: MacEditorCommand, in tv: NSTextView) {
+            switch command {
+            case .bold:      wrapSelection("**", in: tv)
+            case .italic:    wrapSelection("*", in: tv)
+            case .strike:    wrapSelection("~~", in: tv)
+            case .highlight: wrapSelection("==", in: tv)
+            case .link:      wrapSelection("[[", closing: "]]", in: tv)
+            case .heading:   toggleLinePrefix("## ", in: tv)
+            case .bullet:    toggleBullet(in: tv)
+            case .checkbox:  toggleCheckbox(in: tv)
+            case .indent:    indentLine(in: tv)
+            case .outdent:   outdentLine(in: tv)
+            case .date:      insertDate(in: tv)
+            case .undo:      tv.undoManager?.undo()
+            case .redo:      tv.undoManager?.redo()
+            case .applyWikiSuggestion(let name): applyWikiSuggestion(name, in: tv)
+            }
+        }
+
+        private func wrapSelection(_ marker: String, closing: String? = nil, in tv: NSTextView) {
+            let close   = closing ?? marker
+            let range   = lastSelection
+            guard let storage = tv.textStorage else { return }
+            if range.length == 0 {
+                let pair = marker + close
+                storage.replaceCharacters(in: range, with: pair)
+                tv.didChangeText()
+                let newLoc = range.location + (marker as NSString).length
+                tv.setSelectedRange(NSRange(location: newLoc, length: 0))
+            } else if let swiftRange = Range(range, in: storage.string) {
+                let selected = String(storage.string[swiftRange])
+                storage.replaceCharacters(in: range, with: marker + selected + close)
+                tv.didChangeText()
+            }
+            text.wrappedValue = storage.string
+        }
+
+        private func toggleLinePrefix(_ prefix: String, in tv: NSTextView) {
+            guard let storage = tv.textStorage else { return }
+            let ns        = storage.string as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: lastSelection.location, length: 0))
+            let line      = ns.substring(with: lineRange)
+            if line.hasPrefix(prefix) {
+                storage.replaceCharacters(in: lineRange, with: String(line.dropFirst(prefix.count)))
+                tv.didChangeText()
+                let newLoc = max(lineRange.location, lastSelection.location - (prefix as NSString).length)
+                tv.setSelectedRange(NSRange(location: newLoc, length: 0))
+            } else {
+                storage.replaceCharacters(in: lineRange, with: prefix + line)
+                tv.didChangeText()
+                tv.setSelectedRange(NSRange(location: lastSelection.location + (prefix as NSString).length,
+                                            length: 0))
+            }
+            text.wrappedValue = storage.string
+        }
+
+        private func toggleBullet(in tv: NSTextView) {
+            guard let storage = tv.textStorage else { return }
+            let ns        = storage.string as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: lastSelection.location, length: 0))
+            let line      = ns.substring(with: lineRange)
+            let bullet    = "\u{2022} "
+            if line.hasPrefix(bullet) {
+                storage.replaceCharacters(in: lineRange, with: String(line.dropFirst(2)))
+                tv.didChangeText()
+                let newLoc = max(lineRange.location, lastSelection.location - 2)
+                tv.setSelectedRange(NSRange(location: newLoc, length: 0))
+            } else {
+                storage.replaceCharacters(in: lineRange, with: bullet + line)
+                tv.didChangeText()
+                tv.setSelectedRange(NSRange(location: lastSelection.location + 2, length: 0))
+            }
+            text.wrappedValue = storage.string
+        }
+
+        private func toggleCheckbox(in tv: NSTextView) {
+            guard let storage = tv.textStorage else { return }
+            let ns        = storage.string as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: lastSelection.location, length: 0))
+            let line      = ns.substring(with: lineRange)
+            if line.hasPrefix("☑ ") {
+                storage.replaceCharacters(in: lineRange, with: "☐ " + String(line.dropFirst(2)))
+                tv.didChangeText()
+                tv.setSelectedRange(NSRange(location: lastSelection.location, length: 0))
+            } else if line.hasPrefix("☐ ") {
+                storage.replaceCharacters(in: lineRange, with: String(line.dropFirst(2)))
+                tv.didChangeText()
+                let newLoc = max(lineRange.location, lastSelection.location - 2)
+                tv.setSelectedRange(NSRange(location: newLoc, length: 0))
+            } else {
+                storage.replaceCharacters(in: lineRange, with: "☐ " + line)
+                tv.didChangeText()
+                tv.setSelectedRange(NSRange(location: lastSelection.location + 2, length: 0))
+            }
+            text.wrappedValue = storage.string
+        }
+
+        private func indentLine(in tv: NSTextView) {
+            guard let storage = tv.textStorage else { return }
+            let ns        = storage.string as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: lastSelection.location, length: 0))
+            let line      = ns.substring(with: lineRange)
+            storage.replaceCharacters(in: lineRange, with: "  " + line)
+            tv.didChangeText()
+            tv.setSelectedRange(NSRange(location: lastSelection.location + 2, length: 0))
+            text.wrappedValue = storage.string
+        }
+
+        private func outdentLine(in tv: NSTextView) {
+            guard let storage = tv.textStorage else { return }
+            let ns        = storage.string as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: lastSelection.location, length: 0))
+            let line      = ns.substring(with: lineRange)
+            let toRemove  = line.hasPrefix("  ") ? 2 : (line.hasPrefix(" ") ? 1 : 0)
+            guard toRemove > 0 else { return }
+            storage.replaceCharacters(in: lineRange, with: String(line.dropFirst(toRemove)))
+            tv.didChangeText()
+            let newLoc = max(lineRange.location, lastSelection.location - toRemove)
+            tv.setSelectedRange(NSRange(location: newLoc, length: 0))
+            text.wrappedValue = storage.string
+        }
+
+        private func insertDate(in tv: NSTextView) {
+            guard let storage = tv.textStorage else { return }
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "en_US_POSIX")
+            fmt.dateFormat = "MMMM d, yyyy"
+            let str   = fmt.string(from: Date()) + " "
+            let range = lastSelection
+            storage.replaceCharacters(in: range, with: str)
+            tv.didChangeText()
+            tv.setSelectedRange(NSRange(location: range.location + (str as NSString).length, length: 0))
+            text.wrappedValue = storage.string
         }
     }
 }
@@ -788,18 +1364,56 @@ private struct MacTextEditor: NSViewRepresentable {
 struct TraceMacNoteEditor: View {
     let relativePath: String
 
-    @Environment(NoteStore.self) private var noteStore
+    @Environment(NoteStore.self)     private var noteStore
+    @Environment(NotionService.self) private var notionService
 
-    @State private var content = ""
+    @State private var content        = ""
     @State private var saveTask: Task<Void, Never>? = nil
     @State private var lastSaved: Date? = nil
+    // @State keeps the same MacEditorActions instance across re-renders; makeNSView wires it once.
+    @State private var editorActions  = MacEditorActions()
+    // Wikilink autocomplete state
+    @State private var wikiQuery:       String? = nil
+    @State private var wikiSuggestions: [String] = []
 
     var body: some View {
         VStack(spacing: 0) {
-            MacTextEditor(text: $content)
+            MacTextEditor(text: $content, actions: editorActions,
+                          onWikilinkQuery: { query in
+                              wikiQuery = query
+                              // Read directly from NotionService at query time — avoids the
+                              // load-once race where people/places aren't yet fetched.
+                              if let q = query, !q.isEmpty {
+                                  let people = notionService.people
+                                      .filter { !$0.isArchived }
+                                      .map(\.name)
+                                  let places = notionService.places.map(\.name)
+                                  wikiSuggestions = Array((people + places)
+                                      .filter { $0.localizedCaseInsensitiveContains(q) }
+                                      .sorted()
+                                      .prefix(8))
+                              } else {
+                                  wikiSuggestions = []
+                              }
+                          },
+                          onWikilinkAccept: {
+                              if let first = wikiSuggestions.first {
+                                  editorActions.execute(.applyWikiSuggestion(first))
+                              }
+                          })
                 .onChange(of: content) { _, newValue in
                     scheduleSave(content: newValue)
                 }
+
+            // Wikilink suggestion pills — shown only when cursor is inside [[...]]
+            if !wikiSuggestions.isEmpty {
+                Divider()
+                wikiSuggestionBar
+            }
+
+            // Formatting toolbar
+            Divider()
+            formattingToolbar
 
             // Footer
             Divider()
@@ -818,8 +1432,6 @@ struct TraceMacNoteEditor: View {
         }
         .task(id: relativePath) { await loadContent() }
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { note in
-            // Reload when iCloud delivers an external change to this file.
-            // Skip if the user is actively editing (saveTask pending = local change in flight).
             guard saveTask == nil else { return }
             guard let changedPath = note.object as? String,
                   changedPath == relativePath else { return }
@@ -827,7 +1439,6 @@ struct TraceMacNoteEditor: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .noteStorePlaceNoteDidChange)) { note in
             guard saveTask == nil else { return }
-            // Place notes: object is place name; relativePath is Notes/Places/<name>.md
             if let placeName = note.object as? String,
                relativePath == "Notes/Places/\(placeName).md" {
                 Task { await loadContent() }
@@ -840,6 +1451,94 @@ struct TraceMacNoteEditor: View {
             }
         }
     }
+
+    // MARK: - Wiki suggestion bar
+
+    private var wikiSuggestionBar: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            HStack(spacing: 8) {
+                ForEach(wikiSuggestions, id: \.self) { name in
+                    Button {
+                        editorActions.execute(.applyWikiSuggestion(name))
+                    } label: {
+                        Text(name)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.13))
+                            .foregroundStyle(Color.accentColor)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(minHeight: 28)
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    // MARK: - Formatting toolbar
+
+    private var formattingToolbar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 2) {
+                fmtButton("bold",            .bold,      "Bold (**)")
+                    .keyboardShortcut("b", modifiers: .command)
+                fmtButton("italic",          .italic,    "Italic (*)")
+                    .keyboardShortcut("i", modifiers: .command)
+                fmtButton("strikethrough",   .strike,    "Strikethrough (~~)")
+                fmtButton("highlighter",     .highlight, "Highlight (==)")
+
+                toolbarDivider()
+
+                fmtButton("number",          .heading,   "Heading (##)")
+                fmtButton("list.bullet",     .bullet,    "Bullet (•)")
+                fmtButton("checkmark.square",.checkbox,  "Checkbox (☐)")
+
+                toolbarDivider()
+
+                fmtButton("decrease.indent", .outdent,   "Outdent")
+                fmtButton("increase.indent", .indent,    "Indent")
+
+                toolbarDivider()
+
+                fmtButton("link",            .link,      "Wikilink [[]]")
+                fmtButton("calendar",        .date,      "Insert date")
+
+                toolbarDivider()
+
+                fmtButton("arrow.uturn.backward", .undo, "Undo")
+                    .keyboardShortcut("z", modifiers: .command)
+                fmtButton("arrow.uturn.forward",  .redo, "Redo")
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
+            .padding(.horizontal, 10)
+        }
+        .frame(height: 32)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func fmtButton(_ icon: String, _ command: MacEditorCommand, _ tip: String) -> some View {
+        Button { editorActions.execute(command) } label: {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .regular))
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(tip)
+    }
+
+    private func toolbarDivider() -> some View {
+        Divider()
+            .frame(height: 16)
+            .padding(.horizontal, 4)
+    }
+
+    // MARK: - Helpers
 
     private func loadContent() async {
         content = (try? noteStore.readFile(relativePath)) ?? ""
