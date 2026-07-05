@@ -48,7 +48,10 @@ class NotionService {
             }
             return ""
         }
-        set { sharedDefaults.set(newValue, forKey: "notion_token") }
+        set {
+            sharedDefaults.set(newValue, forKey: "notion_token")
+            UserDefaults.standard.set(newValue, forKey: "notion_token")
+        }
     }
 
     private var headers: [String: String] {
@@ -210,7 +213,12 @@ class NotionService {
         var rtArray: [[String: Any]] = []
         for (i, u) in allURLs.enumerated() {
             if i > 0 { rtArray.append(["type": "text", "text": ["content": "\n"]]) }
-            rtArray.append(["type": "text", "text": ["content": u, "link": ["url": u]]])
+            // Notion rejects non-HTTPS values in the link field — store local NoteStore paths as plain text.
+            if u.hasPrefix("https://") {
+                rtArray.append(["type": "text", "text": ["content": u, "link": ["url": u]]])
+            } else {
+                rtArray.append(["type": "text", "text": ["content": u]])
+            }
         }
         _ = try await patch("\(baseURL)/pages/\(pageID)", body: [
             "properties": ["Photo URLs": ["rich_text": rtArray]]
@@ -1357,7 +1365,7 @@ class NotionService {
         return parseInteraction(result) ?? Interaction(
             id: result["id"] as? String ?? UUID().uuidString,
             summary: summary, date: date, type: type, notes: notes.isEmpty ? nil : notes,
-            personIDs: [personID], visitID: nil
+            photoURLs: [], personIDs: [personID], visitID: nil
         )
     }
 
@@ -1368,10 +1376,13 @@ class NotionService {
         let date     = dateProp(props["Date"]) ?? Date()
         let type     = select(props["Type"]) ?? "other"
         let notes    = richText(props["Notes"])
+        let photoURLs = ((props["Photo URLs"] as? [String: Any])?["rich_text"] as? [[String: Any]] ?? [])
+            .compactMap { ($0["text"] as? [String: Any])?["content"] as? String }
+            .filter { !$0.isEmpty && $0 != "\n" }
         let personIDs = ((props["Person"] as? [String: Any])?["relation"] as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? []
         let visitID   = ((props["Related Visit"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String
         return Interaction(id: id, summary: summary, date: date, type: type,
-                           notes: notes, personIDs: personIDs, visitID: visitID)
+                           notes: notes, photoURLs: photoURLs, personIDs: personIDs, visitID: visitID)
     }
 
     // MARK: - Toggle Frequent

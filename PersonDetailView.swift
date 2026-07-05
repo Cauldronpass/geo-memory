@@ -1101,52 +1101,6 @@ struct PersonEditSheet: View {
     }
 }
 
-/// Rectangular photo tile for interaction detail — loads from NoteStore path or HTTPS URL.
-private struct InteractionPhotoTile: View {
-    let urlString: String
-    let size: CGFloat
-
-    @State private var image: UIImage?
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-            } else {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.secondary.opacity(0.12))
-                    .frame(width: size, height: size)
-                    .overlay(
-                        Image(systemName: "photo")
-                            .foregroundStyle(.secondary)
-                    )
-            }
-        }
-        .task(id: urlString) { image = await load() }
-    }
-
-    private func load() async -> UIImage? {
-        if urlString.hasPrefix("Photos/") {
-            guard let fileURL = NoteStore.shared.resolvedURL(for: urlString) else { return nil }
-            try? FileManager.default.startDownloadingUbiquitousItem(at: fileURL)
-            let delays: [UInt64] = [300, 500, 1_000, 1_500, 2_000, 3_000, 4_000, 5_000]
-            for delay in delays {
-                if let data = try? Data(contentsOf: fileURL),
-                   let img = UIImage(data: data) { return img }
-                try? await Task.sleep(nanoseconds: delay * 1_000_000)
-            }
-            return (try? Data(contentsOf: fileURL)).flatMap { UIImage(data: $0) }
-        }
-        guard let url = URL(string: urlString),
-              let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
-        return UIImage(data: data)
-    }
-}
-
 // MARK: - Interaction Detail Sheet
 
 private struct InteractionDetailSheet: View {
@@ -1165,18 +1119,6 @@ private struct InteractionDetailSheet: View {
                 if let notes = interaction.notes, !notes.isEmpty {
                     Section("Notes") {
                         Text(notes).font(.body)
-                    }
-                }
-                if !interaction.photoURLs.isEmpty {
-                    Section("Photos") {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 10) {
-                                ForEach(interaction.photoURLs, id: \.self) { urlString in
-                                    InteractionPhotoTile(urlString: urlString, size: 160)
-                                }
-                            }
-                            .padding(.vertical, 4)
-                        }
                     }
                 }
                 Section {

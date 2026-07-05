@@ -94,12 +94,30 @@ enum iOSDocumentScanService {
 
     private static func scanImage(at url: URL, filename: String,
                                    existingTags: [String], userContext: String) async throws -> DocumentScanResult {
-        guard let data = try? Data(contentsOf: url) else {
+        guard let rawData = try? Data(contentsOf: url) else {
             throw iOSDocumentScanError.noContent
         }
+        // Resize to max 1024px before sending — iPhone photos are 3-5 MB and make
+        // the base64 payload huge. Resizing cuts upload time from minutes to seconds.
+        let data = await Task.detached(priority: .userInitiated) {
+            resizeImageData(rawData, maxDimension: 1024)
+        }.value
         let prompt = buildPrompt(content: nil, existingTags: existingTags,
                                  isText: false, filename: filename, userContext: userContext)
         return try await callClaude(imageData: data, textPrompt: prompt)
+    }
+
+    // MARK: - Image resize helper
+
+    private static func resizeImageData(_ data: Data, maxDimension: CGFloat) -> Data {
+        guard let image = UIImage(data: data) else { return data }
+        let size = image.size
+        guard size.width > maxDimension || size.height > maxDimension else { return data }
+        let scale = maxDimension / max(size.width, size.height)
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let resized = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: newSize)) }
+        return resized.jpegData(compressionQuality: 0.85) ?? data
     }
 
     // MARK: - Prompt
@@ -167,7 +185,7 @@ enum iOSDocumentScanService {
     // MARK: - Shared sender
 
     private static func sendRequest(body: [String: Any]) async throws -> DocumentScanResult {
-        var req = URLRequest(url: endpoint)
+        var req = URLRequest(url: endpoint, timeoutInterval: 30)
         req.httpMethod = "POST"
         req.setValue(apiKey,             forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01",       forHTTPHeaderField: "anthropic-version")

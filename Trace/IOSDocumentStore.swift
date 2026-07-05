@@ -132,6 +132,14 @@ class iOSDocumentStore {
         try noteStore.writeDocument(data, category: "Inbox", filename: filename)
     }
 
+    // MARK: - Delete
+
+    func deleteDocument(_ doc: TraceMacDocument) throws {
+        try noteStore.deleteFile(doc.relativePath)
+        // Best-effort sidecar removal — ignore if it doesn't exist.
+        try? noteStore.deleteFile(doc.sidecarPath)
+    }
+
     // MARK: - Move
 
     func moveDocument(_ doc: TraceMacDocument, to newCategory: String) throws {

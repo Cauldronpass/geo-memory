@@ -904,7 +904,37 @@ struct HomeView: View {
 
     @ViewBuilder
     private var thingsSection: some View {
-        if things.shouldShow {
+        if !things.shouldShow && things.isConfigured {
+            let thingsGreen = Color(red: 0.114, green: 0.620, blue: 0.459)
+            sectionCard {
+                HStack(spacing: 8) {
+                    Image(systemName: things.isLoading ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(things.isLoading ? "Connecting to Things…" : "Things unreachable")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        if let err = things.lastError, !things.isLoading {
+                            Text(err)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(2)
+                        }
+                    }
+                    Spacer()
+                    Button {
+                        UIApplication.shared.open(URL(string: "things:///show?id=today")!)
+                    } label: {
+                        Text("Open →")
+                            .font(.system(size: 10))
+                            .foregroundStyle(thingsGreen)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.vertical, 4)
+            }
+        } else if things.shouldShow {
             let shown = Array(things.tasks.prefix(5))
             let thingsGreen = Color(red: 0.114, green: 0.620, blue: 0.459)
             VStack(alignment: .leading, spacing: 5) {

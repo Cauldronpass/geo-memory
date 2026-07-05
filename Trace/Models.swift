@@ -85,8 +85,9 @@ struct Interaction: Identifiable {
     let id: String
     var summary: String
     var date: Date
-    var type: String        // call / email / meeting / coffee / other (Notion select values)
+    var type: String        // visit / dinner / lunch / coffee / call / video call / text / email / meeting / event / workout / other
     var notes: String?
+    var photoURLs: [String] // stored as "Photo URLs" rich_text on the Notion page (newline-separated URLs)
     var personIDs: [String] // relation to People DB
     var visitID: String?    // Related Visit relation (optional)
 }

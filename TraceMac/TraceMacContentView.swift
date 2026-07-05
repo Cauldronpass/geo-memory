@@ -3,6 +3,7 @@
 // Mac-only — do not add to iOS, Widget, or Share Extension targets.
 
 import SwiftUI
+import MapKit
 import UniformTypeIdentifiers
 
 // MARK: - Sidebar sections
@@ -17,6 +18,7 @@ enum MacSection: String, CaseIterable, Identifiable {
     case billiards = "Billiards"
     case fitness   = "Fitness"
     case documents = "Documents"
+    case photos    = "Photos"
     case inbox     = "Inbox"
     case archive   = "Archive"
 
@@ -33,6 +35,7 @@ enum MacSection: String, CaseIterable, Identifiable {
         case .billiards: return "circle.grid.3x3"
         case .fitness:   return "figure.run"
         case .documents: return "doc.richtext"
+        case .photos:    return "photo.stack"
         case .inbox:     return "tray"
         case .archive:   return "archivebox"
         }
@@ -49,6 +52,7 @@ enum MacSection: String, CaseIterable, Identifiable {
         case .billiards: return Color(hex: "2563EB")
         case .fitness:   return Color(hex: "16A34A")
         case .documents: return Color(hex: "8B5CF6")
+        case .photos:    return Color(hex: "DB2777")
         case .inbox:     return .gray
         case .archive:   return Color(hex: "92400E")
         }
@@ -127,6 +131,23 @@ struct TraceMacContentView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .navigateToRecord)) { note in
+            guard let type = note.userInfo?["type"] as? String,
+                  let id   = note.userInfo?["id"]   as? String else { return }
+            switch type {
+            case "person":
+                selectedSection = .people
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    NotificationCenter.default.post(name: .selectPerson, object: nil, userInfo: ["id": id])
+                }
+            case "place":
+                selectedSection = .places
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    NotificationCenter.default.post(name: .selectPlace, object: nil, userInfo: ["id": id])
+                }
+            default: break
+            }
+        }
         .task {
             async let p: ()  = notionService.fetchPlaces()
             async let pe: () = notionService.fetchPeople()
@@ -172,6 +193,7 @@ struct TraceMacContentView: View {
     private var sidebar: some View {
         List(selection: $selectedSection) {
             coloredLabel(.home).tag(MacSection.home)
+            coloredLabel(.inbox).tag(MacSection.inbox)
 
             Section("Journal") {
                 ForEach([MacSection.daily, .projects, .horizons]) { section in
@@ -188,7 +210,7 @@ struct TraceMacContentView: View {
             }
             Section("Library") {
                 coloredLabel(.documents).tag(MacSection.documents)
-                coloredLabel(.inbox).tag(MacSection.inbox)
+                coloredLabel(.photos).tag(MacSection.photos)
             }
             Section("Archive") {
                 coloredLabel(.archive).tag(MacSection.archive)
@@ -248,6 +270,10 @@ struct TraceMacContentView: View {
         case .documents:
             TraceMacDocumentsView()
                 .environment(noteStore)
+        case .photos:
+            TraceMacPhotosView()
+                .environment(noteStore)
+                .environment(notionService)
         case .inbox:
             TraceMacInboxView()
                 .environment(noteStore)
@@ -268,8 +294,20 @@ struct TraceMacPlacesView: View {
     @State private var selectedID: String?    = nil
     @State private var searchText              = ""
     @State private var showAllVisits           = false
+    @State private var sidebarVisitDetail: Visit? = nil
 
-    private var filtered: [Place] {
+    // Resizable sidebar
+    @State private var listCollapsed = false
+    @State private var sidebarWidth: CGFloat = 220
+    @GestureState private var sidebarDrag: CGFloat = 0
+
+    // Sidebar mode
+    enum SidebarMode { case places, visits }
+    @State private var sidebarMode: SidebarMode = .places
+    @State private var hasLoadedVisits = false
+    @State private var isLoadingVisits = false
+
+    private var filteredPlaces: [Place] {
         let sorted = notionService.places.sorted {
             $0.name.localizedCompare($1.name) == .orderedAscending
         }
@@ -281,6 +319,16 @@ struct TraceMacPlacesView: View {
         }
     }
 
+    private var filteredVisits: [Visit] {
+        let sorted = notionService.visits.sorted { $0.date > $1.date }
+        guard !searchText.isEmpty else { return sorted }
+        let q = searchText.lowercased()
+        return sorted.filter {
+            $0.placeName.lowercased().contains(q) ||
+            ($0.notes?.lowercased().contains(q) ?? false)
+        }
+    }
+
     private var selectedPlace: Place? {
         guard let id = selectedID else { return nil }
         return notionService.places.first { $0.id == id }
@@ -288,67 +336,25 @@ struct TraceMacPlacesView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Left: place list
-            VStack(spacing: 0) {
-                // Header row
-                HStack {
-                    Text("Places")
-                        .font(.headline)
-                    Spacer()
-                    Button {
-                        showAllVisits = true
-                    } label: {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .help("All Visits")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-                .padding(.bottom, 4)
-
-                TextField("Search places", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 6)
-
-                List(filtered, id: \.id, selection: $selectedID) { place in
-                    HStack(alignment: .center, spacing: 6) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(place.name)
-                                .font(.system(.body, weight: .medium))
-                                .lineLimit(1)
-                            if !place.city.isEmpty {
-                                Text(place.city)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+            if !listCollapsed {
+                placesSidebar
+                    .frame(width: max(160, sidebarWidth + sidebarDrag))
+                // Resize strip
+                Rectangle()
+                    .fill(Color.primary.opacity(0.001))
+                    .frame(width: 6)
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .updating($sidebarDrag) { v, state, _ in
+                                state = v.translation.width
                             }
-                        }
-                        Spacer(minLength: 0)
-                        if place.visitCount > 0 {
-                            Text("\(place.visitCount)")
-                                .font(.caption2)
-                                .fontWeight(.medium)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.12), in: Capsule())
-                        }
-                    }
-                    .padding(.vertical, 3)
-                    .tag(place.id)
-                }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                .background(Color(nsColor: .windowBackgroundColor))
+                            .onEnded { v in
+                                sidebarWidth = max(160, sidebarWidth + v.translation.width)
+                            }
+                    )
+                    .onHover { h in h ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
             }
-            .frame(width: 220)
-
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(width: 1)
+            CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
 
             // Right: detail or placeholder
             Group {
@@ -372,11 +378,123 @@ struct TraceMacPlacesView: View {
         .onReceive(NotificationCenter.default.publisher(for: .selectPlace)) { note in
             if let id = note.userInfo?["id"] as? String {
                 selectedID = id
+                sidebarMode = .places
             }
         }
         .sheet(isPresented: $showAllVisits) {
             MacAllVisitsView()
                 .environment(notionService)
+        }
+        .sheet(item: $sidebarVisitDetail) { visit in
+            MacVisitDetailView(visit: visit)
+                .environment(notionService)
+        }
+    }
+
+    // MARK: - Sidebar
+
+    private var placesSidebar: some View {
+        VStack(spacing: 0) {
+            TextField("Search", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
+
+            Picker("", selection: $sidebarMode) {
+                Text("Places").tag(SidebarMode.places)
+                Text("Visits").tag(SidebarMode.visits)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 8)
+            .onChange(of: sidebarMode) { _, mode in
+                if mode == .visits && !hasLoadedVisits {
+                    hasLoadedVisits = true
+                    isLoadingVisits = true
+                    Task {
+                        await notionService.fetchVisits()
+                        isLoadingVisits = false
+                    }
+                }
+            }
+
+            Divider()
+
+            if sidebarMode == .places {
+                placesSidebarContent
+            } else {
+                visitsSidebarContent
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var placesSidebarContent: some View {
+        if filteredPlaces.isEmpty {
+            Spacer()
+            Text(notionService.places.isEmpty ? "No places yet." : "No matches.")
+                .font(.callout).foregroundStyle(.secondary)
+            Spacer()
+        } else {
+            List(filteredPlaces, id: \.id, selection: $selectedID) { place in
+                HStack(alignment: .center, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(place.name)
+                            .font(.system(.body, weight: .medium))
+                            .lineLimit(1)
+                        if !place.city.isEmpty {
+                            Text(place.city)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if place.visitCount > 0 {
+                        Text("\(place.visitCount)")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.12), in: Capsule())
+                    }
+                }
+                .padding(.vertical, 3)
+                .tag(place.id)
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(Color(nsColor: .windowBackgroundColor))
+        }
+    }
+
+    @ViewBuilder
+    private var visitsSidebarContent: some View {
+        if isLoadingVisits {
+            Spacer()
+            ProgressView("Loading…").frame(maxWidth: .infinity)
+            Spacer()
+        } else if filteredVisits.isEmpty {
+            Spacer()
+            Text(notionService.visits.isEmpty ? "No visits yet." : "No matches.")
+                .font(.callout).foregroundStyle(.secondary)
+            Spacer()
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(filteredVisits) { visit in
+                        Button {
+                            sidebarVisitDetail = visit
+                        } label: {
+                            SidebarVisitRow(visit: visit)
+                        }
+                        .buttonStyle(.plain)
+                        Divider().padding(.leading, 12)
+                    }
+                }
+            }
         }
     }
 }
@@ -728,6 +846,62 @@ private struct MacVisitRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+}
+
+// MARK: - SidebarVisitRow (compact, used in Places sidebar Visits mode)
+
+private struct SidebarVisitRow: View {
+    let visit: Visit
+    @Environment(NotionService.self) private var notionService
+
+    private var place: Place? {
+        notionService.places.first { $0.id == visit.placeID }
+    }
+    private var companions: [Person] {
+        notionService.people.filter { visit.peopleIDs.contains($0.id) }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(placeColor(for: place?.category ?? "").opacity(0.15))
+                    .frame(width: 28, height: 28)
+                Image(systemName: placeIcon(for: place?.category ?? ""))
+                    .font(.system(size: 12))
+                    .foregroundStyle(placeColor(for: place?.category ?? ""))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(visit.placeName)
+                    .font(.system(.callout, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(visit.date, style: .date)
+                    if let city = place?.city, !city.isEmpty {
+                        Text("·"); Text(city)
+                    }
+                    if let r = visit.rating {
+                        Text("·"); Text("\(r)/7")
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                if !companions.isEmpty {
+                    Text(companions.prefix(3).map {
+                        $0.name.components(separatedBy: " ").first ?? $0.name
+                    }.joined(separator: ", "))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
     }
 }
 
@@ -1110,6 +1284,50 @@ struct TraceMacPlaceDetail: View {
 
 // MARK: - Mac supporting views
 
+/// Displays a photo from either a NoteStore relative path ("Photos/...") or a remote HTTPS URL.
+struct MacNoteStorePhotoView: View {
+    let urlString: String
+    let size: CGFloat
+
+    @State private var nsImage: NSImage?
+
+    var body: some View {
+        Group {
+            if let img = nsImage {
+                Image(nsImage: img)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(width: size, height: size)
+                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+            }
+        }
+        .task(id: urlString) { nsImage = await loadImage() }
+    }
+
+    private func loadImage() async -> NSImage? {
+        if urlString.hasPrefix("Photos/") {
+            guard let fileURL = NoteStore.shared.resolvedURL(for: urlString) else { return nil }
+            try? FileManager.default.startDownloadingUbiquitousItem(at: fileURL)
+            let delays: [UInt64] = [300, 500, 1_000, 1_500, 2_000, 3_000]
+            for delay in delays {
+                if let img = NSImage(contentsOf: fileURL) { return img }
+                try? await Task.sleep(nanoseconds: delay * 1_000_000)
+            }
+            return NSImage(contentsOf: fileURL)
+        } else if let url = URL(string: urlString) {
+            guard let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+            return NSImage(data: data)
+        }
+        return nil
+    }
+}
+
 private struct MacDetailRow<Content: View>: View {
     let label: String
     @ViewBuilder let content: () -> Content
@@ -1180,6 +1398,9 @@ struct MacVisitDetailView: View {
     @State private var date: Date
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var showDatePopover = false
+    @State private var showingDeleteConfirm = false
+    @State private var isDeleting = false
 
     init(visit: Visit) {
         self.visit = visit
@@ -1232,6 +1453,25 @@ struct MacVisitDetailView: View {
             .padding(.vertical, 12)
             .background(Color(nsColor: .windowBackgroundColor))
 
+            // Go to Place link
+            Button {
+                dismiss()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    NotificationCenter.default.post(
+                        name: .navigateToRecord, object: nil,
+                        userInfo: ["type": "place", "id": visit.placeID]
+                    )
+                }
+            } label: {
+                Label("Go to \(visit.placeName)", systemImage: "arrow.right.circle")
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 8)
+
             Divider()
 
             ScrollView {
@@ -1239,8 +1479,18 @@ struct MacVisitDetailView: View {
 
                     // Date
                     MacDetailRow(label: "Date") {
-                        DatePicker("", selection: $date, displayedComponents: .date)
-                            .labelsHidden()
+                        Button { showDatePopover.toggle() } label: {
+                            Text(date.formatted(date: .abbreviated, time: .omitted))
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showDatePopover, arrowEdge: .bottom) {
+                            DatePicker("", selection: $date, displayedComponents: .date)
+                                .datePickerStyle(.graphical).labelsHidden().padding().frame(width: 280)
+                        }
                     }
 
                     // Rating
@@ -1351,14 +1601,57 @@ struct MacVisitDetailView: View {
                         }
                     }
 
+                    // Map
+                    if let place = livePlace, place.latitude != 0 || place.longitude != 0 {
+                        MacDetailRow(label: "Location") {
+                            let coord = CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude)
+                            Map(initialPosition: .region(MKCoordinateRegion(
+                                center: coord,
+                                span: MKCoordinateSpan(latitudeDelta: 0.008, longitudeDelta: 0.008)
+                            ))) {
+                                Marker(place.name, coordinate: coord)
+                            }
+                            .frame(height: 180)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
+                        }
+                    }
+
                     if let err = errorMessage {
                         Text(err).font(.caption).foregroundStyle(.red)
                     }
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        showingDeleteConfirm = true
+                    } label: {
+                        if isDeleting {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Label("Delete Visit", systemImage: "trash")
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isDeleting)
                 }
                 .padding(20)
             }
         }
-        .frame(width: 560, height: 600)
+        .frame(width: 560, height: 660)
+        .confirmationDialog(
+            "Delete this visit to \(visit.placeName)?",
+            isPresented: $showingDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteVisit() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the visit from Notion. It will no longer count toward this place's visit total.")
+        }
     }
 
     private func save() async {
@@ -1377,6 +1670,19 @@ struct MacVisitDetailView: View {
             isSaving = false
         }
     }
+
+    private func deleteVisit() async {
+        isDeleting = true
+        errorMessage = nil
+        do {
+            try await notionService.deleteVisit(id: visit.id)
+            await notionService.fetchVisits()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+            isDeleting = false
+        }
+    }
 }
 
 // MARK: - TraceMacHomeView
@@ -1389,13 +1695,20 @@ struct TraceMacHomeView: View {
     @State private var dailyContent = ""
     @State private var dailyLoaded  = false
 
+    // Visit detail sheet
+    @State private var selectedVisit: Visit? = nil
+
     // Interaction / agenda sheets
     @State private var showAddInteraction  = false
     @State private var logInteractionPerson: Person? = nil
     @State private var editInteraction: Interaction? = nil
     @State private var editInteractionPerson: Person? = nil
     @State private var agendaPerson: Person? = nil
+    @State private var showAddAgenda = false
     @State private var hoveredPersonID: String? = nil
+
+    // Visit sheet
+    @State private var showAddVisit = false
 
     // MARK: Time-of-day theme
 
@@ -1450,32 +1763,42 @@ struct TraceMacHomeView: View {
     }
 
     private struct PersonSighting: Identifiable {
-        let person: Person; let lastSeen: Date
+        enum Source {
+            case visit(placeName: String)
+            case interaction(type: String)
+        }
+        let person: Person
+        let lastSeen: Date
+        let source: Source
         var id: String { person.id }
     }
 
     private var recentPeople: [PersonSighting] {
-        var seen: [String: Date] = [:]
+        var seen: [String: (date: Date, source: PersonSighting.Source)] = [:]
         // Visit-based contacts
         for visit in notionService.visits.sorted(by: { $0.date > $1.date }).prefix(30) {
             for pid in visit.peopleIDs {
-                if seen[pid] == nil { seen[pid] = visit.date }
+                if seen[pid] == nil {
+                    seen[pid] = (date: visit.date, source: .visit(placeName: visit.placeName))
+                }
             }
         }
-        // Interaction-based contacts (take most recent date from either source)
+        // Interaction-based contacts — override if more recent
         for interaction in notionService.recentInteractions {
             for pid in interaction.personIDs {
                 if let existing = seen[pid] {
-                    if interaction.date > existing { seen[pid] = interaction.date }
+                    if interaction.date > existing.date {
+                        seen[pid] = (date: interaction.date, source: .interaction(type: interaction.type))
+                    }
                 } else {
-                    seen[pid] = interaction.date
+                    seen[pid] = (date: interaction.date, source: .interaction(type: interaction.type))
                 }
             }
         }
         return seen
-            .compactMap { id, date -> PersonSighting? in
+            .compactMap { id, entry -> PersonSighting? in
                 notionService.people.first { $0.id == id }
-                    .map { PersonSighting(person: $0, lastSeen: date) }
+                    .map { PersonSighting(person: $0, lastSeen: entry.date, source: entry.source) }
             }
             .sorted { $0.lastSeen > $1.lastSeen }
             .prefix(8)
@@ -1613,6 +1936,13 @@ struct TraceMacHomeView: View {
             HStack {
                 homeLabel("Recent Visits")
                 Spacer()
+                Button { showAddVisit = true } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Log visit")
                 Button { selectedSection = .places } label: {
                     Text("All →").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -1629,11 +1959,7 @@ struct TraceMacHomeView: View {
                             Divider().padding(.horizontal, 12)
                         }
                         Button {
-                            selectedSection = .places
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                NotificationCenter.default.post(name: .selectPlace, object: nil,
-                                                                userInfo: ["id": visit.placeID])
-                            }
+                            selectedVisit = visit
                         } label: {
                             HStack(spacing: 10) {
                                 ZStack {
@@ -1676,6 +2002,10 @@ struct TraceMacHomeView: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .sheet(isPresented: $showAddVisit) {
+            MacCheckInSheet()
+                .environment(notionService)
+        }
     }
 
     // MARK: - Recent people card
@@ -1692,6 +2022,13 @@ struct TraceMacHomeView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Log interaction")
+                Button { showAddAgenda = true } label: {
+                    Image(systemName: "list.bullet.circle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Edit agenda")
                 Button { selectedSection = .people } label: {
                     Text("All →").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -1710,9 +2047,9 @@ struct TraceMacHomeView: View {
                             .compactMap { $0.first.map { String($0) } }
                             .prefix(2).joined()
                         let colors = macAvatarColors(sighting.person.name)
+                        let isHovered = hoveredPersonID == sighting.person.id
                         let lastInteraction = notionService.recentInteractions
                             .first { $0.personIDs.contains(sighting.person.id) }
-                        let isHovered = hoveredPersonID == sighting.person.id
                         HStack(spacing: 0) {
                             Button {
                                 selectedSection = .people
@@ -1727,12 +2064,15 @@ struct TraceMacHomeView: View {
                                         .foregroundStyle(colors.text)
                                         .frame(width: 28, height: 28)
                                         .background(colors.bg, in: Circle())
-                                    VStack(alignment: .leading, spacing: 1) {
+                                    VStack(alignment: .leading, spacing: 2) {
                                         Text(sighting.person.name)
                                             .font(.system(.subheadline, weight: .medium))
                                             .foregroundStyle(.primary).lineLimit(1)
-                                        Text(macRelativeDate(sighting.lastSeen))
-                                            .font(.caption).foregroundStyle(.secondary)
+                                        HStack(spacing: 5) {
+                                            Text(macRelativeDate(sighting.lastSeen))
+                                                .font(.caption).foregroundStyle(.secondary)
+                                            sourcePill(sighting.source)
+                                        }
                                     }
                                     Spacer(minLength: 0)
                                 }
@@ -1805,6 +2145,10 @@ struct TraceMacHomeView: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .sheet(item: $selectedVisit) { visit in
+            MacVisitDetailView(visit: visit)
+                .environment(notionService)
+        }
         .sheet(isPresented: $showAddInteraction) {
             MacLogInteractionSheet(preselectedPerson: nil)
                 .environment(notionService)
@@ -1818,7 +2162,11 @@ struct TraceMacHomeView: View {
                 .environment(notionService)
         }
         .sheet(item: $agendaPerson) { person in
-            MacAgendaSheet(person: person)
+            MacAgendaSheet(preselectedPerson: person)
+                .environment(notionService)
+        }
+        .sheet(isPresented: $showAddAgenda) {
+            MacAgendaSheet()
                 .environment(notionService)
         }
     }
@@ -1837,6 +2185,26 @@ struct TraceMacHomeView: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func sourcePill(_ source: PersonSighting.Source) -> some View {
+        switch source {
+        case .visit(let placeName):
+            Text(placeName.isEmpty ? "Visit" : placeName)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .padding(.horizontal, 5).padding(.vertical, 2)
+                .background(Color.green.opacity(0.85), in: Capsule())
+                .frame(maxWidth: 90)
+        case .interaction(let type):
+            Text(type.capitalized)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5).padding(.vertical, 2)
+                .background(Color.purple.opacity(0.80), in: Capsule())
+        }
     }
 
     private func macRelativeDate(_ date: Date) -> String {
@@ -1867,16 +2235,22 @@ struct MacLogInteractionSheet: View {
     @Environment(NotionService.self) private var notionService
     @Environment(\.dismiss) private var dismiss
 
-    @State private var personSearch  = ""
+    @State private var personSearch   = ""
     @State private var selectedPerson: Person? = nil
-    @State private var date          = Date()
-    @State private var type          = "other"
-    @State private var summary       = ""
-    @State private var notes         = ""
-    @State private var isSaving      = false
+    @State private var date           = Date()
+    @State private var type           = "other"
+    @State private var summary        = ""
+    @State private var notes          = ""
+    @State private var isSaving       = false
     @State private var saveError: String?
+    @State private var pendingPhotos: [NSImage] = []
+    @State private var showingPhotoPicker = false
+    @State private var isDropTargeted    = false
 
-    private let types = ["call", "email", "meeting", "coffee", "other"]
+    private let types = [
+        "visit", "dinner", "lunch", "coffee", "call", "video call",
+        "text", "email", "meeting", "event", "workout", "other"
+    ]
 
     private var filteredPeople: [Person] {
         guard selectedPerson == nil, !personSearch.isEmpty else { return [] }
@@ -1937,10 +2311,25 @@ struct MacLogInteractionSheet: View {
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Type").font(.caption).foregroundStyle(.secondary)
-                    Picker("", selection: $type) {
-                        ForEach(types, id: \.self) { Text($0.capitalized).tag($0) }
+                    Menu {
+                        ForEach(types, id: \.self) { t in
+                            Button(t.capitalized) { type = t }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(type.capitalized)
+                                .foregroundStyle(.primary)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(Color(nsColor: .controlBackgroundColor),
+                                    in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1))
                     }
-                    .pickerStyle(.menu).labelsHidden()
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -1960,6 +2349,88 @@ struct MacLogInteractionSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
             }
 
+            // Photos
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Photos").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        showingPhotoPicker = true
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.purple)
+                }
+
+                if pendingPhotos.isEmpty {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isDropTargeted ? Color.purple.opacity(0.1) : Color.secondary.opacity(0.06))
+                        .frame(height: 56)
+                        .overlay(
+                            VStack(spacing: 3) {
+                                Image(systemName: "photo.badge.plus")
+                                    .foregroundStyle(isDropTargeted ? .purple : .secondary)
+                                Text("Drop photos here or click Add")
+                                    .font(.caption).foregroundStyle(.tertiary)
+                            }
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(isDropTargeted ? Color.purple.opacity(0.4) : Color.clear, lineWidth: 1.5)
+                        )
+                        .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
+                            handleDrop(providers)
+                        }
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(pendingPhotos.indices, id: \.self) { i in
+                                ZStack(alignment: .topTrailing) {
+                                    Image(nsImage: pendingPhotos[i])
+                                        .resizable().scaledToFill()
+                                        .frame(width: 72, height: 72)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    Button {
+                                        pendingPhotos.remove(at: i)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .symbolRenderingMode(.palette)
+                                            .foregroundStyle(Color.white, Color.black.opacity(0.45))
+                                            .font(.system(size: 15))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(3)
+                                }
+                            }
+                            Button {
+                                showingPhotoPicker = true
+                            } label: {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.secondary.opacity(0.1))
+                                    .frame(width: 72, height: 72)
+                                    .overlay(Image(systemName: "plus").foregroundStyle(.secondary))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .fileImporter(
+                isPresented: $showingPhotoPicker,
+                allowedContentTypes: [.image],
+                allowsMultipleSelection: true
+            ) { result in
+                if case .success(let urls) = result {
+                    for url in urls {
+                        let _ = url.startAccessingSecurityScopedResource()
+                        if let img = NSImage(contentsOf: url) { pendingPhotos.append(img) }
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+            }
+
             if let err = saveError {
                 Text(err).font(.caption).foregroundStyle(.red)
             }
@@ -1976,13 +2447,41 @@ struct MacLogInteractionSheet: View {
         .frame(width: 460)
     }
 
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            if provider.canLoadObject(ofClass: NSImage.self) {
+                _ = provider.loadObject(ofClass: NSImage.self) { obj, _ in
+                    if let img = obj as? NSImage {
+                        DispatchQueue.main.async { pendingPhotos.append(img) }
+                    }
+                }
+                handled = true
+            }
+        }
+        return handled
+    }
+
     private func save() {
         guard let person = selectedPerson ?? preselectedPerson else { return }
         isSaving = true
         Task {
             do {
-                try await notionService.createInteraction(
+                let interaction = try await notionService.createInteraction(
                     personID: person.id, summary: summary, date: date, type: type, notes: notes)
+                // Upload photos after the page exists
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+                for (i, photo) in pendingPhotos.enumerated() {
+                    if let tiff = photo.tiffRepresentation,
+                       let bmp = NSBitmapImageRep(data: tiff),
+                       let jpeg = bmp.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
+                        let filename = "interaction-\(formatter.string(from: date))-\(i).jpg"
+                        let path = try NoteStore.shared.writePhoto(jpeg, category: "Interactions", filename: filename)
+                        try await notionService.addPhotoToPage(interaction.id, photoURL: path)
+                    }
+                }
                 await notionService.fetchRecentInteractions()
                 dismiss()
             } catch {
@@ -2001,14 +2500,20 @@ struct MacEditInteractionSheet: View {
     @Environment(NotionService.self) private var notionService
     @Environment(\.dismiss) private var dismiss
 
-    @State private var date    = Date()
-    @State private var type    = "other"
-    @State private var summary = ""
-    @State private var notes   = ""
-    @State private var isSaving   = false
+    @State private var date           = Date()
+    @State private var type           = "other"
+    @State private var summary        = ""
+    @State private var notes          = ""
+    @State private var isSaving       = false
     @State private var saveError: String?
+    @State private var pendingPhotos: [NSImage] = []
+    @State private var showingPhotoPicker = false
+    @State private var isDropTargeted    = false
 
-    private let types = ["call", "email", "meeting", "coffee", "other"]
+    private let types = [
+        "visit", "dinner", "lunch", "coffee", "call", "video call",
+        "text", "email", "meeting", "event", "workout", "other"
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2033,10 +2538,25 @@ struct MacEditInteractionSheet: View {
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Type").font(.caption).foregroundStyle(.secondary)
-                    Picker("", selection: $type) {
-                        ForEach(types, id: \.self) { Text($0.capitalized).tag($0) }
+                    Menu {
+                        ForEach(types, id: \.self) { t in
+                            Button(t.capitalized) { type = t }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(type.capitalized)
+                                .foregroundStyle(.primary)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(Color(nsColor: .controlBackgroundColor),
+                                    in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1))
                     }
-                    .pickerStyle(.menu).labelsHidden()
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -2052,6 +2572,99 @@ struct MacEditInteractionSheet: View {
                     .font(.body)
                     .frame(minHeight: 60)
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+            }
+
+            // Photos
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Photos").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        showingPhotoPicker = true
+                    } label: {
+                        Label("Add", systemImage: "plus").font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.purple)
+                }
+
+                let existingURLs = interaction.photoURLs
+                let hasAny = !existingURLs.isEmpty || !pendingPhotos.isEmpty
+
+                if !hasAny {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isDropTargeted ? Color.purple.opacity(0.1) : Color.secondary.opacity(0.06))
+                        .frame(height: 56)
+                        .overlay(
+                            VStack(spacing: 3) {
+                                Image(systemName: "photo.badge.plus")
+                                    .foregroundStyle(isDropTargeted ? .purple : .secondary)
+                                Text("Drop photos here or click Add")
+                                    .font(.caption).foregroundStyle(.tertiary)
+                            }
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(isDropTargeted ? Color.purple.opacity(0.4) : Color.clear, lineWidth: 1.5)
+                        )
+                        .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
+                            handleDrop(providers)
+                        }
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            // Existing photos (read display only)
+                            ForEach(existingURLs, id: \.self) { urlString in
+                                MacNoteStorePhotoView(urlString: urlString, size: 72)
+                            }
+                            // Pending new photos (removable)
+                            ForEach(pendingPhotos.indices, id: \.self) { i in
+                                ZStack(alignment: .topTrailing) {
+                                    Image(nsImage: pendingPhotos[i])
+                                        .resizable().scaledToFill()
+                                        .frame(width: 72, height: 72)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    Button {
+                                        pendingPhotos.remove(at: i)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .symbolRenderingMode(.palette)
+                                            .foregroundStyle(Color.white, Color.black.opacity(0.45))
+                                            .font(.system(size: 15))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(3)
+                                }
+                            }
+                            // Add more button
+                            Button {
+                                showingPhotoPicker = true
+                            } label: {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.secondary.opacity(0.1))
+                                    .frame(width: 72, height: 72)
+                                    .overlay(Image(systemName: "plus").foregroundStyle(.secondary))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
+                        handleDrop(providers)
+                    }
+                }
+            }
+            .fileImporter(
+                isPresented: $showingPhotoPicker,
+                allowedContentTypes: [.image],
+                allowsMultipleSelection: true
+            ) { result in
+                if case .success(let urls) = result {
+                    for url in urls {
+                        let _ = url.startAccessingSecurityScopedResource()
+                        if let img = NSImage(contentsOf: url) { pendingPhotos.append(img) }
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
             }
 
             if let err = saveError {
@@ -2076,12 +2689,42 @@ struct MacEditInteractionSheet: View {
         }
     }
 
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            if provider.canLoadObject(ofClass: NSImage.self) {
+                _ = provider.loadObject(ofClass: NSImage.self) { obj, _ in
+                    if let img = obj as? NSImage {
+                        DispatchQueue.main.async { pendingPhotos.append(img) }
+                    }
+                }
+                handled = true
+            }
+        }
+        return handled
+    }
+
     private func save() {
         isSaving = true
         Task {
             do {
                 try await notionService.updateInteraction(
                     id: interaction.id, summary: summary, type: type, date: date, notes: notes)
+                // Upload any new photos
+                if !pendingPhotos.isEmpty {
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "en_US_POSIX")
+                    formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+                    for (i, photo) in pendingPhotos.enumerated() {
+                        if let tiff = photo.tiffRepresentation,
+                           let bmp = NSBitmapImageRep(data: tiff),
+                           let jpeg = bmp.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
+                            let filename = "interaction-\(formatter.string(from: date))-\(i).jpg"
+                            let path = try NoteStore.shared.writePhoto(jpeg, category: "Interactions", filename: filename)
+                            try await notionService.addPhotoToPage(interaction.id, photoURL: path)
+                        }
+                    }
+                }
                 await notionService.fetchRecentInteractions()
                 dismiss()
             } catch {
@@ -2095,44 +2738,110 @@ struct MacEditInteractionSheet: View {
 // MARK: - MacAgendaSheet
 
 struct MacAgendaSheet: View {
-    let person: Person
+    // nil = home-screen entry point; presents a search picker first.
+    // Row-level entry points (peopleCard hover/context-menu) still pass a fixed person.
+    var preselectedPerson: Person? = nil
     @Environment(NotionService.self) private var notionService
     @Environment(\.dismiss) private var dismiss
 
+    @State private var selectedPerson: Person?
+    @State private var personSearch = ""
     @State private var agenda    = ""
     @State private var isSaving  = false
     @State private var saveError: String?
 
+    init(preselectedPerson: Person? = nil) {
+        self.preselectedPerson = preselectedPerson
+        _selectedPerson = State(initialValue: preselectedPerson)
+        _agenda         = State(initialValue: preselectedPerson?.agenda ?? "")
+    }
+
+    private var filteredPeople: [Person] {
+        let q = personSearch.trimmingCharacters(in: .whitespaces).lowercased()
+        let all = notionService.people
+            .filter { !$0.isArchived }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return q.isEmpty ? all : all.filter { $0.name.lowercased().contains(q) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Agenda — \(person.name)")
-                .font(.headline)
-            Text("One item per line. Shows as talking points in 1:1 meetings.")
-                .font(.caption).foregroundStyle(.secondary)
+            if let person = selectedPerson {
+                HStack {
+                    Text("Agenda — \(person.name)").font(.headline)
+                    // Only offer to change the person when we got here via the
+                    // open-ended entry point — row-level entry points are locked.
+                    if preselectedPerson == nil {
+                        Spacer()
+                        Button {
+                            selectedPerson = nil
+                            agenda = ""
+                            personSearch = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Text("One item per line. Shows as talking points in 1:1 meetings.")
+                    .font(.caption).foregroundStyle(.secondary)
 
-            TextEditor(text: $agenda)
-                .font(.body)
-                .frame(minHeight: 160)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                TextEditor(text: $agenda)
+                    .font(.body)
+                    .frame(minHeight: 160)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
 
-            if let err = saveError {
-                Text(err).font(.caption).foregroundStyle(.red)
-            }
+                if let err = saveError {
+                    Text(err).font(.caption).foregroundStyle(.red)
+                }
 
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(.plain).foregroundStyle(.secondary)
-                Button("Save") { save() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isSaving)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { dismiss() }.buttonStyle(.plain).foregroundStyle(.secondary)
+                    Button("Save") { save() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isSaving)
+                }
+            } else {
+                Text("Edit Agenda").font(.headline)
+                TextField("Search people…", text: $personSearch)
+                    .textFieldStyle(.roundedBorder)
+                if filteredPeople.isEmpty {
+                    Text("No matches.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(filteredPeople.prefix(8)) { p in
+                                Button {
+                                    selectedPerson = p
+                                    agenda = p.agenda ?? ""
+                                } label: {
+                                    Text(p.name)
+                                        .foregroundStyle(.primary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 10).padding(.vertical, 7)
+                                }
+                                .buttonStyle(.plain)
+                                if p.id != filteredPeople.prefix(8).last?.id { Divider() }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 220)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { dismiss() }.buttonStyle(.plain).foregroundStyle(.secondary)
+                }
             }
         }
         .padding(24)
         .frame(width: 380)
-        .onAppear { agenda = person.agenda ?? "" }
     }
 
     private func save() {
+        guard let person = selectedPerson else { return }
         isSaving = true
         Task {
             do {
@@ -2348,11 +3057,32 @@ struct MacCheckInSheet: View {
                 date:   date
             )
             await notionService.fetchVisits()
+            logToWeeklyNote(place: place)
             dismiss()
         } catch {
             saveError = error.localizedDescription
             isSaving  = false
         }
+    }
+
+    // Mirrors CheckInView.logToWeeklyNote (iOS) — B9 follow-up: the Mac check-in
+    // sheet called notionService.checkIn directly but never appended the
+    // Check-in Log line to the week's Horizons note, so Mac-added visits never
+    // showed up there. No companions field on this sheet (Mac has no people
+    // picker here), so the line is just time + place + optional rating.
+    private func logToWeeklyNote(place: Place) {
+        let timeFmt = DateFormatter()
+        timeFmt.locale = Locale(identifier: "en_US_POSIX")
+        timeFmt.timeZone = TimeZone.current
+        timeFmt.dateFormat = "h:mm a"
+        let timeStr = timeFmt.string(from: date)
+
+        var parts: [String] = ["\(timeStr) — [[\(place.name)]]"]
+        if let r = rating, r > 0 {
+            parts.append(String(repeating: "★", count: r))
+        }
+
+        try? NoteStore.shared.appendToWeeklyCheckInLog(parts.joined(separator: " "), date: date)
     }
 }
 

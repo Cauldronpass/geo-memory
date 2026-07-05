@@ -40,6 +40,7 @@ final class ThingsService {
     var inboxCount: Int = 0
     var isLoading = false
     private(set) var lastFetched: Date?
+    private(set) var lastError: String?
 
     private let cacheTasksKey    = "things_cache_tasks"
     private let cacheCountKey    = "things_cache_count"
@@ -54,12 +55,15 @@ final class ThingsService {
         return Date().timeIntervalSince(fetched) < maxCacheAge
     }
 
+    /// True when a Things API URL is configured (regardless of whether fetch succeeded).
+    var isConfigured: Bool {
+        guard let url = UserDefaults.standard.string(forKey: "things_api_url"), !url.isEmpty else { return false }
+        return true
+    }
+
     // MARK: - Fetch
 
     func fetch() async {
-        #if targetEnvironment(simulator)
-        return  // Mini server unreachable from simulator; skip to avoid 8-second timeout
-        #endif
         guard let rawURL = UserDefaults.standard.string(forKey: "things_api_url"),
               !rawURL.isEmpty else { return }
 
@@ -69,7 +73,8 @@ final class ThingsService {
         await MainActor.run { isLoading = true }
 
         do {
-            var request = URLRequest(url: url, timeoutInterval: 8)
+            // 4-second timeout — short enough to fail fast in simulator if Mini is unreachable.
+            var request = URLRequest(url: url, timeoutInterval: 4)
             request.cachePolicy = .reloadIgnoringLocalCacheData
             if let token = UserDefaults.standard.string(forKey: "things_api_token"), !token.isEmpty {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -89,7 +94,10 @@ final class ThingsService {
             saveCache()
         } catch {
             // Silent fail — cached data stays visible if within maxCacheAge
-            await MainActor.run { isLoading = false }
+            await MainActor.run {
+                lastError = error.localizedDescription
+                isLoading = false
+            }
         }
     }
 

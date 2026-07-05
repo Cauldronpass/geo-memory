@@ -2,6 +2,8 @@
 // People section — tabbed detail matching iOS PersonDetailView.
 // Mac-only — do not add to iOS, Widget, or Share Extension targets.
 
+#if os(macOS)
+
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
@@ -46,9 +48,18 @@ struct TraceMacPeopleView: View {
     @State private var showDeletePerson = false
     @State private var showEditPerson = false
     @State private var listCollapsed = false
+    @State private var sidebarWidth: CGFloat = 200
+    @GestureState private var sidebarDrag: CGFloat = 0
     @State private var isUploadingPhoto = false
     @State private var avatarHovering = false
     @State private var showArchived = false
+
+    // Sidebar mode — People list vs Interactions view
+    enum SidebarMode { case people, interactions }
+    @State private var sidebarMode: SidebarMode = .people
+    @State private var hasLoadedInteractions = false
+    @State private var sidebarEditInteraction: Interaction? = nil
+    @State private var isLoadingInteractions = false
 
     enum PeopleTab: String, CaseIterable {
         case info     = "Info"
@@ -65,9 +76,48 @@ struct TraceMacPeopleView: View {
         return sorted.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
+    private var agendaPeople: [Person] {
+        notionService.people
+            .filter { !$0.isArchived }
+            .filter {
+                guard let a = $0.agenda, !a.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+                if !searchText.isEmpty {
+                    return $0.name.localizedCaseInsensitiveContains(searchText) ||
+                           a.localizedCaseInsensitiveContains(searchText)
+                }
+                return true
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var filteredRecentInteractions: [Interaction] {
+        guard !searchText.isEmpty else { return notionService.recentInteractions }
+        return notionService.recentInteractions.filter {
+            $0.summary.localizedCaseInsensitiveContains(searchText) ||
+            $0.type.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
-            if !listCollapsed { peopleList }
+            if !listCollapsed {
+                peopleList
+                    .frame(width: max(160, sidebarWidth + sidebarDrag))
+                // Resize strip — must be non-clear to receive hit tests
+                Rectangle()
+                    .fill(Color.primary.opacity(0.001))
+                    .frame(width: 6)
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .updating($sidebarDrag) { v, state, _ in
+                                state = v.translation.width
+                            }
+                            .onEnded { v in
+                                sidebarWidth = max(160, sidebarWidth + v.translation.width)
+                            }
+                    )
+                    .onHover { h in h ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
+            }
             CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
             detailArea.frame(maxWidth: .infinity)
         }
@@ -105,6 +155,15 @@ struct TraceMacPeopleView: View {
                 }
             }
         }
+        .sheet(item: $sidebarEditInteraction) { ix in
+            EditInteractionSheet(interaction: ix, notionService: notionService) { updated in
+                // Update in recentInteractions in-place
+                if let idx = notionService.recentInteractions.firstIndex(where: { $0.id == updated.id }) {
+                    notionService.recentInteractions[idx] = updated
+                }
+                sidebarEditInteraction = nil
+            }
+        }
         .task {
             if notionService.people.isEmpty { await notionService.fetchPeople() }
             if notionService.visits.isEmpty { await notionService.fetchVisits() }
@@ -122,53 +181,149 @@ struct TraceMacPeopleView: View {
         }
     }
 
-    // MARK: - People list
+    // MARK: - People list (sidebar)
 
     private var peopleList: some View {
         VStack(spacing: 0) {
+            // Search + archive toggle
             HStack(spacing: 6) {
                 TextField("Search", text: $searchText)
                     .textFieldStyle(.roundedBorder)
-                Button {
-                    showArchived.toggle()
-                    selectedID = nil
-                } label: {
-                    Image(systemName: showArchived ? "archivebox.fill" : "archivebox")
-                        .foregroundStyle(showArchived ? Color.accentColor : .secondary)
+                if sidebarMode == .people {
+                    Button {
+                        showArchived.toggle()
+                        selectedID = nil
+                    } label: {
+                        Image(systemName: showArchived ? "archivebox.fill" : "archivebox")
+                            .foregroundStyle(showArchived ? Color.accentColor : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(showArchived ? "Showing archived — click to return" : "Show archived")
                 }
-                .buttonStyle(.plain)
-                .help(showArchived ? "Showing archived — click to return" : "Show archived")
             }
             .padding(10)
-            if showArchived {
-                Text("Archived").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.bottom, 4)
+
+            // Segmented mode switcher
+            Picker("", selection: $sidebarMode) {
+                Text("People").tag(SidebarMode.people)
+                Text("Interactions").tag(SidebarMode.interactions)
             }
-            Divider()
-            if filteredPeople.isEmpty {
-                Spacer()
-                Text(showArchived ? "No archived people." : notionService.people.isEmpty ? "No people yet." : "No matches.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Spacer()
-            } else {
-                List(filteredPeople, selection: $selectedID) { person in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(person.name)
-                            .font(.system(.body, weight: .medium))
-                        if let rel = person.relationship {
-                            Text(rel.capitalized)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 8)
+            .onChange(of: sidebarMode) { _, mode in
+                if mode == .interactions && !hasLoadedInteractions {
+                    hasLoadedInteractions = true
+                    isLoadingInteractions = true
+                    Task {
+                        await notionService.fetchRecentInteractions()
+                        isLoadingInteractions = false
                     }
-                    .padding(.vertical, 3)
-                    .tag(person.id)
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                .background(Color(nsColor: .windowBackgroundColor))
+            }
+
+            Divider()
+
+            if sidebarMode == .people {
+                peopleSidebarContent
+            } else {
+                interactionsSidebarContent
             }
         }
-        .frame(width: 200)
+    }
+
+    @ViewBuilder
+    private var peopleSidebarContent: some View {
+        if showArchived {
+            Text("Archived").font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.bottom, 4)
+        }
+        if filteredPeople.isEmpty {
+            Spacer()
+            Text(showArchived ? "No archived people." : notionService.people.isEmpty ? "No people yet." : "No matches.")
+                .font(.callout).foregroundStyle(.secondary)
+            Spacer()
+        } else {
+            List(filteredPeople, selection: $selectedID) { person in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(person.name)
+                        .font(.system(.body, weight: .medium))
+                    if let rel = person.relationship {
+                        Text(rel.capitalized)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 3)
+                .tag(person.id)
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(Color(nsColor: .windowBackgroundColor))
+        }
+    }
+
+    @ViewBuilder
+    private var interactionsSidebarContent: some View {
+        if isLoadingInteractions {
+            Spacer()
+            ProgressView("Loading…").frame(maxWidth: .infinity)
+            Spacer()
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
+                    // Agenda section
+                    if !agendaPeople.isEmpty {
+                        Section {
+                            ForEach(agendaPeople) { person in
+                                Button {
+                                    selectedID = person.id
+                                    selectedTab = .log
+                                } label: {
+                                    SidebarAgendaRow(person: person)
+                                }
+                                .buttonStyle(.plain)
+                                Divider().padding(.leading, 12)
+                            }
+                        } header: {
+                            sidebarSectionHeader("Agenda", color: .orange)
+                        }
+                    }
+
+                    // Recent Interactions section
+                    Section {
+                        if filteredRecentInteractions.isEmpty {
+                            Text(notionService.recentInteractions.isEmpty ? "No recent interactions." : "No matches.")
+                                .font(.callout).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(20)
+                        } else {
+                            ForEach(filteredRecentInteractions) { ix in
+                                Button {
+                                    sidebarEditInteraction = ix
+                                } label: {
+                                    SidebarInteractionRow(interaction: ix)
+                                }
+                                .buttonStyle(.plain)
+                                Divider().padding(.leading, 12)
+                            }
+                        }
+                    } header: {
+                        sidebarSectionHeader("Recent Interactions", color: .purple)
+                    }
+                }
+            }
+        }
+    }
+
+    private func sidebarSectionHeader(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .windowBackgroundColor).opacity(0.95))
     }
 
     // MARK: - Detail area
@@ -829,6 +984,7 @@ struct MacLogTab: View {
     @State private var notes = ""
     @State private var isSaving = false
     @State private var saveError: String? = nil
+    @State private var showLogDatePopover = false
 
     private let types = ["meeting", "call", "email", "coffee", "social", "other"]
 
@@ -897,14 +1053,36 @@ struct MacLogTab: View {
                     }
                     .pickerStyle(.segmented)
 
-                    DatePicker("Date", selection: $date, displayedComponents: .date)
+                    HStack {
+                        Text("Date").font(.callout)
+                        Spacer()
+                        Button {
+                            showLogDatePopover.toggle()
+                        } label: {
+                            Text(date.formatted(date: .abbreviated, time: .omitted))
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(Color(nsColor: .controlBackgroundColor),
+                                            in: RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showLogDatePopover, arrowEdge: .bottom) {
+                            DatePicker("", selection: $date, displayedComponents: .date)
+                                .datePickerStyle(.graphical)
+                                .labelsHidden()
+                                .padding()
+                                .frame(width: 280)
+                        }
+                    }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Notes").font(.caption).foregroundStyle(.secondary)
                         ZStack(alignment: .topLeading) {
                             TextEditor(text: $notes)
                                 .font(.system(size: 13))
-                                .frame(minHeight: 70)
+                                .frame(minHeight: 100)
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
                             if notes.isEmpty {
                                 Text("What did you talk about?")
@@ -1357,8 +1535,15 @@ struct EditInteractionSheet: View {
     @State private var notes: String
     @State private var isSaving = false
     @State private var error: String? = nil
+    @State private var pendingPhotos: [NSImage] = []
+    @State private var showingPhotoPicker = false
+    @State private var isDropTargeted = false
+    @State private var showDatePopover = false
 
-    private let types = ["meeting", "call", "email", "coffee", "social", "other"]
+    private let types = [
+        "visit", "dinner", "lunch", "coffee", "call", "video call",
+        "text", "email", "meeting", "event", "workout", "other"
+    ]
 
     init(interaction: Interaction, notionService: NotionService, onSaved: @escaping (Interaction) -> Void) {
         self.interaction = interaction
@@ -1376,20 +1561,133 @@ struct EditInteractionSheet: View {
             Divider()
             Form {
                 Section {
-                    Picker("Type", selection: $type) {
-                        ForEach(types, id: \.self) { t in Text(t.capitalized).tag(t) }
+                    HStack {
+                        Text("Type")
+                        Spacer()
+                        Menu {
+                            ForEach(types, id: \.self) { t in
+                                Button(t.capitalized) { type = t }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(type.capitalized).foregroundStyle(.primary)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(Color(nsColor: .controlBackgroundColor),
+                                        in: RoundedRectangle(cornerRadius: 6))
+                            .overlay(RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .pickerStyle(.segmented)
-                    DatePicker("Date", selection: $date, displayedComponents: .date)
+                    HStack {
+                        Text("Date")
+                        Spacer()
+                        Button { showDatePopover.toggle() } label: {
+                            Text(date.formatted(date: .abbreviated, time: .omitted))
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showDatePopover, arrowEdge: .bottom) {
+                            DatePicker("", selection: $date, displayedComponents: .date)
+                                .datePickerStyle(.graphical).labelsHidden().padding().frame(width: 280)
+                        }
+                    }
                     TextField("Summary", text: $summary)
                 }
                 Section("Notes") {
                     TextEditor(text: $notes)
                         .font(.system(size: 13))
-                        .frame(minHeight: 80)
+                        .frame(minHeight: 160)
+                }
+                Section("Photos") {
+                    let existingURLs = interaction.photoURLs
+                    let hasPhotos = !existingURLs.isEmpty || !pendingPhotos.isEmpty
+
+                    if !hasPhotos {
+                        HStack {
+                            Spacer()
+                            VStack(spacing: 4) {
+                                Image(systemName: "photo.badge.plus").foregroundStyle(.secondary)
+                                Text("Drop photos here or click Add").font(.caption).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                        }
+                        .frame(height: 56)
+                        .background(isDropTargeted ? Color.purple.opacity(0.07) : Color.clear)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(isDropTargeted ? Color.purple.opacity(0.4) : Color.clear, lineWidth: 1.5)
+                        )
+                        .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
+                            handleDrop(providers)
+                        }
+                    } else {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(existingURLs, id: \.self) { urlString in
+                                    MacNoteStorePhotoView(urlString: urlString, size: 100)
+                                }
+                                ForEach(pendingPhotos.indices, id: \.self) { i in
+                                    ZStack(alignment: .topTrailing) {
+                                        Image(nsImage: pendingPhotos[i])
+                                            .resizable().scaledToFill()
+                                            .frame(width: 100, height: 100)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        Button { pendingPhotos.remove(at: i) } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .symbolRenderingMode(.palette)
+                                                .foregroundStyle(Color.white, Color.black.opacity(0.45))
+                                                .font(.system(size: 15))
+                                        }
+                                        .buttonStyle(.plain).padding(3)
+                                    }
+                                }
+                                Button {
+                                    showingPhotoPicker = true
+                                } label: {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(Color.secondary.opacity(0.1))
+                                        .frame(width: 100, height: 100)
+                                        .overlay(Image(systemName: "plus").foregroundStyle(.secondary))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
+                            handleDrop(providers)
+                        }
+                    }
+
+                    HStack {
+                        Spacer()
+                        Button("+ Add Photo") { showingPhotoPicker = true }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundStyle(.purple)
+                    }
                 }
             }
             .formStyle(.grouped)
+            .fileImporter(
+                isPresented: $showingPhotoPicker,
+                allowedContentTypes: [.image],
+                allowsMultipleSelection: true
+            ) { result in
+                if case .success(let urls) = result {
+                    for url in urls {
+                        let _ = url.startAccessingSecurityScopedResource()
+                        if let img = NSImage(contentsOf: url) { pendingPhotos.append(img) }
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+            }
             if let err = error { Text(err).font(.caption).foregroundStyle(.red).padding(.horizontal) }
             Divider()
             HStack {
@@ -1403,7 +1701,22 @@ struct EditInteractionSheet: View {
             }
             .padding()
         }
-        .frame(width: 480, height: 400)
+        .frame(width: 480, height: 560)
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            if provider.canLoadObject(ofClass: NSImage.self) {
+                _ = provider.loadObject(ofClass: NSImage.self) { obj, _ in
+                    if let img = obj as? NSImage {
+                        DispatchQueue.main.async { pendingPhotos.append(img) }
+                    }
+                }
+                handled = true
+            }
+        }
+        return handled
     }
 
     private func save() {
@@ -1414,6 +1727,21 @@ struct EditInteractionSheet: View {
                     id: interaction.id, summary: summary.trimmingCharacters(in: .whitespacesAndNewlines),
                     type: type, date: date, notes: notes
                 )
+                // Upload any new photos
+                if !pendingPhotos.isEmpty {
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "en_US_POSIX")
+                    formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+                    for (i, photo) in pendingPhotos.enumerated() {
+                        if let tiff = photo.tiffRepresentation,
+                           let bmp = NSBitmapImageRep(data: tiff),
+                           let jpeg = bmp.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
+                            let filename = "interaction-\(formatter.string(from: date))-\(i).jpg"
+                            let path = try NoteStore.shared.writePhoto(jpeg, category: "Interactions", filename: filename)
+                            try await notionService.addPhotoToPage(interaction.id, photoURL: path)
+                        }
+                    }
+                }
                 var updated = interaction
                 updated.summary = summary; updated.type = type; updated.date = date
                 updated.notes = notes.isEmpty ? nil : notes
@@ -1427,6 +1755,89 @@ struct EditInteractionSheet: View {
 }
 
 // MARK: - Interaction row
+
+// MARK: - Sidebar compact rows (Interactions mode)
+
+struct SidebarAgendaRow: View {
+    let person: Person
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            // Initials circle
+            let parts = person.name.split(separator: " ")
+            let initials = parts.count >= 2
+                ? String(parts[0].prefix(1)) + String(parts[1].prefix(1))
+                : String(person.name.prefix(2)).uppercased()
+            Circle()
+                .fill(Color.orange.opacity(0.15))
+                .frame(width: 30, height: 30)
+                .overlay(Text(initials).font(.system(size: 11, weight: .medium)).foregroundStyle(.orange))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(person.name)
+                    .font(.system(.callout, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if let agenda = person.agenda {
+                    let firstItem = agenda.components(separatedBy: "\n")
+                        .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? agenda
+                    Text(firstItem.trimmingCharacters(in: .whitespaces))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+    }
+}
+
+struct SidebarInteractionRow: View {
+    let interaction: Interaction
+
+    private var typeColor: Color {
+        switch interaction.type.lowercased() {
+        case "call":    return .green
+        case "email":   return .blue
+        case "meeting": return .orange
+        case "coffee":  return .brown
+        case "visit":   return .purple
+        case "social":  return .pink
+        default:        return .secondary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(interaction.type.capitalized)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(typeColor.opacity(0.12))
+                    .foregroundStyle(typeColor)
+                    .clipShape(Capsule())
+                if !interaction.photoURLs.isEmpty {
+                    Image(systemName: "photo").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Text(interaction.date, style: .relative)
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            if !interaction.summary.isEmpty {
+                Text(interaction.summary)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+    }
+}
 
 struct MacInteractionRow: View {
     let interaction: Interaction
@@ -1452,6 +1863,11 @@ struct MacInteractionRow: View {
                     .background(typeColor.opacity(0.12))
                     .foregroundStyle(typeColor)
                     .clipShape(Capsule())
+                if !interaction.photoURLs.isEmpty {
+                    Image(systemName: "photo")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Text(interaction.date, style: .date)
                     .font(.caption2).foregroundStyle(.tertiary)
@@ -1467,3 +1883,5 @@ struct MacInteractionRow: View {
         .padding(.horizontal, 16).padding(.vertical, 10)
     }
 }
+
+#endif // os(macOS)

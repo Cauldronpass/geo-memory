@@ -1,289 +1,224 @@
 // TraceMacCalendarPanel.swift
-// Calendar panel for the Daily section — 240px right column.
+// Fixed-width monthly calendar panel for the Daily note right column.
 // Mac-only — do not add to iOS, Widget, or Share Extension targets.
-//
-// - Month header with prev/next navigation. Month name taps → opens Horizons month note.
-// - 7-column grid (Mon–Sun). Week-number column on left. Week numbers tap → Horizons week note.
-// - Today: filled orange circle. Selected date: lighter orange. Dates with entries: small dot below number.
-// - Tapping a date sets selectedDateFile and opens/creates the Calendar note.
 
 import SwiftUI
 
 // MARK: - Calendar panel
 
 struct TraceMacCalendarPanel: View {
-
-    /// Binding into TraceMacDailyView — filename like "2026-07-03.md"
     @Binding var selectedDateFile: String?
-
-    /// Set of date strings ("2026-07-03") that have existing notes.
-    var datesWithEntries: Set<String>
-
-    /// Called with a relative iCloud path when user taps a week or month link.
-    var onOpenHorizonsNote: (String) -> Void
+    let datesWithEntries: Set<String>        // "YYYY-MM-DD" strings
+    let onOpenHorizonsNote: (String) -> Void // bare filename within Notes/Horizons, e.g. "2026-W27.md"
 
     @State private var displayMonth: Date = {
-        // Start on current month
         let cal = Calendar.current
         return cal.date(from: cal.dateComponents([.year, .month], from: Date())) ?? Date()
     }()
 
-    private var cal: Calendar { Calendar.current }
+    private let cal = Calendar.current
+    private let fmt = makeDayFmt()
 
-    // MARK: - Derived values
-
-    private var monthTitle: String {
-        let df = DateFormatter()
-        df.dateFormat = "MMMM yyyy"
-        return df.string(from: displayMonth)
+    private var selectedDateStr: String? {
+        selectedDateFile?.replacingOccurrences(of: ".md", with: "")
     }
 
-    private var monthNotePath: String {
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM"
-        return "Notes/Horizons/\(df.string(from: displayMonth)).md"
-    }
+    // MARK: Month grid — rows of 7 optional Dates (nil = padding cell)
 
-    /// All dates to display for the grid (including leading/trailing blanks as nil).
-    private var gridDates: [[Date?]] {
-        // First day of the display month
-        let firstOfMonth = cal.date(from: cal.dateComponents([.year, .month], from: displayMonth))!
-        let lastOfMonth  = cal.date(byAdding: DateComponents(month: 1, day: -1), to: firstOfMonth)!
+    private var monthGrid: [[Date?]] {
+        guard let range    = cal.range(of: .day, in: .month, for: displayMonth),
+              let firstDay = cal.date(from: cal.dateComponents([.year, .month], from: displayMonth))
+        else { return [] }
 
-        // Weekday of first day (adjusted to Mon=0 … Sun=6)
-        let rawWeekday = cal.component(.weekday, from: firstOfMonth) // 1=Sun…7=Sat
-        let offset     = (rawWeekday + 5) % 7  // Mon-based offset
+        let firstWeekday = cal.component(.weekday, from: firstDay)
+        let leadingNils  = (firstWeekday + 5) % 7   // Mon=0, Sun=6
 
-        // Total cells in the grid (multiples of 7)
-        let totalDays = cal.component(.day, from: lastOfMonth)
-        let totalCells = ((offset + totalDays + 6) / 7) * 7
-
-        var dates: [Date?] = Array(repeating: nil, count: offset)
-        var current = firstOfMonth
-        while dates.count < offset + totalDays {
-            dates.append(current)
-            current = cal.date(byAdding: .day, value: 1, to: current)!
+        var cells: [Date?] = Array(repeating: nil, count: leadingNils)
+        for d in range {
+            cells.append(cal.date(byAdding: .day, value: d - 1, to: firstDay))
         }
-        // Pad to fill last row
-        while dates.count < totalCells {
-            dates.append(nil)
-        }
-
-        // Split into weeks
-        return stride(from: 0, to: dates.count, by: 7).map { Array(dates[$0..<min($0+7, dates.count)]) }
+        while cells.count % 7 != 0 { cells.append(nil) }
+        return stride(from: 0, to: cells.count, by: 7).map { Array(cells[$0..<($0 + 7)]) }
     }
 
-    private var selectedDate: Date? {
-        guard let file = selectedDateFile else { return nil }
-        let dateStr = file.replacingOccurrences(of: ".md", with: "")
-        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
-        return df.date(from: dateStr)
-    }
-
-    // MARK: - Body
+    // MARK: Body
 
     var body: some View {
         VStack(spacing: 0) {
-            // Month header
-            monthHeader
+            navHeader
             Divider()
-
-            // Day-of-week labels
-            dayOfWeekRow
-            Divider()
-
-            // Calendar grid
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(Array(gridDates.enumerated()), id: \.offset) { rowIndex, week in
-                        weekRow(week: week)
-                        if rowIndex < gridDates.count - 1 {
-                            Divider().opacity(0.4)
-                        }
-                    }
-                }
-            }
-
+            dowRow
+            gridRows
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .controlBackgroundColor))
+        .onChange(of: selectedDateFile) { _, newFile in
+            guard let f = newFile,
+                  let d = fmt.date(from: f.replacingOccurrences(of: ".md", with: "")) else { return }
+            let dm = cal.date(from: cal.dateComponents([.year, .month], from: d)) ?? d
+            if !cal.isDate(dm, equalTo: displayMonth, toGranularity: .month) {
+                displayMonth = dm
+            }
+        }
     }
 
-    // MARK: - Month header
+    // MARK: Nav header
 
-    private var monthHeader: some View {
-        HStack(spacing: 6) {
-            Button {
-                displayMonth = cal.date(byAdding: .month, value: -1, to: displayMonth) ?? displayMonth
-            } label: {
+    private var navHeader: some View {
+        HStack(spacing: 0) {
+            Button { step(-1) } label: {
                 Image(systemName: "chevron.left")
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)
-            .help("Previous month")
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Month name — tappable to open Horizons month note
-            Button {
-                onOpenHorizonsNote(monthNotePath)
-            } label: {
-                Text(monthTitle)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
+            Button { openMonth() } label: {
+                Text(displayMonth, format: .dateTime.month(.wide).year())
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.primary)
             }
             .buttonStyle(.plain)
-            .help("Open \(monthTitle) in Horizons")
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            Button {
-                displayMonth = cal.date(byAdding: .month, value: 1, to: displayMonth) ?? displayMonth
-            } label: {
+            Button { step(1) } label: {
                 Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)
-            .help("Next month")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
     }
 
-    // MARK: - Day-of-week row (Mon–Sun)
+    // MARK: Day-of-week header row
 
-    private let weekdayLabels = ["M", "T", "W", "T", "F", "S", "S"]
+    // Indexed tuples avoid ForEach keying issues with duplicate letters (T, S appear twice).
+    private let dowLabels = [(0,"M"),(1,"T"),(2,"W"),(3,"T"),(4,"F"),(5,"S"),(6,"S")]
 
-    private var dayOfWeekRow: some View {
+    private var dowRow: some View {
         HStack(spacing: 0) {
-            // Week-number column label
-            Text("W")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .frame(width: 24)
+            // Invisible placeholder — keeps day columns aligned with week-number column below
+            Text("99")
+                .font(.system(size: 9))
+                .foregroundStyle(.clear)
+                .frame(width: 22)
 
-            ForEach(weekdayLabels.indices, id: \.self) { i in
-                let isSaturday = i == 5
-                let isSunday   = i == 6
-                Text(weekdayLabels[i])
-                    .font(.caption2)
-                    .fontWeight(.medium)
-                    .foregroundStyle(isSaturday || isSunday ? .tertiary : .secondary)
+            ForEach(dowLabels, id: \.0) { _, letter in
+                Text(letter)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
             }
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 6)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
     }
 
-    // MARK: - Week row
+    // MARK: Grid rows
 
-    private func weekRow(week: [Date?]) -> some View {
-        HStack(spacing: 0) {
-            // Week number — tappable to open Horizons week note
-            weekNumberButton(for: week)
-
-            ForEach(0..<7, id: \.self) { i in
-                dateCell(date: week[i])
-            }
-        }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-    }
-
-    private func weekNumberButton(for week: [Date?]) -> some View {
-        let firstDate = week.compactMap { $0 }.first
-        let weekNum   = firstDate.map { cal.component(.weekOfYear, from: $0) }
-        let year      = firstDate.map { cal.component(.yearForWeekOfYear, from: $0) }
-
-        return Group {
-            if let wn = weekNum, let yr = year {
-                Button {
-                    let path = "Notes/Horizons/\(String(format: "%d-W%02d", yr, wn)).md"
-                    onOpenHorizonsNote(path)
-                } label: {
-                    Text("\(wn)")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(Color.traceOrange)
-                        .frame(width: 24)
-                }
-                .buttonStyle(.plain)
-                .help("Open Week \(wn) in Horizons")
-            } else {
-                Color.clear.frame(width: 24)
-            }
-        }
-    }
-
-    // MARK: - Date cell
-
-    private func dateCell(date: Date?) -> some View {
-        Group {
-            if let date {
-                let dateStr   = dateString(date)
-                let isToday   = cal.isDateInToday(date)
-                let isInMonth = cal.isDate(date, equalTo: displayMonth, toGranularity: .month)
-                let isSelected = selectedDate.map { cal.isDate($0, inSameDayAs: date) } ?? false
-                let hasEntry   = datesWithEntries.contains(dateStr)
-
-                Button {
-                    tappedDate(date)
-                } label: {
-                    VStack(spacing: 2) {
-                        ZStack {
-                            // Background circle
-                            if isToday {
-                                Circle()
-                                    .fill(Color.traceOrange)
-                                    .frame(width: 26, height: 26)
-                            } else if isSelected {
-                                Circle()
-                                    .fill(Color.traceOrange.opacity(0.25))
-                                    .frame(width: 26, height: 26)
-                            }
-                            Text("\(cal.component(.day, from: date))")
-                                .font(.system(size: 12, weight: isToday ? .semibold : .regular))
-                                .foregroundStyle(
-                                    isToday    ? .white :
-                                    !isInMonth ? Color.secondary.opacity(0.4) :
-                                                 .primary
-                                )
-                        }
-                        // Entry dot
-                        Circle()
-                            .fill(hasEntry ? Color.traceOrange.opacity(0.7) : .clear)
-                            .frame(width: 4, height: 4)
+    private var gridRows: some View {
+        VStack(spacing: 1) {
+            ForEach(Array(monthGrid.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 0) {
+                    weekNumButton(for: row)
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, date in
+                        dayCell(date)
                     }
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-            } else {
-                Color.clear
-                    .frame(maxWidth: .infinity)
+                .padding(.horizontal, 6)
             }
         }
+        .padding(.vertical, 4)
     }
 
-    // MARK: - Actions
+    // MARK: Week number button
 
-    private func tappedDate(_ date: Date) {
-        let filename = "\(dateString(date)).md"
-        selectedDateFile = filename
-        // Jump calendar to that month if tapping a leading/trailing day
-        let monthOfTapped = cal.date(from: cal.dateComponents([.year, .month], from: date))!
-        let currentMonth  = cal.date(from: cal.dateComponents([.year, .month], from: displayMonth))!
-        if monthOfTapped != currentMonth {
-            displayMonth = monthOfTapped
+    private func weekNumButton(for row: [Date?]) -> some View {
+        let anchor = row.compactMap { $0 }.first ?? displayMonth
+        let wn     = cal.component(.weekOfYear, from: anchor)
+        let yr     = cal.component(.yearForWeekOfYear, from: anchor)
+        return Button {
+            onOpenHorizonsNote(String(format: "%d-W%02d.md", yr, wn))
+        } label: {
+            Text("\(wn)")
+                .font(.system(size: 9))
+                .foregroundStyle(.orange)
+                .frame(width: 22, alignment: .center)
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Day cell
+
+    @ViewBuilder
+    private func dayCell(_ date: Date?) -> some View {
+        if let date {
+            let dateStr    = fmt.string(from: date)
+            let isToday    = cal.isDateInToday(date)
+            let isSelected = dateStr == selectedDateStr
+            let inMonth    = cal.isDate(date, equalTo: displayMonth, toGranularity: .month)
+            let hasEntry   = datesWithEntries.contains(dateStr)
+
+            Button {
+                selectedDateFile = dateStr + ".md"
+                let dm = cal.date(from: cal.dateComponents([.year, .month], from: date)) ?? date
+                if !cal.isDate(dm, equalTo: displayMonth, toGranularity: .month) {
+                    displayMonth = dm
+                }
+            } label: {
+                VStack(spacing: 1) {
+                    ZStack {
+                        if isToday {
+                            Circle().fill(Color.accentColor).frame(width: 24, height: 24)
+                        } else if isSelected {
+                            Circle().fill(Color.accentColor.opacity(0.22)).frame(width: 24, height: 24)
+                        }
+                        Text("\(cal.component(.day, from: date))")
+                            .font(.system(size: 11, weight: isToday ? .bold : .regular))
+                            .foregroundStyle(isToday ? Color.white : inMonth ? Color.primary : Color(nsColor: .tertiaryLabelColor))
+                    }
+                    .frame(height: 24)
+
+                    // Entry dot
+                    Circle()
+                        .fill(hasEntry ? Color.accentColor : Color.clear)
+                        .frame(width: 3, height: 3)
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+        } else {
+            Color.clear
+                .frame(height: 28)
+                .frame(maxWidth: .infinity)
         }
     }
 
-    // MARK: - Helpers
+    // MARK: Navigation actions
 
-    private func dateString(_ date: Date) -> String {
-        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
-        return df.string(from: date)
+    private func step(_ delta: Int) {
+        displayMonth = cal.date(byAdding: .month, value: delta, to: displayMonth) ?? displayMonth
     }
+
+    private func openMonth() {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM"
+        onOpenHorizonsNote("\(f.string(from: displayMonth)).md")
+    }
+}
+
+// MARK: - Helpers
+
+private func makeDayFmt() -> DateFormatter {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "yyyy-MM-dd"
+    return f
 }

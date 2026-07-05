@@ -8,12 +8,14 @@ import AppKit
 // MARK: - Notification for Horizons deep-link from calendar panel
 
 extension Notification.Name {
-    static let openHorizonsFile = Notification.Name("trace.openHorizonsFile")
-    static let openWikilink     = Notification.Name("trace.openWikilink")
-    static let selectPerson     = Notification.Name("trace.selectPerson")
-    static let selectPlace      = Notification.Name("trace.selectPlace")
-    static let selectDocument   = Notification.Name("trace.selectDocument")
-    static let reloadDocuments  = Notification.Name("trace.reloadDocuments")
+    static let openHorizonsFile  = Notification.Name("trace.openHorizonsFile")
+    static let openWikilink      = Notification.Name("trace.openWikilink")
+    static let selectPerson      = Notification.Name("trace.selectPerson")
+    static let selectPlace       = Notification.Name("trace.selectPlace")
+    static let selectDocument    = Notification.Name("trace.selectDocument")
+    static let reloadDocuments   = Notification.Name("trace.reloadDocuments")
+    /// Navigate to a record from any context. userInfo: ["type": "person"|"place", "id": String]
+    static let navigateToRecord  = Notification.Name("trace.navigateToRecord")
 }
 
 // MARK: - Journal root (dispatches to the right tab)
@@ -30,6 +32,7 @@ struct TraceMacJournalView: View {
         case .daily:
             TraceMacDailyView()
                 .environment(noteStore)
+                .environment(notionService)
         case .projects:
             TraceMacProjectsView()
                 .environment(noteStore)
@@ -53,287 +56,590 @@ struct TraceMacJournalView: View {
     }
 }
 
-// MARK: - Daily notes (3-column: file list | editor | calendar panel)
+// MARK: - Daily notes — NoteStore backed
 
 struct TraceMacDailyView: View {
-    @Environment(NoteStore.self) private var noteStore
+    @Environment(NoteStore.self)     private var noteStore
+    @Environment(NotionService.self) private var notionService
 
-    @State private var files: [String] = []     // filenames in Calendar/
-    @State private var selectedFile: String? = nil
+    @State private var dateFiles: [String] = []
+    @State private var selectedDateFile: String? = nil
+    @State private var sidebarCollapsed = false
+    @State private var calendarCollapsed = false
     @State private var searchText = ""
-    @State private var deleteCandidate: String? = nil
-    @State private var showDeleteConfirm = false
-    @State private var fileListCollapsed  = true
-    @State private var calendarCollapsed  = false
-    @State private var selectedTags: Set<String> = []
-    @State private var allTags: [String] = []
-    @State private var fileContents: [String: String] = [:]
 
-    /// Set of date strings ("2026-07-03") that have existing notes — fed to calendar panel.
+    private let dateFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
     private var datesWithEntries: Set<String> {
-        Set(files.map { $0.replacingOccurrences(of: ".md", with: "") })
+        Set(dateFiles.map { $0.replacingOccurrences(of: ".md", with: "") })
     }
 
-    private var filtered: [String] {
-        let base = searchText.isEmpty ? files : files.filter { $0.localizedCaseInsensitiveContains(searchText) }
-        guard !selectedTags.isEmpty else { return base }
-        return base.filter { filename in
-            let content = fileContents[filename] ?? ""
-            return selectedTags.allSatisfy { content.range(of: "#\($0)", options: .caseInsensitive) != nil }
-        }
+    private var filteredFiles: [String] {
+        guard !searchText.isEmpty else { return dateFiles }
+        return dateFiles.filter { $0.localizedCaseInsensitiveContains(searchText) }
     }
 
-    private var todayFilename: String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        return "\(fmt.string(from: Date())).md"
+    private func label(for filename: String) -> String {
+        let dateStr = filename.replacingOccurrences(of: ".md", with: "")
+        guard let date = dateFmt.date(from: dateStr) else { return dateStr }
+        let cal = Calendar.current
+        if cal.isDateInToday(date)     { return "Today" }
+        if cal.isDateInYesterday(date) { return "Yesterday" }
+        return date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
     }
-
-    private let calendarGray = Color(nsColor: .controlBackgroundColor)
 
     var body: some View {
         HStack(spacing: 0) {
-
-            // Column 1: file list — white background so it's visually distinct from the
-            // gray nav sidebar to its left. The 1px line in the handle separates it from
-            // the white editor to its right.
-            if !fileListCollapsed {
+            // Column 1: date list (fixed 200pt — same pattern as TraceMacProjectsView)
+            if !sidebarCollapsed {
                 VStack(spacing: 0) {
                     TextField("Search", text: $searchText)
                         .textFieldStyle(.roundedBorder)
                         .padding(10)
-                    MacTagChipRow(tags: allTags, selected: $selectedTags)
-                    List(filtered, id: \.self, selection: $selectedFile) { filename in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(displayName(for: filename))
-                                .font(.system(.callout, weight: .medium))
-                                .lineLimit(1)
-                            Text(relativeLabel(for: filename))
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical, 3)
-                        .tag(filename)
-                        .contextMenu {
-                            Button(role: .destructive) {
-                                deleteCandidate = filename
-                                showDeleteConfirm = true
-                            } label: {
-                                Label("Delete", systemImage: "trash")
+                    if dateFiles.isEmpty {
+                        Spacer()
+                        Text("No daily notes yet.")
+                            .font(.caption).foregroundStyle(.secondary).padding()
+                        Spacer()
+                    } else {
+                        List(filteredFiles, id: \.self, selection: $selectedDateFile) { file in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(label(for: file))
+                                    .font(.system(.callout, weight: .medium))
+                                Text(file.replacingOccurrences(of: ".md", with: ""))
+                                    .font(.caption2).foregroundStyle(.secondary)
                             }
+                            .padding(.vertical, 2)
+                            .tag(file as String?)
                         }
+                        .listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
+                        .background(Color(nsColor: .windowBackgroundColor))
                     }
-                    .listStyle(.sidebar)
-                    .scrollContentBackground(.hidden)
-                    .background(Color(nsColor: .windowBackgroundColor))
                 }
                 .frame(width: 200)
             }
 
-            // Handle: white | 1px line | white — one separator between same-color panels
-            CollapseHandle(
-                isCollapsed: $fileListCollapsed,
-                collapsesRight: false,
-                showLine: true,
-                panelColor: .clear
-            )
+            CollapseHandle(isCollapsed: $sidebarCollapsed, collapsesRight: false,
+                           showLine: true, panelColor: .clear)
 
-            // Column 2: editor
+            // Columns 2+3: flexible region (editor + fixed calendar) — mirrors the
+            // Projects hub layout (editor .frame(maxWidth:) + fixed-width sidebar
+            // inside a Group .frame(maxWidth: .infinity)).
             Group {
-                if let file = selectedFile {
-                    TraceMacNoteEditor(relativePath: "Calendar/\(file)")
-                        .environment(noteStore)
-                } else {
-                    placeholderEditor
+                HStack(spacing: 0) {
+                    editorColumn
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if !calendarCollapsed {
+                        Rectangle()
+                            .fill(Color(nsColor: .separatorColor))
+                            .frame(width: 1)
+                        TraceMacCalendarPanel(
+                            selectedDateFile: $selectedDateFile,
+                            datesWithEntries: datesWithEntries,
+                            onOpenHorizonsNote: { filename in
+                                NotificationCenter.default.post(
+                                    name: .openHorizonsFile,
+                                    object: nil,
+                                    userInfo: ["filename": filename]
+                                )
+                            }
+                        )
+                        .frame(width: 240)
+                    }
                 }
             }
             .frame(maxWidth: .infinity)
-
-            // Calendar collapse handle.
-            // panelColor: calendarGray merges the 12px zone into the calendar panel visually.
-            // The separator is pinned to the LEADING edge (white/gray boundary) — one line only.
-            CollapseHandle(
-                isCollapsed: $calendarCollapsed,
-                collapsesRight: true,
-                showLine: true,
-                lineWidth: 3,
-                panelColor: calendarGray
-            )
-
-            // Column 3: calendar — same gray as the handle so they merge visually
-            if !calendarCollapsed {
-                TraceMacCalendarPanel(
-                    selectedDateFile: Binding(
-                        get: { selectedFile },
-                        set: { newFile in
-                            guard let filename = newFile else { return }
-                            openOrCreateDate(filename: filename)
-                        }
-                    ),
-                    datesWithEntries: datesWithEntries,
-                    onOpenHorizonsNote: { relativePath in
-                        openHorizonsNote(at: relativePath)
-                    }
-                )
-                .frame(width: 240)
-            }
         }
-        // Toolbar lives here so it persists even when file list is collapsed
+        .onChange(of: selectedDateFile) { _, newFile in
+            guard let f = newFile else { return }
+            ensureFileExists(f)
+        }
+        .task { await loadDates() }
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
                     withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
-                        fileListCollapsed.toggle()
+                        sidebarCollapsed.toggle()
                     }
-                } label: {
-                    Label("Toggle List", systemImage: "sidebar.leading")
-                }
+                } label: { Label("Toggle List", systemImage: "sidebar.leading") }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
-                .help("Toggle note list (⌘⇧L)")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("Today") { openToday() }
             }
             ToolbarItem {
-                Button { openToday() } label: {
-                    Label("New", systemImage: "plus")
-                }
-            }
-            if let file = selectedFile {
-                ToolbarItem {
-                    Button(role: .destructive) {
-                        deleteCandidate = file
-                        showDeleteConfirm = true
-                    } label: {
-                        Label("Delete", systemImage: "trash")
+                Button {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                        calendarCollapsed.toggle()
                     }
-                    .keyboardShortcut(.delete, modifiers: .command)
-                }
+                } label: { Label("Toggle Calendar", systemImage: "calendar") }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
             }
         }
-        .confirmationDialog(
-            "Delete \"\(deleteCandidate.map { displayName(for: $0) } ?? "")\"?",
-            isPresented: $showDeleteConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let f = deleteCandidate { deleteNote(f) }
-            }
-            Button("Cancel", role: .cancel) { }
-        }
-        .task { await loadFiles() }
-        .onAppear { openToday() }
     }
 
-    // MARK: - Sub-views
+    // MARK: - Editor column
 
-    private var placeholderEditor: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "calendar")
-                .font(.system(size: 40, weight: .thin))
-                .foregroundStyle(.tertiary)
-            Text("Select a day or tap Today")
-                .foregroundStyle(.secondary)
+    @ViewBuilder
+    private var editorColumn: some View {
+        if let file = selectedDateFile,
+           let date = dateFmt.date(from: file.replacingOccurrences(of: ".md", with: "")) {
+            TraceMacNoteEditor(
+                relativePath: "Calendar/\(file)",
+                showMoveButton: true,
+                moveSourceDate: date
+            )
+            .environment(noteStore)
+            .environment(notionService)
+        } else {
+            VStack(spacing: 16) {
+                Spacer()
+                Text("Select a date")
+                    .font(.callout).foregroundStyle(.tertiary)
+                Button("Open Today") { openToday() }
+                    .buttonStyle(.borderedProminent)
+                Spacer()
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Actions
 
-    private func loadFiles() async {
-        let loaded = (try? noteStore.listFiles(in: "Calendar")) ?? []
-        files = loaded.sorted(by: >)
-        if selectedFile == nil, files.contains(todayFilename) {
-            selectedFile = todayFilename
-        }
-        await loadTagIndex(subfolder: "Calendar")
+    private func openToday() {
+        let filename = dateFmt.string(from: Date()) + ".md"
+        ensureFileExists(filename)
+        selectedDateFile = filename
     }
 
-    private func loadTagIndex(subfolder: String) async {
-        let filesToScan = files
-        var contents: [String: String] = [:]
-        var tagSet = Set<String>()
-        let regex = try? NSRegularExpression(pattern: #"(?<![&\w])#([a-zA-Z][a-zA-Z0-9_]*)"#)
-        for filename in filesToScan {
-            let content = (try? noteStore.readFile("\(subfolder)/\(filename)")) ?? ""
-            contents[filename] = content
-            guard let regex else { continue }
-            let ns = content as NSString
-            regex.enumerateMatches(in: content, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
-                if let m, let r = Range(m.range(at: 1), in: content) {
-                    tagSet.insert(String(content[r]).lowercased())
+    private func ensureFileExists(_ filename: String) {
+        let path = "Calendar/\(filename)"
+        if (try? noteStore.readFile(path)) == nil {
+            try? noteStore.writeFile(path, content: "")
+        }
+        if !dateFiles.contains(filename) {
+            dateFiles.insert(filename, at: 0)
+        }
+    }
+
+    private func loadDates() async {
+        let files = (try? noteStore.listFiles(in: "Calendar")) ?? []
+        let sorted = files
+            .filter { $0.hasSuffix(".md") }
+            .filter { dateFmt.date(from: $0.replacingOccurrences(of: ".md", with: "")) != nil }
+            .sorted(by: >)
+        await MainActor.run {
+            dateFiles = sorted
+            if selectedDateFile == nil {
+                let todayFile = dateFmt.string(from: Date()) + ".md"
+                if sorted.contains(todayFile) { selectedDateFile = todayFile }
+            }
+        }
+    }
+}
+
+// MARK: - Mac daily move sheet
+
+struct MacDailyMoveSheet: View {
+    let sourceDate: Date
+    let sourceContent: String
+    let onMoved: () -> Void
+
+    @Environment(NotionService.self) private var notionService
+    @Environment(NoteStore.self)     private var noteStore
+    @Environment(\.dismiss)          private var dismiss
+
+    enum Dest: String, CaseIterable {
+        case day, visit, project, horizon, place
+        var label: String {
+            switch self {
+            case .day:     return "Another Day"
+            case .visit:   return "Visit"
+            case .project: return "Project"
+            case .horizon: return "Horizon"
+            case .place:   return "Place"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .day:     return "calendar"
+            case .visit:   return "checkmark.circle"
+            case .project: return "folder"
+            case .horizon: return "square.stack"
+            case .place:   return "mappin"
+            }
+        }
+    }
+
+    @State private var dest: Dest = .day
+    @State private var targetDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+    @State private var showDatePopover = false
+    @State private var selectedVisit: Visit? = nil
+    @State private var selectedPlace: Place? = nil
+    @State private var selectedFile: String? = nil
+    @State private var files: [String] = []
+    @State private var searchText = ""
+    @State private var isMoving = false
+    @State private var errorMessage: String? = nil
+
+    private let dateFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private var canMove: Bool {
+        switch dest {
+        case .day:               return !isSameAsSource
+        case .visit:             return selectedVisit != nil
+        case .place:             return selectedPlace != nil
+        case .project, .horizon: return selectedFile != nil
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Move Content").font(.title3.weight(.semibold))
+                Spacer()
+                Button("Cancel") { dismiss() }
+            }
+            .padding(.horizontal, 20).padding(.vertical, 16)
+            Divider()
+
+            // Destination type pills
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Dest.allCases, id: \.rawValue) { d in
+                        Button {
+                            dest = d
+                            selectedVisit = nil; selectedPlace = nil
+                            selectedFile = nil; searchText = ""
+                        } label: {
+                            Label(d.label, systemImage: d.icon)
+                                .font(.subheadline.weight(dest == d ? .semibold : .regular))
+                                .padding(.horizontal, 12).padding(.vertical, 7)
+                                .background(
+                                    dest == d ? Color.accentColor
+                                              : Color(nsColor: .controlBackgroundColor),
+                                    in: Capsule()
+                                )
+                                .foregroundStyle(dest == d ? .white : .primary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 10)
+            }
+            Divider()
+
+            // Content preview
+            Text(sourceContent.prefix(200))
+                .font(.callout).foregroundStyle(.secondary)
+                .lineLimit(4)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .controlBackgroundColor),
+                            in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 4)
+
+            // Destination-specific picker
+            Group {
+                switch dest {
+                case .day:     dayPicker
+                case .visit:   visitList
+                case .project: fileListView(subfolder: "Notes/Projects")
+                case .horizon: horizonListView
+                case .place:   placeList
+                }
+            }
+
+            if let err = errorMessage {
+                Text(err).font(.caption).foregroundStyle(.red)
+                    .padding(.horizontal, 20).padding(.bottom, 4)
+            }
+
+            Spacer(minLength: 0)
+            Divider()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                if isMoving {
+                    ProgressView().controlSize(.small).padding(.trailing, 4)
+                } else {
+                    Button("Move") { Task { await performMove() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canMove)
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 440, height: 560)
+        .task(id: dest) { await loadFilesForDest() }
+    }
+
+    // MARK: Day picker
+
+    private var isSameAsSource: Bool {
+        Calendar.current.isDate(targetDate, inSameDayAs: sourceDate)
+    }
+
+    private var dayPicker: some View {
+        VStack(spacing: 4) {
+            DatePicker("", selection: $targetDate, displayedComponents: .date)
+                .datePickerStyle(.graphical)
+                .padding(.horizontal, 16)
+                .frame(maxWidth: 360)
+            if isSameAsSource {
+                Text("Same as source — pick a different date.")
+                    .font(.caption).foregroundStyle(.red)
+            }
+        }
+    }
+
+    // MARK: Visit list
+
+    private var filteredVisits: [Visit] {
+        let sorted = notionService.visits.sorted { $0.date > $1.date }
+        if searchText.isEmpty { return Array(sorted.prefix(40)) }
+        return sorted.filter { $0.placeName.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var visitList: some View {
+        VStack(spacing: 0) {
+            TextField("Search visits", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 20).padding(.top, 8)
+            List(filteredVisits) { visit in
+                Button { selectedVisit = visit } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(visit.placeName).foregroundStyle(.primary)
+                            Text(visit.date.formatted(.dateTime.month(.abbreviated).day().year()))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if selectedVisit?.id == visit.id {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: Project / general file list
+
+    private func fileListView(subfolder: String) -> some View {
+        VStack(spacing: 0) {
+            TextField("Search", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 20).padding(.top, 8)
+            if files.isEmpty {
+                Spacer()
+                Text("No files found.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            } else {
+                let filtered = files.filter {
+                    searchText.isEmpty || $0.localizedCaseInsensitiveContains(searchText)
+                }
+                List(filtered, id: \.self) { file in
+                    Button { selectedFile = file } label: {
+                        HStack {
+                            Image(systemName: "doc.text").foregroundStyle(.secondary)
+                            Text(file.replacingOccurrences(of: ".md", with: "")).foregroundStyle(.primary)
+                            Spacer()
+                            if selectedFile == file {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
-        fileContents = contents
-        allTags = tagSet.sorted()
     }
 
-    private func openToday() {
-        openOrCreateDate(filename: todayFilename)
+    // MARK: Horizon list
+
+    private static let isoCal: Calendar = {
+        var c = Calendar(identifier: .iso8601)
+        c.locale = Locale(identifier: "en_US_POSIX")
+        return c
+    }()
+
+    private var currentWeekFile: String {
+        let wk = Self.isoCal.component(.weekOfYear, from: Date())
+        let yr = Self.isoCal.component(.yearForWeekOfYear, from: Date())
+        return String(format: "%d-W%02d.md", yr, wk)
     }
 
-    private func openOrCreateDate(filename: String) {
-        let path = "Calendar/\(filename)"
-        // Create the file if it doesn't exist
-        if (try? noteStore.readFile(path)) == nil ||
-            ((try? noteStore.readFile(path)) ?? "").isEmpty {
-            let dateStr = filename.replacingOccurrences(of: ".md", with: "")
-            let header  = "# \(dateStr)\n\n"
-            try? noteStore.writeFile(path, content: header)
+    private var currentMonthFile: String {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM"
+        return "\(f.string(from: Date())).md"
+    }
+
+    private var horizonListView: some View {
+        List {
+            Section("This Period") {
+                horizonRow(file: currentWeekFile,
+                           label: "Week \(Self.isoCal.component(.weekOfYear, from: Date()))",
+                           icon: "calendar.badge.clock")
+                horizonRow(file: currentMonthFile,
+                           label: Date().formatted(.dateTime.month(.wide).year()),
+                           icon: "calendar")
+            }
+            let past = files.filter { $0 != currentWeekFile && $0 != currentMonthFile }.sorted(by: >)
+            if !past.isEmpty {
+                Section("Past") {
+                    ForEach(past, id: \.self) { file in
+                        horizonRow(file: file,
+                                   label: file.replacingOccurrences(of: ".md", with: ""),
+                                   icon: "doc.text")
+                    }
+                }
+            }
         }
-        if !files.contains(filename) {
-            files.insert(filename, at: 0)
-            files.sort(by: >)
+    }
+
+    private func horizonRow(file: String, label: String, icon: String) -> some View {
+        Button { selectedFile = file } label: {
+            HStack {
+                Image(systemName: icon).foregroundStyle(.secondary)
+                Text(label).foregroundStyle(.primary)
+                Spacer()
+                if selectedFile == file {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                }
+            }
+            .contentShape(Rectangle())
         }
-        selectedFile = filename
+        .buttonStyle(.plain)
     }
 
-    private func openHorizonsNote(at relativePath: String) {
-        // Create stub if the file doesn't exist yet
-        let content = (try? noteStore.readFile(relativePath)) ?? ""
-        if content.isEmpty {
-            let title = (relativePath as NSString).lastPathComponent
-                .replacingOccurrences(of: ".md", with: "")
-            try? noteStore.writeFile(relativePath, content: "# \(title)\n\n")
+    // MARK: Place list
+
+    private var filteredPlaces: [Place] {
+        let sorted = notionService.places.sorted { $0.name < $1.name }
+        if searchText.isEmpty { return sorted }
+        return sorted.filter { $0.name.localizedCaseInsensitiveContains(searchText) ||
+                               $0.city.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var placeList: some View {
+        VStack(spacing: 0) {
+            TextField("Search places", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 20).padding(.top, 8)
+            if notionService.places.isEmpty {
+                Spacer()
+                Text("No places loaded.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            } else {
+                List(filteredPlaces) { place in
+                    Button { selectedPlace = place } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(place.name).foregroundStyle(.primary)
+                                if !place.city.isEmpty {
+                                    Text(place.city).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            if selectedPlace?.id == place.id {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
-        // Post notification — TraceMacContentView switches to .horizons
-        // and passes the filename down to TraceMacNoteListView for selection.
-        let filename = (relativePath as NSString).lastPathComponent
-        NotificationCenter.default.post(
-            name: .openHorizonsFile,
-            object: nil,
-            userInfo: ["filename": filename]
-        )
+        .task {
+            if notionService.places.isEmpty { await notionService.fetchPlaces() }
+        }
     }
 
-    private func deleteNote(_ filename: String) {
-        try? noteStore.deleteFile("Calendar/\(filename)")
-        files.removeAll { $0 == filename }
-        if selectedFile == filename { selectedFile = nil }
-        deleteCandidate = nil
+    // MARK: Data loading
+
+    private func loadFilesForDest() async {
+        let subfolder: String
+        switch dest {
+        case .project: subfolder = "Notes/Projects"
+        case .horizon: subfolder = "Notes/Horizons"
+        default: return
+        }
+        let list = (try? noteStore.listFiles(in: subfolder)) ?? []
+        await MainActor.run { files = list.filter { $0.hasSuffix(".md") }.sorted(by: >) }
     }
 
-    // MARK: - Display helpers
+    // MARK: Perform move
 
-    private func displayName(for filename: String) -> String {
-        let dateStr = filename.replacingOccurrences(of: ".md", with: "")
-        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
-        guard let date = fmt.date(from: dateStr) else { return dateStr }
-        let display = DateFormatter(); display.dateFormat = "EEEE, MMM d"
-        return display.string(from: date)
+    private func performMove() async {
+        isMoving = true
+        errorMessage = nil
+        do {
+            switch dest {
+            case .day:
+                let path = "Calendar/\(dateFmt.string(from: targetDate)).md"
+                try appendToFile(path: path, header: dateFmt.string(from: targetDate))
+            case .visit:
+                guard let visit = selectedVisit else { return }
+                try await notionService.appendVisitNotes(visitID: visit.id, text: stripped(sourceContent))
+            case .project:
+                guard let file = selectedFile else { return }
+                try appendToFile(path: "Notes/Projects/\(file)",
+                                 header: file.replacingOccurrences(of: ".md", with: ""))
+            case .horizon:
+                guard let file = selectedFile else { return }
+                try appendToFile(path: "Notes/Horizons/\(file)",
+                                 header: file.replacingOccurrences(of: ".md", with: ""))
+            case .place:
+                guard let place = selectedPlace else { return }
+                try appendToFile(path: "Notes/Places/\(place.name).md", header: place.name)
+            }
+            await MainActor.run { onMoved(); dismiss() }
+        } catch {
+            await MainActor.run { errorMessage = error.localizedDescription; isMoving = false }
+        }
     }
 
-    private func relativeLabel(for filename: String) -> String {
-        let dateStr = filename.replacingOccurrences(of: ".md", with: "")
-        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
-        guard let date = fmt.date(from: dateStr) else { return "" }
-        if Calendar.current.isDateInToday(date)     { return "Today" }
-        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
-        let days = Calendar.current.dateComponents([.day], from: date, to: Date()).day ?? 0
-        return "\(days) days ago"
+    private func appendToFile(path: String, header: String) throws {
+        let text = stripped(sourceContent)
+        let existing = (try? noteStore.readFile(path)) ?? ""
+        let updated = existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "# \(header)\n\n\(text)"
+            : existing + "\n\n" + text
+        try noteStore.writeFile(path, content: updated)
+    }
+
+    private func stripped(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        if let first = lines.first,
+           first.hasPrefix("# "),
+           first.dropFirst(2).range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil {
+            lines.removeFirst()
+            while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeFirst() }
+        }
+        return lines.joined(separator: "\n")
     }
 }
+
 
 // MARK: - Hover-reveal collapse handle
 
@@ -1286,6 +1592,8 @@ enum MacEditorCommand: Equatable {
     case indent, outdent
     case link, date
     case undo, redo
+    case timestamp
+    case requestMove
     case applyWikiSuggestion(String)
 }
 
@@ -1367,6 +1675,8 @@ private final class MarkdownNSTextView: NSTextView {
 /// MacTextEditor wires it to the coordinator in makeNSView. No binding timing issues.
 final class MacEditorActions {
     var execute: (MacEditorCommand) -> Void = { _ in }
+    /// Called by .requestMove with (textToMove, remainingContent).
+    var onMoveRequest: ((String, String) -> Void)?
 }
 
 // MARK: - MacTextEditor (NSViewRepresentable)
@@ -1379,6 +1689,8 @@ private struct MacTextEditor: NSViewRepresentable {
     var onWikilinkQuery: ((String?) -> Void)? = nil
     /// Called when the user presses Return while a wikilink suggestion is active.
     var onWikilinkAccept: (() -> Void)? = nil
+    /// Called by .requestMove with (textToMove, remainingContent).
+    var onMoveRequest: ((String, String) -> Void)? = nil
 
     // MARK: makeNSView
 
@@ -1424,6 +1736,8 @@ private struct MacTextEditor: NSViewRepresentable {
         }
         coord.onWikilinkQuery  = onWikilinkQuery
         coord.onWikilinkAccept = onWikilinkAccept
+        coord.onMoveRequest    = onMoveRequest
+        actions.onMoveRequest  = onMoveRequest
 
         let scrollView = NSScrollView()
         scrollView.documentView          = tv
@@ -1455,6 +1769,8 @@ private struct MacTextEditor: NSViewRepresentable {
         }
         coord.onWikilinkQuery  = onWikilinkQuery
         coord.onWikilinkAccept = onWikilinkAccept
+        coord.onMoveRequest    = onMoveRequest
+        actions.onMoveRequest  = onMoveRequest
         guard let tv = scrollView.documentView as? MarkdownNSTextView else { return }
         guard tv.string != text else { return }
         let savedRange = tv.selectedRange()
@@ -1467,6 +1783,18 @@ private struct MacTextEditor: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
+    // MARK: Sizing
+
+    /// Fully flexible: adopt whatever SwiftUI proposes; never report an intrinsic
+    /// minimum. Without this, SwiftUI derives sizing from the scroll view's fitting
+    /// size, which reads as a wide minimum once the text view has laid out wide and
+    /// refuses to compress — pushing sibling columns (e.g. the calendar) off-window.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> NSSize? {
+        guard proposal.width != nil || proposal.height != nil else { return nil }
+        return NSSize(width: proposal.width ?? nsView.frame.width,
+                      height: proposal.height ?? nsView.frame.height)
+    }
+
     // MARK: Coordinator
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -1478,6 +1806,8 @@ private struct MacTextEditor: NSViewRepresentable {
         var onWikilinkQuery: ((String?) -> Void)?
         /// Called when user presses Return while a suggestion is active.
         var onWikilinkAccept: (() -> Void)?
+        /// Called by .requestMove with (textToMove, remainingContent).
+        var onMoveRequest: ((String, String) -> Void)?
         /// Character position of the opening [[ in the active wikilink session.
         private var wikilinkOpenLoc: Int? = nil
         /// Marker subclass for thin NSView separators overlaid on `---` lines.
@@ -1503,7 +1833,12 @@ private struct MacTextEditor: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
-            lastSelection = tv.selectedRange()
+            // Only snapshot the selection while the text view actually owns focus.
+            // When the user clicks a toolbar button macOS collapses the selection
+            // *before* the button action fires — if we saved that we'd lose the range.
+            if tv.window?.firstResponder === tv {
+                lastSelection = tv.selectedRange()
+            }
             checkForWikilink(in: tv)
         }
 
@@ -1748,6 +2083,8 @@ private struct MacTextEditor: NSViewRepresentable {
             case .indent:    indentLine(in: tv)
             case .outdent:   outdentLine(in: tv)
             case .date:      insertDate(in: tv)
+            case .timestamp: insertTimestamp(in: tv)
+            case .requestMove: requestMove(in: tv)
             case .undo:      tv.undoManager?.undo()
             case .redo:      tv.undoManager?.redo()
             case .applyWikiSuggestion(let name): applyWikiSuggestion(name, in: tv)
@@ -1869,6 +2206,35 @@ private struct MacTextEditor: NSViewRepresentable {
             tv.setSelectedRange(NSRange(location: range.location + (str as NSString).length, length: 0))
             text.wrappedValue = storage.string
         }
+
+        private func insertTimestamp(in tv: NSTextView) {
+            guard let storage = tv.textStorage else { return }
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "en_US_POSIX")
+            fmt.dateFormat = "h:mm a"
+            let timeStr = fmt.string(from: Date())
+            let insert  = "\n\n**\(timeStr)**\n\n"
+            // Insert at end of document
+            let endLoc = storage.length
+            storage.replaceCharacters(in: NSRange(location: endLoc, length: 0), with: insert)
+            tv.didChangeText()
+            let newLoc = endLoc + (insert as NSString).length
+            tv.setSelectedRange(NSRange(location: newLoc, length: 0))
+            tv.scrollRangeToVisible(NSRange(location: newLoc, length: 0))
+            text.wrappedValue = storage.string
+        }
+
+        private func requestMove(in tv: NSTextView) {
+            let sel = lastSelection
+            let fullText = tv.string
+            if sel.length > 0, let r = Range(sel, in: fullText) {
+                let selected  = String(fullText[r])
+                let remaining = fullText.replacingCharacters(in: r, with: "")
+                onMoveRequest?(selected, remaining)
+            } else {
+                onMoveRequest?(fullText, "")
+            }
+        }
     }
 }
 
@@ -1876,6 +2242,8 @@ private struct MacTextEditor: NSViewRepresentable {
 
 struct TraceMacNoteEditor: View {
     let relativePath: String
+    var showMoveButton: Bool = false
+    var moveSourceDate: Date? = nil
 
     @Environment(NoteStore.self)     private var noteStore
     @Environment(NotionService.self) private var notionService
@@ -1888,6 +2256,10 @@ struct TraceMacNoteEditor: View {
     // Wikilink autocomplete state
     @State private var wikiQuery:       String? = nil
     @State private var wikiSuggestions: [String] = []
+    // Move sheet state
+    @State private var showMoveSheet   = false
+    @State private var moveContent     = ""
+    @State private var postMoveContent = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1913,7 +2285,12 @@ struct TraceMacNoteEditor: View {
                               if let first = wikiSuggestions.first {
                                   editorActions.execute(.applyWikiSuggestion(first))
                               }
-                          })
+                          },
+                          onMoveRequest: showMoveButton ? { textToMove, remaining in
+                              moveContent     = textToMove
+                              postMoveContent = remaining
+                              showMoveSheet   = true
+                          } : nil)
                 .onChange(of: content) { _, newValue in
                     scheduleSave(content: newValue)
                 }
@@ -1962,7 +2339,48 @@ struct TraceMacNoteEditor: View {
                 Button("Save") { saveNow() }
                     .keyboardShortcut("s", modifiers: .command)
             }
+            if showMoveButton {
+                ToolbarItem {
+                    Button {
+                        editorActions.execute(.timestamp)
+                    } label: {
+                        Label("Timestamp", systemImage: "clock")
+                    }
+                    .help("Insert timestamp (HH:MM AM)")
+                }
+                ToolbarItem {
+                    Button {
+                        editorActions.execute(.requestMove)
+                    } label: {
+                        Label("Move", systemImage: "arrow.up.right.square")
+                    }
+                    .help("Move selection (or whole note) to another destination")
+                }
+            }
         }
+        .sheet(isPresented: $showMoveSheet) {
+            if let date = moveSourceDate ?? parsedDate(from: relativePath) {
+                MacDailyMoveSheet(
+                    sourceDate: date,
+                    sourceContent: moveContent,
+                    onMoved: {
+                        content = postMoveContent
+                        scheduleSave(content: postMoveContent)
+                        saveNow()
+                    }
+                )
+                .environment(noteStore)
+                .environment(notionService)
+            }
+        }
+    }
+
+    private func parsedDate(from path: String) -> Date? {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd"
+        let base = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        return fmt.date(from: base)
     }
 
     // MARK: - Wiki suggestion bar
@@ -1995,6 +2413,12 @@ struct TraceMacNoteEditor: View {
     // MARK: - Formatting toolbar
 
     private var formattingToolbar: some View {
+        // Horizontal ScrollView (not a plain HStack) so this row's fixed content
+        // (14 buttons + dividers, ~450pt minimum) never forces a minimum width on
+        // the parent VStack/editor column — same pattern as wikiSuggestionBar above.
+        // A plain HStack here was B9's second constraint: it survived the
+        // MacTextEditor sizeThatFits fix because a VStack won't compress below a
+        // child's intrinsic minimum width.
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 2) {
                 fmtButton("bold",            .bold,      "Bold (**)")

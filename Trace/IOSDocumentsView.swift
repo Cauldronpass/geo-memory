@@ -18,6 +18,7 @@ struct iOSDocumentsView: View {
     @State private var activeTag: String? = nil
     @State private var showingImport = false
     @State private var showingDetail = false
+    @State private var docToDelete: TraceMacDocument? = nil
 
     private var categories: [String] {
         let standard = ["Inbox", "Project", "Place", "Trip"]
@@ -138,10 +139,16 @@ struct iOSDocumentsView: View {
                         .listRowBackground(Color.clear)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
+                                docToDelete = doc
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            Button {
                                 archive(doc)
                             } label: {
                                 Label("Archive", systemImage: "archivebox")
                             }
+                            .tint(.orange)
                             Button {
                                 selectedDoc = doc
                                 showingDetail = true
@@ -160,6 +167,20 @@ struct iOSDocumentsView: View {
         }
         .sheet(isPresented: $showingImport) {
             AddDocumentView()
+        }
+        .confirmationDialog(
+            "Delete \"\(docToDelete?.title ?? "document")\"?",
+            isPresented: Binding(get: { docToDelete != nil }, set: { if !$0 { docToDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let doc = docToDelete {
+                    try? store.deleteDocument(doc)
+                    Task { await store.reload() }
+                }
+                docToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { docToDelete = nil }
         }
         .sheet(isPresented: $showingDetail) {
             if let doc = selectedDoc {
@@ -439,6 +460,22 @@ struct iOSDocDetailSheet: View {
             .listStyle(.insetGrouped)
             .navigationTitle("Document")
             .navigationBarTitleDisplayMode(.inline)
+            .overlay(alignment: .top) {
+                if isScanning {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small).tint(.white)
+                        Text("Scanning with AI…")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Color.accentColor, in: Capsule())
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .animation(.easeInOut(duration: 0.3), value: isScanning)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

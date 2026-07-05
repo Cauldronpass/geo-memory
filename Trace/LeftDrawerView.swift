@@ -273,6 +273,13 @@ struct SettingsView: View {
                     Text("Monitoring: \(gm.isMonitoring ? "yes" : "no")").font(.caption).foregroundStyle(.secondary)
                     Text("Regions: \(gm.monitoredRegionCount)").font(.caption).foregroundStyle(.secondary)
                 }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("iCloud Notes: \(NoteStore.shared.hasAccess ? "✓ linked" : "✗ not found")")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(NoteStore.shared.containerPath)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
                 Button("Clear Geofence Cooldowns") {
                     UserDefaults.standard.removeObject(forKey: "geofence_cooldowns")
                 }
@@ -340,6 +347,8 @@ struct SettingsView: View {
         saveState = .saving
         let sharedDefaults = UserDefaults(suiteName: "group.com.david.trace") ?? .standard
         sharedDefaults.set(notionToken,      forKey: "notion_token")
+        // Also write to standard so the migration fallback always finds it across build changes.
+        UserDefaults.standard.set(notionToken, forKey: "notion_token")
         UserDefaults.standard.set(nasPassword,      forKey: "nas_password")
         UserDefaults.standard.set(b2KeyID,          forKey: "b2_key_id")
         UserDefaults.standard.set(b2ApplicationKey, forKey: "b2_application_key")
