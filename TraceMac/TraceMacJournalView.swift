@@ -136,10 +136,15 @@ struct TraceMacDailyView: View {
                     editorColumn
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+                    // Handle lives outside the `if !calendarCollapsed` block (same
+                    // pattern as the date-list handle above) so it's still there to
+                    // re-expand the panel once collapsed — previously this was a
+                    // plain separator Rectangle inside the conditional, so there was
+                    // no way to bring the calendar back except the ⌘⇧K toolbar toggle.
+                    CollapseHandle(isCollapsed: $calendarCollapsed, collapsesRight: true,
+                                   showLine: true, panelColor: .clear)
+
                     if !calendarCollapsed {
-                        Rectangle()
-                            .fill(Color(nsColor: .separatorColor))
-                            .frame(width: 1)
                         TraceMacCalendarPanel(
                             selectedDateFile: $selectedDateFile,
                             datesWithEntries: datesWithEntries,

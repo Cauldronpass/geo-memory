@@ -31,43 +31,59 @@ struct TraceMacBilliardsView: View {
         sessions.first { $0.id == selectedID }
     }
 
+    // Stats always computed on the full set (not the search-filtered list) so
+    // the header stays meaningful — matches iOS BilliardsView.
+    private var wins:   Int { notion.billiardsSessions.filter { $0.result == "Win"  }.count }
+    private var losses: Int { notion.billiardsSessions.filter { $0.result == "Loss" }.count }
+    private var eightBallW: Int { notion.billiardsSessions.filter { $0.format == "8-Ball" && $0.result == "Win"  }.count }
+    private var eightBallL: Int { notion.billiardsSessions.filter { $0.format == "8-Ball" && $0.result == "Loss" }.count }
+    private var nineBallW:  Int { notion.billiardsSessions.filter { $0.format == "9-Ball" && $0.result == "Win"  }.count }
+    private var nineBallL:  Int { notion.billiardsSessions.filter { $0.format == "9-Ball" && $0.result == "Loss" }.count }
+
     var body: some View {
-        HStack(spacing: 0) {
-            // Left column — session list
-            if !listCollapsed {
-                VStack(spacing: 0) {
-                    searchBar
-                    Divider()
-                    if notion.billiardsSessions.isEmpty && isLoading {
-                        ProgressView("Loading sessions…")
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if sessions.isEmpty {
-                        emptyState
-                    } else {
-                        List(sessions, id: \.id, selection: $selectedID) { session in
-                            BilliardsSessionRow(session: session)
-                                .tag(session.id)
+        VStack(spacing: 0) {
+            // Pinned header — always visible, matching iOS's statsHeader at the
+            // top of the Billiards list.
+            statsHeader
+            Divider()
+
+            HStack(spacing: 0) {
+                // Left column — session list
+                if !listCollapsed {
+                    VStack(spacing: 0) {
+                        searchBar
+                        Divider()
+                        if notion.billiardsSessions.isEmpty && isLoading {
+                            ProgressView("Loading sessions…")
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if sessions.isEmpty {
+                            emptyState
+                        } else {
+                            List(sessions, id: \.id, selection: $selectedID) { session in
+                                BilliardsSessionRow(session: session)
+                                    .tag(session.id)
+                            }
+                            .listStyle(.sidebar)
+                            .scrollContentBackground(.hidden)
+                            .background(Color(nsColor: .windowBackgroundColor))
                         }
-                        .listStyle(.sidebar)
-                        .scrollContentBackground(.hidden)
-                        .background(Color(nsColor: .windowBackgroundColor))
+                    }
+                    .frame(width: 260)
+                }
+
+                CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
+
+                // Right column — detail / edit panel
+                Group {
+                    if let session = selectedSession {
+                        BilliardsSessionDetailPanel(session: session)
+                            .environment(notion)
+                    } else {
+                        placeholderDetail
                     }
                 }
-                .frame(width: 260)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-
-            CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
-
-            // Right column — detail / edit panel
-            Group {
-                if let session = selectedSession {
-                    BilliardsSessionDetailPanel(session: session)
-                        .environment(notion)
-                } else {
-                    placeholderDetail
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -132,6 +148,43 @@ struct TraceMacBilliardsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
+    // Wins / Losses / Matches + per-format breakdown — matches iOS BilliardsView.statsHeader.
+    private var statsHeader: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 0) {
+                statPill(value: "\(wins)", label: "Wins", color: .green)
+                Spacer()
+                statPill(value: "\(losses)", label: "Losses", color: .red)
+                Spacer()
+                statPill(value: "\(notion.billiardsSessions.count)", label: "Matches", color: .primary)
+            }
+            Divider()
+            HStack(spacing: 20) {
+                formatStat(label: "8-Ball", wins: eightBallW, losses: eightBallL)
+                formatStat(label: "9-Ball", wins: nineBallW, losses: nineBallL)
+                Spacer()
+            }
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 24)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func statPill(value: String, label: String, color: Color) -> some View {
+        VStack(spacing: 2) {
+            Text(value).font(.title2.bold()).foregroundStyle(color)
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(minWidth: 70)
+    }
+
+    private func formatStat(label: String, wins: Int, losses: Int) -> some View {
+        HStack(spacing: 4) {
+            Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text("\(wins)-\(losses)").font(.caption).foregroundStyle(.primary)
+        }
+    }
 }
 
 // MARK: - Session list row
@@ -147,51 +200,64 @@ private struct BilliardsSessionRow: View {
         }
     }
 
-    private var scoreLabel: String {
-        if let my = session.myScore, let opp = session.opponentScore {
-            return "\(my) – \(opp)"
-        }
-        return session.format
+    private var scoreDisplay: String {
+        let my = session.myScore ?? "—"
+        let op = session.opponentScore ?? "—"
+        return "\(my) · \(op)"
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            // Win/loss dot
-            Circle()
-                .fill(resultColor)
-                .frame(width: 8, height: 8)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(session.opponent.isEmpty ? "Unknown opponent" : "vs \(session.opponent)")
-                    .font(.callout)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(session.date, format: .dateTime.month(.abbreviated).day().year())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text(scoreLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                if let result = session.result {
+                    Text(result)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(resultColor, in: Capsule())
+                }
+                Text(session.format)
+                    .font(.caption).foregroundStyle(.secondary)
+                if let matchNo = session.matchNumber {
+                    Text("M\(matchNo)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let myTP = session.myTeamPoints {
+                    Text("\(myTP) pts")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(myTP > 0 ? .green : .secondary)
                 }
             }
 
-            Spacer()
+            HStack {
+                Text(session.opponent.isEmpty ? "vs Opponent" : "vs \(session.opponent)")
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer()
+                Text(scoreDisplay)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
 
-            if let result = session.result {
-                Text(result)
+            HStack(spacing: 4) {
+                Text(session.date, format: .dateTime.month(.abbreviated).day())
                     .font(.caption2)
-                    .fontWeight(.semibold)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(resultColor.opacity(0.15))
-                    .foregroundStyle(resultColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .foregroundStyle(.tertiary)
+            }
+
+            if let notes = session.notes, !notes.isEmpty {
+                Text(notes)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
     }
 }
 

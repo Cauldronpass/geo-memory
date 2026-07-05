@@ -8,6 +8,20 @@
 import SwiftUI
 import PhotosUI
 
+// MARK: - Stat period (iOS parity — This Week / This Month / All Time)
+
+private enum FitnessStatPeriod: String, CaseIterable, Identifiable {
+    case week, month, allTime
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .week:    return "This Week"
+        case .month:   return "This Month"
+        case .allTime: return "All Time"
+        }
+    }
+}
+
 // MARK: - Main view
 
 struct TraceMacFitnessView: View {
@@ -51,51 +65,73 @@ struct TraceMacFitnessView: View {
         filteredWorkouts.first { $0.id == selectedID }
     }
 
-    // Stats for the header strip
-    private var thisMonthWorkouts: [Workout] {
-        let start = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: Date()))!
-        return sortedWorkouts.filter { $0.date >= start }
+    // Stats for the header strip — This Week / This Month / All Time (iOS parity)
+    private func workoutsIn(_ period: FitnessStatPeriod) -> [Workout] {
+        let cal = Calendar.current
+        let now = Date()
+        switch period {
+        case .week:
+            let start = cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now))!
+            return sortedWorkouts.filter { $0.date >= start }
+        case .month:
+            let start = cal.date(from: cal.dateComponents([.year, .month], from: now))!
+            return sortedWorkouts.filter { $0.date >= start }
+        case .allTime:
+            return sortedWorkouts
+        }
+    }
+
+    private func miles(_ workouts: [Workout]) -> Double {
+        workouts.compactMap { $0.distance }.reduce(0, +)
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Left column — list
-            if !listCollapsed {
-                VStack(spacing: 0) {
-                    searchBar
-                    if !availableTypes.isEmpty { typeFilterBar }
-                    Divider()
-                    if sortedWorkouts.isEmpty && isLoading {
-                        ProgressView("Loading workouts…")
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if filteredWorkouts.isEmpty {
-                        emptyState
-                    } else {
-                        List(filteredWorkouts, id: \.id, selection: $selectedID) { workout in
-                            WorkoutRow(workout: workout)
-                                .tag(workout.id)
+        VStack(spacing: 0) {
+            // Pinned header — always visible, not just in the empty-state
+            // placeholder (that was the old behavior; iOS shows this at the
+            // top of the screen regardless of selection).
+            statsStrip
+            Divider()
+
+            HStack(spacing: 0) {
+                // Left column — list
+                if !listCollapsed {
+                    VStack(spacing: 0) {
+                        searchBar
+                        if !availableTypes.isEmpty { typeFilterBar }
+                        Divider()
+                        if sortedWorkouts.isEmpty && isLoading {
+                            ProgressView("Loading workouts…")
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if filteredWorkouts.isEmpty {
+                            emptyState
+                        } else {
+                            List(filteredWorkouts, id: \.id, selection: $selectedID) { workout in
+                                WorkoutRow(workout: workout)
+                                    .tag(workout.id)
+                            }
+                            .listStyle(.sidebar)
+                            .scrollContentBackground(.hidden)
+                            .background(Color(nsColor: .windowBackgroundColor))
                         }
-                        .listStyle(.sidebar)
-                        .scrollContentBackground(.hidden)
-                        .background(Color(nsColor: .windowBackgroundColor))
+                    }
+                    .frame(width: 260)
+                }
+
+                CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
+
+                // Right column — detail
+                Group {
+                    if let workout = selectedWorkout {
+                        WorkoutDetailPanel(workout: workout)
+                            .environment(notion)
+                            .id(workout.id)
+                    } else {
+                        placeholderDetail
                     }
                 }
-                .frame(width: 260)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-
-            CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
-
-            // Right column — detail
-            Group {
-                if let workout = selectedWorkout {
-                    WorkoutDetailPanel(workout: workout)
-                        .environment(notion)
-                        .id(workout.id)
-                } else {
-                    placeholderDetail
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -178,8 +214,6 @@ struct TraceMacFitnessView: View {
 
     private var placeholderDetail: some View {
         VStack(spacing: 16) {
-            // Stats strip
-            statsStrip
             Spacer()
             Image(systemName: "figure.run")
                 .font(.system(size: 48, weight: .ultraLight))
@@ -192,40 +226,42 @@ struct TraceMacFitnessView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    // This Week / This Month / All Time — matches iOS FitnessView.statsSection.
     private var statsStrip: some View {
-        HStack(spacing: 32) {
-            statCell(
-                label: "This month",
-                value: "\(thisMonthWorkouts.count)",
-                unit: "workouts"
-            )
-            let otfCount = thisMonthWorkouts.filter { $0.isOTF }.count
-            if otfCount > 0 {
-                statCell(label: "OTF", value: "\(otfCount)", unit: "classes")
-            }
-            let totalMin = thisMonthWorkouts.compactMap(\.duration).reduce(0, +)
-            if totalMin > 0 {
-                statCell(label: "Time", value: "\(totalMin / 60)h \(totalMin % 60)m", unit: "this month")
-            }
-            let totalCal = thisMonthWorkouts.compactMap(\.calories).reduce(0, +)
-            if totalCal > 0 {
-                statCell(label: "Calories", value: "\(totalCal)", unit: "this month")
+        HStack(spacing: 0) {
+            ForEach(FitnessStatPeriod.allCases) { period in
+                let ws = workoutsIn(period)
+                let mi = miles(ws)
+                VStack(spacing: 4) {
+                    Text(period.label.uppercased())
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .tracking(0.5)
+                    Text("\(ws.count)")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("workouts")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if mi > 0 {
+                        Text(String(format: "%.1f mi", mi))
+                            .font(.caption.bold())
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("— mi")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                if period != .allTime {
+                    Divider().frame(height: 50)
+                }
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .padding(.horizontal, 24)
         .background(Color(nsColor: .controlBackgroundColor))
-    }
-
-    private func statCell(label: String, value: String, unit: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(.title2)
-                .fontWeight(.semibold)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
     }
 }
 
@@ -233,6 +269,8 @@ struct TraceMacFitnessView: View {
 
 private struct WorkoutRow: View {
     let workout: Workout
+    // Same emoji ladder as iOS FitnessView.WorkoutRow.
+    private let feelEmoji = ["", "😴", "😕", "😐", "🙂", "😊", "💪", "🔥"]
 
     private var typeColor: Color {
         switch workout.type {
@@ -245,19 +283,31 @@ private struct WorkoutRow: View {
         }
     }
 
-    private var subtitle: String {
-        var parts: [String] = []
-        if let dur = workout.duration { parts.append("\(dur) min") }
-        if let cal = workout.calories { parts.append("\(cal) cal") }
-        if workout.isOTF, let sp = workout.splatPoints { parts.append("\(sp) splats") }
-        return parts.joined(separator: " · ")
+    private var typeIcon: String {
+        switch workout.type {
+        case "OrangeTheory": return "flame.fill"
+        case "Run":          return "figure.run"
+        case "Bike":         return "figure.outdoor.cycle"
+        case "Hike":         return "figure.hiking"
+        case "Lift":         return "dumbbell.fill"
+        default:             return "figure.mixed.cardio"
+        }
+    }
+
+    private var dot: some View {
+        Text("·").font(.caption).foregroundStyle(.tertiary)
     }
 
     var body: some View {
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 3)
-                .fill(typeColor)
-                .frame(width: 4, height: 36)
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(typeColor.opacity(0.15))
+                    .frame(width: 34, height: 34)
+                Image(systemName: typeIcon)
+                    .font(.system(size: 15))
+                    .foregroundStyle(typeColor)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
@@ -271,21 +321,47 @@ private struct WorkoutRow: View {
                     }
                 }
                 .lineLimit(1)
+
                 HStack(spacing: 4) {
-                    Text(workout.date, format: .dateTime.month(.abbreviated).day().year())
+                    Text(workout.date, format: .dateTime.month(.abbreviated).day())
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if !subtitle.isEmpty {
-                        Text("·").foregroundStyle(.tertiary)
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    if let dur = workout.duration {
+                        dot
+                        Text("\(dur) min").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let dist = workout.distance {
+                        dot
+                        Text(String(format: "%.2f mi", dist)).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                let hasSub = workout.splatPoints != nil || workout.feel != nil
+                if hasSub {
+                    HStack(spacing: 4) {
+                        if let splats = workout.splatPoints {
+                            Text("🔥 \(splats) splats").font(.caption).foregroundStyle(.orange)
+                        }
+                        if let feel = workout.feel, feel >= 1, feel <= 7 {
+                            if workout.splatPoints != nil { dot }
+                            Text("\(feelEmoji[feel]) \(feel)/7").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
+
             Spacer()
+
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(workout.date, format: .dateTime.weekday(.abbreviated))
+                    .font(.caption)
+                    .fontWeight(.medium)
+                if let cal = workout.calories {
+                    Text("\(cal) cal").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
     }
 }
 
