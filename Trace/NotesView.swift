@@ -2,12 +2,13 @@ import SwiftUI
 
 // MARK: - NotesView
 //
-// Four-tab notes screen backed by NoteStore (Trace iCloud container).
+// Five-tab notes screen backed by NoteStore (Trace iCloud container).
 //
-//  Daily     — today's Calendar/YYYY-MM-DD.md, editable inline
-//  Horizons  — Notes/Horizons/*.md (week + month notes)
+//  Daily     — today's Calendar/YYYY-MM-DD.md, editable inline; tap again to toggle calendar (week + month notes)
 //  Projects  — Notes/Projects/*.md
 //  Places    — Notes/Places/*.md (one file per place)
+//  Trips     — Trip management (placeholder, full build pending)
+//  Docs      — Documents/*/  (iCloud document library with AI scan)
 
 struct NotesView: View {
 
@@ -19,7 +20,7 @@ struct NotesView: View {
     @State private var showingFABNewNote = false
     @State private var fabNewNoteName = ""
     @State private var isCreatingFABNote = false
-    @State private var fabNoteSubfolder: String = "Notes/Horizons"
+    @State private var fabNoteSubfolder: String = "Notes/Projects"
     @State private var showingFABDailyPicker = false
     @State private var fabDailyDate: Date = Date()
     @State private var showingFABPlacePicker = false
@@ -71,7 +72,7 @@ struct NotesView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .traceNotesNewNote)) { notif in
-            let type = notif.userInfo?["type"] as? String ?? "horizons"
+            let type = notif.userInfo?["type"] as? String ?? "projects"
             switch type {
             case "daily":
                 fabDailyDate = Date()
@@ -84,9 +85,9 @@ struct NotesView: View {
             case "places":
                 selectedTab = .places
                 showingFABPlacePicker = true
-            default: // "horizons"
-                selectedTab = .horizons
-                fabNoteSubfolder = "Notes/Horizons"
+            default:
+                selectedTab = .projects
+                fabNoteSubfolder = "Notes/Projects"
                 fabNewNoteName = ""
                 showingFABNewNote = true
             }
@@ -147,12 +148,14 @@ struct NotesView: View {
         switch selectedTab {
         case .daily:
             DailyNoteTab(showCalendar: $showCalendar)
-        case .horizons:
-            HorizonsNoteTab()
         case .projects:
             NoteFileListTab(subfolder: "Notes/Projects", emptyMessage: "No project notes yet.\nTap the pencil to create one.")
         case .places:
             NoteFileListTab(subfolder: "Notes/Places", emptyMessage: "No place notes yet.\nPlace notes are created automatically when you tap Notes on a place.")
+        case .trips:
+            TripsPlaceholderTab()
+        case .docs:
+            iOSDocumentsView()
         }
     }
 }
@@ -174,24 +177,26 @@ enum WikiLinkTarget: Identifiable {
 // MARK: - NoteTab enum
 
 enum NoteTab: String, CaseIterable, Identifiable {
-    case daily, horizons, projects, places
+    case daily, projects, places, trips, docs
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .daily:    return "Daily"
-        case .horizons: return "Horizons"
         case .projects: return "Projects"
         case .places:   return "Places"
+        case .trips:    return "Trips"
+        case .docs:     return "Docs"
         }
     }
 
     var icon: String {
         switch self {
         case .daily:    return "calendar"
-        case .horizons: return "square.stack"
         case .projects: return "folder"
         case .places:   return "mappin"
+        case .trips:    return "airplane"
+        case .docs:     return "doc.richtext"
         }
     }
 }
@@ -2123,6 +2128,27 @@ struct MoveNoteSheet: View {
         }
         .presentationDetents([.height(280)])
         .presentationDragIndicator(.visible)
+    }
+}
+
+// MARK: - Trips Placeholder Tab
+
+struct TripsPlaceholderTab: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "airplane")
+                .font(.system(size: 48, weight: .thin))
+                .foregroundStyle(.tertiary)
+            Text("Trips")
+                .font(.title3).fontWeight(.semibold)
+            Text("Trip management is coming soon.\nYour trips will appear here.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Spacer()
+        }
+        .padding()
     }
 }
 

@@ -1,5 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import PhotosUI
+import VisionKit
 
 // MARK: - DocDestination
 
@@ -35,6 +37,13 @@ struct AddDocumentView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var showingFilePicker = false
+    @State private var showingPhotoPicker = false
+    @State private var showingScanner = false
+    @State private var showingCamera = false
+    @State private var selectedPhotoItem: PhotosPickerItem? = nil
+    @State private var scannedImage: UIImage? = nil
+    @State private var cameraImage: UIImage? = nil
+    @State private var isProcessingPhoto = false
 
     // File state
     @State private var selectedURL: URL?
@@ -125,6 +134,56 @@ struct AddDocumentView: View {
                     fileSize = computeFileSize(url)
                 }
             }
+            .photosPicker(
+                isPresented: $showingPhotoPicker,
+                selection: $selectedPhotoItem,
+                matching: .images
+            )
+            .onChange(of: selectedPhotoItem) { _, item in
+                guard let item else { return }
+                isProcessingPhoto = true
+                Task {
+                    if let rawData = try? await item.loadTransferable(type: Data.self) {
+                        // Convert to JPEG — photo library may return HEIC on modern iPhones
+                        let jpegData: Data = await Task.detached(priority: .userInitiated) {
+                            UIImage(data: rawData)?.jpegData(compressionQuality: 0.85) ?? rawData
+                        }.value
+                        await MainActor.run {
+                            preloadedData = jpegData
+                            preloadedFilename = "photo-\(Int(Date().timeIntervalSince1970)).jpg"
+                            fileSize = ByteCountFormatter.string(
+                                fromByteCount: Int64(jpegData.count), countStyle: .file)
+                            if documentTitle.isEmpty { documentTitle = "Photo" }
+                            selectedPhotoItem = nil
+                            isProcessingPhoto = false
+                        }
+                    } else {
+                        await MainActor.run { isProcessingPhoto = false }
+                    }
+                }
+            }
+            .sheet(isPresented: $showingScanner) {
+                DocumentScannerView(image: $scannedImage, isPresented: $showingScanner)
+                    .ignoresSafeArea()
+            }
+            .sheet(isPresented: $showingCamera) {
+                CameraPickerView { captured in
+                    guard let data = captured.jpegData(compressionQuality: 0.85) else { return }
+                    preloadedData = data
+                    preloadedFilename = "photo-\(Int(Date().timeIntervalSince1970)).jpg"
+                    fileSize = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+                    if documentTitle.isEmpty { documentTitle = "Photo" }
+                }
+                .ignoresSafeArea()
+            }
+            .onChange(of: scannedImage) { _, img in
+                guard let img, let data = img.jpegData(compressionQuality: 0.85) else { return }
+                preloadedData = data
+                preloadedFilename = "scan-\(Int(Date().timeIntervalSince1970)).jpg"
+                fileSize = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+                if documentTitle.isEmpty { documentTitle = "Scanned Document" }
+                scannedImage = nil
+            }
             .onAppear {
                 if let incoming = incomingDocument, preloadedData == nil {
                     preloadedData = incoming.data
@@ -145,6 +204,7 @@ struct AddDocumentView: View {
     private var pickPrompt: some View {
         Form {
             Section {
+                // Files app
                 Button {
                     showingFilePicker = true
                 } label: {
@@ -152,14 +212,80 @@ struct AddDocumentView: View {
                         Image(systemName: "doc.badge.plus")
                             .font(.title2)
                             .foregroundStyle(Color.accentColor)
+                            .frame(width: 32)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Choose File").foregroundStyle(.primary)
-                            Text("PDF, images, text, markdown — saved to iCloud")
+                            Text("PDF, images, text, markdown")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Image(systemName: "chevron.right")
-                            .foregroundStyle(.tertiary).font(.caption)
+                        Image(systemName: "chevron.right").foregroundStyle(.tertiary).font(.caption)
+                    }
+                }
+
+                // Camera
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    Button {
+                        showingCamera = true
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "camera")
+                                .font(.title2)
+                                .foregroundStyle(.blue)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Take Photo").foregroundStyle(.primary)
+                                Text("Camera — saved as JPEG")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary).font(.caption)
+                        }
+                    }
+                }
+
+                // Photo library
+                Button {
+                    showingPhotoPicker = true
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.title2)
+                            .foregroundStyle(.green)
+                            .frame(width: 32)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Photo Library").foregroundStyle(.primary)
+                            Text("Pick a photo or screenshot")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if isProcessingPhoto {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary).font(.caption)
+                        }
+                    }
+                }
+                .disabled(isProcessingPhoto)
+
+                // Document scanner
+                if VNDocumentCameraViewController.isSupported {
+                    Button {
+                        showingScanner = true
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "doc.viewfinder")
+                                .font(.title2)
+                                .foregroundStyle(.orange)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Scan Document").foregroundStyle(.primary)
+                                Text("Camera scan — saved as PDF")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary).font(.caption)
+                        }
                     }
                 }
             }
@@ -534,3 +660,41 @@ struct AddDocumentView: View {
         )
     }
 }
+
+// MARK: - Camera picker (UIImagePickerController wrapper)
+
+struct CameraPickerView: UIViewControllerRepresentable {
+    let onCapture: (UIImage) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let parent: CameraPickerView
+        init(parent: CameraPickerView) { self.parent = parent }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.onCapture(image)
+            }
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
+

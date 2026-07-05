@@ -12,6 +12,8 @@ extension Notification.Name {
     static let openWikilink     = Notification.Name("trace.openWikilink")
     static let selectPerson     = Notification.Name("trace.selectPerson")
     static let selectPlace      = Notification.Name("trace.selectPlace")
+    static let selectDocument   = Notification.Name("trace.selectDocument")
+    static let reloadDocuments  = Notification.Name("trace.reloadDocuments")
 }
 
 // MARK: - Journal root (dispatches to the right tab)
@@ -29,13 +31,9 @@ struct TraceMacJournalView: View {
             TraceMacDailyView()
                 .environment(noteStore)
         case .projects:
-            TraceMacNoteListView(
-                subfolder: "Notes/Projects",
-                sectionTitle: "Projects",
-                newNotePrompt: "Project name",
-                emptyMessage: "No project notes yet."
-            )
-            .environment(noteStore)
+            TraceMacProjectsView()
+                .environment(noteStore)
+                .environment(notionService)
         case .horizons:
             TraceMacNoteListView(
                 subfolder: "Notes/Horizons",
@@ -65,8 +63,11 @@ struct TraceMacDailyView: View {
     @State private var searchText = ""
     @State private var deleteCandidate: String? = nil
     @State private var showDeleteConfirm = false
-    @State private var fileListCollapsed = true
-    @State private var calendarCollapsed = false
+    @State private var fileListCollapsed  = true
+    @State private var calendarCollapsed  = false
+    @State private var selectedTags: Set<String> = []
+    @State private var allTags: [String] = []
+    @State private var fileContents: [String: String] = [:]
 
     /// Set of date strings ("2026-07-03") that have existing notes — fed to calendar panel.
     private var datesWithEntries: Set<String> {
@@ -74,8 +75,12 @@ struct TraceMacDailyView: View {
     }
 
     private var filtered: [String] {
-        if searchText.isEmpty { return files }
-        return files.filter { $0.localizedCaseInsensitiveContains(searchText) }
+        let base = searchText.isEmpty ? files : files.filter { $0.localizedCaseInsensitiveContains(searchText) }
+        guard !selectedTags.isEmpty else { return base }
+        return base.filter { filename in
+            let content = fileContents[filename] ?? ""
+            return selectedTags.allSatisfy { content.range(of: "#\($0)", options: .caseInsensitive) != nil }
+        }
     }
 
     private var todayFilename: String {
@@ -97,6 +102,7 @@ struct TraceMacDailyView: View {
                     TextField("Search", text: $searchText)
                         .textFieldStyle(.roundedBorder)
                         .padding(10)
+                    MacTagChipRow(tags: allTags, selected: $selectedTags)
                     List(filtered, id: \.self, selection: $selectedFile) { filename in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(displayName(for: filename))
@@ -240,6 +246,27 @@ struct TraceMacDailyView: View {
         if selectedFile == nil, files.contains(todayFilename) {
             selectedFile = todayFilename
         }
+        await loadTagIndex(subfolder: "Calendar")
+    }
+
+    private func loadTagIndex(subfolder: String) async {
+        let filesToScan = files
+        var contents: [String: String] = [:]
+        var tagSet = Set<String>()
+        let regex = try? NSRegularExpression(pattern: #"(?<![&\w])#([a-zA-Z][a-zA-Z0-9_]*)"#)
+        for filename in filesToScan {
+            let content = (try? noteStore.readFile("\(subfolder)/\(filename)")) ?? ""
+            contents[filename] = content
+            guard let regex else { continue }
+            let ns = content as NSString
+            regex.enumerateMatches(in: content, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+                if let m, let r = Range(m.range(at: 1), in: content) {
+                    tagSet.insert(String(content[r]).lowercased())
+                }
+            }
+        }
+        fileContents = contents
+        allTags = tagSet.sorted()
     }
 
     private func openToday() {
@@ -397,10 +424,17 @@ struct TraceMacNoteListView: View {
     @State private var showRenameSheet = false
     @State private var renameDraft = ""
     @State private var fileListCollapsed = false
+    @State private var selectedTags: Set<String> = []
+    @State private var allTags: [String] = []
+    @State private var fileContents: [String: String] = [:]
 
     private var filtered: [String] {
-        if searchText.isEmpty { return files }
-        return files.filter { $0.localizedCaseInsensitiveContains(searchText) }
+        let base = searchText.isEmpty ? files : files.filter { $0.localizedCaseInsensitiveContains(searchText) }
+        guard !selectedTags.isEmpty else { return base }
+        return base.filter { filename in
+            let content = fileContents[filename] ?? ""
+            return selectedTags.allSatisfy { content.range(of: "#\($0)", options: .caseInsensitive) != nil }
+        }
     }
 
     var body: some View {
@@ -411,6 +445,7 @@ struct TraceMacNoteListView: View {
                     TextField("Search", text: $searchText)
                         .textFieldStyle(.roundedBorder)
                         .padding(10)
+                    MacTagChipRow(tags: allTags, selected: $selectedTags)
 
                     if files.isEmpty {
                         Spacer()
@@ -458,11 +493,20 @@ struct TraceMacNoteListView: View {
                 panelColor: .clear
             )
 
-            // Right: editor
+            // Right: editor (with optional horizon calendar header)
             Group {
                 if let file = selectedFile {
-                    TraceMacNoteEditor(relativePath: "\(subfolder)/\(file)")
-                        .environment(noteStore)
+                    VStack(spacing: 0) {
+                        if let kind = HorizonKind(filename: file) {
+                            HorizonCalendarHeader(kind: kind)
+                                .padding(.horizontal, 24)
+                                .padding(.top, 16)
+                                .padding(.bottom, 12)
+                            Divider()
+                        }
+                        TraceMacNoteEditor(relativePath: "\(subfolder)/\(file)")
+                            .environment(noteStore)
+                    }
                 } else {
                     VStack(spacing: 8) {
                         Image(systemName: "doc.text")
@@ -571,6 +615,23 @@ struct TraceMacNoteListView: View {
     private func loadFiles() async {
         let loaded = (try? noteStore.listFiles(in: subfolder)) ?? []
         files = loaded.sorted()
+        let sf = subfolder
+        var contents: [String: String] = [:]
+        var tagSet = Set<String>()
+        let regex = try? NSRegularExpression(pattern: #"(?<![&\w])#([a-zA-Z][a-zA-Z0-9_]*)"#)
+        for filename in files {
+            let content = (try? noteStore.readFile("\(sf)/\(filename)")) ?? ""
+            contents[filename] = content
+            guard let regex else { continue }
+            let ns = content as NSString
+            regex.enumerateMatches(in: content, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+                if let m, let r = Range(m.range(at: 1), in: content) {
+                    tagSet.insert(String(content[r]).lowercased())
+                }
+            }
+        }
+        fileContents = contents
+        allTags = tagSet.sorted()
     }
 
     private func renameNote() {
@@ -611,6 +672,250 @@ struct TraceMacNoteListView: View {
         selectedFile = filename
         newNoteName = ""
         showingNewNote = false
+    }
+}
+
+// MARK: - Projects view (hub layout: editor + Documents/People/Places tabs)
+
+struct TraceMacProjectsView: View {
+    private let subfolder = "Notes/Projects"
+
+    @Environment(NoteStore.self)     private var noteStore
+    @Environment(NotionService.self) private var notionService
+
+    @State private var files: [String] = []
+    @State private var selectedFile: String? = nil
+    @State private var searchText = ""
+    @State private var showingNewNote = false
+    @State private var newNoteName = ""
+    @State private var deleteCandidate: String? = nil
+    @State private var showDeleteConfirm = false
+    @State private var renameCandidate: String? = nil
+    @State private var showRenameSheet = false
+    @State private var renameDraft = ""
+    @State private var fileListCollapsed = false
+    @State private var docStore: TraceMacDocumentStore? = nil
+    @State private var selectedTags: Set<String> = []
+    @State private var allTags: [String] = []
+    @State private var fileContents: [String: String] = [:]
+
+    private var filtered: [String] {
+        let base = searchText.isEmpty ? files : files.filter { $0.localizedCaseInsensitiveContains(searchText) }
+        guard !selectedTags.isEmpty else { return base }
+        return base.filter { filename in
+            let content = fileContents[filename] ?? ""
+            return selectedTags.allSatisfy { content.range(of: "#\($0)", options: .caseInsensitive) != nil }
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Left: project list
+            if !fileListCollapsed {
+                VStack(spacing: 0) {
+                    TextField("Search", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(10)
+                    MacTagChipRow(tags: allTags, selected: $selectedTags)
+
+                    if files.isEmpty {
+                        Spacer()
+                        Text("No projects yet.")
+                            .font(.caption).foregroundStyle(.secondary).padding()
+                        Spacer()
+                    } else {
+                        List(filtered, id: \.self, selection: $selectedFile) { filename in
+                            Label(
+                                filename.replacingOccurrences(of: ".md", with: ""),
+                                systemImage: "folder.fill"
+                            )
+                            .font(.system(.callout, weight: .medium))
+                            .lineLimit(1)
+                            .padding(.vertical, 4)
+                            .tag(filename)
+                            .contextMenu {
+                                Button {
+                                    renameCandidate = filename
+                                    renameDraft = filename.replacingOccurrences(of: ".md", with: "")
+                                    showRenameSheet = true
+                                } label: { Label("Rename", systemImage: "pencil") }
+                                Divider()
+                                Button(role: .destructive) {
+                                    deleteCandidate = filename
+                                    showDeleteConfirm = true
+                                } label: { Label("Delete", systemImage: "trash") }
+                            }
+                        }
+                        .listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
+                        .background(Color(nsColor: .windowBackgroundColor))
+                    }
+                }
+                .frame(width: 200)
+            }
+
+            CollapseHandle(isCollapsed: $fileListCollapsed, collapsesRight: false,
+                           showLine: true, panelColor: .clear)
+
+            // Right: hub (editor + entity sidebar)
+            Group {
+                if let file = selectedFile, let store = docStore {
+                    let notePath = "\(subfolder)/\(file)"
+                    HStack(spacing: 0) {
+                        TraceMacNoteEditor(relativePath: notePath)
+                            .frame(maxWidth: .infinity)
+                        Divider()
+                        MacProjectHubSidebar(notePath: notePath, store: store)
+                            .frame(width: 260)
+                    }
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 40, weight: .thin)).foregroundStyle(.tertiary)
+                        Text("Select a project or create one")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showingNewNote = true } label: {
+                    Label("New Project", systemImage: "plus")
+                }
+            }
+            if let file = selectedFile {
+                ToolbarItem {
+                    Button(role: .destructive) {
+                        deleteCandidate = file
+                        showDeleteConfirm = true
+                    } label: { Label("Delete", systemImage: "trash") }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                }
+            }
+        }
+        .confirmationDialog(
+            "Delete \"\(deleteCandidate?.replacingOccurrences(of: ".md", with: "") ?? "")\"?",
+            isPresented: $showDeleteConfirm, titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let f = deleteCandidate { deleteNote(f) }
+            }
+            Button("Cancel", role: .cancel) { }
+        }
+        .sheet(isPresented: $showingNewNote) { newNoteSheet }
+        .sheet(isPresented: $showRenameSheet) { renameSheet }
+        .task {
+            await loadFiles()
+            if docStore == nil {
+                docStore = TraceMacDocumentStore(noteStore: noteStore)
+            }
+            await docStore?.reload()
+        }
+    }
+
+    // MARK: - Sheets
+
+    private var newNoteSheet: some View {
+        VStack(spacing: 16) {
+            Text("New Project").font(.headline)
+            TextField("Project name", text: $newNoteName)
+                .textFieldStyle(.roundedBorder).frame(width: 280)
+                .onSubmit { createNote() }
+            HStack {
+                Button("Cancel") { newNoteName = ""; showingNewNote = false }
+                Button("Create") { createNote() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(newNoteName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(24)
+    }
+
+    private var renameSheet: some View {
+        VStack(spacing: 16) {
+            Text("Rename Project").font(.headline)
+            TextField("Name", text: $renameDraft)
+                .textFieldStyle(.roundedBorder).frame(width: 280)
+                .onSubmit { renameNote() }
+            HStack {
+                Button("Cancel") { showRenameSheet = false; renameCandidate = nil }
+                Button("Rename") { renameNote() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(24)
+    }
+
+    // MARK: - Actions
+
+    private func loadFiles() async {
+        let loaded = (try? noteStore.listFiles(in: subfolder)) ?? []
+        files = loaded.sorted()
+        var contents: [String: String] = [:]
+        var tagSet = Set<String>()
+        let regex = try? NSRegularExpression(pattern: #"(?<![&\w])#([a-zA-Z][a-zA-Z0-9_]*)"#)
+        for filename in files {
+            let content = (try? noteStore.readFile("\(subfolder)/\(filename)")) ?? ""
+            contents[filename] = content
+            guard let regex else { continue }
+            let ns = content as NSString
+            regex.enumerateMatches(in: content, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+                if let m, let r = Range(m.range(at: 1), in: content) {
+                    tagSet.insert(String(content[r]).lowercased())
+                }
+            }
+        }
+        fileContents = contents
+        allTags = tagSet.sorted()
+    }
+
+    private func createNote() {
+        let name = newNoteName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let filename = "\(name).md"
+        let path = "\(subfolder)/\(filename)"
+        let today = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
+        let content = """
+        ---
+        title: \(name)
+        type: project
+        created: \(today)
+        people: []
+        places: []
+        tags: []
+        linked_notes: []
+        ---
+
+        """
+        try? noteStore.writeFile(path, content: content)
+        if !files.contains(filename) { files.append(filename); files.sort() }
+        selectedFile = filename
+        newNoteName = ""
+        showingNewNote = false
+        Task { await docStore?.reload() }
+    }
+
+    private func renameNote() {
+        guard let old = renameCandidate else { return }
+        let newName = renameDraft.trimmingCharacters(in: .whitespaces)
+        guard !newName.isEmpty else { return }
+        let newFilename = newName + ".md"
+        guard newFilename != old else { showRenameSheet = false; renameCandidate = nil; return }
+        try? noteStore.moveFile(from: "\(subfolder)/\(old)", to: "\(subfolder)/\(newFilename)")
+        if let idx = files.firstIndex(of: old) { files[idx] = newFilename; files.sort() }
+        if selectedFile == old { selectedFile = newFilename }
+        showRenameSheet = false; renameCandidate = nil
+    }
+
+    private func deleteNote(_ filename: String) {
+        try? noteStore.deleteFile("\(subfolder)/\(filename)")
+        files.removeAll { $0 == filename }
+        if selectedFile == filename { selectedFile = nil }
+        deleteCandidate = nil
     }
 }
 
@@ -791,6 +1096,186 @@ struct TraceMacPlaceNoteView: View {
     }
 }
 
+// MARK: - Horizon file classification
+
+/// Parses a Horizons filename into a week or month kind.
+/// "2026-W27.md" → .week(2026, 27)
+/// "2026-07.md"  → .month(2026, 7)
+/// Anything else → nil (no header shown)
+private enum HorizonKind {
+    case week(year: Int, week: Int)
+    case month(year: Int, month: Int)
+
+    init?(filename: String) {
+        let name = filename.replacingOccurrences(of: ".md", with: "")
+        // Weekly: "YYYY-Www"
+        if let wRange = name.range(of: "-W") {
+            let yearStr = String(name[name.startIndex ..< wRange.lowerBound])
+            let weekStr = String(name[wRange.upperBound...])
+            if let y = Int(yearStr), let w = Int(weekStr), w >= 1, w <= 53 {
+                self = .week(year: y, week: w)
+                return
+            }
+        }
+        // Monthly: exactly "YYYY-MM"
+        let parts = name.split(separator: "-").map(String.init)
+        if parts.count == 2, parts[0].count == 4, parts[1].count == 2,
+           let y = Int(parts[0]), let m = Int(parts[1]), m >= 1, m <= 12 {
+            self = .month(year: y, month: m)
+            return
+        }
+        return nil
+    }
+}
+
+// MARK: - Horizon calendar header
+
+private struct HorizonCalendarHeader: View {
+
+    let kind: HorizonKind
+
+    private var isoCalendar: Calendar {
+        var cal = Calendar(identifier: .iso8601)
+        cal.locale = Locale.current
+        return cal
+    }
+
+    var body: some View {
+        switch kind {
+        case .week(let year, let week):   weekView(year: year, week: week)
+        case .month(let year, let month): monthView(year: year, month: month)
+        }
+    }
+
+    // MARK: Weekly header
+
+    private func weekDates(year: Int, week: Int) -> [Date] {
+        var comps = DateComponents()
+        comps.yearForWeekOfYear = year
+        comps.weekOfYear = week
+        comps.weekday = 2   // Monday = first day in ISO week
+        guard let monday = isoCalendar.date(from: comps) else { return [] }
+        return (0..<7).compactMap { isoCalendar.date(byAdding: .day, value: $0, to: monday) }
+    }
+
+    private func weekRangeLabel(_ dates: [Date]) -> String {
+        guard let first = dates.first, let last = dates.last else { return "" }
+        let mFmt = DateFormatter(); mFmt.dateFormat = "MMMM"
+        let dFmt = DateFormatter(); dFmt.dateFormat = "d"
+        let yFmt = DateFormatter(); yFmt.dateFormat = "yyyy"
+        let firstMonth = isoCalendar.component(.month, from: first)
+        let lastMonth  = isoCalendar.component(.month, from: last)
+        let year = yFmt.string(from: last)
+        if firstMonth == lastMonth {
+            return "\(mFmt.string(from: first)) \(dFmt.string(from: first))–\(dFmt.string(from: last)), \(year)"
+        } else {
+            return "\(mFmt.string(from: first)) \(dFmt.string(from: first)) – \(mFmt.string(from: last)) \(dFmt.string(from: last)), \(year)"
+        }
+    }
+
+    @ViewBuilder
+    private func weekView(year: Int, week: Int) -> some View {
+        let dates    = weekDates(year: year, week: week)
+        let abbrevs  = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        VStack(alignment: .leading, spacing: 8) {
+            Text(weekRangeLabel(dates))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 0) {
+                ForEach(Array(zip(abbrevs, dates)), id: \.0) { abbrev, date in
+                    let dayNum    = isoCalendar.component(.day, from: date)
+                    let isWeekend = abbrev == "Sat" || abbrev == "Sun"
+
+                    VStack(spacing: 5) {
+                        Text(abbrev)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(isWeekend ? .secondary : .primary)
+
+                        Text("\(dayNum)")
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundStyle(isWeekend ? .secondary : .primary)
+                            .frame(width: 28, height: 28)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+    }
+
+    // MARK: Monthly header
+
+    private func monthDates(year: Int, month: Int) -> [Date?] {
+        var comps = DateComponents()
+        comps.year = year; comps.month = month; comps.day = 1
+        guard let firstDay = isoCalendar.date(from: comps) else { return [] }
+        guard let range = isoCalendar.range(of: .day, in: .month, for: firstDay) else { return [] }
+        let weekday = isoCalendar.component(.weekday, from: firstDay)
+        let offset  = (weekday + 5) % 7   // Mon=0 … Sun=6
+        var result: [Date?] = Array(repeating: nil, count: offset)
+        for d in range {
+            var dc = comps; dc.day = d
+            result.append(isoCalendar.date(from: dc))
+        }
+        while result.count % 7 != 0 { result.append(nil) }
+        return result
+    }
+
+    private func monthHeaderLabel(year: Int, month: Int) -> String {
+        var comps = DateComponents()
+        comps.year = year; comps.month = month; comps.day = 1
+        guard let date = isoCalendar.date(from: comps) else { return "" }
+        let fmt = DateFormatter(); fmt.dateFormat = "MMMM yyyy"
+        return fmt.string(from: date)
+    }
+
+    @ViewBuilder
+    private func monthView(year: Int, month: Int) -> some View {
+        let dates   = monthDates(year: year, month: month)
+        let rows    = stride(from: 0, to: dates.count, by: 7).map {
+            Array(dates[$0 ..< min($0 + 7, dates.count)])
+        }
+        let headers = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        let label   = monthHeaderLabel(year: year, month: month)
+
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            // Column headers
+            HStack(spacing: 0) {
+                ForEach(Array(headers.enumerated()), id: \.offset) { idx, h in
+                    Text(h)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(idx >= 5 ? .secondary : .primary)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+
+            // Date rows
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 0) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { colIdx, date in
+                        if let date = date {
+                            let dayNum    = isoCalendar.component(.day, from: date)
+                            let isWeekend = colIdx >= 5
+                            Text("\(dayNum)")
+                                .font(.system(size: 12, weight: .regular))
+                                .foregroundStyle(isWeekend ? .secondary : .primary)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 26)
+                        } else {
+                            Color.clear.frame(maxWidth: .infinity).frame(height: 26)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // MARK: - AppKit text editor (no scrollbar)
 
 // MARK: - Editor command enum
@@ -807,7 +1292,35 @@ enum MacEditorCommand: Equatable {
 // MARK: - NSTextView subclass: checkbox click detection
 
 /// Intercepts mouseDown to toggle ☐/☑ when the user clicks the checkbox glyph.
+/// Also rejects file-URL drags so they propagate up to the Documents drop zone
+/// instead of being pasted as text paths.
 private final class MarkdownNSTextView: NSTextView {
+
+    // Refuse file-URL drags — let the Documents left-column .onDrop handle them.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let fileTypes: [NSPasteboard.PasteboardType] = [
+            .fileURL,
+            NSPasteboard.PasteboardType("public.file-url"),
+            NSPasteboard.PasteboardType(rawValue: "NSFilenamesPboardType")
+        ]
+        if fileTypes.contains(where: { sender.draggingPasteboard.types?.contains($0) == true }) {
+            return []
+        }
+        return super.draggingEntered(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let fileTypes: [NSPasteboard.PasteboardType] = [
+            .fileURL,
+            NSPasteboard.PasteboardType("public.file-url"),
+            NSPasteboard.PasteboardType(rawValue: "NSFilenamesPboardType")
+        ]
+        if fileTypes.contains(where: { sender.draggingPasteboard.types?.contains($0) == true }) {
+            return false
+        }
+        return super.prepareForDragOperation(sender)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let adj = NSPoint(x: point.x - textContainerInset.width,
@@ -1557,5 +2070,45 @@ struct TraceMacNoteEditor: View {
     private func saveNow() {
         try? noteStore.writeFile(relativePath, content: content)
         lastSaved = Date()
+    }
+}
+
+// MARK: - MacTagChipRow
+
+/// Horizontally scrolling `#tag` filter chips for note list views.
+/// Shows only when `tags` is non-empty. Selected chips AND-filter the list.
+struct MacTagChipRow: View {
+    let tags: [String]
+    @Binding var selected: Set<String>
+
+    var body: some View {
+        if !tags.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach(tags, id: \.self) { tag in
+                        let on = selected.contains(tag)
+                        Button {
+                            if on { selected.remove(tag) }
+                            else  { selected.insert(tag) }
+                        } label: {
+                            Text("#\(tag)")
+                                .font(.system(size: 10, weight: on ? .semibold : .regular))
+                                .foregroundStyle(on ? Color(nsColor: .windowBackgroundColor) : .secondary)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(
+                                    on ? Color.accentColor : Color.secondary.opacity(0.12),
+                                    in: Capsule()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
+            Divider()
+        }
     }
 }

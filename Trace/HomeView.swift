@@ -201,6 +201,7 @@ struct HomeView: View {
             await oura.fetchToday()
             await cal.requestAndFetch()
             await things.fetch()
+            await notion.fetchVisits()
             await healthKit.requestAuthorizationAndFetch()
             if let content = try? NoteStore.shared.readDailyNote() {
                 notePlanContent = content
@@ -213,6 +214,7 @@ struct HomeView: View {
             Task {
                 await cal.fetchUpcomingEvents()
                 await things.fetch()
+                await notion.fetchVisits()
                 await oura.fetchToday()
                 await healthKit.fetchToday()
                 if let content = try? NoteStore.shared.readDailyNote() {
@@ -948,6 +950,13 @@ struct HomeView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 0) {
+                    if shown.isEmpty {
+                        Text(things.isLoading ? "Loading…" : "No tasks today")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                    }
                     ForEach(shown) { task in
                         HStack(alignment: .center, spacing: 10) {
                             // Tappable completion circle

@@ -9,6 +9,7 @@ class NotionService {
     var visits: [Visit] = []
     var captures: [Capture] = []
     var people: [Person] = []
+    var recentInteractions: [Interaction] = []
     var workouts: [Workout] = []
     var billiardsSessions: [BilliardsSession] = []
     var dayNotes: [DayNote] = []
@@ -1299,6 +1300,22 @@ class NotionService {
     }
 
     // MARK: - Interactions
+
+    /// Fetches the most recent interactions across all people (last 45 days).
+    /// Results cached in `recentInteractions` for use by the home screen.
+    func fetchRecentInteractions() async {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withFullDate]
+        let cutoff = iso.string(from: Calendar.current.date(byAdding: .day, value: -45, to: Date()) ?? Date())
+        guard let data = try? await post("\(baseURL)/databases/\(interactionsDBID)/query", body: [
+            "filter": ["property": "Date", "date": ["on_or_after": cutoff]],
+            "sorts": [["property": "Date", "direction": "descending"]],
+            "page_size": 50
+        ]) else { return }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pages = json["results"] as? [[String: Any]] else { return }
+        recentInteractions = pages.compactMap { parseInteraction($0) }
+    }
 
     /// Fetches all interactions for a given person, newest first.
     func fetchInteractions(personID: String) async throws -> [Interaction] {

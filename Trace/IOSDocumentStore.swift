@@ -1,24 +1,22 @@
-// TraceMacDocumentStore.swift
-// Scans Trace's iCloud Documents/ folder and builds a browsable list.
-// Sidecar .md files store optional title/tag metadata alongside each document.
-// Mac-only — do not add to iOS, Widget, or Share Extension targets.
+// iOSDocumentStore.swift
+// iOS document store — reads the same iCloud Documents/ folder as the Mac.
+// Shares TraceMacDocument model. No AppKit dependencies.
+// iOS-only — do not add to Mac target (Mac uses TraceMacDocumentStore).
 
 import Foundation
 import Observation
 
-// TraceMacDocument and DocumentScanResult are defined in TraceDocumentModels.swift (shared).
-
 // MARK: - Store
 
 @Observable
-class TraceMacDocumentStore {
+class iOSDocumentStore {
 
     var documents: [TraceMacDocument] = []
     var isLoading: Bool = false
 
     private let noteStore: NoteStore
 
-    init(noteStore: NoteStore) {
+    init(noteStore: NoteStore = .shared) {
         self.noteStore = noteStore
     }
 
@@ -30,7 +28,6 @@ class TraceMacDocumentStore {
 
         var result: [TraceMacDocument] = []
 
-        // Scan all immediate subfolders of Documents/
         let subfolders = (try? listSubfolders(in: "Documents")) ?? []
         let scanTargets = subfolders.isEmpty ? ["Documents"] : subfolders.map { "Documents/\($0)" }
 
@@ -39,10 +36,8 @@ class TraceMacDocumentStore {
             let files = (try? noteStore.listDocumentFiles(in: folder)) ?? []
 
             for filename in files {
-                // Skip hidden files
                 guard !filename.hasPrefix(".") else { continue }
 
-                // Skip directories (e.g. Documents/Notes/Horizons/ is a subfolder, not a file)
                 if let url = noteStore.resolvedURL(for: "\(folder)/\(filename)") {
                     let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
                     if isDir { continue }
@@ -50,19 +45,14 @@ class TraceMacDocumentStore {
 
                 let relativePath = "\(folder)/\(filename)"
                 let ext = (filename as NSString).pathExtension.lowercased()
-
-                // Documents section is for binary/media files only.
-                // Skip .txt and .md files — those are notes and belong in Journal sections.
-                guard !["txt","md","markdown","text"].contains(ext) else { continue }
+                guard !["txt", "md", "markdown", "text"].contains(ext) else { continue }
 
                 let sidecarRelative = relativePath.hasSuffix(".\(ext)")
                     ? String(relativePath.dropLast(ext.count + 1)) + ".md"
                     : relativePath + ".md"
 
-                // Read sidecar if present
                 let sidecar = parseSidecar(at: sidecarRelative)
 
-                // Derive title from filename — strip leading timestamp (yyyy-MM-dd-HHmmss-)
                 let nameNoExt = filename.hasSuffix(".\(ext)")
                     ? String(filename.dropLast(ext.count + 1))
                     : filename
@@ -73,7 +63,6 @@ class TraceMacDocumentStore {
                     .replacingOccurrences(of: "-", with: " ")
                     .replacingOccurrences(of: "_", with: " ")
 
-                // Filesystem creation date as fallback
                 var fsDate: Date? = nil
                 if let url = noteStore.resolvedURL(for: relativePath) {
                     fsDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.creationDate] as? Date
@@ -95,10 +84,7 @@ class TraceMacDocumentStore {
             }
         }
 
-        // Sort newest first
-        result.sort {
-            ($0.created ?? .distantPast) > ($1.created ?? .distantPast)
-        }
+        result.sort { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
 
         await MainActor.run {
             documents = result
@@ -115,7 +101,7 @@ class TraceMacDocumentStore {
         linkedNote: String?,
         people: [String],
         description: String = "",
-        date: Date? = nil                // explicit override; falls back to doc.created or today
+        date: Date? = nil
     ) throws {
         let tagLine = tags.isEmpty ? "[]" : "[" + tags.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.joined(separator: ", ") + "]"
         let peopleLine = people.isEmpty ? "[]" : "[" + people.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: ", ") + "]"
@@ -128,29 +114,11 @@ class TraceMacDocumentStore {
         if !people.isEmpty { content += "people: \(peopleLine)\n" }
         let trimmedDesc = description.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedDesc.isEmpty {
-            // Escape internal double quotes and store as a single quoted line
             let escaped = trimmedDesc.replacingOccurrences(of: "\"", with: "'")
             content += "description: \"\(escaped)\"\n"
         }
         content += "---\n"
         try noteStore.writeFile(doc.sidecarPath, content: content)
-    }
-
-    /// Moves a document (and its sidecar) to a different category subfolder.
-    func moveDocument(_ doc: TraceMacDocument, to newCategory: String) throws {
-        let newRelativePath = "Documents/\(newCategory)/\(doc.filename)"
-        let newSidecarPath: String = {
-            let base = newRelativePath.hasSuffix(".\(doc.fileExtension)")
-                ? String(newRelativePath.dropLast(doc.fileExtension.count + 1))
-                : newRelativePath
-            return "\(base).md"
-        }()
-        // Move the binary document file using the iCloud-safe mover
-        try noteStore.moveItem(from: doc.relativePath, to: newRelativePath)
-        // Move sidecar if it exists (text file — moveFile is fine)
-        if let sidecar = try? noteStore.readFile(doc.sidecarPath), !sidecar.isEmpty {
-            try? noteStore.moveFile(from: doc.sidecarPath, to: newSidecarPath)
-        }
     }
 
     // MARK: - Import
@@ -162,6 +130,22 @@ class TraceMacDocumentStore {
         let filename = "\(timestamp)-\(sourceURL.lastPathComponent)"
         let data = try Data(contentsOf: sourceURL)
         try noteStore.writeDocument(data, category: "Inbox", filename: filename)
+    }
+
+    // MARK: - Move
+
+    func moveDocument(_ doc: TraceMacDocument, to newCategory: String) throws {
+        let newRelativePath = "Documents/\(newCategory)/\(doc.filename)"
+        let newSidecarPath: String = {
+            let base = newRelativePath.hasSuffix(".\(doc.fileExtension)")
+                ? String(newRelativePath.dropLast(doc.fileExtension.count + 1))
+                : newRelativePath
+            return "\(base).md"
+        }()
+        try noteStore.moveItem(from: doc.relativePath, to: newRelativePath)
+        if let sidecar = try? noteStore.readFile(doc.sidecarPath), !sidecar.isEmpty {
+            try? noteStore.moveFile(from: doc.sidecarPath, to: newSidecarPath)
+        }
     }
 
     // MARK: - Helpers
@@ -194,8 +178,6 @@ class TraceMacDocumentStore {
 
     private func parseSidecar(at relativePath: String) -> SidecarData? {
         guard let raw = try? noteStore.readFile(relativePath), !raw.isEmpty else { return nil }
-
-        // Extract YAML frontmatter between --- delimiters
         let lines = raw.components(separatedBy: "\n")
         guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
         var yamlLines: [String] = []
@@ -210,39 +192,24 @@ class TraceMacDocumentStore {
         guard !yamlLines.isEmpty else { return nil }
 
         var data = SidecarData(tags: [], people: [])
-        let dateFmt = DateFormatter()
-        dateFmt.dateFormat = "yyyy-MM-dd"
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "yyyy-MM-dd"
 
         for line in yamlLines {
             let parts = line.split(separator: ":", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespaces) }
             guard parts.count == 2 else { continue }
             let key = parts[0]; let value = parts[1]
             switch key {
-            case "title":
-                data.title = value
+            case "title":       data.title = value
             case "tags":
-                let stripped = value
-                    .trimmingCharacters(in: .whitespaces)
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-                data.tags = stripped.components(separatedBy: ",")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-            case "created":
-                data.created = dateFmt.date(from: value)
-            case "linked_note":
-                data.linkedNote = value
+                let stripped = value.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                data.tags = stripped.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            case "created":     data.created = dateFmt.date(from: value)
+            case "linked_note": data.linkedNote = value
             case "people":
-                let stripped = value
-                    .trimmingCharacters(in: .whitespaces)
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-                data.people = stripped.components(separatedBy: ",")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-            case "description":
-                // Strip surrounding double quotes if present
-                data.description = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-            default:
-                break
+                let stripped = value.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                data.people = stripped.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            case "description": data.description = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            default: break
             }
         }
         return data
