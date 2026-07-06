@@ -15,6 +15,7 @@ enum MacSection: String, CaseIterable, Identifiable {
     case places    = "Places"
     case horizons  = "Horizons"
     case people    = "People"
+    case discover  = "Discover"
     case billiards = "Billiards"
     case fitness   = "Fitness"
     case documents = "Documents"
@@ -32,6 +33,7 @@ enum MacSection: String, CaseIterable, Identifiable {
         case .places:    return "mappin"
         case .horizons:  return "calendar.badge.clock"
         case .people:    return "person.2"
+        case .discover:  return "binoculars"
         case .billiards: return "circle.grid.3x3"
         case .fitness:   return "figure.run"
         case .documents: return "doc.richtext"
@@ -49,6 +51,7 @@ enum MacSection: String, CaseIterable, Identifiable {
         case .places:    return .green
         case .horizons:  return .purple
         case .people:    return .indigo
+        case .discover:  return Color(hex: "0EA5E9")
         case .billiards: return Color(hex: "2563EB")
         case .fitness:   return Color(hex: "16A34A")
         case .documents: return Color(hex: "8B5CF6")
@@ -203,6 +206,7 @@ struct TraceMacContentView: View {
             Section("Directory") {
                 coloredLabel(.people).tag(MacSection.people)
                 coloredLabel(.places).tag(MacSection.places)
+                coloredLabel(.discover).tag(MacSection.discover)
             }
             Section("Activity") {
                 coloredLabel(.billiards).tag(MacSection.billiards)
@@ -261,6 +265,10 @@ struct TraceMacContentView: View {
         case .people:
             TraceMacPeopleView()
                 .environment(notionService)
+        case .discover:
+            TraceMacDiscoverView()
+                .environment(notionService)
+                .environment(noteStore)
         case .billiards:
             TraceMacBilliardsView()
                 .environment(notionService)
