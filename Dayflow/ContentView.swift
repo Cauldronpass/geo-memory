@@ -9,8 +9,25 @@
 //  DayflowNoteFullPageView.swift, build order step 4). Browse views (step 5)
 //  are wired for real as of this pass — see DayflowUpcomingView.swift,
 //  DayflowCalendarBrowseView.swift, DayflowAnytimeView.swift. Inbox (step 5b)
-//  added 2026-07-20 — see DayflowInboxView.swift. Settings (step 6) is still
-//  a stub icon that just logs.
+//  added 2026-07-20 — see DayflowInboxView.swift. Settings (step 6) added
+//  2026-07-20 — see DayflowSettingsView.swift. Calendar write support (step 7)
+//  added 2026-07-20 — see CalendarService.createEvent and saveDraft()'s
+//  `.event` case below. Widget (step 8) is the only step left unbuilt.
+//
+//  **`ThingsService.addTask()` silent-failure fix, added 2026-07-20.** That
+//  method used to discard its HTTP response entirely (see its own header
+//  comment) — a failed task save had zero signal anywhere. Now it returns a
+//  `Bool`, and `saveDraft()`'s `.task` case surfaces a failure via
+//  `saveErrorMessage` (a real on-screen `.alert`, not just `log()`) — matches
+//  the pattern the `.event` case already used for Calendar write failures.
+//
+//  **Notes & Project search + Agenda search, added 2026-07-20 (Session 11).**
+//  Daily Note's header gained a third icon (DayflowNotesView — search over
+//  Daily/Projects/Places notes, plus project-note create/view/append) and the
+//  top-bar Browse menu gained a fifth destination, Search (DayflowAgendaSearchView
+//  — keyword search over Things tasks + calendar events). Deliberately two
+//  separate screens, not one — see Dayflow-Design-Plan.md "Notes & Agenda
+//  search" for the reasoning David and Cowork walked through before building.
 //
 //  Kept the type name `ContentView` (matches DayflowApp.swift's WindowGroup
 //  reference and the real Xcode file name `ContentView.swift`) rather than
@@ -45,6 +62,32 @@ struct ContentView: View {
     // value driving a single .fullScreenCover(item:) rather than three Bool
     // flags. See DayflowModels.swift's "Browse views" section.
     @State private var browseDestination: DayflowBrowseDestination? = nil
+    /// Settings (build order step 6) — added 2026-07-20. See
+    /// DayflowSettingsView.swift's header comment for why this became urgent.
+    @State private var showSettings = false
+    /// Forces DayflowAgendaSection to tear down and re-run its own `.task(id:
+    /// date)` fetch after a new calendar event is saved for the day currently
+    /// in view. Added 2026-07-20 for Calendar write support (build order step
+    /// 7) — Agenda's `dayEvents` is a local `@State` snapshot populated by its
+    /// own `loadDayData()`, not a reactive read off a shared observable like
+    /// `ThingsService.shared.tasks` is, so creating an event elsewhere doesn't
+    /// otherwise reach it until the next natural trigger (a `date` change, or
+    /// the user tapping Agenda's own refresh button). Applied as `.id(...)` on
+    /// the section below — changing it recreates the view, which reruns
+    /// `.task(id:)` the same as if `date` itself had changed.
+    @State private var agendaRefreshToken = UUID()
+    /// Surfaces a failed task/event save to the screen instead of only the
+    /// Xcode console. Added 2026-07-20 alongside `ThingsService.addTask()`'s
+    /// fix (it used to silently discard failures — see that method's header
+    /// comment) — a console `log()` line is useless once David's off a real
+    /// device with no console attached, which is exactly the TestFlight
+    /// scenario this was fixed ahead of.
+    @State private var saveErrorMessage: String? = nil
+    /// Daily Note's third header icon (Session 11, 2026-07-20) — search over
+    /// notes + view/append project notes. A plain Bool + fullScreenCover, not
+    /// folded into `browseDestination`, since it's reached from Daily Note's
+    /// own header, not the top-bar calendar-icon Browse menu.
+    @State private var showNotes = false
 
     private var dateHeadlineText: String {
         let f = DateFormatter()
@@ -75,11 +118,13 @@ struct ContentView: View {
                     onOpenQuickAdd: { showQuickAdd = true },
                     isCollapsed: $agendaCollapsed
                 )
+                .id(agendaRefreshToken)
 
                 DayflowDailyNoteSection(
                     date: selectedDate,
+                    onShare: { log("Share — not built yet") },
                     onExpand: { showNoteFullPage = true },
-                    onShare: { log("Share — not built yet") }
+                    onOpenNotes: { showNotes = true }
                 )
             }
             .padding()
@@ -100,7 +145,24 @@ struct ContentView: View {
             .presentationDetents([.medium])
         }
         .fullScreenCover(isPresented: $showNoteFullPage) {
-            DayflowNoteFullPageView(initialDate: selectedDate)
+            // Session 18, 2026-07-20 — `selectedDate` is now a real Binding, not a
+            // one-shot `initialDate:` seed. Navigating dates inside the full-page
+            // view (its Today/Tomorrow pill, or its Calendar picker) updates this
+            // exact same `selectedDate`, so Agenda above and the Daily Note card
+            // both reflect it the moment you're back here — see
+            // DayflowNoteFullPageView.swift's header comment for the bug this fixes.
+            DayflowNoteFullPageView(selectedDate: $selectedDate)
+        }
+        .sheet(isPresented: $showSettings) {
+            DayflowSettingsView()
+        }
+        .fullScreenCover(isPresented: $showNotes) {
+            // Session 19, 2026-07-20 — DayflowNotesView now shares this same
+            // `selectedDate` binding so a tapped Daily search result inside it
+            // (jumping to DayflowNoteFullPageView for that date) also moves
+            // Agenda + the main Daily Note card once you're back here — same
+            // "share the one real date" pattern as showNoteFullPage above.
+            DayflowNotesView(selectedDate: $selectedDate)
         }
         .fullScreenCover(item: $browseDestination) { destination in
             switch destination {
@@ -115,6 +177,8 @@ struct ContentView: View {
                 DayflowAnytimeView()
             case .inbox:
                 DayflowInboxView()
+            case .search:
+                DayflowAgendaSearchView()
             }
         }
         // Added 2026-07-20 alongside the Browse views' pull-to-refresh and
@@ -128,6 +192,14 @@ struct ContentView: View {
             if newPhase == .active {
                 Task { await ThingsService.shared.refreshAll() }
             }
+        }
+        .alert("Couldn't save", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("OK") { saveErrorMessage = nil }
+        } message: {
+            Text(saveErrorMessage ?? "")
         }
     }
 
@@ -148,6 +220,9 @@ struct ContentView: View {
                 Button { browseDestination = .inbox } label: {
                     Label("Inbox", systemImage: "tray")
                 }
+                Button { browseDestination = .search } label: {
+                    Label("Search", systemImage: "magnifyingglass")
+                }
             } label: {
                 Image(systemName: "calendar")
                     .font(.system(size: 15))
@@ -159,9 +234,7 @@ struct ContentView: View {
             dayPill
             Spacer()
             iconButton(systemName: "gearshape") {
-                // Settings (Default Calendar, Sync) — build order step 6, not
-                // built yet.
-                log("Settings — step 6, not built yet")
+                showSettings = true
             }
         }
     }
@@ -213,13 +286,14 @@ struct ContentView: View {
         switch draft.kind {
         case .task:
             Task {
+                let success: Bool
                 switch draft.when {
                 case .none:
-                    await ThingsService.shared.addTask(title: draft.title, list: draft.list, notes: draft.notes)
+                    success = await ThingsService.shared.addTask(title: draft.title, list: draft.list, notes: draft.notes)
                 case .today:
-                    await ThingsService.shared.addTask(title: draft.title, toToday: true, list: draft.list, notes: draft.notes)
+                    success = await ThingsService.shared.addTask(title: draft.title, toToday: true, list: draft.list, notes: draft.notes)
                 case .date(let d):
-                    await ThingsService.shared.addTask(title: draft.title, date: d, list: draft.list, notes: draft.notes)
+                    success = await ThingsService.shared.addTask(title: draft.title, date: d, list: draft.list, notes: draft.notes)
                 case .thisEvening, .someday:
                     // Open architecture question, not yet resolved: these two
                     // Things-native buckets need the URL-scheme-direct path,
@@ -227,17 +301,48 @@ struct ContentView: View {
                     // only takes an arbitrary date). Conservative fallback so
                     // this doesn't silently mis-schedule: lands undated in the
                     // chosen list (or Inbox) instead of guessing a date.
-                    await ThingsService.shared.addTask(title: draft.title, list: draft.list, notes: draft.notes)
+                    success = await ThingsService.shared.addTask(title: draft.title, list: draft.list, notes: draft.notes)
                 }
                 await MainActor.run {
-                    log("Task: \(draft.title) — \(draft.when.label)\(draft.list.map { " · \($0)" } ?? "")")
+                    if success {
+                        log("Task: \(draft.title) — \(draft.when.label)\(draft.list.map { " · \($0)" } ?? "")")
+                    } else {
+                        log("Task creation FAILED (check Mini bridge connection in Settings): \(draft.title)")
+                        saveErrorMessage = "\"\(draft.title)\" wasn't saved to Things. Check Settings → Things Integration → Test Connection, then try again."
+                    }
                 }
             }
         case .event:
-            // CalendarService.swift's write path (build order step 7) isn't
-            // built yet — only fetchDayEvents/fetchUpcomingEvents/fetchEvents
-            // (all read) exist.
-            log("Event (not yet written — calendar write support pending): \(draft.title)")
+            // CalendarService.createEvent (build order step 7, added
+            // 2026-07-20) does the real EventKit write. `draft.eventDate` is
+            // the day picked via the Date pill; `draft.eventStart`/`.eventEnd`
+            // are the Start/End time pickers — CalendarService combines all
+            // three itself (see that method's header comment for why they
+            // can't just be used as-is).
+            let calendarIdentifier = UserDefaults.standard.string(forKey: "default_calendar_identifier")
+            Task {
+                let success = await CalendarService.shared.createEvent(
+                    title: draft.title,
+                    date: draft.eventDate,
+                    startTime: draft.eventStart,
+                    endTime: draft.eventEnd,
+                    calendarIdentifier: calendarIdentifier
+                )
+                await MainActor.run {
+                    if success {
+                        log("Event created: \(draft.title)")
+                    } else {
+                        log("Event creation FAILED (check Calendar access + Settings → Default Calendar): \(draft.title)")
+                        saveErrorMessage = "\"\(draft.title)\" wasn't saved to Calendar. Check Calendar access in iOS Settings and your Default Calendar in Dayflow Settings, then try again."
+                    }
+                    // Only force an Agenda refresh if the new event actually
+                    // lands on the day currently in view — no visible reason
+                    // to tear the view down otherwise.
+                    if success && Calendar.current.isDate(draft.eventDate, inSameDayAs: selectedDate) {
+                        agendaRefreshToken = UUID()
+                    }
+                }
+            }
         }
     }
 

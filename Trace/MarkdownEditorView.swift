@@ -234,6 +234,14 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// scrolls to the first hit. Purely visual — never touches the saved file.
     /// Supports the same token syntax as GlobalSearchView: plain text and #tag.
     var searchQuery: String? = nil
+    /// Controls the ☐ toolbar button. Default `true` preserves Trace's existing
+    /// behavior (a UIMenu: Keep local / Send to Things / Send to Tweek). Dayflow's
+    /// Daily Note has no "send to Things/Tweek" concept for its checklists — a
+    /// checkbox there is always just a local checkbox — so it passes `false` to
+    /// get a plain button that calls `insertCheckbox()` directly, no menu popup.
+    /// Added 2026-07-19 (Dayflow Daily Note build) rather than special-casing by
+    /// target, since this file is shared between Trace and Dayflow.
+    var checklistSendEnabled: Bool = true
 
     // MARK: Make
 
@@ -361,10 +369,36 @@ struct MarkdownEditorView: UIViewRepresentable {
     }
 
     func updateUIView(_ tv: UITextView, context: Context) {
-        // Keep relativePath, onWikiTap, and wikiSuggestions in sync after initial creation.
-        context.coordinator.relativePath    = relativePath
-        context.coordinator.onWikiTap       = onWikiTap
-        context.coordinator.wikiSuggestions = wikiSuggestions
+        // Keep every closure/back-reference in sync after initial creation — NOT just
+        // relativePath/onWikiTap/wikiSuggestions, which is all this used to do.
+        //
+        // **Bug fixed 2026-07-20 (Session 18) — `onSave` was missing from this list.**
+        // `makeCoordinator()` only runs once per Coordinator identity; SwiftUI does not
+        // guarantee a fresh Coordinator every time a caller's `date` (or any other
+        // captured state inside its `onSave` closure) changes — if this view's tree
+        // position survives the transition (which it can, e.g. DayflowDailyNoteEditor's
+        // isLoading→loaded toggle happening fast enough within one Task that SwiftUI
+        // never commits an intermediate frame), the Coordinator's `onSave` stayed
+        // permanently bound to whatever date/closure was captured at *first* creation.
+        // Concretely, for DayflowDailyNoteEditor: open the full-page Daily Note (Today),
+        // jump to Tomorrow via the Calendar picker, type something — the 0.8s debounced
+        // autosave fired the *original* `onSave` closure, still bound to Today, silently
+        // overwriting Today's note with Tomorrow's typed content. Jumping again to a
+        // third date (e.g. Wednesday) kept firing that same stale Today-bound closure,
+        // so Wednesday's file was never actually written at all — reported as "the note
+        // I typed is lost." Reported by David 2026-07-20; root-caused here, not in
+        // DayflowDailyNoteEditor.swift (that file's `save()` was already correct — the
+        // Coordinator just never got handed the new one). `onFocusChange`/
+        // `onBlockLongPress`/`parentView` had the exact same missing-refresh shape —
+        // fixed alongside `onSave` since they're one-line additions in the same spot,
+        // not because a caller has reported a symptom from those specifically yet.
+        context.coordinator.relativePath     = relativePath
+        context.coordinator.onWikiTap        = onWikiTap
+        context.coordinator.wikiSuggestions  = wikiSuggestions
+        context.coordinator.onSave           = onSave
+        context.coordinator.onFocusChange    = onFocusChange
+        context.coordinator.onBlockLongPress = onBlockLongPress
+        context.coordinator.parentView       = self
         _updateUIView(tv, context: context)
         // Apply search highlights after the text storage settles.
         if let query = searchQuery, !query.isEmpty {
@@ -515,7 +549,11 @@ struct MarkdownEditorView: UIViewRepresentable {
         for itemID in order {
             switch itemID {
             case .checkbox:
-                stack.addArrangedSubview(makeCheckboxMenuButton(coordinator: coordinator))
+                if checklistSendEnabled {
+                    stack.addArrangedSubview(makeCheckboxMenuButton(coordinator: coordinator))
+                } else {
+                    stack.addArrangedSubview(makePlainCheckboxButton(coordinator: coordinator))
+                }
             case .attach:
                 stack.addArrangedSubview(makeAttachMenuButton(coordinator: coordinator))
             default:
@@ -666,6 +704,25 @@ struct MarkdownEditorView: UIViewRepresentable {
             },
         ])
         btn.showsMenuAsPrimaryAction = true
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+        btn.heightAnchor.constraint(equalToConstant: 43).isActive = true
+        return btn
+    }
+
+    // Plain checkbox button — used when `checklistSendEnabled == false` (Dayflow's
+    // Daily Note). Same icon as the menu variant, but a direct tap always inserts
+    // a local ☐ via `insertCheckbox()` — no UIMenu, no Things/Tweek options.
+    private func makePlainCheckboxButton(coordinator: Coordinator) -> UIButton {
+        let btn = UIButton(type: .system)
+        let symConfig = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        if let img = UIImage(systemName: "checkmark.square", withConfiguration: symConfig) {
+            btn.setImage(img, for: .normal)
+            btn.tintColor = .label
+        } else {
+            btn.setTitle("cb", for: .normal)
+        }
+        btn.addTarget(coordinator, action: #selector(Coordinator.insertCheckbox), for: .touchUpInside)
         btn.translatesAutoresizingMaskIntoConstraints = false
         btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
         btn.heightAnchor.constraint(equalToConstant: 43).isActive = true
@@ -1889,12 +1946,19 @@ struct MarkdownEditorView: UIViewRepresentable {
             storage.enumerateAttribute(.checkboxState, in: fullRange, options: []) { value, attrRange, _ in
                 guard let checked = value as? Bool else { return }
 
-                // The ☐/☑ character at attrRange.location has hiddenFont (0.1pt), so the
-                // layout manager assigns it a null glyph. Querying lineFragmentUsedRect on a
-                // null glyph can return a rect with origin.y = 0, collapsing every subsequent
-                // overlay onto the first line. Instead, anchor on the first VISIBLE text
-                // character (2 positions past the hidden ☐ and space).
-                let textCharIdx = min(attrRange.location + 2, storage.length - 1)
+                // Anchor on the trailing hidden SPACE (attrRange.location + 1), not the
+                // ☐/☑ character itself and not "2 ahead." Fixed 2026-07-20 — see
+                // MarkdownTextStorage.styleCheckboxLine's comment for the full history:
+                // anchoring on the ☐ (hiddenFont, 0.1pt) risked a "null glyph" y=0
+                // collapse; anchoring 2-ahead (the first real task-text character)
+                // broke on an otherwise-empty checklist item, since there was no
+                // character there yet, so the query landed on the paragraph
+                // terminator and could resolve to the PRECEDING line's rect —
+                // "checkbox overlaps the row above." The trailing space now uses
+                // hiddenAnchorFont (3pt, still invisible) specifically so it's never
+                // null-sized, giving a glyph that's always present, always on THIS
+                // line, whether or not the item has real text yet.
+                let textCharIdx = min(attrRange.location + 1, storage.length - 1)
                 let textGlyphRange = tv.layoutManager.glyphRange(
                     forCharacterRange: NSRange(location: textCharIdx, length: 1),
                     actualCharacterRange: nil)
@@ -1914,9 +1978,11 @@ struct MarkdownEditorView: UIViewRepresentable {
 
                 let symConfig = UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)
                 let symName   = checked ? "checkmark.square.fill" : "square"
-                let tint      = checked
-                    ? UIColor.systemGreen
-                    : UIColor(red: 0.9, green: 0.5, blue: 0.1, alpha: 1)
+                // Single source of truth for these colors is MarkdownTextStorage's
+                // checkColor/uncheckColor (previously defined but unused — this overlay
+                // was duplicating the same literal values inline instead of referencing
+                // them). Change the color for the eventual visual-skin pass there, not here.
+                let tint = checked ? MarkdownTextStorage.checkColor : MarkdownTextStorage.uncheckColor
 
                 let overlay = CheckboxOverlay(frame: CGRect(x: x, y: y,
                                                             width: iconSize, height: iconSize))
@@ -2445,10 +2511,23 @@ struct MarkdownEditorView: UIViewRepresentable {
         }
 
         /// Completes the wikilink: replaces `[[partial` with `[[name]]` and hides the bar.
+        ///
+        /// If the wikilink was started via the toolbar's Link button (insertLink() inserts
+        /// a "[[]]" template with the cursor parked between the brackets), there's already
+        /// a closing "]]" sitting immediately after the cursor. Consume it too, or it's left
+        /// behind as literal visible text -- "[[Mitch Weiss]]]]" instead of "[[Mitch Weiss]]".
+        /// Found 2026-07-20 (Session 14) -- David reported two stray trailing "]]" left in
+        /// the note after picking a suggestion pill. Typing "[[" raw (no pre-existing "]]")
+        /// is unaffected -- the lookahead below is a no-op when nothing follows the cursor.
         private func applyWikiSuggestion(_ name: String, in tv: UITextView) {
             let cursorLoc = tv.selectedRange.location
             guard let openLoc = wikilinkOpenLoc, openLoc <= cursorLoc else { return }
-            let replaceRange = NSRange(location: openLoc, length: cursorLoc - openLoc)
+            var endLoc = cursorLoc
+            let ns = tv.textStorage.string as NSString
+            if endLoc + 2 <= ns.length, ns.substring(with: NSRange(location: endLoc, length: 2)) == "]]" {
+                endLoc += 2
+            }
+            let replaceRange = NSRange(location: openLoc, length: endLoc - openLoc)
             let replacement = "[[\(name)]]"
             tv.textStorage.replaceCharacters(in: replaceRange, with: replacement)
             let newLoc = openLoc + (replacement as NSString).length
