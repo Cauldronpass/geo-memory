@@ -21,6 +21,12 @@ import SwiftUI
 // date or list on an Inbox task is exactly how you'd file it out of the Inbox,
 // so this is probably the most-used edit path of any Browse screen once it's
 // on-device tested.
+//
+// **Pull-to-refresh added 2026-07-20** — see DayflowUpcomingView.swift's
+// header comment for the "note edited directly in Things didn't show up in
+// Dayflow" finding this addresses. This view already reads
+// `ThingsService.shared.inboxTasks` live (no local snapshot), so no other
+// change was needed here.
 
 struct DayflowInboxView: View {
     @Environment(\.dismiss) private var dismiss
@@ -49,12 +55,14 @@ struct DayflowInboxView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 24)
                 }
+                .refreshable { await ThingsService.shared.fetchInbox() }
             }
         }
         .task { await ThingsService.shared.fetchInbox() }
         .sheet(item: $editingTask) { task in
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
-                                  initialDate: task.date, initialList: task.list) {
+                                  initialDate: task.date, initialList: task.list,
+                                  initialNotes: task.notes) {
                 Task { await ThingsService.shared.fetchInbox() }
             }
         }

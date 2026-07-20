@@ -56,6 +56,7 @@ struct DayflowQuickAddDraft {
     var title: String
     var when: DayflowWhenValue
     var list: String?          // Things area/project name, exact match, Task only
+    var notes: String?         // Freeform notes/description, Task only. Added 2026-07-20.
     var eventDate: Date        // Event mode only
     var eventStart: Date       // Event mode only
     var eventEnd: Date         // Event mode only
@@ -149,6 +150,12 @@ struct DayflowAgendaItem: Identifiable {
     /// needs the task's real current date to prefill correctly rather than
     /// risking a silent clear if the sheet assumed "no date."
     let taskDate: Date?
+    /// The underlying `ThingsTask.notes` — nil for calendar events. Added
+    /// 2026-07-20 (fifth addendum, notes field) so DayflowTaskEditSheet's new
+    /// Notes section prefills with the task's real current notes from the
+    /// Agenda tap-to-edit path, same as it already does via `metaLabel`/
+    /// `taskDate` for list/date.
+    let taskNotes: String?
 
     // Note: the mockup shows an illustrative "Overdue" meta label on one demo
     // task, styled in red. `ThingsTask` (ThingsService.swift) doesn't carry a

@@ -8,12 +8,21 @@ struct ThingsTask: Identifiable, Codable {
     let title: String
     let list: String?                  // mapped from "project_title" (area/project name)
     let scheduledDateString: String?   // mapped from "scheduled_date" ("yyyy-MM-dd" or "")
+    /// Freeform notes text. Added 2026-07-20 alongside DayflowTaskEditSheet's
+    /// notes field/quick-add's notes field — the Mini bridge now sends this on
+    /// all four GET endpoints (always a real string, "" for a to-do with no
+    /// notes, never missing/null). Optional here anyway so decoding an old
+    /// cached response from before this change (UserDefaults cache, see
+    /// saveCache()/loadCache() below) doesn't fail — a missing key just
+    /// decodes to nil rather than throwing.
+    let notes: String?
 
     enum CodingKeys: String, CodingKey {
         case id = "uuid"
         case title
         case list = "project_title"
         case scheduledDateString = "scheduled_date"
+        case notes
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -133,10 +142,29 @@ final class ThingsService {
         }
     }
 
+    /// Logs a fetch failure to the Xcode console with real detail — added
+    /// 2026-07-20 after every fetch's catch block turned out to be completely
+    /// silent (no print, no visible UI signal beyond an array staying empty),
+    /// which made a real regression (Agenda/Upcoming losing all Things data
+    /// after this session's changes) undiagnosable from outside Xcode. Prints
+    /// the specific `DecodingError` case (missing key, type mismatch, etc.)
+    /// when that's what happened, since "decode failed" alone doesn't say
+    /// which field or why.
+    private func logFetchError(_ endpoint: String, _ error: Error) {
+        if let decodingError = error as? DecodingError {
+            print("[ThingsService] \(endpoint) decode failed: \(decodingError)")
+        } else {
+            print("[ThingsService] \(endpoint) failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Fetch (Today)
 
     func fetch() async {
-        guard let base = baseURL(), let url = URL(string: "today", relativeTo: base) else { return }
+        guard let base = baseURL(), let url = URL(string: "today", relativeTo: base) else {
+            print("[ThingsService] /today skipped — no things_api_url configured")
+            return
+        }
 
         await MainActor.run { isLoading = true }
 
@@ -159,7 +187,9 @@ final class ThingsService {
             }
             saveCache()
         } catch {
-            // Silent fail — cached data stays visible if within maxCacheAge
+            // Cached data stays visible if within maxCacheAge — but now at
+            // least logged, see logFetchError()'s header comment.
+            logFetchError("/today", error)
             await MainActor.run {
                 lastError = error.localizedDescription
                 isLoading = false
@@ -172,12 +202,24 @@ final class ThingsService {
     /// Pulls the real Things Anytime list from the Mini bridge's `/anytime`
     /// endpoint. Silent fail, no caching (unlike `fetch()`) — this is a browse
     /// view data source, not something shown on the always-visible main screen.
+    ///
+    /// **Timeout bumped 6s → 20s, 2026-07-20.** `/upcoming` (same risk profile —
+    /// see that function) was measured timing out at 6.37s after the notes
+    /// feature added a `task.notes()` JXA/AppleScript-bridge call per task on
+    /// every GET endpoint; each bridge call carries real per-call overhead, so
+    /// larger lists like Anytime/Upcoming are the ones at risk, not `/today`
+    /// (small list, still fine at 4s). Bumped preventively here even though
+    /// only `/upcoming` was confirmed timing out, since the same per-item cost
+    /// applies equally to this endpoint.
     func fetchAnytime() async {
-        guard let base = baseURL(), let url = URL(string: "anytime", relativeTo: base) else { return }
+        guard let base = baseURL(), let url = URL(string: "anytime", relativeTo: base) else {
+            print("[ThingsService] /anytime skipped — no things_api_url configured")
+            return
+        }
 
         await MainActor.run { isLoadingAnytime = true }
         do {
-            var request = URLRequest(url: url, timeoutInterval: 6)
+            var request = URLRequest(url: url, timeoutInterval: 20)
             request.cachePolicy = .reloadIgnoringLocalCacheData
             authorize(&request)
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -190,6 +232,7 @@ final class ThingsService {
                 isLoadingAnytime = false
             }
         } catch {
+            logFetchError("/anytime", error)
             await MainActor.run { isLoadingAnytime = false }
         }
     }
@@ -198,12 +241,26 @@ final class ThingsService {
 
     /// Pulls the real Things Upcoming list from the Mini bridge's `/upcoming`
     /// endpoint. Same silent-fail, no-cache pattern as `fetchAnytime()`.
+    ///
+    /// **Timeout bumped 6s → 20s, 2026-07-20.** Root cause of a same-day
+    /// "Agenda/Upcoming lost all data" report: confirmed via console log
+    /// (`[ThingsService] /upcoming failed: The request timed out.`) plus a
+    /// direct `curl -w "%{time_total}"` measurement on the Mini (6.37s) that
+    /// this endpoint was landing just past the old 6s timeout. The notes
+    /// feature added a `task.notes()` JXA/AppleScript-bridge call per task on
+    /// every GET endpoint; each bridge call has real overhead, and `/upcoming`
+    /// (a larger list than `/today`) pushed the accumulated cost over the old
+    /// timeout. No backend change needed — this was purely a client-side
+    /// timeout sized for pre-notes response times.
     func fetchUpcoming() async {
-        guard let base = baseURL(), let url = URL(string: "upcoming", relativeTo: base) else { return }
+        guard let base = baseURL(), let url = URL(string: "upcoming", relativeTo: base) else {
+            print("[ThingsService] /upcoming skipped — no things_api_url configured")
+            return
+        }
 
         await MainActor.run { isLoadingUpcoming = true }
         do {
-            var request = URLRequest(url: url, timeoutInterval: 6)
+            var request = URLRequest(url: url, timeoutInterval: 20)
             request.cachePolicy = .reloadIgnoringLocalCacheData
             authorize(&request)
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -216,6 +273,7 @@ final class ThingsService {
                 isLoadingUpcoming = false
             }
         } catch {
+            logFetchError("/upcoming", error)
             await MainActor.run { isLoadingUpcoming = false }
         }
     }
@@ -227,12 +285,19 @@ final class ThingsService {
     /// `fetchUpcoming()`. Distinct from `inboxCount` (an `Int` sourced from
     /// `/today`'s `inbox_count` field) — that's a count only, this is the real
     /// task list, needed once Dayflow has an actual Inbox browse view to render.
+    ///
+    /// **Timeout bumped 6s → 20s, 2026-07-20.** Same preventive reasoning as
+    /// `fetchAnytime()` — see `fetchUpcoming()`'s header comment for the
+    /// confirmed root cause this matches.
     func fetchInbox() async {
-        guard let base = baseURL(), let url = URL(string: "inbox", relativeTo: base) else { return }
+        guard let base = baseURL(), let url = URL(string: "inbox", relativeTo: base) else {
+            print("[ThingsService] /inbox skipped — no things_api_url configured")
+            return
+        }
 
         await MainActor.run { isLoadingInbox = true }
         do {
-            var request = URLRequest(url: url, timeoutInterval: 6)
+            var request = URLRequest(url: url, timeoutInterval: 20)
             request.cachePolicy = .reloadIgnoringLocalCacheData
             authorize(&request)
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -245,8 +310,43 @@ final class ThingsService {
                 isLoadingInbox = false
             }
         } catch {
+            logFetchError("/inbox", error)
             await MainActor.run { isLoadingInbox = false }
         }
+    }
+
+    // MARK: - Refresh all
+
+    /// Re-runs all four GET fetches. Added 2026-07-20 — David hit a real gap
+    /// where a note edited directly in Things (outside Dayflow) didn't show up
+    /// when reopening that task in Dayflow, since nothing here re-fetches on
+    /// its own once a view has already loaded once. Used by
+    /// `DayflowContentView.swift`'s foreground-return auto-refresh and
+    /// available for any view's own pull-to-refresh to call instead of a
+    /// single endpoint, where "just get everything current" is simpler than
+    /// reasoning about which one list actually needs it.
+    ///
+    /// **Sequential, not concurrent — found the hard way, same day.** The
+    /// first version fired all four with `async let`. `things-jxa-server.py`
+    /// runs a plain `http.server.HTTPServer` (confirmed via its own source —
+    /// no `ThreadingMixIn`/`ThreadingHTTPServer`), which only ever processes
+    /// one request at a time; four simultaneous requests just queue at the
+    /// socket level rather than actually running in parallel. Once the notes
+    /// feature made `/anytime`/`/upcoming`/`/inbox` each take several seconds
+    /// (see `fetchUpcoming()`'s own header comment), whichever request landed
+    /// last in that queue could sit waiting long enough to blow even
+    /// `/today`'s comparatively generous 4s timeout — confirmed via console:
+    /// `[ThingsService] /today failed: The request timed out.`, immediately
+    /// after this function started being called from the new foreground
+    /// auto-refresh. Sequential awaits take longer wall-clock overall (sum of
+    /// four instead of the slowest one), but that's the honest cost of a
+    /// server that can't actually do more than one thing at a time — and it's
+    /// a background refresh, not something blocking the UI.
+    func refreshAll() async {
+        await fetch()
+        await fetchAnytime()
+        await fetchUpcoming()
+        await fetchInbox()
     }
 
     // MARK: - Complete
@@ -288,10 +388,20 @@ final class ThingsService {
     ///     existing Things area/project exactly (same exact-match-or-Inbox rule
     ///     `things-adapter.sh` already uses) — a non-matching or empty value leaves
     ///     the task in the Inbox.
-    func addTask(title: String, toToday: Bool = false, date: Date? = nil, list: String? = nil) async {
+    ///   - notes: Optional freeform note/description text, passed straight through to
+    ///     Things. **Removed the old hardcoded `"From Trace"` default 2026-07-20** —
+    ///     David found it added no value and just cluttered every task. Wired up to
+    ///     a real Notes field in the quick-add sheet's Details section same day
+    ///     (second pass) — empty/nil is skipped entirely (nothing to "clear" on a
+    ///     brand-new task, unlike `update()` below, which does need to distinguish
+    ///     "leave unchanged" from "clear to blank" on an existing task's notes).
+    func addTask(title: String, toToday: Bool = false, date: Date? = nil, list: String? = nil, notes: String? = nil) async {
         guard let base = baseURL(), let url = URL(string: "add", relativeTo: base) else { return }
 
-        var body: [String: String] = ["title": title, "notes": "From Trace"]
+        var body: [String: String] = ["title": title]
+        if let notes, !notes.isEmpty {
+            body["notes"] = notes
+        }
 
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -331,6 +441,15 @@ final class ThingsService {
     ///   - list: New area/project name, exact match. Pass nil/empty to leave the
     ///     task's current list unchanged (the bridge only reassigns list when a
     ///     non-empty value is sent).
+    ///   - notes: New notes text. Added 2026-07-20 for DayflowTaskEditSheet's notes
+    ///     field. **Different convention from `list`/`title` above:** pass `nil` to
+    ///     leave notes unchanged, but pass `""` (empty string) to deliberately clear
+    ///     them — the bridge distinguishes "key absent" from "key present but empty"
+    ///     (see `things-jxa-server.py`'s `update_task()` docstring), so this method
+    ///     always includes the `"notes"` key in the request body whenever `notes` is
+    ///     non-nil, even if it's an empty string. DayflowTaskEditSheet always passes
+    ///     its notes text field's current value (never nil) since the field always
+    ///     reflects the task's true current notes, including "the user cleared it."
     /// - Returns: true if the Mini reported success. On success, `fetch()`,
     ///   `fetchAnytime()`, `fetchUpcoming()`, and `fetchInbox()` all re-run
     ///   concurrently — an edit can move a task between the Today/Anytime/
@@ -338,7 +457,7 @@ final class ThingsService {
     ///   it into Today or Upcoming), so a full refresh is simpler and safer
     ///   than hand-patching four local arrays.
     @discardableResult
-    func update(taskID: String, title: String, date: Date?, clearDate: Bool, list: String?) async -> Bool {
+    func update(taskID: String, title: String, date: Date?, clearDate: Bool, list: String?, notes: String? = nil) async -> Bool {
         guard let base = baseURL(), let url = URL(string: "update", relativeTo: base) else { return false }
 
         var body: [String: Any] = ["uuid": taskID, "title": title]
@@ -353,6 +472,9 @@ final class ThingsService {
         if let list, !list.isEmpty {
             body["list"] = list
         }
+        if let notes {
+            body["notes"] = notes
+        }
 
         var request = URLRequest(url: url, timeoutInterval: 8)
         request.httpMethod = "POST"
@@ -366,11 +488,15 @@ final class ThingsService {
             let decoded = try? JSONDecoder().decode(UpdateResponse.self, from: data)
             let success = decoded?.success ?? false
             if success {
-                async let a: Void = fetch()
-                async let b: Void = fetchAnytime()
-                async let c: Void = fetchUpcoming()
-                async let d: Void = fetchInbox()
-                _ = await (a, b, c, d)
+                // Sequential, not concurrent — same reasoning as refreshAll()
+                // above (its header comment has the full story): the Mini's
+                // server only handles one request at a time, so firing these
+                // four together just queues them and risks the same
+                // self-inflicted timeout. This call site had the identical
+                // bug from Session 6 round 1 onward, just never exposed until
+                // the notes feature made the GET endpoints slow enough for it
+                // to matter — fixed here for consistency, same day.
+                await refreshAll()
             }
             return success
         } catch {

@@ -34,7 +34,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var selectedDate: Date = DayflowRelativeDay.today.date()
     @State private var showQuickAdd = false
-    @State private var recentLog: [String] = []
+    @Environment(\.scenePhase) private var scenePhase
     // Agenda's collapse state, lifted out of DayflowAgendaSection so this
     // screen can bind to it (DayflowAgendaSection.swift's own header comment
     // has the history). Daily Note no longer reads this directly — its card
@@ -55,11 +55,13 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             // Fixed viewport, not a ScrollView — this is what lets the Daily
-            // Note card actually claim whatever room Agenda/recentLog don't
-            // use (see DayflowDailyNoteSection's header comment for why the
-            // old ScrollView + two-fixed-heights approach couldn't do that).
-            // Agenda and recentLog size to their own natural content height;
-            // Daily Note's `.frame(maxHeight: .infinity)` absorbs the rest.
+            // Note card actually claim whatever room Agenda doesn't use (see
+            // DayflowDailyNoteSection's header comment for why the old
+            // ScrollView + two-fixed-heights approach couldn't do that).
+            // Agenda sizes to its own natural content height; Daily Note's
+            // `.frame(maxHeight: .infinity)` absorbs the rest. (The old
+            // `recentLog` debug strip that used to also live in this VStack
+            // was removed 2026-07-20 — see `log(_:)`'s doc comment below.)
             VStack(alignment: .leading, spacing: 12) {
                 topBar
 
@@ -73,14 +75,6 @@ struct ContentView: View {
                     onOpenQuickAdd: { showQuickAdd = true },
                     isCollapsed: $agendaCollapsed
                 )
-
-                if !recentLog.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(recentLog.prefix(2), id: \.self) { line in
-                            Text(line).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }
-                }
 
                 DayflowDailyNoteSection(
                     date: selectedDate,
@@ -121,6 +115,18 @@ struct ContentView: View {
                 DayflowAnytimeView()
             case .inbox:
                 DayflowInboxView()
+            }
+        }
+        // Added 2026-07-20 alongside the Browse views' pull-to-refresh and
+        // Agenda's new refresh button — see DayflowUpcomingView.swift's header
+        // comment for the "note edited directly in Things didn't show up in
+        // Dayflow" finding. Agenda reads ThingsService.shared's arrays live
+        // (no local snapshot), so this alone is enough to bring it current
+        // whenever you switch back to Dayflow from Things or anywhere else —
+        // no separate plumbing needed for the main screen specifically.
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                Task { await ThingsService.shared.refreshAll() }
             }
         }
     }
@@ -209,11 +215,11 @@ struct ContentView: View {
             Task {
                 switch draft.when {
                 case .none:
-                    await ThingsService.shared.addTask(title: draft.title, list: draft.list)
+                    await ThingsService.shared.addTask(title: draft.title, list: draft.list, notes: draft.notes)
                 case .today:
-                    await ThingsService.shared.addTask(title: draft.title, toToday: true, list: draft.list)
+                    await ThingsService.shared.addTask(title: draft.title, toToday: true, list: draft.list, notes: draft.notes)
                 case .date(let d):
-                    await ThingsService.shared.addTask(title: draft.title, date: d, list: draft.list)
+                    await ThingsService.shared.addTask(title: draft.title, date: d, list: draft.list, notes: draft.notes)
                 case .thisEvening, .someday:
                     // Open architecture question, not yet resolved: these two
                     // Things-native buckets need the URL-scheme-direct path,
@@ -221,7 +227,7 @@ struct ContentView: View {
                     // only takes an arbitrary date). Conservative fallback so
                     // this doesn't silently mis-schedule: lands undated in the
                     // chosen list (or Inbox) instead of guessing a date.
-                    await ThingsService.shared.addTask(title: draft.title, list: draft.list)
+                    await ThingsService.shared.addTask(title: draft.title, list: draft.list, notes: draft.notes)
                 }
                 await MainActor.run {
                     log("Task: \(draft.title) — \(draft.when.label)\(draft.list.map { " · \($0)" } ?? "")")
@@ -235,9 +241,16 @@ struct ContentView: View {
         }
     }
 
+    /// Console-only debug trace, no UI. **Downgraded from a visible on-screen
+    /// strip 2026-07-20** — the old `recentLog` array rendered its last two
+    /// entries directly under Agenda (e.g. "Task: Test4 — No date"), which
+    /// was always just a Session 3/4 testing convenience from before Agenda
+    /// showed real data, never part of the actual design spec. Now that
+    /// Agenda/Daily Note both show real state, that visible strip was pure
+    /// clutter — kept as a `print` so the same signal is still available in
+    /// Xcode's console if useful, without living in the UI.
     private func log(_ line: String) {
-        recentLog.insert(line, at: 0)
-        if recentLog.count > 8 { recentLog.removeLast() }
+        print("[Dayflow] \(line)")
     }
 }
 
