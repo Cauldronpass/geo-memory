@@ -14,8 +14,15 @@ struct ContentView: View {
     @State private var showingLeftDrawer = false
     @State private var showingQuickPin = false
     @State private var quickPinCoord = CLLocationCoordinate2D()
+    /// Fixed 2026-07-22 (Session 27 addendum, second instance) — this used to be
+    /// paired with its own `showingGeofenceCheckIn` boolean, gating the sheet's
+    /// content on `if let place = geofencePlace`. Same bug David hit with
+    /// `logInteractionPerson`/`showingLogInteractionFromURL` (blank sheet on
+    /// presentation, works on a retry) — he reported the identical symptom here,
+    /// from a real geofence "you're near a place" notification tap. Switched to
+    /// `.sheet(item:)` bound directly to this optional for the same reason.
     @State private var geofencePlace: Place? = nil
-    @State private var showingGeofenceCheckIn = false
+    @State private var pendingGeofencePlaceID: String? = nil
     @State private var showingWorkoutPrompt = false
     @State private var showingWorkoutFromURL = false
     @State private var showingAddDocument = false
@@ -29,6 +36,59 @@ struct ContentView: View {
     @State private var isActivityContext = false
     @State private var showingFABLogWorkout = false
     @State private var showingFABLogBilliards = false
+    /// Set only when a `trace://checkin?placeID=…` deep link resolves to a
+    /// known place — 2026-07-21, Dayflow hand-off. Every other path that
+    /// sets `showingCheckIn = true` (the FAB buttons, the Home Screen
+    /// shortcut) resets this to nil first so a stale deep-linked place never
+    /// leaks into an unrelated manual check-in.
+    @State private var checkInPreselectedPlace: Place? = nil
+    /// Fifth Dayflow hand-off button, 2026-07-21 (Session 26) — `trace://
+    /// loginteraction?personID=…` resolves to a known person and presents
+    /// `LogInteractionSheet` pre-scoped to them, same shape as `checkin`'s
+    /// `checkInPreselectedPlace` above. Unlike CheckInView, LogInteractionSheet
+    /// has no "generic, nobody preselected" mode — personID/personName are
+    /// non-optional — so there's no shared boolean to reset the way every
+    /// other `showingCheckIn = true` caller resets `checkInPreselectedPlace`.
+    /// This sheet only ever opens via this one path.
+    ///
+    /// Fixed 2026-07-22 (Session 27 addendum): originally paired with its own
+    /// `showingLogInteractionFromURL` boolean, gating the sheet's content on
+    /// `if let person = logInteractionPerson`. David hit a real bug from that on
+    /// a cold-launch test — the sheet opened but showed a blank screen, then
+    /// worked correctly on a second try. Two independent `@State` vars driving
+    /// one presentation can settle across two separate render passes instead of
+    /// one, and since the `if let` produces nothing when it fails, "blank sheet"
+    /// is exactly what a person-not-set-yet moment looks like. Switched to
+    /// `.sheet(item:)` bound directly to this optional — same pattern
+    /// `pendingIncomingDocument` below already uses — so there's one source of
+    /// truth instead of two that can drift apart.
+    @State private var logInteractionPerson: Person? = nil
+    /// Cold-launch race fix, 2026-07-22 (Session 27) — same problem
+    /// `resolveGeofencePlace()`/`pendingGeofencePlaceID` below already solves for
+    /// geofence notifications: a Dayflow hand-off URL almost always cold-launches
+    /// Trace, and `TraceApp.swift`'s `.task` awaits `fetchPlaces()` then
+    /// `fetchVisits()` then `fetchCaptures()` then `fetchPeople()` (in that order,
+    /// sequentially) before any of `notion.places`/`notion.people` are populated —
+    /// so a same-tick lookup in `.onOpenURL` almost always finds nothing, even for
+    /// a perfectly valid ID, and (for `loginteraction`, which has no unconditional
+    /// fallback) the sheet just never opens at all. These two hold the ID until
+    /// the corresponding list actually loads; see `resolvePendingCheckIn()` /
+    /// `resolvePendingLogInteraction()` below for the retry logic.
+    @State private var pendingCheckInPlaceID: String? = nil
+    @State private var pendingLogInteractionPersonID: String? = nil
+    /// AI-prefill, Session 28 — suggested field values riding alongside the two
+    /// pending IDs above, on the same `trace://checkin`/`trace://loginteraction`
+    /// URLs (see DayflowWikiSummaryView.swift's placeVisitsTab/personLogTab, which
+    /// compute these before opening the URL). Unlike the pending-ID vars, these
+    /// don't need their own retry logic — they're just data riding along, only
+    /// read once the corresponding sheet actually presents. Reset to nil by every
+    /// other `showingCheckIn = true` / non-hand-off path alongside
+    /// `checkInPreselectedPlace = nil`, same as that var already is, so a stale
+    /// prefill from a previous hand-off can never leak into an unrelated manual
+    /// check-in.
+    @State private var checkInPrefillNotes: String? = nil
+    @State private var loginteractionPrefillType: String? = nil
+    @State private var loginteractionPrefillNotes: String? = nil
 
     /// Screen width without using the deprecated UIScreen.main
     private var windowWidth: CGFloat {
@@ -57,7 +117,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var fabPlacesButtons: some View {
-        Button("Check In")     { showingCheckIn = true }
+        Button("Check In")     { checkInPreselectedPlace = nil; checkInPrefillNotes = nil; showingCheckIn = true }
         Button("Quick Pin")    { quickPin() }
         Button("Add Place")    { showingAddPlace = true }
         Button("Go to Visits") { NotificationCenter.default.post(name: .tracePlacesShowVisits, object: nil) }
@@ -72,7 +132,7 @@ struct ContentView: View {
     @ViewBuilder private var fabActivityButtons: some View {
         Button("Log Workout")   { showingFABLogWorkout = true }
         Button("Log Billiards") { showingFABLogBilliards = true }
-        Button("Log Visit")     { showingCheckIn = true }
+        Button("Log Visit")     { checkInPreselectedPlace = nil; checkInPrefillNotes = nil; showingCheckIn = true }
         Button("Cancel", role: .cancel) { }
     }
     @ViewBuilder private var fabLifeButtons: some View {
@@ -92,7 +152,7 @@ struct ContentView: View {
         Button("Cancel", role: .cancel) { }
     }
     @ViewBuilder private var fabGlobalButtons: some View {
-        Button("Check In")     { showingCheckIn = true }
+        Button("Check In")     { checkInPreselectedPlace = nil; checkInPrefillNotes = nil; showingCheckIn = true }
         Button("Quick Pin")    { quickPin() }
         Button("Add Place")    { showingAddPlace = true }
         Button("Add Note")     { showingAddCapture = true }
@@ -188,7 +248,25 @@ struct ContentView: View {
             }
             // Global FAB sheets
             .sheet(isPresented: $showingCheckIn) {
-                CheckInView().environment(NotionService.shared).environment(LocationManager.shared)
+                // prefillNotes: checkInPrefillNotes — Session 28 AI-prefill, only ever
+                // non-nil when this sheet was reached via the checkin hand-off URL.
+                CheckInView(preselectedPlace: checkInPreselectedPlace, prefillNotes: checkInPrefillNotes)
+                    .environment(NotionService.shared).environment(LocationManager.shared)
+            }
+            // Dayflow hand-off, 2026-07-21 (Session 26) — trace://loginteraction.
+            // .sheet(item:) bound directly to logInteractionPerson — see its
+            // declaration above for why this isn't a separate isPresented boolean
+            // (Session 27 addendum: that version showed a blank sheet on cold launch).
+            .sheet(item: $logInteractionPerson) { person in
+                // prefillType/prefillNotes — Session 28 AI-prefill, only ever non-nil
+                // when this sheet was reached via the loginteraction hand-off URL.
+                LogInteractionSheet(
+                    personID: person.id,
+                    personName: person.name,
+                    prefillType: loginteractionPrefillType,
+                    prefillNotes: loginteractionPrefillNotes
+                ) { }
+                    .environment(notion)
             }
             .sheet(isPresented: $showingAddPlace) {
                 AddPlaceView().environment(NotionService.shared).environment(LocationManager.shared)
@@ -251,7 +329,9 @@ struct ContentView: View {
     }
 
     // Layer 3: stackWithSheets + events/lifecycle
-    var body: some View {
+    // Layer 3a: stackWithSheets + app lifecycle notifications.
+    // Split out from body 2026-07-22 (Session 27) — see body's own comment below for why.
+    private var stackWithLifecycle: some View {
         stackWithSheets
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
@@ -288,12 +368,18 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             withAnimation(.easeInOut(duration: 0.15)) { isKeyboardVisible = false }
         }
-        .sheet(isPresented: $showingGeofenceCheckIn) {
-            if let place = geofencePlace {
-                CheckInView(preselectedPlace: place)
-                    .environment(NotionService.shared)
-                    .environment(LocationManager.shared)
-            }
+    }
+
+    // Layer 3b: stackWithLifecycle + secondary sheets/state observers.
+    // Split out from body 2026-07-22 (Session 27) — see body's own comment below for why.
+    private var stackWithObservers: some View {
+        stackWithLifecycle
+        // .sheet(item:) bound directly to geofencePlace — see its declaration
+        // above for why this isn't a separate isPresented boolean.
+        .sheet(item: $geofencePlace) { place in
+            CheckInView(preselectedPlace: place)
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
         }
         .sheet(isPresented: $showingWorkoutPrompt) {
             WorkoutWizardView()
@@ -309,6 +395,38 @@ struct ContentView: View {
                 checkIncomingDocument()
             }
         }
+        // Resolve a pending geofence notification once places have loaded.
+        // On cold launch, notion.places is empty when the notification fires —
+        // we store the placeID and retry here when the fetch completes.
+        // Session 27 addendum: same watcher now also retries the Dayflow
+        // checkin hand-off (see pendingCheckInPlaceID's declaration).
+        .onChange(of: notion.places.count) { _, count in
+            if count > 0 {
+                resolveGeofencePlace()
+                resolvePendingCheckIn()
+            }
+        }
+        // Session 27 — retries the Dayflow loginteraction hand-off once
+        // notion.people has loaded (see pendingLogInteractionPersonID's declaration).
+        // No pre-existing watcher on notion.people.count to piggyback on, unlike
+        // places above, so this is its own onChange.
+        .onChange(of: notion.people.count) { _, count in
+            if count > 0 { resolvePendingLogInteraction() }
+        }
+    }
+
+    // Layer 4: stackWithObservers + gestures/URL routing.
+    // Session 27 note: this used to be one single `body` chain covering everything
+    // from Layer 3a through Layer 4 below. Adding this session's third onChange
+    // (notion.people.count, for the loginteraction hand-off fix) pushed that one
+    // giant expression over Swift's type-checker complexity limit — "The compiler
+    // is unable to type-check this expression in reasonable time" — the exact
+    // failure mode the original mainTabStack/stackWithSheets split already existed
+    // to avoid, just one modifier too many past what that split still covered.
+    // Split into stackWithLifecycle/stackWithObservers/body instead of adding to
+    // the same chain further.
+    var body: some View {
+        stackWithObservers
         // Right edge swipe → opens Captures drawer
         .overlay(alignment: .trailing) {
             Rectangle()
@@ -329,11 +447,54 @@ struct ContentView: View {
             guard url.scheme == "trace" else { return }
             switch url.host {
             case "quicknote": showingAddCapture = true
-            case "checkin":   showingCheckIn = true
+            case "checkin":
+                // Dayflow hand-off, 2026-07-21: trace://checkin?placeID=<Notion place ID>
+                // pre-loads that place into CheckInView (see checkInPreselectedPlace's
+                // declaration above); plain trace://checkin (or an unrecognized/missing
+                // placeID) falls back to the generic picker, same as every other caller.
+                // Fixed 2026-07-22 (Session 27): resolution now goes through
+                // resolvePendingCheckIn() instead of a same-tick lookup — see
+                // pendingCheckInPlaceID's declaration above for why.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let placeID = comps.queryItems?.first(where: { $0.name == "placeID" })?.value {
+                    pendingCheckInPlaceID = placeID
+                    // AI-prefill, Session 28 — optional "notes" query param, set by
+                    // DayflowWikiSummaryView.swift's placeVisitsTab hand-off button.
+                    // Not part of the pending/retry mechanism above — just carried
+                    // data, read once resolvePendingCheckIn() actually presents the
+                    // sheet.
+                    checkInPrefillNotes = comps.queryItems?.first(where: { $0.name == "notes" })?.value
+                    resolvePendingCheckIn()
+                } else {
+                    checkInPreselectedPlace = nil
+                    checkInPrefillNotes = nil
+                    showingCheckIn = true
+                }
+            case "loginteraction":
+                // Dayflow hand-off, 2026-07-21 (Session 26): trace://loginteraction?personID=<Notion person ID>
+                // pre-loads that person into LogInteractionSheet (see logInteractionPerson's declaration
+                // above), same pattern as checkin's placeID. Unlike checkin, a missing or unresolved
+                // personID does nothing rather than falling back to a generic picker — LogInteractionSheet
+                // has no "nobody preselected" mode to fall back to (FABLogInteractionSheet is a different,
+                // unrelated component), so silently no-oping is the safer default until David says otherwise.
+                // Fixed 2026-07-22 (Session 27): resolution now goes through
+                // resolvePendingLogInteraction() instead of a same-tick lookup — see
+                // pendingLogInteractionPersonID's declaration above for why.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let personID = comps.queryItems?.first(where: { $0.name == "personID" })?.value {
+                    pendingLogInteractionPersonID = personID
+                    // AI-prefill, Session 28 — optional "type"/"notes" query params, set
+                    // by DayflowWikiSummaryView.swift's personLogTab hand-off button.
+                    // Same "just carried data" reasoning as checkInPrefillNotes above.
+                    loginteractionPrefillType = comps.queryItems?.first(where: { $0.name == "type" })?.value
+                    loginteractionPrefillNotes = comps.queryItems?.first(where: { $0.name == "notes" })?.value
+                    resolvePendingLogInteraction()
+                }
             case "workout":   showingWorkoutFromURL = true
             case "addphoto":    showingAddPhoto = true
             case "adddocument": showingAddDocument = true
             case "addplace":    showingAddPlace = true
+            case "addperson":   showingFABAddPerson = true
             case "addnote":   showingAddCapture = true
             case "pin":       quickPin()
             default: break
@@ -396,7 +557,7 @@ struct ContentView: View {
     private func handleShortcut(_ action: String) {
         switch action {
         case "quickpin": quickPin()
-        case "checkin":  showingCheckIn = true
+        case "checkin":  checkInPreselectedPlace = nil; showingCheckIn = true
         case "addnote":  showingAddCapture = true
         case "addphoto": showingAddPhoto = true
         default: break
@@ -415,11 +576,67 @@ struct ContentView: View {
     private func checkPendingGeofence() {
         guard let placeID = UserDefaults.standard.string(forKey: "pendingGeofencePlaceID") else { return }
         UserDefaults.standard.removeObject(forKey: "pendingGeofencePlaceID")
-        guard let place = notion.places.first(where: { $0.id == placeID }) else { return }
+        // Store placeID so resolveGeofencePlace() can retry after places load.
+        pendingGeofencePlaceID = placeID
+        resolveGeofencePlace()
+    }
+
+    /// Attempts to match pendingGeofencePlaceID against the loaded places list.
+    /// Called immediately on notification tap (may no-op if places not loaded yet)
+    /// and again via .onChange(of: notion.places.count) once the fetch completes.
+    private func resolveGeofencePlace() {
+        guard let placeID = pendingGeofencePlaceID,
+              let place = notion.places.first(where: { $0.id == placeID }) else { return }
+        pendingGeofencePlaceID = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             geofencePlace = place
-            showingGeofenceCheckIn = true
         }
+    }
+
+    // MARK: - Dayflow hand-off resolution (Session 27 cold-launch race fix)
+    //
+    // Same shape as resolveGeofencePlace() above, called both immediately (in case
+    // notion.places/.people already loaded — a warm launch, Trace already running
+    // in the background) and again from the onChange watchers once the corresponding
+    // fetch completes. Distinguishes "not found yet, data still loading" (leaves the
+    // pending ID set, so a later retry can still succeed) from "genuinely not found"
+    // (only decided once the list is confirmed non-empty, i.e. the fetch actually ran) —
+    // collapsing that distinction would either drop a valid ID that just hadn't loaded
+    // yet, or open a fallback sheet prematurely before we'd really given the real match
+    // a chance.
+
+    private func resolvePendingCheckIn() {
+        guard let placeID = pendingCheckInPlaceID else { return }
+        if let place = notion.places.first(where: { $0.id == placeID }) {
+            pendingCheckInPlaceID = nil
+            checkInPreselectedPlace = place
+            showingCheckIn = true
+        } else if !notion.places.isEmpty {
+            // Places have loaded and this ID still isn't in there — genuinely
+            // unresolvable, not just a timing race. Same fallback a missing/malformed
+            // placeID always had: open the generic picker instead of nothing.
+            pendingCheckInPlaceID = nil
+            checkInPreselectedPlace = nil
+            showingCheckIn = true
+        }
+        // else: places haven't loaded yet. Leave pendingCheckInPlaceID set — the
+        // onChange(of: notion.places.count) watcher retries this once they do.
+    }
+
+    private func resolvePendingLogInteraction() {
+        guard let personID = pendingLogInteractionPersonID else { return }
+        if let person = notion.people.first(where: { $0.id == personID }) {
+            pendingLogInteractionPersonID = nil
+            logInteractionPerson = person
+        } else if !notion.people.isEmpty {
+            // People have loaded and this ID still isn't in there — genuinely
+            // unresolvable. No generic fallback exists for this one (see the
+            // .onOpenURL case's own comment) — same do-nothing default as before,
+            // just no longer decided before people has actually had a chance to load.
+            pendingLogInteractionPersonID = nil
+        }
+        // else: people haven't loaded yet. Leave pendingLogInteractionPersonID set —
+        // the onChange(of: notion.people.count) watcher retries this once they do.
     }
 }
 

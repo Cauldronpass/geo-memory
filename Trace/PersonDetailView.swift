@@ -1204,7 +1204,14 @@ private struct InteractionDetailSheet: View {
 
 // MARK: - Log Interaction Sheet
 
-private struct LogInteractionSheet: View {
+// Visibility dropped from `private` to internal 2026-07-21 (Session 26) — Dayflow
+// hand-off, fifth button ("Log an Interaction in Trace"). ContentView.swift's new
+// `loginteraction` .onOpenURL case needs to construct this from outside this file;
+// `private` restricted it to file scope, same category of blocker Session 25 hit
+// with CheckInView's unused `preselectedPlace` init, just a visibility fix instead
+// of a missing param. Behavior and every existing call site (this file's own
+// per-person "Log Interaction" button, ~line 213) are unchanged.
+struct LogInteractionSheet: View {
     let personID: String
     let personName: String
     let onSaved: () -> Void
@@ -1217,13 +1224,30 @@ private struct LogInteractionSheet: View {
         "text", "email", "meeting", "event", "workout", "other"
     ]
 
-    @State private var selectedType = "visit"
+    @State private var selectedType: String
     @State private var date = Date()
-    @State private var notes = ""
+    @State private var notes: String
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var capturedPhoto: UIImage? = nil
+
+    /// AI-prefill, Session 28 — optional suggested Type/Notes riding in on the
+    /// `trace://loginteraction` URL's query params (see DayflowWikiSummaryView.swift's
+    /// personLogTab). Defaults to blank for every other existing way of opening this
+    /// sheet — in particular this file's own per-person "Log Interaction" button
+    /// (~line 213) is unaffected, it never passes these. `prefillType` is validated
+    /// against `typeOptions` rather than trusted outright — a Claude response that
+    /// somehow returns a value outside the fixed list would otherwise select nothing
+    /// in the type picker instead of falling back to the "visit" default.
+    init(personID: String, personName: String, prefillType: String? = nil, prefillNotes: String? = nil, onSaved: @escaping () -> Void) {
+        self.personID = personID
+        self.personName = personName
+        self.onSaved = onSaved
+        let validatedType = typeOptions.contains(prefillType ?? "") ? prefillType! : "visit"
+        _selectedType = State(initialValue: validatedType)
+        _notes = State(initialValue: prefillNotes ?? "")
+    }
 
     var body: some View {
         NavigationStack {

@@ -12,7 +12,7 @@ struct CheckInView: View {
 
     @State private var selectedPlace: Place? = nil
     @State private var rating: Int? = nil
-    @State private var notes: String = ""
+    @State private var notes: String
     @State private var checkInDate: Date = Date()
     @State private var personIDs: [String] = []
     @State private var isLoading = false
@@ -25,9 +25,16 @@ struct CheckInView: View {
     @State private var showingAddPlace = false
     @State private var showingBilliardsWizard = false
 
-    init(preselectedPlace: Place? = nil) {
+    /// AI-prefill, Session 28 — optional suggested Notes riding in on the
+    /// `trace://checkin` URL's "notes" query param (see DayflowWikiSummaryView.swift's
+    /// placeVisitsTab). No Type field to prefill here — CheckInView has none.
+    /// Defaults to blank for every other existing way of opening this sheet (the
+    /// FAB buttons, the Home Screen shortcut, geofence check-ins, and a bare
+    /// `trace://checkin` hand-off) — all of those pass nil and are unaffected.
+    init(preselectedPlace: Place? = nil, prefillNotes: String? = nil) {
         self.preselectedPlace = preselectedPlace
         _selectedPlace = State(initialValue: preselectedPlace)
+        _notes = State(initialValue: prefillNotes ?? "")
     }
 
     private var availableCategories: [String] {
