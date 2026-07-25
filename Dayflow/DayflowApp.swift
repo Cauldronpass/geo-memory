@@ -55,6 +55,7 @@
 
 import SwiftUI
 import UserNotifications
+import CoreLocation
 
 @main
 struct DayflowApp: App {
@@ -79,6 +80,7 @@ struct DayflowApp: App {
                     await notionService.fetchPeople()
                     await notionService.fetchVisits()
                     await DayflowInboxBadge.refresh()
+                    DayflowLocationPrimer.primeIfNeeded()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .noteStoreInboxDidChange)) { _ in
                     Task { await DayflowInboxBadge.refresh() }
@@ -103,5 +105,31 @@ enum DayflowInboxBadge {
         }
         let count = (try? NoteStore.shared.listFiles(in: "Notes/Inbox").count) ?? 0
         try? await center.setBadgeCount(count)
+    }
+}
+
+// MARK: - Location priming (for the widget's weather)
+
+/// Added 2026-07-25 for the Dayflow widget's weather block. The widget
+/// process reads the system's cached location fix via
+/// `CLLocationManager().location`, but a widget can never PROMPT for
+/// location permission — only its containing app can. This asks once
+/// (when-in-use) on first launch after the update; if David declines, the
+/// widget simply never shows weather and everything else is unaffected.
+/// Deliberately not a full LocationManager.swift dependency — Dayflow
+/// doesn't otherwise use location, and pulling that file (with its geofence
+/// machinery) into this target for one authorization prompt would be far
+/// more than the job needs. Requires `NSLocationWhenInUseUsageDescription`
+/// on the Dayflow app target's Info tab (manual Xcode step, see
+/// DayflowWidget.swift's header checklist).
+enum DayflowLocationPrimer {
+    // Retained statically — CLLocationManager must stay alive for its
+    // authorization prompt to complete; a local would deallocate first.
+    private static let manager = CLLocationManager()
+
+    static func primeIfNeeded() {
+        if manager.authorizationStatus == .notDetermined {
+            manager.requestWhenInUseAuthorization()
+        }
     }
 }

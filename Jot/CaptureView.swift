@@ -108,6 +108,26 @@ struct CaptureView: View {
     /// isn't Identifiable — see the sheet modifier's Binding for how it's
     /// cleared on dismiss.
     @State private var tappedCaptureID: String? = nil
+    /// **Tap-to-jump calendar, added 2026-07-25** (David: swipe-to-day is
+    /// good for one day at a time, but wanted a faster way to reach a date
+    /// further out). Tapping the header date label (not the target pill —
+    /// that still just resets to Today) opens a small popover calendar
+    /// anchored top-left under the header, mockup-approved
+    /// (`jot-calendar-jump-mockup-v2.html`, styled after David's own
+    /// macOS Calendar reference screenshot: month grid, prev/next chevrons,
+    /// no week-number column, Dayflow's blue/gray palette instead of the
+    /// screenshot's orange). Same today-or-later floor as the swipe gesture
+    /// — David's explicit call: past dates go through the Dayflow app
+    /// itself, not Jot. Tapping a date sets the target and dismisses
+    /// immediately, same "no separate confirm" feel as the pill's own
+    /// tap-to-reset; tapping anywhere outside the popover dismisses without
+    /// changing anything. Uses the system `DatePicker(.graphical)` rather
+    /// than a hand-built grid — gets correct month/leap-year/locale
+    /// handling for free, restyled via `.tint` to Dayflow's blue and
+    /// wrapped in a rounded card to match the popover look, rather than
+    /// matching the mockup's exact custom cell layout pixel-for-pixel.
+    @State private var showingDatePicker = false
+    @State private var pickerDate = Date()
 
     private static let draftTextKey = "jot_draft_text"
     private static let draftDateKey = "jot_draft_date"
@@ -149,11 +169,52 @@ struct CaptureView: View {
     }
 
     var body: some View {
+        // Outer ZStack added for the tap-to-jump calendar popover (see
+        // showingDatePicker's declaration) — everything that existed before
+        // is still the first child, unchanged, just now wrapped instead of
+        // being the top-level view.
+        ZStack(alignment: .topLeading) {
+            captureContent
+
+            if showingDatePicker {
+                // Full-screen invisible tap-outside-to-dismiss catcher,
+                // drawn above captureContent but below the popover itself
+                // (later ZStack children stack on top). Blocks interaction
+                // with the rest of the screen while the popover is open,
+                // same as a modal would, without a visible scrim — matches
+                // the mockup, which had no dark overlay behind the popover.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showingDatePicker = false
+                        }
+                    }
+
+                calendarPopover
+                    .padding(.top, 46)
+                    .padding(.leading, 18)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var captureContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Text(headerDateLabel)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        pickerDate = targetDate
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showingDatePicker.toggle()
+                        }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
 
                 // Target pill — only visible once a swipe has moved the
                 // target off plain Today, either a future day or Inbox.
@@ -321,6 +382,41 @@ struct CaptureView: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
+        }
+    }
+
+    /// System `DatePicker(.graphical)` restyled to sit inside a small
+    /// popover card rather than a hand-built calendar grid — see
+    /// `showingDatePicker`'s declaration for why. `in: startOfToday...`
+    /// disables every date before today at the picker level (matches the
+    /// swipe gesture's own floor), so there's no separate validation needed
+    /// once a date comes back through `onChange`.
+    @ViewBuilder
+    private var calendarPopover: some View {
+        let startOfToday = Calendar.current.startOfDay(for: Date())
+        DatePicker(
+            "Jump to date",
+            selection: $pickerDate,
+            in: startOfToday...,
+            displayedComponents: .date
+        )
+        .datePickerStyle(.graphical)
+        .labelsHidden()
+        .tint(Color(red: 0.231, green: 0.435, blue: 0.878)) // Dayflow's blue
+        .frame(width: 260)
+        .padding(8)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 14))
+        .shadow(color: .black.opacity(0.18), radius: 16, x: 0, y: 8)
+        .onChange(of: pickerDate) { _, newValue in
+            let cal = Calendar.current
+            let startPicked = cal.startOfDay(for: newValue)
+            let days = cal.dateComponents([.day], from: startOfToday, to: startPicked).day ?? 0
+            withAnimation(.easeInOut(duration: 0.15)) {
+                dayOffset = max(0, days)
+                targetIsInbox = false
+                showingDatePicker = false
+            }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
     }
 

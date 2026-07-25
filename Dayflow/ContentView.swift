@@ -312,17 +312,31 @@ struct ContentView: View {
         } message: {
             Text(saveErrorMessage ?? "")
         }
-        // Added 2026-07-24 for the Dayflow widget's two tap targets: the
+        // Added 2026-07-24 for the Dayflow widget's tap targets: the
         // "+" sends `dayflow://addEvent` (opens straight into the quick-add
         // sheet, Event mode preset — see `quickAddInitialKind` above),
         // everywhere else on the card sends a plain `dayflow://open` (just
         // opens the app, no extra state to set — same as launching normally,
         // so there's nothing to do here for that case beyond not crashing on
         // an unrecognized host).
+        //
+        // `openJot` added 2026-07-25 for the widget's third tap target (the
+        // big date block): iOS widgets can only launch their own containing
+        // app, so the widget sends `dayflow://openJot` and Dayflow
+        // immediately relays to the Jot capture app via its `jot://` scheme
+        // (already registered on the Jot target for JotWidget — see
+        // JotWidget.swift's header). Costs a sub-second Dayflow flash on the
+        // way to Jot; flagged to David before building, accepted. If Jot
+        // isn't installed, `open` just fails silently and the user stays in
+        // Dayflow — acceptable, and on David's phone Jot is always there.
         .onOpenURL { url in
             if url.host == "addEvent" {
                 quickAddInitialKind = .event
                 showQuickAdd = true
+            } else if url.host == "openJot" {
+                if let jotURL = URL(string: "jot://open") {
+                    UIApplication.shared.open(jotURL)
+                }
             }
         }
     }

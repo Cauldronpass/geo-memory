@@ -47,6 +47,17 @@ struct DayflowSettingsView: View {
     @State private var testState: ConnectionTestState = .idle
     @State private var availableCalendars: [EKCalendar] = []
     @State private var lastSyncedText: String = "Never"
+    /// **TEMPORARY, added 2026-07-25** — widget weather debug readout. The
+    /// widget face is too small to show a full error string legibly
+    /// (confirmed: David couldn't read it even zoomed into a screenshot),
+    /// so `DayflowWidget.swift`'s `fetchWeather()` now also writes the full,
+    /// untruncated failure text to the shared App Group UserDefaults; this
+    /// screen reads it back with real space to show it and lets David
+    /// copy/paste it directly instead of a screenshot. Remove this state var,
+    /// `loadWeatherDebugText()`, and `weatherDebugSection` once weather is
+    /// confirmed working — see Dayflow-HANDOFF.md for the matching widget-side
+    /// removal checklist.
+    @State private var weatherDebugText: String = "(not loaded yet)"
 
     private enum ConnectionTestState: Equatable {
         case idle, testing, success(String), failure(String)
@@ -66,6 +77,7 @@ struct DayflowSettingsView: View {
         VStack(spacing: 0) {
             header
             Form {
+                weatherDebugSection
                 thingsSection
                 appearanceSection
                 calendarSection
@@ -89,7 +101,33 @@ struct DayflowSettingsView: View {
         .task {
             availableCalendars = await CalendarService.shared.availableCalendars()
             updateLastSyncedText()
+            loadWeatherDebugText()
         }
+    }
+
+    // MARK: TEMP — Widget Weather Debug (see weatherDebugText's declaration)
+
+    private var weatherDebugSection: some View {
+        Section {
+            Text(weatherDebugText)
+                .font(.system(size: 12, design: .monospaced))
+                .textSelection(.enabled)
+            Button("Refresh") { loadWeatherDebugText() }
+        } header: {
+            Text("TEMP: Widget Weather Debug")
+        } footer: {
+            Text("Temporary diagnostic screen. Shows the widget's last weather-fetch attempt and, on failure, the full error — long-press the text above to copy it. This section and the widget code writing to it get removed once weather works.")
+        }
+    }
+
+    private func loadWeatherDebugText() {
+        // Inlined rather than `AppGroup.identifier` — that type turns out
+        // not to be in the Dayflow target's membership either (build error:
+        // "Cannot find 'AppGroup' in scope"), same situation
+        // DayflowWidget.swift's own comment already flags for the widget
+        // extension. Must match `group.com.david.trace` used everywhere else.
+        weatherDebugText = UserDefaults(suiteName: "group.com.david.trace")?
+            .string(forKey: "dayflowWidgetWeatherDebugTextFull") ?? "(no debug text written yet — widget hasn't run since this key was added, or App Group isn't shared correctly)"
     }
 
     // MARK: Header
