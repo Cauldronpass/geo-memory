@@ -25,6 +25,11 @@ import SwiftUI
 // for that exists. Flag if that turns out to matter enough to justify the
 // Mini-side work.
 //
+// **Event rows made tappable 2026-07-21 (Session 23).** Opens the new
+// read-only `DayflowEventDetailView` — `eventsByDay` already held the real
+// `NextCalendarEvent` per row, so this was just a tap gesture + a sheet, no
+// new data plumbing.
+//
 // **Pull-to-refresh + reactive task grouping added 2026-07-20.** David edited
 // a task's note directly in Things and found it didn't show up in Dayflow —
 // nothing here re-fetched on its own after the initial `.task { load() }`.
@@ -38,13 +43,16 @@ import SwiftUI
 // the explicit "I'm on this screen, get me current data" case.
 
 struct DayflowUpcomingView: View {
-    var onSwitchToCalendar: () -> Void
-
     @Environment(\.dismiss) private var dismiss
     @State private var days: [Date] = []
     @State private var eventsByDay: [Date: [NextCalendarEvent]] = [:]
     @State private var isLoading = true
     @State private var editingTask: ThingsTask? = nil
+    /// Added 2026-07-21 (Session 23, tap-a-calendar-event-for-details backlog
+    /// item) — see this file's `eventsByDay` above, which already holds the
+    /// real `NextCalendarEvent` per row, so no new plumbing was needed to
+    /// find the tapped event, just a place to hold it + a sheet.
+    @State private var selectedEvent: NextCalendarEvent? = nil
 
     private static let windowLength = 14
 
@@ -66,33 +74,50 @@ struct DayflowUpcomingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(days, id: \.self) { day in
-                            daySection(day)
+            // Skin fix 2026-07-22 (Session 32) — wraps the content area in
+            // the same card treatment used on the home screen and the Notes
+            // screen, so it doesn't sit directly on the warm background
+            // below. See DayflowSkin.swift.
+            Group {
+                if isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(days, id: \.self) { day in
+                                daySection(day)
+                            }
                         }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
 
-                    Text("Same as Things' own Upcoming list — day-grouped, scrolls, merged with your real calendar events. Tap the calendar icon above to switch to a month grid instead.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(20)
+                        Text("Same as Things' own Upcoming list — day-grouped, scrolls, merged with your real calendar events. Tap the calendar icon above to switch to a month grid instead.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(20)
+                    }
+                    .refreshable { await load() }
                 }
-                .refreshable { await load() }
             }
+            .dayflowCard()
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
         }
+        // Skin fix 2026-07-22 (Session 32) — same warm gradient as the home
+        // screen. See DayflowSkin.swift.
+        .dayflowSkinBackground()
         .task { await load() }
         .sheet(item: $editingTask) { task in
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
                                   initialDate: task.date, initialList: task.list,
                                   initialNotes: task.notes) {
                 Task { await ThingsService.shared.fetchUpcoming() }
+            }
+        }
+        .sheet(item: $selectedEvent) { event in
+            NavigationStack {
+                DayflowEventDetailView(event: event)
             }
         }
     }
@@ -109,19 +134,22 @@ struct DayflowUpcomingView: View {
             .buttonStyle(.plain)
 
             Spacer()
+            // Skin fix 2026-07-22 (Session 32) — was .custom("Georgia", ...),
+            // same capital-J mismatch fixed elsewhere in the skin. See
+            // DayflowSkin.swift.
             Text("Upcoming")
-                .font(.custom("Georgia", size: 20).weight(.bold))
+                .font(.dayflowSerif(20))
             Spacer()
 
-            Button(action: onSwitchToCalendar) {
-                Image(systemName: "calendar")
-                    .font(.system(size: 15))
-                    .frame(width: 32, height: 32)
-                    .background(.background, in: Circle())
-                    .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Switch to Calendar")
+            // Was a "switch to Calendar" shortcut button here — removed
+            // 2026-07-21 (Session 24), same call as removing the top-bar
+            // menu's "Calendar" entry (see DayflowModels.swift's
+            // `DayflowBrowseDestination` header comment for the full
+            // reasoning). Kept as an empty placeholder, matching
+            // DayflowCalendarBrowseView.swift's own convention for a header
+            // that only sometimes has a right-side button, so the title stays
+            // visually centered either way.
+            Color.clear.frame(width: 32, height: 32)
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -148,6 +176,8 @@ struct DayflowUpcomingView: View {
                         .lineLimit(2)
                 }
                 .padding(.vertical, 3)
+                .contentShape(Rectangle())
+                .onTapGesture { selectedEvent = ev }
             }
             ForEach(tasks) { task in
                 taskRow(task)

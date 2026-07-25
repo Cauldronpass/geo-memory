@@ -174,6 +174,12 @@ struct DayflowWikiSummaryView: View {
     @State private var isLoadingNoteStore = false
     @State private var noteStoreLoadedOnce = false
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
+    /// Session 45 addendum 6 — set by MarkdownEditorView's onCaptureTap when a
+    /// `[label](capture://open?id=ID)` marker is tapped, from either
+    /// placeNotesTab or personNotesTab below (both share this one state var
+    /// and the one .sheet(isPresented:) added alongside wikiLinkTarget's own
+    /// sheet). isPresented-Binding since String isn't Identifiable.
+    @State private var tappedCaptureID: String? = nil
 
     // MARK: Mentioned In (shared — content-based backlinks)
 
@@ -222,6 +228,17 @@ struct DayflowWikiSummaryView: View {
         .sheet(item: $wikiLinkTarget) { nested in
             NavigationStack {
                 DayflowWikiSummaryView(target: nested)
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { tappedCaptureID != nil },
+            set: { if !$0 { tappedCaptureID = nil } }
+        )) {
+            if let id = tappedCaptureID {
+                CaptureSummaryView(captureID: id)
+                    .environment(NotionService.shared)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
         }
         .sheet(item: $selectedVisit) { visit in
@@ -333,11 +350,43 @@ struct DayflowWikiSummaryView: View {
                 if let rating = place.ratingPersonal { LabeledContent("My Rating", value: "\(rating)/5") }
                 if let rating = place.ratingExternal { LabeledContent("Rating", value: String(format: "%.1f", rating)) }
             }
+            // Phone/website made tappable 2026-07-24 — this stand-in view (see file
+            // header) never had the tel:// / open-URL wiring Trace's own
+            // PlaceDetailView.swift's DetailRow already has; these two rows were
+            // plain LabeledContent, so tapping them did nothing. David hit this
+            // from a Daily Note place link — the phone/website card in the
+            // screenshot he sent. Same tel:// digit-filter + plain URL(string:)
+            // approach as PlaceDetailView.swift's infoTab, just re-laid-out as a
+            // Button-wrapped LabeledContent since this view is List-based, not the
+            // ScrollView+VStack DetailRow uses.
             if let phone = place.phone, !phone.isEmpty {
-                Section { LabeledContent("Phone", value: phone) }
+                Section {
+                    Button {
+                        if let url = URL(string: "tel://\(phone.filter { $0.isNumber })") {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        LabeledContent("Phone") {
+                            Text(phone).foregroundStyle(.blue)
+                        }
+                    }
+                }
             }
             if let website = place.website, !website.isEmpty {
-                Section { LabeledContent("Website", value: website) }
+                Section {
+                    Button {
+                        if let url = URL(string: website) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        LabeledContent("Website") {
+                            Text(website)
+                                .foregroundStyle(.blue)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
             }
             if !place.tags.isEmpty {
                 Section("Tags") {
@@ -475,7 +524,8 @@ struct DayflowWikiSummaryView: View {
                     relativePath: placeNotePath(place),
                     onWikiTap: { name in resolveWikiLink(name) },
                     wikiSuggestions: { query in wikiSuggestions(for: query) },
-                    checklistSendEnabled: false
+                    checklistSendEnabled: false,
+                    onCaptureTap: { id in tappedCaptureID = id }
                 )
                 .frame(minHeight: 320)
                 .listRowInsets(EdgeInsets())
@@ -860,7 +910,8 @@ struct DayflowWikiSummaryView: View {
                     relativePath: personNotePath(person),
                     onWikiTap: { name in resolveWikiLink(name) },
                     wikiSuggestions: { query in wikiSuggestions(for: query) },
-                    checklistSendEnabled: false
+                    checklistSendEnabled: false,
+                    onCaptureTap: { id in tappedCaptureID = id }
                 )
                 .frame(minHeight: 320)
                 .listRowInsets(EdgeInsets())

@@ -391,8 +391,28 @@ struct ContentView: View {
                 Task {
                     await notion.fetchPlaces()
                     await notion.fetchVisits()
+                    // Added 2026-07-25 — was missing from this list entirely.
+                    // David dropped several Quick Pins from Jot/Dayflow (separate
+                    // processes — their own NotionService.shared instances can't
+                    // update Trace's in-memory `notion.captures` directly) and the
+                    // Captures drawer showed none of them despite the writes
+                    // succeeding (confirmed directly against the Notion database).
+                    // CapturesDrawerView has no refresh of its own — this and the
+                    // showingDrawer onChange below are the only two paths that
+                    // now keep `notion.captures` current without a full relaunch.
+                    await notion.fetchCaptures()
                 }
                 checkIncomingDocument()
+            }
+        }
+        // Added 2026-07-25, alongside the scenePhase fix above — refetches the
+        // instant the Captures drawer is actually opened, not just on the next
+        // foreground transition. Covers the more likely real case: Trace was
+        // already in the foreground the whole time (never backgrounded), the
+        // drawer just hadn't been opened yet since the last pin was dropped.
+        .onChange(of: showingDrawer) { _, isShowing in
+            if isShowing {
+                Task { await notion.fetchCaptures() }
             }
         }
         // Resolve a pending geofence notification once places have loaded.
@@ -490,6 +510,20 @@ struct ContentView: View {
                     loginteractionPrefillNotes = comps.queryItems?.first(where: { $0.name == "notes" })?.value
                     resolvePendingLogInteraction()
                 }
+            case "capture":
+                // Session 45 addendum 6 — trace://capture?id=<Notion capture page ID>,
+                // opened from CaptureSummaryView's "Open in Trace" button (Jot/Dayflow/
+                // Trace all share that view). No pending-ID/retry machinery like
+                // checkin/loginteraction above, and no scroll-to-specific-capture
+                // attempt: CapturesDrawerView.swift only renders local Notes/Inbox
+                // markdown files (InboxNote) — it never actually displays
+                // notion.captures (the GPS Quick Pin database this feature's captures
+                // live in), despite addendum 4/5's fetchCaptures() refresh fixes
+                // assuming it did. Flagged in this addendum's HANDOFF entry as a
+                // pre-existing gap, not fixed here — so for now this just opens the
+                // drawer, same "if not feasible, just open the drawer" fallback
+                // addendum 6 itself pre-approved for this exact case.
+                withAnimation(.easeInOut(duration: 0.3)) { showingDrawer = true }
             case "workout":   showingWorkoutFromURL = true
             case "addphoto":    showingAddPhoto = true
             case "adddocument": showingAddDocument = true

@@ -192,6 +192,45 @@ class NoteStore {
 
     /// Appends a markdown line to the daily note for the given date.
     /// Creates the file with a date header if it doesn't exist yet.
+
+    /// Inserts `text` as a new paragraph in a daily note's PROSE section,
+    /// before a trailing "## Related Notes" table if the note has one —
+    /// rather than always appending at the true end of file. Added
+    /// 2026-07-25 after a real bug David hit: Jot's plain end-of-file
+    /// append landed new content below an existing Related Notes table in
+    /// the raw file, and Dayflow's own DayflowRelatedNotesEngine.split()
+    /// (which treats every line from the "## Related Notes" heading to the
+    /// next "## " heading or end-of-file as table rows) silently swallowed
+    /// that stray text as unparseable garbage the next time the Daily Note
+    /// editor loaded the file — content that looked present in Files/Bear
+    /// vanished the moment Dayflow touched the note again. Detection here
+    /// is a plain literal-heading match, not a dependency on
+    /// DayflowRelatedNotesEngine itself — NoteStore.swift is shared across
+    /// every target (Trace/Dayflow/Jot/TraceMac) and a Dayflow-specific
+    /// type dependency isn't warranted for what's fundamentally a
+    /// plain-text insertion-point decision.
+    private static func insertIntoDailyNoteProse(_ existing: String, appending text: String) -> String {
+        let heading = "## Related Notes"
+        let lines = existing.components(separatedBy: "\n")
+        guard let headingIdx = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == heading }) else {
+            // No table — original behavior, append at the true end of file.
+            return existing.hasSuffix("\n") ? existing + text : existing + "\n" + text
+        }
+        var before = Array(lines[..<headingIdx])
+        // Trim trailing blank lines directly above the heading so the newly
+        // inserted paragraph doesn't pile up extra blank lines before the table.
+        while let last = before.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
+            before.removeLast()
+        }
+        let after = Array(lines[headingIdx...])
+        var result = before
+        result.append("")
+        result.append(text)
+        result.append("")
+        result.append(contentsOf: after)
+        return result.joined(separator: "\n")
+    }
+
     func appendToDailyNote(_ text: String, date: Date = Date()) throws {
         guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
 
@@ -212,7 +251,7 @@ class NoteStore {
             do {
                 if FileManager.default.fileExists(atPath: url.path) {
                     let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-                    let updated = existing.hasSuffix("\n") ? existing + text : existing + "\n" + text
+                    let updated = Self.insertIntoDailyNoteProse(existing, appending: text)
                     try updated.write(to: url, atomically: true, encoding: .utf8)
                 } else {
                     let content = "# \(dateStr)\n\n\(text)"
@@ -275,6 +314,85 @@ class NoteStore {
         formatter.timeZone = TimeZone.current
         formatter.dateFormat = "yyyy-MM-dd"
         return try readFile("Calendar/\(formatter.string(from: date)).md")
+    }
+
+    // MARK: - Inbox filing
+    //
+    // Added 2026-07-24 (Session 44 addendum 10) — David's Dayflow "Inbox"
+    // concept: evergreen notes captured on the go (not tied to a specific
+    // day) that get reviewed later and filed to wherever they actually
+    // belong. `Notes/Inbox/` already existed as a convention before this —
+    // Trace's own `QuickAppendSheet.swift` already writes new captures there
+    // (one timestamped .md file per note, e.g. "2026-07-24-143022.md"), and
+    // `TraceMacInboxView.swift` already browses/edits/deletes them on Mac.
+    // What was missing was a way to move a staged note OUT of the inbox into
+    // one of its real homes — that's what `fileInboxNote(_:to:)` below adds.
+
+    /// The real homes an inbox note can be filed to. Matches the exact
+    /// destinations Trace's `QuickAppendSheet` already offers when
+    /// CAPTURING a note (Daily/Project), extended with Person/Place — real
+    /// destinations Dayflow already knows about via
+    /// `DayflowRelatedNotesEngine`'s candidate lists (`NotionService.shared
+    /// .people`/`.places`) that QuickAppendSheet never needed.
+    enum InboxFilingDestination {
+        case daily(Date)
+        case project(String)
+        case person(String)
+        case place(String)
+    }
+
+    /// Files an inbox note's content into `destination`'s note, then deletes
+    /// the source file. An inbox note that's empty (or only whitespace) is
+    /// just deleted rather than filed anywhere — nothing meaningful to move.
+    ///
+    /// Project/Person paths are built directly from the entity's name,
+    /// unsanitized — this deliberately matches
+    /// `DayflowProjectNoteView.swift`'s `Notes/Projects/\(title).md` and
+    /// `PersonDetailView.swift`'s `Notes/People/\(personName).md` exactly,
+    /// so a filed note lands in the SAME file those screens already read/
+    /// write, not a differently-sanitized duplicate next to it. Place uses
+    /// `placeNoteFilename(for:)` for the identical reason —
+    /// `PlaceDetailView.swift` already sanitizes place filenames that way.
+    func fileInboxNote(_ filename: String, to destination: InboxFilingDestination) throws {
+        let sourcePath = "Notes/Inbox/\(filename)"
+        let content = try readFile(sourcePath)
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            try deleteFile(sourcePath)
+            return
+        }
+        switch destination {
+        case .daily(let date):
+            try appendToDailyNote(trimmed, date: date)
+        case .project(let name):
+            try appendToNamedNote(relativePath: "Notes/Projects/\(name).md", title: name, text: trimmed)
+        case .person(let name):
+            try appendToNamedNote(relativePath: "Notes/People/\(name).md", title: name, text: trimmed)
+        case .place(let name):
+            let path = "Notes/Places/\(placeNoteFilename(for: name)).md"
+            try appendToNamedNote(relativePath: path, title: name, text: trimmed)
+        }
+        try deleteFile(sourcePath)
+    }
+
+    /// Shared existing-or-template append for the three named-note filing
+    /// cases above. Note this checks whether `existing` is actually
+    /// non-empty (not just whether the read succeeded) before deciding to
+    /// apply the "# Title" template — `readFile` returns "" rather than
+    /// throwing for a file that doesn't exist yet, so a check that only
+    /// gated on the read throwing would silently skip the template and
+    /// prepend a bare blank line instead (a gap in `QuickAppendSheet.swift`'s
+    /// own hand-rolled version of this same pattern for Projects — fixed
+    /// here rather than carried forward, since this is the one place all
+    /// three entity kinds now share).
+    private func appendToNamedNote(relativePath: String, title: String, text: String) throws {
+        let existing = (try? readFile(relativePath)) ?? ""
+        if existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try writeFile(relativePath, content: "# \(title)\n\n\(text)")
+        } else {
+            let separator = existing.hasSuffix("\n") ? "\n" : "\n\n"
+            try writeFile(relativePath, content: existing + separator + text)
+        }
     }
 
     // MARK: - Weekly check-in log
@@ -488,6 +606,19 @@ class NoteStore {
         guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
         let fileURL = documentsURL.appendingPathComponent(relativePath)
         try FileManager.default.removeItem(at: fileURL)
+        // Added 2026-07-24 alongside fileInboxNote(_:to:) above — writeFile
+        // already posts this notification for Notes/Inbox/ writes (new
+        // captures), but deletes never did, so a filed-then-deleted inbox
+        // note left both TraceMacInboxView and the new DayflowNotesInboxView
+        // showing a stale entry until their next unrelated reload. Same
+        // "Calendar/" symmetry gap doesn't apply here — nothing currently
+        // deletes Calendar/ files outside moveDailyNote/writeFile, which
+        // already notify via their own writeFile("Calendar/...", "") calls.
+        if relativePath.hasPrefix("Notes/Inbox/") {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .noteStoreInboxDidChange, object: relativePath)
+            }
+        }
     }
 
     func moveFile(from sourcePath: String, to destPath: String) throws {
@@ -535,6 +666,67 @@ class NoteStore {
         let items = try FileManager.default.contentsOfDirectory(atPath: folderURL.path)
         return items.filter { !$0.hasPrefix(".") }.sorted(by: >)  // newest first
     }
+
+    /// A file's last-modified date, or nil if it doesn't exist / the vault isn't
+    /// linked yet. Same `.contentModificationDateKey` call `findWikilinkMentions`
+    /// already makes per-file during its whole-vault scan below — pulled out as
+    /// its own helper since DayflowNotesView.swift (Session 22, search result
+    /// metadata + sorting) needs it for exactly one file at a time, not a scan.
+    func fileModifiedDate(_ relativePath: String) -> Date? {
+        guard let documentsURL else { return nil }
+        let fileURL = documentsURL.appendingPathComponent(relativePath)
+        return (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    }
+
+    // MARK: - Wikilink mentions (content-based backlinks)
+
+    /// Scans all markdown notes in the vault for a `[[Name]]` wikilink that exactly matches
+    /// `name` (case-insensitive on the bracket contents — not a substring match, since Trace's
+    /// own `[[...]]` autocomplete always inserts the full display name). Excludes `excludePath`
+    /// so an entity's own canonical note never appears as "mentioning itself".
+    /// Synchronous filesystem walk — call off the main thread (e.g. `Task.detached`), same
+    /// convention `TagIndex.seedFromNotes` uses for its tag scan.
+    func findWikilinkMentions(of name: String, excluding excludePath: String? = nil) -> [NoteMention] {
+        guard let documentsURL else { return [] }
+        let escaped = NSRegularExpression.escapedPattern(for: name)
+        guard let regex = try? NSRegularExpression(pattern: "\\[\\[\(escaped)\\]\\]", options: .caseInsensitive) else {
+            return []
+        }
+
+        var results: [NoteMention] = []
+        guard let enumerator = FileManager.default.enumerator(
+            at: documentsURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        let rootPath = documentsURL.path
+        for case let url as URL in enumerator {
+            guard url.pathExtension == "md" else { continue }
+            var relativePath = url.path
+            if relativePath.hasPrefix(rootPath) {
+                relativePath = String(relativePath.dropFirst(rootPath.count))
+                if relativePath.hasPrefix("/") { relativePath.removeFirst() }
+            }
+            if let excludePath, relativePath == excludePath { continue }
+            guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let range = NSRange(content.startIndex..., in: content)
+            guard regex.firstMatch(in: content, range: range) != nil else { continue }
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            let title = url.deletingPathExtension().lastPathComponent
+            results.append(NoteMention(relativePath: relativePath, title: title, modified: modified))
+        }
+        return results
+    }
+}
+
+/// A note whose body contains a `[[Name]]` wikilink pointing at a person or place.
+/// Used by the Mac People/Place "Mentioned in" backlink section.
+struct NoteMention: Identifiable, Hashable {
+    var id: String { relativePath }
+    let relativePath: String
+    let title: String
+    let modified: Date?
 }
 
 // MARK: - Notification names

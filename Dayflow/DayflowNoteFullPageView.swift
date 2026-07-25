@@ -54,11 +54,39 @@ import SwiftUI
 // save into the *previous* date's file — fixed there, see that file's
 // `updateUIView` header comment. That bug existed independently of this
 // binding change and would have kept happening even with dates lined up.)
+//
+// **Date headline repurposed as the Related Notes entry point, 2026-07-23
+// (Session 38 addendum 2).** The inline "Link a note" row this screen had
+// (via DayflowRelatedNotesSection's own empty-state affordance) looked
+// rough in practice once David tried it on-device — flagged directly as
+// "formatting on the expanded note is not good." Rather than tune that row's
+// styling, he asked for the same fix already applied to the home card
+// (Session 38 addendum 1): move the entry point onto an existing, already-
+// prominent piece of chrome instead of a dedicated row. There it was the
+// header pencil icon; here it's this screen's own large date headline,
+// which was previously inert text. Wrapped in the same `dayflowLinkKindMenu
+// Items` Menu, and `DayflowDailyNoteEditor` is now told
+// `showInlineLinkAffordance: false` here too, so the section stays fully
+// hidden (same as the card, same as Project Note) until something's
+// actually linked — no dedicated empty-state row anywhere in this app
+// anymore, both hosts now trigger from existing chrome.
+//
+// **Pin added, 2026-07-23 (Session 38 addendum 7).** Companion to the home
+// card's pin toggle (see DayflowDailyNoteSection.swift's own header comment
+// for the full design discussion). This screen never had a Share button to
+// fold anything into, so David asked for Pin as its own new icon instead,
+// placed next to the existing calendar icon. Reuses `DayflowFlagStore.shared`
+// exactly as the card and Project Note both do.
 
 struct DayflowNoteFullPageView: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var selectedDate: Date
     @State private var showCalendar = false
+    /// Drives the Related Notes link flow from the date headline below —
+    /// see this file's header comment. Passed down to DayflowDailyNoteEditor
+    /// as `externalActiveLinkFlow`, which still owns the actual sheet
+    /// presentation and persistence.
+    @State private var activeLinkFlow: DayflowLinkKind? = nil
 
     /// Only Today/Tomorrow render as pill buttons — see header comment above.
     private static let pageDays: [DayflowRelativeDay] = [.today, .tomorrow]
@@ -69,17 +97,54 @@ struct DayflowNoteFullPageView: View {
         return f.string(from: selectedDate)
     }
 
+    /// Session 38 addendum 7 — same file DayflowDailyNoteEditor/
+    /// DayflowDailyNoteSection use for this day's note, computed here too
+    /// since the pin toggle lives in this view's own header.
+    private var relativePath: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        f.dateFormat = "yyyy-MM-dd"
+        return "Calendar/\(f.string(from: selectedDate)).md"
+    }
+    private var isFlagged: Bool { DayflowFlagStore.shared.isFlagged(relativePath) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Text(dateHeadlineText)
-                .font(.custom("Georgia", size: 24).weight(.bold))
-                .padding(.horizontal, 16)
-                .padding(.top, 4)
-                .padding(.bottom, 10)
-            DayflowDailyNoteEditor(date: selectedDate)
+            // Session 38 addendum 2 — was a plain Text, now the Related
+            // Notes link-flow entry point (see this file's header comment).
+            // Explicit foregroundStyle so Menu's default accent-blue label
+            // tinting doesn't leak in — same bug class already fixed
+            // elsewhere in this app (e.g. ContentView's top-bar Menu,
+            // Session 30; DayflowDailyNoteSection's pencil icon, this same
+            // session).
+            Menu {
+                dayflowLinkKindMenuItems { kind in activeLinkFlow = kind }
+            } label: {
+                Text(dateHeadlineText)
+                    // Skin fix 2026-07-22 (Session 32) — was .custom("Georgia",
+                    // ...), the same capital-J mismatch already fixed on the home
+                    // screen's date headline. David flagged this screen (Daily
+                    // Note's expand icon) as one of several still out of step
+                    // with the rest of the skin. See DayflowSkin.swift.
+                    .font(.dayflowSerif(24))
+                    .foregroundStyle(Color.primary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
+            DayflowDailyNoteEditor(
+                date: selectedDate,
+                externalActiveLinkFlow: $activeLinkFlow,
+                showInlineLinkAffordance: false
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // Skin fix 2026-07-22 (Session 32) — same warm gradient as the home
+        // screen. No NavigationStack here (plain VStack), so no risk of the
+        // "background on the wrong view" bug Session 30 hit on ContentView.
+        .dayflowSkinBackground()
         .fullScreenCover(isPresented: $showCalendar) {
             // Calendar only — no switch-to-Upcoming icon here (onSwitchToUpcoming
             // left nil), matching the design plan's "Upcoming and Anytime
@@ -105,16 +170,41 @@ struct DayflowNoteFullPageView: View {
             dayPill
             Spacer()
 
-            Button {
-                showCalendar = true
-            } label: {
-                Image(systemName: "calendar")
-                    .font(.system(size: 15))
-                    .frame(width: 32, height: 32)
-                    .background(.background, in: Circle())
-                    .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
+            // Session 38 addendum 7 — Pin, next to the calendar icon per
+            // David's ask (see this file's header comment). Same filled/
+            // outline toggle the card and Project Note both use, chromed to
+            // match this screen's own calendar-icon button style rather than
+            // the card's smaller iconButton helper, since this screen never
+            // had that helper to begin with.
+            HStack(spacing: 8) {
+                Button {
+                    DayflowFlagStore.shared.toggleFlag(relativePath)
+                } label: {
+                    Image(systemName: isFlagged ? "pin.fill" : "pin")
+                        .font(.system(size: 15))
+                        .foregroundStyle(isFlagged ? Color.dayflowInk : .secondary)
+                        .frame(width: 32, height: 32)
+                        .background(.background, in: Circle())
+                        .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isFlagged ? "Unpin this day" : "Pin this day")
+
+                Button {
+                    showCalendar = true
+                } label: {
+                    // Skin fix 2026-07-22 (Session 32) — explicit ink color,
+                    // same fix as the home screen's top-bar calendar icon
+                    // (Session 30 addendum), so it can't render in accent blue.
+                    Image(systemName: "calendar")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.dayflowInk)
+                        .frame(width: 32, height: 32)
+                        .background(.background, in: Circle())
+                        .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -127,17 +217,22 @@ struct DayflowNoteFullPageView: View {
                     withAnimation(.easeInOut(duration: 0.15)) { selectedDate = day.date() }
                 } label: {
                     Text(day.label)
-                        .font(.system(size: 13))
-                        .foregroundStyle(isActive(day) ? .white : .secondary)
+                        // Skin fix 2026-07-22 (Session 32) — was a solid blue
+                        // capsule + white text, same pre-skin pattern already
+                        // fixed on the home screen's day pill. See
+                        // DayflowSkin.swift.
+                        .font(.system(size: 13, weight: isActive(day) ? .bold : .medium))
+                        .foregroundStyle(isActive(day) ? Color.dayflowInk : Color.dayflowPillInactiveText)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
-                        .background(isActive(day) ? Color.blue : Color.clear, in: Capsule())
+                        .background(isActive(day) ? Color.white : Color.clear, in: Capsule())
+                        .shadow(color: .black.opacity(isActive(day) ? 0.10 : 0), radius: 2, x: 0, y: 1)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(3)
-        .background(.quaternary.opacity(0.3), in: Capsule())
+        .background(Color.dayflowInk.opacity(0.055), in: Capsule())
     }
 
     private func isActive(_ day: DayflowRelativeDay) -> Bool {

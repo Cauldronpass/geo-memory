@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 import PDFKit
 import AVFoundation
 import EventKit
+import CoreLocation
 
 // MARK: - Tag index
 
@@ -94,6 +95,7 @@ enum ToolbarItemID: String, CaseIterable, Identifiable {
     case date        = "date"
     case undo        = "undo"
     case redo        = "redo"
+    case pin         = "pin"
 
     var id: String { rawValue }
 
@@ -112,6 +114,7 @@ enum ToolbarItemID: String, CaseIterable, Identifiable {
         case .date:      return "Date (📅)"
         case .undo:      return "Undo"
         case .redo:      return "Redo"
+        case .pin:       return "Quick Pin"
         }
     }
 
@@ -130,6 +133,11 @@ enum ToolbarItemID: String, CaseIterable, Identifiable {
         case .date:      return "calendar"
         case .undo:      return "arrow.uturn.backward"
         case .redo:      return "arrow.uturn.forward"
+        // "scope" (crosshair/reticle), not "mappin.circle.fill" — swapped
+        // 2026-07-25, David's "position indicator" ask (see JotFormattingToolbar.swift's
+        // matching comment for the full context). Toolbar icon only; the note's own
+        // inserted marker keeps the bold 📍 emoji, unchanged.
+        case .pin:       return "scope"
         }
     }
 }
@@ -145,7 +153,7 @@ func loadToolbarOrder() -> [ToolbarItemID] {
         return mapped + missing
     }
     return [.undo, .redo, .bold, .strike, .highlight, .bullet, .checkbox,
-            .outdent, .indent, .attach, .link, .heading, .date]
+            .outdent, .indent, .attach, .link, .heading, .date, .pin]
 }
 
 func saveToolbarOrder(_ order: [ToolbarItemID]) {
@@ -242,6 +250,23 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// Added 2026-07-19 (Dayflow Daily Note build) rather than special-casing by
     /// target, since this file is shared between Trace and Dayflow.
     var checklistSendEnabled: Bool = true
+    /// Quick Pin toolbar button (added 2026-07-25) — fires the instant it's
+    /// tapped (no confirmation sheet), same "instant save" design as Jot's
+    /// own Quick Pin (CaptureView.swift/JotTextView.swift, Session 45
+    /// addendum 2). Plain closures, not bindings — this is fire-and-forget
+    /// from the caller's perspective (flash a confirmation / show an error),
+    /// unlike `text`, which is a live two-way value. The actual save lives
+    /// on `Coordinator.dropPin()` below, next to the other toolbar actions.
+    var onPinSucceeded: () -> Void = {}
+    var onPinFailed: (String) -> Void = { _ in }
+    /// Called with the capture's Notion page ID when a
+    /// `[label](capture://open?id=ID)`
+    /// marker is tapped (Session 45 addendum 6) — intercepted in
+    /// shouldInteractWith(url:) below rather than opened externally. Parent
+    /// view is responsible for presenting CaptureSummaryView. Optional/nil
+    /// default, same shape as onWikiTap above — not every call site needs to
+    /// wire it.
+    var onCaptureTap: ((String) -> Void)? = nil
 
     // MARK: Make
 
@@ -290,6 +315,23 @@ struct MarkdownEditorView: UIViewRepresentable {
 
         if !text.isEmpty {
             storage.replaceCharacters(in: NSRange(location: 0, length: 0), with: text)
+            // Force the layout manager to complete its pass synchronously so the
+            // scroll view's contentSize is accurate from the very first frame —
+            // mirrors the identical fix already below in _updateUIView (documented
+            // there as "Bug 4": scroll locked until the next render cycle). That
+            // fix only covered later content updates; initial creation had the
+            // same gap, just harder to notice since it only affects the very
+            // first load of a given UITextView instance.
+            //
+            // Found 2026-07-23 (Dayflow Session 38 addendum 6), root-caused by
+            // David: reproduced as "can't quite scroll to the true bottom, springs
+            // back" on both DayflowDailyNoteEditor's card and full-page hosts, on
+            // notes of any length, and confirmed gone the instant the cursor was
+            // moved to the end of the text — which forces the exact same layout
+            // pass this line now forces automatically on first load. Shared file —
+            // if anything looks off after this change (in Dayflow OR Trace), this
+            // one-line addition is the first thing to suspect and revert.
+            tv.layoutIfNeeded()
         }
         updatePlaceholderVisibility(tv)
 
@@ -365,6 +407,9 @@ struct MarkdownEditorView: UIViewRepresentable {
         c.onWikiTap       = onWikiTap
         c.wikiSuggestions = wikiSuggestions
         c.parentView      = self
+        c.onPinSucceeded  = onPinSucceeded
+        c.onPinFailed     = onPinFailed
+        c.onCaptureTap    = onCaptureTap
         return c
     }
 
@@ -399,6 +444,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         context.coordinator.onFocusChange    = onFocusChange
         context.coordinator.onBlockLongPress = onBlockLongPress
         context.coordinator.parentView       = self
+        context.coordinator.onCaptureTap     = onCaptureTap
         _updateUIView(tv, context: context)
         // Apply search highlights after the text storage settles.
         if let query = searchQuery, !query.isEmpty {
@@ -624,6 +670,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         case .date:      action = #selector(Coordinator.insertDate)
         case .undo:      action = #selector(Coordinator.performUndo)
         case .redo:      action = #selector(Coordinator.performRedo)
+        case .pin:       action = #selector(Coordinator.dropPin)
         case .checkbox, .attach: return nil
         }
         let symCfg = UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
@@ -769,6 +816,9 @@ struct MarkdownEditorView: UIViewRepresentable {
         var onFocusChange: ((Bool) -> Void)?
         var onBlockLongPress: ((BlockInfo) -> Void)?
         var onWikiTap: ((String) -> Void)?
+        var onPinSucceeded: () -> Void = {}
+        var onPinFailed: (String) -> Void = { _ in }
+        var onCaptureTap: ((String) -> Void)?
         weak var textView: UITextView?
         private var saveWork: DispatchWorkItem?
         var lastTimestampTrigger: Date?
@@ -1004,6 +1054,32 @@ struct MarkdownEditorView: UIViewRepresentable {
                       in characterRange: NSRange,
                       interaction: UITextItemInteraction) -> Bool {
             guard interaction == .invokeDefaultAction else { return true }
+            // Capture-marker tap — Session 45 addendum 6. dropPin() writes
+            // `[label](capture://open?id=pageID)`, which applyMarkdownLinks()
+            // renders through the same hidden-bracket machinery as any other
+            // markdown link, ending up here with a plain .link URL whose
+            // scheme is "capture" instead of "http(s)". Deliberately the same
+            // scheme://host?query=value shape as the existing trace://checkin
+            // /trace://loginteraction hand-off URLs (DayflowWikiSummaryView.swift)
+            // rather than a bare "capture:pageID" opaque URI — Foundation's
+            // URL/URLComponents parsing of non-hierarchical opaque URIs
+            // (no "//") is inconsistent for .host/.path, where this
+            // slash-form's queryItems parsing is already proven elsewhere in
+            // this file's ecosystem. Intercepted before the generic
+            // UIApplication.shared.open(url) fallback below so it opens the
+            // in-app summary sheet instead of handing off externally (no app
+            // is registered for a "capture:" scheme anyway).
+            if url.scheme == "capture" {
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let id = comps.queryItems?.first(where: { $0.name == "id" })?.value,
+                   !id.isEmpty {
+                    onCaptureTap?(id)
+                }
+                // Never falls through to the external-open below, parsed or
+                // not — nothing is registered to handle "capture:" outside
+                // this app, so an external open would only ever no-op.
+                return false
+            }
             UIApplication.shared.open(url)
             return false
         }
@@ -1472,6 +1548,138 @@ struct MarkdownEditorView: UIViewRepresentable {
             tv.selectedRange = NSRange(location: safeLoc + (dateStr as NSString).length, length: 0)
             text = tv.text
             scheduleSave(tv.text)
+        }
+
+        // MARK: - Quick Pin
+        //
+        // Added 2026-07-25, ported from Jot's JotTextView.swift `dropPin()`
+        // (Session 45 addendum 2) which itself ported Trace's own FAB
+        // `QuickPinLabelSheet.swift` — same silent nearest-place-within-500m
+        // auto-link, same "instant save" behavior (no confirmation sheet).
+        // Built here, on the shared editor, rather than duplicated a third
+        // time, since this is the one file already common to every note
+        // surface David asked to cover in one shot: Daily Note, Project
+        // Note, Dayflow's Inbox editor, and Trace's own Notes tab/
+        // QuickAppendSheet.
+        //
+        // Unlike the synchronous formatting actions above, this is async (a
+        // location fetch + a Notion network call) and doesn't touch `text`
+        // until the save actually completes — a failed save calls
+        // `onPinFailed(_:)` and leaves the note's text completely untouched,
+        // same principle every other failure path in this Coordinator
+        // already follows (see insertCheckboxAndSend's own error handling).
+        // Self-contained: requests location permission and starts updates
+        // itself rather than relying on the host screen to have warmed
+        // anything up first, since this button can now appear on screens
+        // (Project Note, Trace's Notes tab) that never had a reason to call
+        // LocationManager before.
+        @objc func dropPin() {
+            guard let tv = textView else { return }
+
+            Task { @MainActor in
+                if LocationManager.shared.location == nil {
+                    LocationManager.shared.requestPermission()
+                    LocationManager.shared.startUpdating()
+                    for _ in 0..<20 {
+                        if LocationManager.shared.location != nil { break }
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                    }
+                }
+                guard let loc = LocationManager.shared.location else {
+                    self.onPinFailed("Couldn't get your location — check Location Services, then try again.")
+                    return
+                }
+
+                let formatter = DateFormatter()
+                formatter.dateFormat = "h:mm a"
+                let timeStr = formatter.string(from: Date())
+
+                // Places list is normally already warm (Dayflow/Trace both
+                // fetch it at launch), but fetch on demand if it's ever
+                // genuinely empty rather than silently skipping the
+                // auto-link this one time.
+                if NotionService.shared.places.isEmpty {
+                    await NotionService.shared.fetchPlaces()
+                }
+                // Auto-link to the nearest Trace place within 500 m — exact
+                // same logic as QuickPinLabelSheet.swift's save() and Jot's
+                // dropPin(): filter to candidates within radius, take the
+                // nearest, zero UI either way (no match = nil placeID,
+                // multiple matches always resolve to the single nearest).
+                let nearbyPlace = NotionService.shared.places.filter { p in
+                    CLLocation(latitude: p.latitude, longitude: p.longitude).distance(from: loc) <= 500
+                }.min { a, b in
+                    CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: loc)
+                        < CLLocation(latitude: b.latitude, longitude: b.longitude).distance(from: loc)
+                }
+
+                let pageID: String
+                do {
+                    pageID = try await NotionService.shared.saveCapture(
+                        notes: timeStr,
+                        placeID: nearbyPlace?.id,
+                        // Fixed 2026-07-25 (Session 45 addendum 8) — was always
+                        // timeStr, so every capture's Notion page title was a
+                        // clock time even when a place matched, regardless of
+                        // the correct placeID relation set above. Now titles
+                        // the page with the matched place's real name when
+                        // there is one, falling back to the time otherwise —
+                        // only affects captures saved from this point forward.
+                        placeName: nearbyPlace?.name ?? timeStr,
+                        lat: loc.coordinate.latitude,
+                        lon: loc.coordinate.longitude,
+                        photoURL: nil
+                    )
+                } catch {
+                    self.onPinFailed("Couldn't save the pin — try again.")
+                    return
+                }
+
+                // Added 2026-07-25 — matches QuickPinLabelSheet.swift's own
+                // save(), which always refreshes the local list right after
+                // a successful save. Has no effect on Trace's own in-memory
+                // captures list if Trace happens to be running (separate
+                // process, separate NotionService.shared instance — see
+                // ContentView.swift's matching 2026-07-25 fix for that side),
+                // but keeps this app's own state correct if it's ever the one
+                // displaying captures, and costs nothing when it isn't.
+                await NotionService.shared.fetchCaptures()
+
+                // Insert marker using the same first-responder-or-end
+                // fallback insertDate() above already uses, then route
+                // through the normal text/scheduleSave path so this
+                // persists to disk exactly like every other edit here does
+                // (unlike Jot, this editor always autosaves — no separate
+                // commit step).
+                //
+                // Place-aware marker, Session 45 addendum 6: shows the
+                // matched place's name when nearbyPlace (computed above)
+                // found one, "Dropped Pin" otherwise — David wanted an
+                // explicit "nothing found" indicator, not a silently plain
+                // marker. Written as a markdown link
+                // `[label](capture://open?id=pageID)` — applyMarkdownLinks()
+                // in MarkdownTextStorage.swift already hides the `[`/`](url)`
+                // syntax and renders just the label, no new regex needed on
+                // this side. shouldInteractWith(url:) below intercepts the
+                // capture: scheme to present the summary sheet in-app instead
+                // of handing off externally.
+                let label = nearbyPlace != nil
+                    ? "📍 \(nearbyPlace!.name) · \(timeStr)"
+                    : "📍 Dropped Pin · \(timeStr)"
+                let marker = "[\(label)](capture://open?id=\(pageID)) "
+                let insertLoc: Int
+                if tv.isFirstResponder, let sel = tv.selectedTextRange {
+                    insertLoc = tv.offset(from: tv.beginningOfDocument, to: sel.end)
+                } else {
+                    insertLoc = tv.textStorage.length
+                }
+                let safeLoc = min(insertLoc, tv.textStorage.length)
+                tv.textStorage.replaceCharacters(in: NSRange(location: safeLoc, length: 0), with: marker)
+                tv.selectedRange = NSRange(location: safeLoc + (marker as NSString).length, length: 0)
+                self.text = tv.text
+                self.scheduleSave(tv.text)
+                self.onPinSucceeded()
+            }
         }
 
         @objc func dismissKeyboard() {

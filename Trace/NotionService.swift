@@ -357,7 +357,13 @@ class NotionService {
         }
     }
 
-    func saveCapture(notes: String, placeID: String?, placeName: String?, lat: Double?, lon: Double?, photoURL: String? = nil) async throws {
+    /// Returns the created page's Notion ID — added Session 45 addendum 6 so callers
+    /// (dropPin() in JotTextView.swift/MarkdownEditorView.swift) can encode a resolvable
+    /// reference into the inserted marker text. @discardableResult keeps the existing
+    /// caller that doesn't need it (QuickPinLabelSheet.swift's save()) compiling with no
+    /// "result unused" warning.
+    @discardableResult
+    func saveCapture(notes: String, placeID: String?, placeName: String?, lat: Double?, lon: Double?, photoURL: String? = nil) async throws -> String {
         var props: [String: Any] = [
             "Name": ["title": [["text": ["content": placeName ?? "Capture"]]]],
             "Notes": ["rich_text": [["text": ["content": notes]]]],
@@ -372,7 +378,27 @@ class NotionService {
             "parent": ["database_id": capturesDBID],
             "properties": props
         ]
-        _ = try await post("\(baseURL)/pages", body: body)
+        let data = try await post("\(baseURL)/pages", body: body)
+        guard let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pageID = result["id"] as? String else {
+            throw NotionError.apiError(0, "saveCapture: response missing page id")
+        }
+        return pageID
+    }
+
+    /// Fetches a single Capture by its Notion page ID directly — added Session 45
+    /// addendum 6 for capture-marker tap resolution. Unlike fetchCaptures() (which
+    /// caches only Status == "Unlinked" rows), a tapped marker must resolve regardless
+    /// of the capture's current status, so this always goes straight to the page rather
+    /// than the filtered in-memory list — same single-page GET shape as
+    /// appendCaptureNotes()'s existing read.
+    func fetchCapture(id: String) async throws -> Capture {
+        let data = try await get("\(baseURL)/pages/\(id)")
+        guard let page = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let capture = parseCapture(page) else {
+            throw NotionError.apiError(0, "fetchCapture: could not parse page \(id)")
+        }
+        return capture
     }
 
     func fetchPeople() async {
@@ -531,6 +557,11 @@ class NotionService {
         if let idx = workouts.firstIndex(where: { $0.id == pageID }) {
             workouts[idx].notes = notes.isEmpty ? nil : notes
         }
+    }
+
+    func deleteWorkout(id: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["archived": true])
+        await MainActor.run { workouts.removeAll { $0.id == id } }
     }
 
     // MARK: - Billiards Sessions

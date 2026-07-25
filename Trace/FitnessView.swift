@@ -236,6 +236,13 @@ struct FitnessView: View {
                 ForEach(displayedWorkouts) { w in
                     Button { selectedWorkout = w } label: { WorkoutRow(workout: w) }
                         .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                Task { try? await notion.deleteWorkout(id: w.id) }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                 }
                 if filteredWorkouts.count > 5 {
                     Button {
@@ -401,6 +408,13 @@ struct PeriodWorkoutListSheet: View {
                         ForEach(workouts) { w in
                             Button { selectedWorkout = w } label: { WorkoutRow(workout: w) }
                                 .buttonStyle(.plain)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        Task { try? await notion.deleteWorkout(id: w.id) }
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
                         }
                     }
                 }

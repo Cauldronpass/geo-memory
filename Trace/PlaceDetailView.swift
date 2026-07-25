@@ -11,6 +11,10 @@ struct PlaceDetailView: View {
     @State private var placeNoteContent: String = ""
     @State private var placeNoteLoaded = false
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
+    /// Session 45 addendum 6 — set by MarkdownEditorView's onCaptureTap when a
+    /// `[label](capture://open?id=ID)` marker is tapped. isPresented-Binding
+    /// (String isn't Identifiable, so not .sheet(item:)).
+    @State private var tappedCaptureID: String? = nil
     @State private var showingCheckIn = false
     @State private var editingVisit: Visit? = nil
     @State private var showingEditPlace = false
@@ -448,8 +452,20 @@ struct PlaceDetailView: View {
                     .sorted()
                     .map { (name: $0, isPlace: false) }
                 return Array((places + people).prefix(8))
-            }
+            },
+            onCaptureTap: { id in tappedCaptureID = id }
         )
+        .sheet(isPresented: Binding(
+            get: { tappedCaptureID != nil },
+            set: { if !$0 { tappedCaptureID = nil } }
+        )) {
+            if let id = tappedCaptureID {
+                CaptureSummaryView(captureID: id)
+                    .environment(NotionService.shared)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
         .sheet(item: $wikiLinkTarget) { target in
             NavigationStack {
                 switch target {

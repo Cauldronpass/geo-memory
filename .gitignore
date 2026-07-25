@@ -1,2 +1,9 @@
 Config.swift
 **/Config.swift
+
+_to_delete/
+**/_to_delete/
+_scratch/
+**/_scratch/
+.DS_Store
+**/.DS_Store

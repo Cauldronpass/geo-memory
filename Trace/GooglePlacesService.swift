@@ -57,6 +57,16 @@ private extension Array {
     }
 }
 
+// MARK: - Review model (Phase 2 — Place Details call)
+
+struct GooglePlaceReview: Identifiable, Equatable {
+    let id: String
+    let authorName: String
+    let rating: Int
+    let text: String?
+    let relativeTime: String
+}
+
 // MARK: - Service
 
 class GooglePlacesService {
@@ -108,6 +118,55 @@ class GooglePlacesService {
             ]
         ]
         return try await search(body: body)
+    }
+
+    // Place Details — reviews (Phase 2). Separate endpoint/field mask from
+    // search(); current `fieldMask` excludes reviews entirely, per Google's
+    // API design (search results stay lightweight, details are opt-in).
+    // Returns up to 5 individual reviews, the aggregate rating + total review
+    // count (the only real "distribution" signal Google's API provides —
+    // there's no per-star breakdown available), and the Google Maps URI
+    // required for attribution alongside any displayed review content
+    // (Google ToS).
+    func placeDetails(placeID: String) async throws -> (
+        reviews: [GooglePlaceReview],
+        googleMapsURI: String?,
+        overallRating: Double?,
+        totalReviewCount: Int?
+    ) {
+        guard !apiKey.isEmpty else { return ([], nil, nil, nil) }
+        let url = URL(string: "\(baseURL)/\(placeID)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
+        request.setValue("reviews,googleMapsUri,rating,userRatingCount", forHTTPHeaderField: "X-Goog-FieldMask")
+        request.setValue("com.david.Trace", forHTTPHeaderField: "X-Ios-Bundle-Identifier")
+
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        let reviewsJSON = json["reviews"] as? [[String: Any]] ?? []
+        let reviews = reviewsJSON.compactMap { parseReview($0) }
+        let mapsURI = json["googleMapsUri"] as? String
+        let overallRating = json["rating"] as? Double
+        let totalReviewCount = json["userRatingCount"] as? Int
+        return (reviews, mapsURI, overallRating, totalReviewCount)
+    }
+
+    private func parseReview(_ json: [String: Any]) -> GooglePlaceReview? {
+        guard let rating = json["rating"] as? Int else { return nil }
+        let textObj = json["text"] as? [String: Any]
+        let text = textObj?["text"] as? String
+        let author = json["authorAttribution"] as? [String: Any]
+        let authorName = author?["displayName"] as? String ?? "Anonymous"
+        let relativeTime = json["relativePublishTimeDescription"] as? String ?? ""
+        let publishTime = json["publishTime"] as? String ?? UUID().uuidString
+        return GooglePlaceReview(
+            id: "\(authorName)-\(publishTime)",
+            authorName: authorName,
+            rating: rating,
+            text: text,
+            relativeTime: relativeTime
+        )
     }
 
     private func search(body: [String: Any]) async throws -> [GooglePlace] {

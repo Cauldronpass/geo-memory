@@ -51,9 +51,13 @@ import SwiftUI
 // or list — David asked for this alongside the Upcoming/Anytime real-data
 // fixes. The tap target is the title/meta VStack only, kept separate from the
 // checkbox `Button` beside it so completing and editing stay two distinct
-// gestures. Calendar events (`kind == .event`) are not editable here — no
-// edit path exists for EventKit events in this build, so the tap is a no-op
-// for them.
+// gestures.
+//
+// **Revised 2026-07-21 (Session 23).** Calendar events are no longer a no-op
+// on tap — they now open the new read-only `DayflowEventDetailView` (title,
+// time, location, notes, video-join link, attendees). Still a completely
+// separate destination from the task-edit path above: events stay
+// non-editable everywhere in Dayflow, this is view-only.
 
 struct DayflowAgendaSection: View {
     let date: Date
@@ -68,7 +72,13 @@ struct DayflowAgendaSection: View {
     @Binding var isCollapsed: Bool
 
     @State private var dayEvents: [NextCalendarEvent] = []
+    /// Tomorrow's raw events — only fetched/populated when `isToday` (see
+    /// `loadDayData()`). Feeds `tomorrowFirstTimedEvent`, the "first meeting
+    /// of tomorrow" preview shown once today's Timed column is otherwise
+    /// empty. Added 2026-07-24, David's open-time/gap-tile ask.
+    @State private var tomorrowEvents: [NextCalendarEvent] = []
     @State private var editingItem: DayflowAgendaItem? = nil
+    @State private var selectedEvent: NextCalendarEvent? = nil
     /// Drives the header refresh button's spin + disables it mid-fetch.
     /// **Added 2026-07-20** alongside the Browse views' pull-to-refresh — this
     /// card's two columns are only ~150pt tall and don't render a ScrollView
@@ -80,6 +90,17 @@ struct DayflowAgendaSection: View {
 
     private var isToday: Bool {
         Calendar.current.isDateInToday(date)
+    }
+
+    /// True for any date strictly before today. Added 2026-07-24 alongside
+    /// extending the open-time gap tiles to future dates (David: "add the
+    /// time between meetings graphic for any future date... its not needed
+    /// for past meetings") — `timedRows(now:)` below uses this instead of
+    /// `isToday` to decide whether to run the gap/hiding logic at all, so
+    /// only genuinely past dates keep the old plain-unfiltered-list
+    /// behavior.
+    private var isPastDate: Bool {
+        Calendar.current.startOfDay(for: date) < Calendar.current.startOfDay(for: Date())
     }
 
     /// Things tasks scheduled for `date`. Today pulls the real `/today` list
@@ -101,22 +122,22 @@ struct DayflowAgendaSection: View {
         let events = dayEvents.filter(\.isAllDay).map { ev in
             DayflowAgendaItem(id: "event-\(ev.id)", kind: .event, title: ev.title,
                               isAllDay: true, timeLabel: nil, metaLabel: "Calendar · All day",
-                              taskID: nil, taskDate: nil, taskNotes: nil)
+                              taskID: nil, taskDate: nil, taskNotes: nil, event: ev)
         }
         let tasks = tasksForDay.map { t in
             DayflowAgendaItem(id: "task-\(t.id)", kind: .task, title: t.title,
                               isAllDay: true, timeLabel: nil, metaLabel: t.list,
-                              taskID: t.id, taskDate: t.date, taskNotes: t.notes)
+                              taskID: t.id, taskDate: t.date, taskNotes: t.notes, event: nil)
         }
         return events + tasks
     }
 
+    /// Reuses `rawTodayTimedEvents` (see the Timed-column section below) so
+    /// the collapsed-state summary count and the expanded list can never
+    /// disagree — both exclude the same placeholder/never-attend meetings
+    /// (`isExcludedPlaceholderTitle(_:)`, added 2026-07-24).
     private var timedItems: [DayflowAgendaItem] {
-        dayEvents.filter { !$0.isAllDay }.map { ev in
-            DayflowAgendaItem(id: "event-\(ev.id)", kind: .event, title: ev.title,
-                              isAllDay: false, timeLabel: ev.startTimeString, metaLabel: nil,
-                              taskID: nil, taskDate: nil, taskNotes: nil)
-        }
+        rawTodayTimedEvents.map { timedAgendaItem(for: $0) }
     }
 
     private var summaryLabel: String {
@@ -143,8 +164,9 @@ struct DayflowAgendaSection: View {
         .padding(.horizontal, 14)
         .padding(.top, 14)
         .padding(.bottom, isCollapsed ? 10 : 16)
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.quaternary, lineWidth: 0.5))
+        // Skin locked 2026-07-21 (Session 29) — was a 16pt-radius background
+        // + quaternary-stroke border; see DayflowSkin.swift's `dayflowCard()`.
+        .dayflowCard()
         .task(id: date) { await loadDayData() }
         .sheet(item: $editingItem) { item in
             if let taskID = item.taskID {
@@ -155,6 +177,11 @@ struct DayflowAgendaSection: View {
                 }
             }
         }
+        .sheet(item: $selectedEvent) { event in
+            NavigationStack {
+                DayflowEventDetailView(event: event)
+            }
+        }
     }
 
     // MARK: Header
@@ -162,13 +189,22 @@ struct DayflowAgendaSection: View {
     private var header: some View {
         HStack(spacing: 8) {
             Label("Agenda", systemImage: "calendar")
-                .font(.system(size: 14.5, weight: .semibold))
+                // Skin locked 2026-07-21 (Session 29) — card titles use the
+                // same serif as the date headline. See DayflowSkin.swift.
+                .font(.dayflowSerif(14.5, weight: .semibold))
             Spacer()
             Button {
                 withAnimation(.easeInOut(duration: 0.25)) { isCollapsed.toggle() }
             } label: {
-                Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                    .font(.system(size: 11, weight: .semibold))
+                // Skin locked 2026-07-21 (Session 29) — was a single chevron
+                // that flipped direction (chevron.down/chevron.up) based on
+                // isCollapsed. David picked the always-stacked
+                // chevron.up.chevron.down look over that in the icon-review
+                // round, so this no longer needs to branch on state for the
+                // glyph itself — isCollapsed still drives the actual
+                // expand/collapse behavior below, just not which icon shows.
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 26, height: 26)
                     .background(.quaternary.opacity(0.6), in: Circle())
@@ -184,7 +220,13 @@ struct DayflowAgendaSection: View {
                     isRefreshing = false
                 }
             } label: {
-                Image(systemName: "arrow.clockwise")
+                // Skin locked 2026-07-21 (Session 29) — was arrow.clockwise;
+                // David picked the two-arrow sync-loop look in the icon-review
+                // round. arrow.triangle.2.circlepath is the real SF Symbol
+                // the mockup's hand-drawn version was approximating, so used
+                // directly rather than reproducing arc geometry with no
+                // simulator to verify it against. See DayflowSkin.swift.
+                Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 26, height: 26)
@@ -214,7 +256,11 @@ struct DayflowAgendaSection: View {
         HStack(alignment: .top, spacing: 12) {
             column(label: "All day / no time", items: noTimeItems, isTimedColumn: false)
             Rectangle().fill(.quaternary.opacity(0.5)).frame(width: 1)
-            column(label: "Timed", items: timedItems, isTimedColumn: true)
+            // Timed column is its own implementation now, not the shared
+            // `column(...)` below — it needs a live "now" to drive open-time
+            // gaps, past-meeting hiding, and the tomorrow-preview row. See
+            // `timedColumn` and its header comment further down.
+            timedColumn
         }
     }
 
@@ -223,7 +269,11 @@ struct DayflowAgendaSection: View {
             Text(label.uppercased())
                 .font(.system(size: 10.5, weight: .medium))
                 .tracking(0.4)
-                .foregroundStyle(.secondary)
+                // Skin locked 2026-07-21 (Session 29) — was .secondary, which
+                // David flagged as too dark against the new warm background;
+                // lightened to the dedicated column-label color.
+                // See DayflowSkin.swift.
+                .foregroundStyle(Color.dayflowColumnLabel)
 
             if items.isEmpty {
                 Text("Nothing here")
@@ -246,6 +296,276 @@ struct DayflowAgendaSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // MARK: Timed column — live "now"-aware (open-time gaps, past-meeting
+    // hiding, tomorrow's-first-meeting preview)
+    //
+    // Added 2026-07-24, David's ask ("show me how much time I have between
+    // meetings" — backlog item 13, worked through via an HTML mockup review
+    // before any of this was built). Three pieces, all driven by the same
+    // `TimelineView` clock below so they update live while the app just sits
+    // open, not only on the next manual refresh or date change:
+    //
+    //   1. Open-time gap tiles between meetings — >= 30 min only, dashed
+    //      pill style (mockup "Variant A" — David picked this over a
+    //      duration-scaled square and a full-width block, wanting the
+    //      smallest visual footprint of the three). Runs for today AND any
+    //      future date (`!isPastDate`) — extended 2026-07-24 from an
+    //      initial today-only build, David wanting the same "how much time
+    //      between meetings" view when browsing tomorrow or later. Past
+    //      dates keep the original plain, fully-unfiltered list.
+    //   2. A meeting hides once it has ENDED, not once it's started — an
+    //      in-progress meeting still shows. This is naturally a no-op for a
+    //      future date (nothing on a day that hasn't happened yet can have
+    //      an `endDate` before "now"), so it only ever actually does
+    //      anything when `isToday`. Past dates via Browse: Calendar still
+    //      show every event, unfiltered, same as before this change.
+    //   3. Once every one of today's meetings has ended (including the
+    //      trivial case of a day with zero meetings), tomorrow's first
+    //      *timed* meeting (all-day events skipped — David's call, since
+    //      this preview's whole point is "when's my next timed
+    //      commitment") shows as a distinct lavender-pill row (mockup
+    //      "Option 2" — chosen over a dimmed/grayscale row and a same-layout
+    //      warm-accent row for being unmistakable at a glance). Tapping it
+    //      opens the same read-only `DayflowEventDetailView` a normal
+    //      meeting row does — no separate destination. Deliberately gated
+    //      on `isToday` specifically, not `!isPastDate` — this preview only
+    //      makes sense chained forward from *today's* screen; a future date
+    //      with zero meetings should just read as empty, not chain forward
+    //      another day on top of that.
+    //
+    // The one genuinely tricky rule, walked through explicitly with David
+    // before building: the leading gap (before the first still-visible
+    // meeting) is suppressed only before the literal first meeting of the
+    // entire day, when nothing has happened yet — never as a blanket "no
+    // leading gap ever" rule. The moment an earlier meeting has already
+    // ended and dropped off the list, the leading gap uses "now" as its
+    // lower bound and DOES show — "how much time do I have right now until
+    // my next meeting" is the single most useful number this feature
+    // produces (today only — on a future date nothing has ever dropped off
+    // the list, so `visible` always equals `all` and this rule is naturally
+    // inert there too, same as point 2 above). Provably, a gap between two
+    // still-VISIBLE meetings can never itself span "now": a visible meeting
+    // is one whose `endDate > now` by
+    // definition, so its trailing gap always starts in the future. Only the
+    // leading gap (bounded below by nothing today's data can see — no
+    // earlier visible meeting) can ever have "now" as its true lower bound
+    // instead of a meeting's `endDate`.
+
+    private static let minGapSeconds: TimeInterval = 30 * 60
+
+    /// Placeholder / never-attend meetings David keeps on his calendar for
+    /// other reasons (dummy blocks, office events he doesn't go to) but
+    /// doesn't want driving Agenda behavior. Added 2026-07-24, alongside the
+    /// gap-tile/tomorrow-preview build — David's explicit ask: "pretend they
+    /// never existed," fully, everywhere a timed meeting can appear in this
+    /// section (today's live view AND Browse: Calendar past/future dates) —
+    /// not just excluded from the gap math while still shown as a row, which
+    /// would visually contradict a gap tile spanning right through it.
+    /// Case-insensitive substring match against the event title. Applied at
+    /// the source (`rawTodayTimedEvents`/`tomorrowFirstTimedEvent`) so every
+    /// downstream consumer — event rows, gap math, the collapsed summary
+    /// count, the tomorrow preview — automatically stays in sync with no
+    /// separate filter to remember.
+    private static let excludedTitleKeywords = ["rehab", "bewell", "trivia", "happy hour"]
+
+    private static func isExcludedPlaceholderTitle(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        return excludedTitleKeywords.contains { lower.contains($0) }
+    }
+
+    private enum TimedRow: Identifiable {
+        case event(DayflowAgendaItem)
+        /// `id` is keyed off the anchoring event ids, NOT the label text —
+        /// the label's duration counts down every clock tick, but the row
+        /// itself needs a stable identity across those updates so SwiftUI
+        /// doesn't treat it as a new row and animate/flicker.
+        case gap(id: String, label: String)
+        case tomorrow(NextCalendarEvent)
+
+        var id: String {
+            switch self {
+            case .event(let item): return item.id
+            case .gap(let id, _): return id
+            case .tomorrow(let ev): return "tomorrow-\(ev.id)"
+            }
+        }
+    }
+
+    private var rawTodayTimedEvents: [NextCalendarEvent] {
+        dayEvents
+            .filter { !$0.isAllDay }
+            .filter { !Self.isExcludedPlaceholderTitle($0.title) }
+            .sorted { $0.startDate < $1.startDate }
+    }
+
+    /// First non-all-day event on the day after `date` — only meaningful (and
+    /// only fetched — see `loadDayData()`) when `isToday`.
+    private var tomorrowFirstTimedEvent: NextCalendarEvent? {
+        tomorrowEvents
+            .filter { !$0.isAllDay }
+            .filter { !Self.isExcludedPlaceholderTitle($0.title) }
+            .min { $0.startDate < $1.startDate }
+    }
+
+    private func gapLabel(_ seconds: TimeInterval) -> String {
+        let mins = max(0, Int(seconds / 60))
+        if mins < 60 { return "\(mins)m open" }
+        let h = mins / 60, m = mins % 60
+        return m > 0 ? "\(h)h \(m)m open" : "\(h)h open"
+    }
+
+    private func timedAgendaItem(for ev: NextCalendarEvent) -> DayflowAgendaItem {
+        DayflowAgendaItem(id: "event-\(ev.id)", kind: .event, title: ev.title,
+                          isAllDay: false, timeLabel: ev.startTimeString, metaLabel: nil,
+                          taskID: nil, taskDate: nil, taskNotes: nil, event: ev)
+    }
+
+    /// Builds the Timed column's row list for a given "now" — see this
+    /// section's header comment above for the full rule set.
+    private func timedRows(now: Date) -> [TimedRow] {
+        let all = rawTodayTimedEvents
+        guard !isPastDate else {
+            // Past dates: every event, no hiding, no gap tiles — unchanged
+            // from before this feature existed.
+            return all.map { .event(timedAgendaItem(for: $0)) }
+        }
+
+        // Today AND any future date reach here. For a future date, `now` is
+        // always before every event that day, so `visible` always equals
+        // `all` — nothing gets hidden, and the leading-gap branch below
+        // never fires (see this section's header comment). Gap tiles
+        // between meetings still compute normally either way.
+        let visible = all.filter { $0.endDate > now }
+        guard let first = visible.first else {
+            // Only today falls through to the tomorrow-preview — a future
+            // date with zero (remaining) meetings just reads as empty, no
+            // chaining forward another day on top of that.
+            if isToday, let tomorrow = tomorrowFirstTimedEvent {
+                return [.tomorrow(tomorrow)]
+            }
+            return []
+        }
+
+        var rows: [TimedRow] = []
+
+        // Leading gap — suppressed only when `first` is the actual first
+        // meeting of the entire day (nothing earlier ever existed to have
+        // already ended). Otherwise it's "now until `first` starts."
+        if first.startDate > now, let veryFirst = all.first, veryFirst.id != first.id {
+            let remaining = first.startDate.timeIntervalSince(now)
+            if remaining >= Self.minGapSeconds {
+                rows.append(.gap(id: "gap-lead-\(first.id)", label: gapLabel(remaining)))
+            }
+        }
+
+        for (index, event) in visible.enumerated() {
+            rows.append(.event(timedAgendaItem(for: event)))
+            guard index + 1 < visible.count else { continue }
+            let next = visible[index + 1]
+            let gap = next.startDate.timeIntervalSince(event.endDate)
+            if gap >= Self.minGapSeconds {
+                rows.append(.gap(id: "gap-\(event.id)-\(next.id)", label: gapLabel(gap)))
+            }
+        }
+
+        return rows
+    }
+
+    private var timedColumn: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("TIMED")
+                .font(.system(size: 10.5, weight: .medium))
+                .tracking(0.4)
+                .foregroundStyle(Color.dayflowColumnLabel)
+
+            // `.periodic(from:by:)` over the sample-code-only `.everyMinute`
+            // schedule — this environment can't build/run to double-check an
+            // API's exact availability, so picking the one guaranteed to
+            // exist. Re-evaluates `timedRows(now:)` every 60s so gap
+            // countdowns, past-meeting hiding, and the tomorrow-preview
+            // trigger all stay live while this card just sits on screen.
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                let rows = timedRows(now: context.date)
+                if rows.isEmpty {
+                    Text("Nothing here")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(rows) { tr in
+                                timedRowView(tr)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 150)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func timedRowView(_ tr: TimedRow) -> some View {
+        switch tr {
+        case .event(let item):
+            row(for: item, isTimedColumn: true)
+        case .gap(_, let label):
+            gapTile(label: label)
+        case .tomorrow(let event):
+            tomorrowPreviewRow(event)
+        }
+    }
+
+    /// Mockup "Variant A" — small dashed pill, not a full row, so it never
+    /// reads as its own meeting.
+    private func gapTile(label: String) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(Color.dayflowInk.opacity(0.3)).frame(width: 5, height: 5)
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .italic()
+                .foregroundStyle(Color.dayflowInk.opacity(0.5))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.dayflowInk.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        )
+        .background(Color.dayflowInk.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.leading, 16)
+    }
+
+    /// Mockup "Option 2" — lavender pill + "TOMORROW" tag. Tapping opens the
+    /// same read-only `DayflowEventDetailView` today's meetings use; no
+    /// separate destination, no navigation to tomorrow's date.
+    private func tomorrowPreviewRow(_ event: NextCalendarEvent) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Text("🕒").font(.system(size: 10)).padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("TOMORROW")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .tracking(0.3)
+                    .foregroundStyle(Color(red: 0.478, green: 0.435, blue: 0.761))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Color(red: 0.863, green: 0.839, blue: 0.949), in: RoundedRectangle(cornerRadius: 5))
+                Text(event.startTimeString)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.357, green: 0.310, blue: 0.639))
+                Text(event.title)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(red: 0.357, green: 0.310, blue: 0.639))
+                    .lineLimit(2)
+            }
+        }
+        .padding(7)
+        .background(Color(red: 0.929, green: 0.918, blue: 0.969), in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color(red: 0.851, green: 0.827, blue: 0.941), lineWidth: 1))
+        .contentShape(Rectangle())
+        .onTapGesture { selectedEvent = event }
+    }
+
     @ViewBuilder
     private func row(for item: DayflowAgendaItem, isTimedColumn: Bool) -> some View {
         HStack(alignment: .top, spacing: 7) {
@@ -266,8 +586,11 @@ struct DayflowAgendaSection: View {
             }
             .contentShape(Rectangle())
             .onTapGesture {
-                guard item.kind == .task, item.taskID != nil else { return }
-                editingItem = item
+                if item.kind == .task, item.taskID != nil {
+                    editingItem = item
+                } else if item.kind == .event, let event = item.event {
+                    selectedEvent = event
+                }
             }
         }
     }
@@ -311,11 +634,18 @@ struct DayflowAgendaSection: View {
         // above) — added 2026-07-20, see this file's header comment.
         if isToday {
             async let taskFetch: Void = ThingsService.shared.fetch()
+            // Tomorrow's events — only needed for `tomorrowFirstTimedEvent`
+            // (the "first meeting of tomorrow" preview below), so only
+            // fetched when actually viewing today. Added 2026-07-24.
+            async let tomorrow = CalendarService.shared.fetchDayEvents(
+                for: Calendar.current.date(byAdding: .day, value: 1, to: date) ?? date)
             dayEvents = await events
+            tomorrowEvents = await tomorrow
             await taskFetch
         } else {
             async let taskFetch: Void = ThingsService.shared.fetchUpcoming()
             dayEvents = await events
+            tomorrowEvents = []
             await taskFetch
         }
     }

@@ -62,10 +62,11 @@ struct TraceMacPeopleView: View {
     @State private var isLoadingInteractions = false
 
     enum PeopleTab: String, CaseIterable {
-        case info     = "Info"
-        case activity = "Activity"
-        case log      = "Log"
-        case notes    = "Notes"
+        case info      = "Info"
+        case activity  = "Activity"
+        case log       = "Log"
+        case notes     = "Notes"
+        case documents = "Documents"
     }
 
     private var filteredPeople: [Person] {
@@ -368,6 +369,8 @@ struct TraceMacPeopleView: View {
                     )
                 case .notes:
                     NotesTab(personName: d.name)
+                case .documents:
+                    PersonDocumentsTab(personName: d.name)
                 }
             }
             .confirmationDialog(
@@ -1266,15 +1269,87 @@ struct NotesTab: View {
 
     private var relativePath: String { "Notes/People/\(personName).md" }
 
+    @State private var mentions: [NoteMention] = []
+    @State private var previewTarget: NotePreviewTarget? = nil
+
     var body: some View {
-        TraceMacNoteEditor(relativePath: relativePath)
-            .environment(NoteStore.shared)
-            .onAppear {
-                let store = NoteStore.shared
-                if ((try? store.readFile(relativePath)) ?? "").isEmpty {
-                    try? store.writeFile(relativePath, content: "# \(personName)\n\n")
+        VStack(spacing: 0) {
+            TraceMacNoteEditor(relativePath: relativePath)
+                .environment(NoteStore.shared)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onAppear {
+                    let store = NoteStore.shared
+                    if ((try? store.readFile(relativePath)) ?? "").isEmpty {
+                        try? store.writeFile(relativePath, content: "# \(personName)\n\n")
+                    }
+                }
+            MentionedInSection(mentions: mentions) { mention in
+                previewTarget = NotePreviewTarget(path: mention.relativePath)
+            }
+        }
+        .task { await loadMentions() }
+        .sheet(item: $previewTarget) { target in
+            MacNotePreviewSheet(relativePath: target.path)
+                .environment(NoteStore.shared)
+        }
+    }
+
+    private func loadMentions() async {
+        let name = personName
+        let excludePath = relativePath
+        mentions = await Task.detached(priority: .utility) {
+            NoteStore.shared.findWikilinkMentions(of: name, excluding: excludePath)
+        }.value
+    }
+}
+
+// MARK: - Person Documents tab (backlinks — Phase 4)
+
+/// Documents where this person appears in the sidecar `people` field.
+/// `TraceMacDocumentStore` is never environment-injected anywhere in this codebase —
+/// always built as a local @State, same lazy-init pattern as TraceMacArchiveView/
+/// TraceMacDocumentsView/TraceMacJournalView. See HANDOFF.md Session 91 scoping notes.
+struct PersonDocumentsTab: View {
+    let personName: String
+
+    @State private var docStore: TraceMacDocumentStore? = nil
+
+    private var linkedDocs: [TraceMacDocument] {
+        guard let docStore else { return [] }
+        return docStore.documents
+            .filter { $0.people.contains(personName) }
+            .sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+    }
+
+    var body: some View {
+        Group {
+            if docStore?.isLoading == true {
+                ProgressView("Loading…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if linkedDocs.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "doc.richtext")
+                        .font(.system(size: 36, weight: .ultraLight))
+                        .foregroundStyle(.tertiary)
+                    Text("No documents linked to \(personName)")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(linkedDocs) { doc in
+                            DocumentBacklinkRow(doc: doc)
+                            Divider().padding(.leading, 42)
+                        }
+                    }
+                    .padding(.vertical, 4)
                 }
             }
+        }
+        .task {
+            if docStore == nil { docStore = TraceMacDocumentStore(noteStore: NoteStore.shared) }
+            await docStore?.reload()
+        }
     }
 }
 

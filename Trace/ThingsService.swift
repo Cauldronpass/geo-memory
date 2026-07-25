@@ -395,8 +395,18 @@ final class ThingsService {
     ///     (second pass) — empty/nil is skipped entirely (nothing to "clear" on a
     ///     brand-new task, unlike `update()` below, which does need to distinguish
     ///     "leave unchanged" from "clear to blank" on an existing task's notes).
-    func addTask(title: String, toToday: Bool = false, date: Date? = nil, list: String? = nil, notes: String? = nil) async {
-        guard let base = baseURL(), let url = URL(string: "add", relativeTo: base) else { return }
+    /// - Returns: true if the Mini reported success. **Fixed 2026-07-20** — this
+    ///   used to be `_ = try? await URLSession.shared.data(for: request)`, which
+    ///   discarded both thrown errors and non-200/failure responses, so a task
+    ///   could silently fail to create with zero signal to the caller or David.
+    ///   Now matches `update()`'s pattern below: check the status code, decode
+    ///   `{"success": Bool}`, return it. `@discardableResult` so existing call
+    ///   sites that don't check the result (Trace's HomeView.swift quick-add)
+    ///   keep compiling unchanged — only Dayflow's call sites were updated to
+    ///   surface a failure, see DayflowContentView.swift's `saveDraft()`.
+    @discardableResult
+    func addTask(title: String, toToday: Bool = false, date: Date? = nil, list: String? = nil, notes: String? = nil) async -> Bool {
+        guard let base = baseURL(), let url = URL(string: "add", relativeTo: base) else { return false }
 
         var body: [String: String] = ["title": title]
         if let notes, !notes.isEmpty {
@@ -421,10 +431,19 @@ final class ThingsService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         authorize(&request)
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        _ = try? await URLSession.shared.data(for: request)
 
-        // Refresh so the new task appears if it landed in Today
-        if toToday || date != nil { await fetch() }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
+            let decoded = try? JSONDecoder().decode(UpdateResponse.self, from: data)
+            let success = decoded?.success ?? false
+            // Refresh so the new task appears if it landed in Today — only on
+            // actual success, matching update()'s refresh-on-success pattern.
+            if success && (toToday || date != nil) { await fetch() }
+            return success
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Update

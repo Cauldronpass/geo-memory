@@ -1,5 +1,39 @@
 import UIKit
 
+// MARK: - BlockInfo
+//
+// Moved here from NotesView.swift (2026-07-19, Dayflow Session 1) — it's
+// MarkdownEditorView's own long-press-block callback type
+// (`onBlockLongPress: ((BlockInfo) -> Void)?`), so it belongs with the
+// editor component, not with one particular Trace-side caller. Purely
+// self-contained (Foundation only), so moving it doesn't change behavior for
+// NotesView.swift, which still resolves it via the same Trace/TraceMac
+// target membership as before. This unblocked Dayflow's target from having
+// to compile all of NotesView.swift just to get one small struct.
+struct BlockInfo: Identifiable {
+    let id = UUID()
+    let text: String
+    let nsRange: NSRange
+
+    /// First non-empty, non-timestamp content line — used as default title for promote.
+    var firstLineTitle: String {
+        let lines = text.components(separatedBy: "\n")
+        for line in lines.dropFirst() {
+            var t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.isEmpty { continue }
+            // Strip leading markdown list/checkbox prefixes
+            t = t.replacingOccurrences(of: "^[•\\-] ", with: "", options: .regularExpression)
+            t = t.replacingOccurrences(of: "^- \\[.\\] ", with: "", options: .regularExpression)
+            // Strip bold wrapper
+            if t.hasPrefix("**") && t.hasSuffix("**") && t.count > 4 {
+                t = String(t.dropFirst(2).dropLast(2))
+            }
+            return t.isEmpty ? "Note" : t
+        }
+        return "Note"
+    }
+}
+
 // MARK: - MarkdownTextStorage
 //
 // NSTextStorage subclass that applies live markdown styling (TextKit 1).
@@ -25,6 +59,19 @@ final class MarkdownTextStorage: NSTextStorage {
     static let uncheckColor: UIColor = UIColor(red: 0.9, green: 0.5, blue: 0.1, alpha: 1)
     // Tiny invisible font used to hide markdown syntax markers (**, *, ☐, ☑, etc.)
     static let hiddenFont:   UIFont  = UIFont.systemFont(ofSize: 0.1)
+    // Same idea as hiddenFont (invisible: .clear color), but large enough that
+    // TextKit's layout manager doesn't classify the glyph as "null." Used only for
+    // the checkbox line's trailing hidden space — see styleCheckboxLine's comment
+    // and MarkdownEditorView.refreshCheckboxOverlays for why this distinction
+    // matters (found 2026-07-20, the "checkbox overlaps the row above when the
+    // checklist item is still empty" bug).
+    static let hiddenAnchorFont: UIFont = UIFont.systemFont(ofSize: 3)
+    // Fixed row height for checkbox lines — see styleCheckboxLine's comment for
+    // why a *multiplier* (lineHeightMultiple) isn't enough on its own (found
+    // 2026-07-20, second pass at the checkbox-overlap bug). bodyFont.lineHeight
+    // is the natural single-line height of real 16pt task text; × 1.4 matches the
+    // same visual row height every other checklist/bullet line already uses.
+    static let checkboxLineHeight: CGFloat = bodyFont.lineHeight * 1.4
     // Left indent reserved for the SF Symbol checkbox overlay (18pt icon + 4pt gap)
     static let checkboxIndent: CGFloat = 22
 
@@ -400,13 +447,46 @@ final class MarkdownTextStorage: NSTextStorage {
     // refreshCheckboxOverlays can find every checkbox line via enumerateAttribute.
     // The paragraph indent (firstLineHeadIndent + headIndent = 22pt) pushes task text
     // to the right of the 18pt icon, matching the same pattern used for --- HR overlays.
+    //
+    // **The trailing space uses `hiddenAnchorFont` (3pt), not `hiddenFont` (0.1pt) —
+    // found 2026-07-20.** refreshCheckboxOverlays needs a real, on-this-line glyph
+    // to query for vertical position. It can't use the ☐ character itself (0.1pt
+    // is small enough that the layout manager treats it as a "null glyph," which
+    // can report y=0 — collapsing the overlay to the top of the document). So it
+    // used to skip 2 characters ahead to the first real *task text* character —
+    // fine when the checklist item has text, but when the item is still empty
+    // (just inserted, nothing typed after it yet) there IS no character 2 ahead;
+    // the query lands on the paragraph's own newline/terminator, which TextKit can
+    // resolve to the PRECEDING line's rect — exactly the "checkbox overlaps the
+    // row above" bug. Giving the trailing space a small-but-not-null font means
+    // refreshCheckboxOverlays can anchor 1 character ahead (a glyph that always
+    // exists, is always part of THIS line, and is never null-sized) instead of 2,
+    // which works whether or not the item has real text yet. Still fully invisible
+    // (.clear foreground color either way).
+    //
+    // **Second pass, found 2026-07-20 — the trailing-space fix above was only a
+    // partial fix.** It made the position QUERY more reliable, but didn't touch
+    // the paragraph's actual rendered HEIGHT. `lineHeightMultiple` is a *multiplier*
+    // on whatever the natural line height works out to from the fonts actually
+    // present on that line. An empty checkbox line's only content is the hidden
+    // ☐ (0.1pt) and the hidden space (3pt, per the fix above) — both tiny — so the
+    // natural line height TextKit computes for that paragraph is tiny too, and
+    // 1.4× a tiny number is still tiny. The line is genuinely too short, not just
+    // mis-positioned, until real 16pt task text exists on it to drive the natural
+    // height back up. Real fix: pin the checkbox paragraph to an explicit fixed
+    // height (`checkboxLineHeight`, computed once from real body-text metrics)
+    // via minimumLineHeight/maximumLineHeight, the same technique this file
+    // already uses for `---` horizontal rules just below — so the row is always
+    // full height, whether or not it has text yet.
 
     private func styleCheckboxLine(checked: Bool, line: String, in range: NSRange) {
         guard range.length >= 2 else { return }
 
         // Indent the whole line to leave room for the SF Symbol icon at the left margin.
         let para = NSMutableParagraphStyle()
-        para.lineHeightMultiple  = 1.4          // preserve base line height
+        para.lineHeightMultiple  = 1.4                        // kept for intent/continuity
+        para.minimumLineHeight   = Self.checkboxLineHeight     // the real fix — see comment above
+        para.maximumLineHeight   = Self.checkboxLineHeight
         para.firstLineHeadIndent = Self.checkboxIndent
         para.headIndent          = Self.checkboxIndent
         backing.addAttribute(.paragraphStyle, value: para, range: range)
@@ -419,8 +499,9 @@ final class MarkdownTextStorage: NSTextStorage {
         ], range: NSRange(location: range.location, length: 1))
 
         // Hide the trailing space too — it has no visible role now that we indent.
+        // hiddenAnchorFont (not hiddenFont) — see the MARK: Checkbox comment above.
         backing.addAttributes([
-            .font:           Self.hiddenFont,
+            .font:           Self.hiddenAnchorFont,
             .foregroundColor: UIColor.clear
         ], range: NSRange(location: range.location + 1, length: 1))
 

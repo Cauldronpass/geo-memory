@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		636864743013C740000A3F02 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1CB2FE881FF00A0523F /* WidgetKit.framework */; };
+		636864753013C740000A3F02 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1CD2FE881FF00A0523F /* SwiftUI.framework */; };
+		636864843013C742000A3F02 /* JotWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 636864733013C740000A3F02 /* JotWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		636864943013DD38000A3F02 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1CB2FE881FF00A0523F /* WidgetKit.framework */; };
+		636864953013DD38000A3F02 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1CD2FE881FF00A0523F /* SwiftUI.framework */; };
+		636864A03013DD3A000A3F02 /* DayflowWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 636864933013DD38000A3F02 /* DayflowWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		638DB1C32FE7852600A0523F /* EventKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1C22FE7852600A0523F /* EventKit.framework */; };
 		638DB1CC2FE881FF00A0523F /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1CB2FE881FF00A0523F /* WidgetKit.framework */; };
 		638DB1CE2FE881FF00A0523F /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 638DB1CD2FE881FF00A0523F /* SwiftUI.framework */; };
@@ -15,6 +21,20 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		636864823013C742000A3F02 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 63DCBCAC2FDEF667009EBC1B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 636864723013C740000A3F02;
+			remoteInfo = JotWidgetExtension;
+		};
+		6368649E3013DD3A000A3F02 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 63DCBCAC2FDEF667009EBC1B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 636864923013DD38000A3F02;
+			remoteInfo = DayflowWidgetExtension;
+		};
 		638DB1DB2FE8820000A0523F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 63DCBCAC2FDEF667009EBC1B /* Project object */;
@@ -32,6 +52,28 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		636864893013C742000A3F02 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				636864843013C742000A3F02 /* JotWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		636864A53013DD3A000A3F02 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				636864A03013DD3A000A3F02 /* DayflowWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		638DB1E22FE8820000A0523F /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -47,6 +89,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		636863DE300D7848000A3F02 /* Dayflow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Dayflow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6368645D30131A80000A3F02 /* Jot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Jot.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		636864733013C740000A3F02 /* JotWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = JotWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		6368648C3013C923000A3F02 /* JotWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = JotWidgetExtension.entitlements; sourceTree = "<group>"; };
+		636864933013DD38000A3F02 /* DayflowWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DayflowWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		638DB1C22FE7852600A0523F /* EventKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = EventKit.framework; path = System/Library/Frameworks/EventKit.framework; sourceTree = SDKROOT; };
 		638DB1CA2FE881FF00A0523F /* TraceWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TraceWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		638DB1CB2FE881FF00A0523F /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
@@ -59,6 +106,79 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		636863EB300D799E000A3F02 /* Exceptions for "Trace" folder in "Dayflow" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				CalendarService.swift,
+				CaptureSummaryView.swift,
+				Config.swift,
+				GeofenceManager.swift,
+				GooglePlacesService.swift,
+				LocationManager.swift,
+				MarkdownEditorView.swift,
+				MarkdownTextStorage.swift,
+				Models.swift,
+				NoteStore.swift,
+				NotionService.swift,
+				ThingsService.swift,
+			);
+			target = 636863DD300D7848000A3F02 /* Dayflow */;
+		};
+		6368641D300DE1DF000A3F02 /* Exceptions for "Dayflow" folder in "Dayflow" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 636863DD300D7848000A3F02 /* Dayflow */;
+		};
+		6368646D30131C4F000A3F02 /* Exceptions for "Trace" folder in "Jot" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				CaptureSummaryView.swift,
+				GeofenceManager.swift,
+				GooglePlacesService.swift,
+				LocationManager.swift,
+				Models.swift,
+				NoteStore.swift,
+				NotionService.swift,
+			);
+			target = 6368645C30131A80000A3F02 /* Jot */;
+		};
+		636864883013C742000A3F02 /* Exceptions for "JotWidget" folder in "JotWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 636864723013C740000A3F02 /* JotWidgetExtension */;
+		};
+		6368648B3013C8E5000A3F02 /* Exceptions for "Trace" folder in "JotWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				NoteStore.swift,
+			);
+			target = 636864723013C740000A3F02 /* JotWidgetExtension */;
+		};
+		6368648E3013C97F000A3F02 /* Exceptions for "Jot" folder in "Jot" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 6368645C30131A80000A3F02 /* Jot */;
+		};
+		636864A43013DD3A000A3F02 /* Exceptions for "DayflowWidget" folder in "DayflowWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 636864923013DD38000A3F02 /* DayflowWidgetExtension */;
+		};
+		636864A73013DE54000A3F02 /* Exceptions for "Trace" folder in "DayflowWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				CalendarService.swift,
+			);
+			target = 636864923013DD38000A3F02 /* DayflowWidgetExtension */;
+		};
 		638DB08E2FE252C700A0523F /* Exceptions for "Trace" folder in "Trace" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -105,6 +225,38 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		636863DF300D7848000A3F02 /* Dayflow */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				6368641D300DE1DF000A3F02 /* Exceptions for "Dayflow" folder in "Dayflow" target */,
+			);
+			path = Dayflow;
+			sourceTree = "<group>";
+		};
+		6368645E30131A80000A3F02 /* Jot */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				6368648E3013C97F000A3F02 /* Exceptions for "Jot" folder in "Jot" target */,
+			);
+			path = Jot;
+			sourceTree = "<group>";
+		};
+		636864763013C740000A3F02 /* JotWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				636864883013C742000A3F02 /* Exceptions for "JotWidget" folder in "JotWidgetExtension" target */,
+			);
+			path = JotWidget;
+			sourceTree = "<group>";
+		};
+		636864963013DD38000A3F02 /* DayflowWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				636864A43013DD3A000A3F02 /* Exceptions for "DayflowWidget" folder in "DayflowWidgetExtension" target */,
+			);
+			path = DayflowWidget;
+			sourceTree = "<group>";
+		};
 		638DB1CF2FE881FF00A0523F /* TraceWidget */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -119,6 +271,10 @@
 				638DB08E2FE252C700A0523F /* Exceptions for "Trace" folder in "Trace" target */,
 				63FF440D2FF1E9FB00EAC44A /* Exceptions for "Trace" folder in "TraceShareExtension" target */,
 				63FF441F2FF766E200EAC44A /* Exceptions for "Trace" folder in "TraceMac" target */,
+				636863EB300D799E000A3F02 /* Exceptions for "Trace" folder in "Dayflow" target */,
+				6368646D30131C4F000A3F02 /* Exceptions for "Trace" folder in "Jot" target */,
+				6368648B3013C8E5000A3F02 /* Exceptions for "Trace" folder in "JotWidgetExtension" target */,
+				636864A73013DE54000A3F02 /* Exceptions for "Trace" folder in "DayflowWidgetExtension" target */,
 			);
 			path = Trace;
 			sourceTree = "<group>";
@@ -139,6 +295,38 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		636863DB300D7848000A3F02 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6368645A30131A80000A3F02 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		636864703013C740000A3F02 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				636864753013C740000A3F02 /* SwiftUI.framework in Frameworks */,
+				636864743013C740000A3F02 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		636864903013DD38000A3F02 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				636864953013DD38000A3F02 /* SwiftUI.framework in Frameworks */,
+				636864943013DD38000A3F02 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		638DB1C72FE881FF00A0523F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -186,12 +374,17 @@
 		63DCBCAB2FDEF667009EBC1B = {
 			isa = PBXGroup;
 			children = (
+				6368648C3013C923000A3F02 /* JotWidgetExtension.entitlements */,
 				63FF43EB2FEE24B000EAC44A /* Trace.entitlements */,
 				638DB1E42FE8836200A0523F /* TraceWidgetExtension.entitlements */,
 				63DCBCB62FDEF667009EBC1B /* Trace */,
 				638DB1CF2FE881FF00A0523F /* TraceWidget */,
 				63FF43F92FF1E4C500EAC44A /* TraceShareExtension */,
 				63FF44132FF7655C00EAC44A /* TraceMac */,
+				636863DF300D7848000A3F02 /* Dayflow */,
+				6368645E30131A80000A3F02 /* Jot */,
+				636864763013C740000A3F02 /* JotWidget */,
+				636864963013DD38000A3F02 /* DayflowWidget */,
 				638DB1C12FE7852500A0523F /* Frameworks */,
 				63DCBCB52FDEF667009EBC1B /* Products */,
 			);
@@ -204,6 +397,10 @@
 				638DB1CA2FE881FF00A0523F /* TraceWidgetExtension.appex */,
 				63FF43F82FF1E4C500EAC44A /* TraceShareExtension.appex */,
 				63FF44122FF7655C00EAC44A /* TraceMac.app */,
+				636863DE300D7848000A3F02 /* Dayflow.app */,
+				6368645D30131A80000A3F02 /* Jot.app */,
+				636864733013C740000A3F02 /* JotWidgetExtension.appex */,
+				636864933013DD38000A3F02 /* DayflowWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -211,6 +408,98 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		636863DD300D7848000A3F02 /* Dayflow */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 636863E6300D7849000A3F02 /* Build configuration list for PBXNativeTarget "Dayflow" */;
+			buildPhases = (
+				636863DA300D7848000A3F02 /* Sources */,
+				636863DB300D7848000A3F02 /* Frameworks */,
+				636863DC300D7848000A3F02 /* Resources */,
+				636864A53013DD3A000A3F02 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				6368649F3013DD3A000A3F02 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				636863DF300D7848000A3F02 /* Dayflow */,
+			);
+			name = Dayflow;
+			packageProductDependencies = (
+			);
+			productName = Dayflow;
+			productReference = 636863DE300D7848000A3F02 /* Dayflow.app */;
+			productType = "com.apple.product-type.application";
+		};
+		6368645C30131A80000A3F02 /* Jot */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6368646530131A82000A3F02 /* Build configuration list for PBXNativeTarget "Jot" */;
+			buildPhases = (
+				6368645930131A80000A3F02 /* Sources */,
+				6368645A30131A80000A3F02 /* Frameworks */,
+				6368645B30131A80000A3F02 /* Resources */,
+				636864893013C742000A3F02 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				636864833013C742000A3F02 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				6368645E30131A80000A3F02 /* Jot */,
+			);
+			name = Jot;
+			packageProductDependencies = (
+			);
+			productName = Jot;
+			productReference = 6368645D30131A80000A3F02 /* Jot.app */;
+			productType = "com.apple.product-type.application";
+		};
+		636864723013C740000A3F02 /* JotWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 636864853013C742000A3F02 /* Build configuration list for PBXNativeTarget "JotWidgetExtension" */;
+			buildPhases = (
+				6368646F3013C740000A3F02 /* Sources */,
+				636864703013C740000A3F02 /* Frameworks */,
+				636864713013C740000A3F02 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				636864763013C740000A3F02 /* JotWidget */,
+			);
+			name = JotWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = JotWidgetExtension;
+			productReference = 636864733013C740000A3F02 /* JotWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		636864923013DD38000A3F02 /* DayflowWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 636864A13013DD3A000A3F02 /* Build configuration list for PBXNativeTarget "DayflowWidgetExtension" */;
+			buildPhases = (
+				6368648F3013DD38000A3F02 /* Sources */,
+				636864903013DD38000A3F02 /* Frameworks */,
+				636864913013DD38000A3F02 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				636864963013DD38000A3F02 /* DayflowWidget */,
+			);
+			name = DayflowWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = DayflowWidgetExtension;
+			productReference = 636864933013DD38000A3F02 /* DayflowWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		638DB1C92FE881FF00A0523F /* TraceWidgetExtension */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 638DB1DE2FE8820000A0523F /* Build configuration list for PBXNativeTarget "TraceWidgetExtension" */;
@@ -309,9 +598,22 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2650;
+				LastSwiftUpdateCheck = 2660;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
+					636863DD300D7848000A3F02 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					6368645C30131A80000A3F02 = {
+						CreatedOnToolsVersion = 26.6;
+						LastSwiftMigration = 2660;
+					};
+					636864723013C740000A3F02 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					636864923013DD38000A3F02 = {
+						CreatedOnToolsVersion = 26.6;
+					};
 					638DB1C92FE881FF00A0523F = {
 						CreatedOnToolsVersion = 26.5;
 					};
@@ -345,11 +647,43 @@
 				638DB1C92FE881FF00A0523F /* TraceWidgetExtension */,
 				63FF43F72FF1E4C500EAC44A /* TraceShareExtension */,
 				63FF44112FF7655C00EAC44A /* TraceMac */,
+				636863DD300D7848000A3F02 /* Dayflow */,
+				6368645C30131A80000A3F02 /* Jot */,
+				636864723013C740000A3F02 /* JotWidgetExtension */,
+				636864923013DD38000A3F02 /* DayflowWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		636863DC300D7848000A3F02 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6368645B30131A80000A3F02 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		636864713013C740000A3F02 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		636864913013DD38000A3F02 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		638DB1C82FE881FF00A0523F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -381,6 +715,34 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		636863DA300D7848000A3F02 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6368645930131A80000A3F02 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6368646F3013C740000A3F02 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6368648F3013DD38000A3F02 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		638DB1C62FE881FF00A0523F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -412,6 +774,16 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		636864833013C742000A3F02 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 636864723013C740000A3F02 /* JotWidgetExtension */;
+			targetProxy = 636864823013C742000A3F02 /* PBXContainerItemProxy */;
+		};
+		6368649F3013DD3A000A3F02 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 636864923013DD38000A3F02 /* DayflowWidgetExtension */;
+			targetProxy = 6368649E3013DD3A000A3F02 /* PBXContainerItemProxy */;
+		};
 		638DB1DC2FE8820000A0523F /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 638DB1C92FE881FF00A0523F /* TraceWidgetExtension */;
@@ -425,6 +797,279 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		636863E7300D7849000A3F02 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Dayflow/Dayflow.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 10;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Dayflow/Info.plist;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dayflow uses your calendar to show today's events alongside your tasks in the Agenda";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Dayflow uses your calendar to show today's events alongside your tasks in the Agenda";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to tag Quick Pin notes with your current location";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Dayflow;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		636863E8300D7849000A3F02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Dayflow/Dayflow.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 10;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Dayflow/Info.plist;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dayflow uses your calendar to show today's events alongside your tasks in the Agenda";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Dayflow uses your calendar to show today's events alongside your tasks in the Agenda";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to tag Quick Pin notes with your current location";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Dayflow;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		6368646630131A82000A3F02 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Jot/Jot.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Jot/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to tag Quick Pin notes with your current location";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Jot;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		6368646730131A82000A3F02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Jot/Jot.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Jot/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to tag Quick Pin notes with your current location";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Jot;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		636864863013C742000A3F02 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = JotWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = JotWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = JotWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Jot.JotWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		636864873013C742000A3F02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = JotWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = JotWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = JotWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Jot.JotWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		636864A23013DD3A000A3F02 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DayflowWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = DayflowWidget;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dayflow shows your schedule in this widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Dayflow.DayflowWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		636864A33013DD3A000A3F02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DayflowWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = DayflowWidget;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dayflow shows your schedule in this widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Dayflow.DayflowWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		638DB1DF2FE8820000A0523F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -432,7 +1077,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = TraceWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 84;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceWidget/Info.plist;
@@ -463,7 +1108,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = TraceWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 84;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceWidget/Info.plist;
@@ -617,7 +1262,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 84;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -625,6 +1270,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Trace shows your next calendar event on the home screen.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trace uses the camera to capture photos linked to places.";
+				INFOPLIST_KEY_NSHealthClinicalHealthRecordsShareUsageDescription = "Trace reads your Apple Watch activity rings to show Move, Exercise, and Stand progress.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Trace reads your Apple Watch activity rings to show Move, Exercise, and Stand progress.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Trace does not write health data.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Trace uses your location to show nearby places and auto check-in.";
@@ -663,7 +1309,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 84;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -671,6 +1317,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Trace shows your next calendar event on the home screen.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trace uses the camera to capture photos linked to places.";
+				INFOPLIST_KEY_NSHealthClinicalHealthRecordsShareUsageDescription = "Trace reads your Apple Watch activity rings to show Move, Exercise, and Stand progress.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Trace reads your Apple Watch activity rings to show Move, Exercise, and Stand progress.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Trace does not write health data.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Trace uses your location to show nearby places and auto check-in.";
@@ -708,7 +1355,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = TraceShareExtension/TraceShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 84;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceShareExtension/Info.plist;
@@ -739,7 +1386,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = TraceShareExtension/TraceShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 84;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceShareExtension/Info.plist;
@@ -786,7 +1433,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -831,7 +1478,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -856,6 +1503,42 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		636863E6300D7849000A3F02 /* Build configuration list for PBXNativeTarget "Dayflow" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				636863E7300D7849000A3F02 /* Debug */,
+				636863E8300D7849000A3F02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6368646530131A82000A3F02 /* Build configuration list for PBXNativeTarget "Jot" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6368646630131A82000A3F02 /* Debug */,
+				6368646730131A82000A3F02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		636864853013C742000A3F02 /* Build configuration list for PBXNativeTarget "JotWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				636864863013C742000A3F02 /* Debug */,
+				636864873013C742000A3F02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		636864A13013DD3A000A3F02 /* Build configuration list for PBXNativeTarget "DayflowWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				636864A23013DD3A000A3F02 /* Debug */,
+				636864A33013DD3A000A3F02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		638DB1DE2FE8820000A0523F /* Build configuration list for PBXNativeTarget "TraceWidgetExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

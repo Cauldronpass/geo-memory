@@ -118,6 +118,32 @@ struct DayflowTaskEditSheet: View {
                                 .allowsHitTesting(false)
                         }
                     }
+
+                    // Detected links in the notes text — 2026-07-24, David's
+                    // ask, after a screenshot showed a `Shortcuts://` URL
+                    // sitting inert in this field (he stores quick-action
+                    // shortcut links here). Deliberately a separate row below
+                    // the TextEditor, not a tap target inside the actively-
+                    // edited text itself — no simulator here to verify a more
+                    // invasive approach against, and this way normal
+                    // typing/editing is completely untouched.
+                    ForEach(detectedLinks, id: \.absoluteString) { url in
+                        Button {
+                            UIApplication.shared.open(url)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "link")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.blue)
+                                Text(url.absoluteString)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.blue)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             .navigationTitle("Edit Task")
@@ -137,6 +163,31 @@ struct DayflowTaskEditSheet: View {
                 }
             }
         }
+    }
+
+    // MARK: Link detection
+
+    /// Every distinct `scheme://...` token in `notes`, in the order they
+    /// first appear. Deliberately a plain whitespace-split + `URL(string:)`
+    /// scan rather than `NSDataDetector` — `NSDataDetector`'s `.link` type is
+    /// tuned toward recognizable real-world schemes (http/https/mailto/tel),
+    /// and whether it reliably recognizes an arbitrary custom app scheme like
+    /// `Shortcuts://` isn't something this environment can verify without a
+    /// simulator. A direct `URL(string:)` parse succeeds for any well-formed
+    /// `scheme://...` string regardless of whether the scheme is "known," so
+    /// it's the safer bet for the exact case David hit.
+    private var detectedLinks: [URL] {
+        var seen = Set<String>()
+        var links: [URL] = []
+        for token in notes.split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
+            guard token.contains("://"),
+                  let url = URL(string: String(token)),
+                  let scheme = url.scheme, !scheme.isEmpty
+            else { continue }
+            guard seen.insert(url.absoluteString).inserted else { continue }
+            links.append(url)
+        }
+        return links
     }
 
     private func save() {

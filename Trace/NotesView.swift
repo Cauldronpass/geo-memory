@@ -161,18 +161,11 @@ struct NotesView: View {
 }
 
 // MARK: - WikiLinkTarget
-// Discriminated union used by onWikiTap to present the right detail sheet.
-
-enum WikiLinkTarget: Identifiable {
-    case place(Place)
-    case person(Person)
-    var id: String {
-        switch self {
-        case .place(let p):  return "place-\(p.id)"
-        case .person(let p): return "person-\(p.id)"
-        }
-    }
-}
+// Moved to Models.swift (2026-07-19, Dayflow Session 1) — same reasoning as
+// BlockInfo's move to MarkdownTextStorage.swift: it's PersonDetailView/
+// PlaceDetailView's own discriminated union, not something specific to this
+// view, and it only depends on Place/Person (already in Models.swift). No
+// behavior change — Trace/TraceMac already carry Models.swift.
 
 // MARK: - NoteTab enum
 
@@ -231,6 +224,11 @@ struct DailyNoteTab: View {
     @State private var showingMonthNote: Bool = false
     // E1 — block promote
     @State private var longPressedBlock: BlockInfo? = nil
+    /// Session 45 addendum 6 — set by MarkdownEditorView's onCaptureTap when a
+    /// `[label](capture://open?id=ID)` marker is tapped. isPresented-Binding,
+    /// same shape as other non-Identifiable sheet triggers in this file
+    /// (String isn't Identifiable, so not .sheet(item:)).
+    @State private var tappedCaptureID: String? = nil
     // E6b — wikilink tap navigation
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
 
@@ -280,7 +278,8 @@ struct DailyNoteTab: View {
                         onFocusChange: { isEditorFocused = $0 },
                         onBlockLongPress: { info in longPressedBlock = info },
                         onWikiTap: { name in resolveWikiLink(name) },
-                        wikiSuggestions: { query in wikiSuggestions(for: query) }
+                        wikiSuggestions: { query in wikiSuggestions(for: query) },
+                        onCaptureTap: { id in tappedCaptureID = id }
                     )
                 }
             }
@@ -345,6 +344,17 @@ struct DailyNoteTab: View {
                     PersonDetailView(personID: person.id, personName: person.name)
                         .environment(NotionService.shared)
                 }
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { tappedCaptureID != nil },
+            set: { if !$0 { tappedCaptureID = nil } }
+        )) {
+            if let id = tappedCaptureID {
+                CaptureSummaryView(captureID: id)
+                    .environment(NotionService.shared)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .traceNotesOpenDay)) { notif in
@@ -1432,6 +1442,11 @@ struct NoteEditorView: View {
     @State private var renameText = ""
     @State private var showingLinkedPlace: Place? = nil
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
+    /// Session 45 addendum 6 — set by MarkdownEditorView's onCaptureTap when a
+    /// `[label](capture://open?id=ID)` marker is tapped. isPresented-Binding,
+    /// same shape as other non-Identifiable sheet triggers in this file
+    /// (String isn't Identifiable, so not .sheet(item:)).
+    @State private var tappedCaptureID: String? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(NotionService.self) private var notion
 
@@ -1539,7 +1554,8 @@ struct NoteEditorView: View {
                     relativePath: relativePath,
                     onWikiTap: { name in resolveWikiLink(name) },
                     wikiSuggestions: { query in wikiSuggestions(for: query) },
-                    searchQuery: searchQuery
+                    searchQuery: searchQuery,
+                    onCaptureTap: { id in tappedCaptureID = id }
                 )
             }
         }
@@ -2422,30 +2438,13 @@ private struct HorizonPinnedRow: View {
 }
 
 // MARK: - E1: Block data models
-
-struct BlockInfo: Identifiable {
-    let id = UUID()
-    let text: String
-    let nsRange: NSRange
-
-    /// First non-empty, non-timestamp content line — used as default title for promote.
-    var firstLineTitle: String {
-        let lines = text.components(separatedBy: "\n")
-        for line in lines.dropFirst() {
-            var t = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if t.isEmpty { continue }
-            // Strip leading markdown list/checkbox prefixes
-            t = t.replacingOccurrences(of: "^[•\\-] ", with: "", options: .regularExpression)
-            t = t.replacingOccurrences(of: "^- \\[.\\] ", with: "", options: .regularExpression)
-            // Strip bold wrapper
-            if t.hasPrefix("**") && t.hasSuffix("**") && t.count > 4 {
-                t = String(t.dropFirst(2).dropLast(2))
-            }
-            return t.isEmpty ? "Note" : t
-        }
-        return "Note"
-    }
-}
+//
+// BlockInfo itself moved to MarkdownTextStorage.swift (2026-07-19, Dayflow
+// Session 1) — it's MarkdownEditorView's own callback type, not something
+// specific to this view, and keeping it here forced Dayflow's target to
+// compile all of NotesView.swift just to resolve one struct. No behavior
+// change: same target (Trace/TraceMac already carry MarkdownTextStorage.swift),
+// just resolved from its new home.
 
 enum BlockAction {
     case promote(title: String, destination: BlockDestination)

@@ -789,12 +789,23 @@ struct DiscoverResultRow: View {
                         }
                     }
 
-                    // Phone number (tappable)
-                    if let phone = place.phone {
-                        HStack(spacing: 6) {
-                            Image(systemName: "phone").font(.caption).foregroundStyle(.secondary)
-                            Text(phone).font(.caption).foregroundStyle(.secondary)
+                    // Phone number, second display below the action bar's own green
+                    // "Call" button above — this one shows the actual digits (the
+                    // action bar button just says "Call"). Was plain text despite its
+                    // own "(tappable)" comment claiming otherwise — never actually
+                    // wired to anything. Fixed 2026-07-24, same tel: pattern as the
+                    // action bar's Call button just above.
+                    if let phone = place.phone,
+                       let url = URL(string: "tel:\(phone.filter { $0.isNumber || $0 == "+" })") {
+                        Button {
+                            UIApplication.shared.open(url)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "phone").font(.caption).foregroundStyle(.secondary)
+                                Text(phone).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.plain)
                     }
 
                     // Today's hours

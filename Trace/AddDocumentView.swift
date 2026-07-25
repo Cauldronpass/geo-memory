@@ -14,7 +14,10 @@ enum DocDestination: String, CaseIterable {
 
 // MARK: - AddDocumentView
 //
-// Imports a document and saves it to NoteStore iCloud container.
+// Imports a document and saves it to NoteStore iCloud container. Both file
+// types below respect the same Inbox/Today/Project/Place destination picker
+// (unified 2026-07-06, E31 — markdown used to always land in Inbox with no
+// picker shown at all; no real reason the two file types needed to differ).
 //
 // PDF / image / other files:
 //   → file stored at Documents/Inbox/<timestamp>-<filename>
@@ -22,8 +25,12 @@ enum DocDestination: String, CaseIterable {
 //   → falls back to Notes/Inbox/<timestamp>.md if destination can't be resolved
 //
 // Markdown (.md) files:
-//   → imported directly as Notes/Inbox/<timestamp>-<title>.md
-//   → destination picker not shown (always Inbox for .md)
+//   → the file's own content becomes the note (no separate attachment/link —
+//     there's nothing to link to, the imported text IS the note)
+//   → Inbox: Notes/Inbox/<timestamp>-<title>.md (direct write, keeps the
+//     nice filename); Today: appended to today's daily note; Project/Place:
+//     appended into that note's file — same destinations, see
+//     writeMarkdownNote(title:timestamp:noteContent:)
 //
 // Entry points:
 //   • FAB "Add Document" in ContentView — starts at file picker
@@ -328,130 +335,138 @@ struct AddDocumentView: View {
                 TextField("Document title", text: $documentTitle)
             }
 
-            // Destination — not shown for .md
+            // Destination — shown for every file type (E31, 2026-07-06).
+            // Markdown files used to always land in Inbox, no picker shown at
+            // all; now they respect the same Inbox/Today/Project/Place choice
+            // documents already have, since there was no real reason for the
+            // two file types to behave differently here.
+            Section("Save to") {
+                Picker("Destination", selection: $destination) {
+                    ForEach(DocDestination.allCases, id: \.self) { dest in
+                        Text(dest.rawValue).tag(dest)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: destination) { _, _ in
+                    confirmedProject = ""
+                    confirmedPlace = ""
+                    projectSearch = ""
+                    placeSearch = ""
+                }
+            }
+
+            // Project sub-picker
+            if destination == .project {
+                Section {
+                    HStack {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Search projects…", text: $projectSearch)
+                            .autocorrectionDisabled()
+                    }
+
+                    if !confirmedProject.isEmpty {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Text(confirmedProject).bold()
+                            Spacer()
+                            Button("Clear") {
+                                confirmedProject = ""
+                                projectSearch = ""
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        // Filtered results
+                        ForEach(filteredProjects, id: \.self) { name in
+                            Button {
+                                confirmedProject = name
+                                projectSearch = name
+                            } label: {
+                                Text(name).foregroundStyle(.primary)
+                            }
+                        }
+
+                        // Create new option
+                        let q = projectSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !q.isEmpty && !projectSearchHasExactMatch {
+                            Button {
+                                confirmedProject = q
+                            } label: {
+                                Label("Create \"\(q)\"", systemImage: "plus.circle")
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        }
+
+                        // Inbox escape
+                        if filteredProjects.isEmpty && projectSearch.isEmpty {
+                            Text("No projects yet — type a name to create one")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Button("Save to Inbox instead") {
+                        destination = .inbox
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                } header: {
+                    Text("Project")
+                }
+            }
+
+            // Place sub-picker
+            if destination == .place {
+                Section {
+                    HStack {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Search places…", text: $placeSearch)
+                            .autocorrectionDisabled()
+                    }
+
+                    if !confirmedPlace.isEmpty {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Text(confirmedPlace).bold()
+                            Spacer()
+                            Button("Clear") {
+                                confirmedPlace = ""
+                                placeSearch = ""
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ForEach(filteredPlaces, id: \.self) { name in
+                            Button {
+                                confirmedPlace = name
+                                placeSearch = name
+                            } label: {
+                                Text(name).foregroundStyle(.primary)
+                            }
+                        }
+
+                        if filteredPlaces.isEmpty {
+                            Text(placeSearch.isEmpty ? "No places loaded" : "No matches")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Button("Save to Inbox instead") {
+                        destination = .inbox
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                } header: {
+                    Text("Place")
+                }
+            }
+
+            // Attached-note annotation — a short freeform comment alongside
+            // the 📎 link stub. Doesn't apply to markdown imports, since
+            // there's no separate link stub for those — the imported content
+            // itself is the note, nothing to annotate alongside it.
             if !isMarkdown {
-                Section("Save to") {
-                    Picker("Destination", selection: $destination) {
-                        ForEach(DocDestination.allCases, id: \.self) { dest in
-                            Text(dest.rawValue).tag(dest)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: destination) { _, _ in
-                        confirmedProject = ""
-                        confirmedPlace = ""
-                        projectSearch = ""
-                        placeSearch = ""
-                    }
-                }
-
-                // Project sub-picker
-                if destination == .project {
-                    Section {
-                        HStack {
-                            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                            TextField("Search projects…", text: $projectSearch)
-                                .autocorrectionDisabled()
-                        }
-
-                        if !confirmedProject.isEmpty {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                                Text(confirmedProject).bold()
-                                Spacer()
-                                Button("Clear") {
-                                    confirmedProject = ""
-                                    projectSearch = ""
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            }
-                        } else {
-                            // Filtered results
-                            ForEach(filteredProjects, id: \.self) { name in
-                                Button {
-                                    confirmedProject = name
-                                    projectSearch = name
-                                } label: {
-                                    Text(name).foregroundStyle(.primary)
-                                }
-                            }
-
-                            // Create new option
-                            let q = projectSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !q.isEmpty && !projectSearchHasExactMatch {
-                                Button {
-                                    confirmedProject = q
-                                } label: {
-                                    Label("Create \"\(q)\"", systemImage: "plus.circle")
-                                        .foregroundStyle(Color.accentColor)
-                                }
-                            }
-
-                            // Inbox escape
-                            if filteredProjects.isEmpty && projectSearch.isEmpty {
-                                Text("No projects yet — type a name to create one")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-
-                        Button("Save to Inbox instead") {
-                            destination = .inbox
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    } header: {
-                        Text("Project")
-                    }
-                }
-
-                // Place sub-picker
-                if destination == .place {
-                    Section {
-                        HStack {
-                            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                            TextField("Search places…", text: $placeSearch)
-                                .autocorrectionDisabled()
-                        }
-
-                        if !confirmedPlace.isEmpty {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                                Text(confirmedPlace).bold()
-                                Spacer()
-                                Button("Clear") {
-                                    confirmedPlace = ""
-                                    placeSearch = ""
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            }
-                        } else {
-                            ForEach(filteredPlaces, id: \.self) { name in
-                                Button {
-                                    confirmedPlace = name
-                                    placeSearch = name
-                                } label: {
-                                    Text(name).foregroundStyle(.primary)
-                                }
-                            }
-
-                            if filteredPlaces.isEmpty {
-                                Text(placeSearch.isEmpty ? "No places loaded" : "No matches")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-
-                        Button("Save to Inbox instead") {
-                            destination = .inbox
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    } header: {
-                        Text("Place")
-                    }
-                }
-
                 Section("Note (optional)") {
                     TextField("Add a note…", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
@@ -499,7 +514,6 @@ struct AddDocumentView: View {
     }
 
     private var destinationSummary: String {
-        if isMarkdown { return "Saved to Notes/Inbox in iCloud" }
         switch destination {
         case .inbox:   return "Saved to Notes/Inbox in iCloud"
         case .today:   return "Appended to today's note in iCloud"
@@ -590,14 +604,7 @@ struct AddDocumentView: View {
             if isMarkdown {
                 let rawText = String(data: data, encoding: .utf8) ?? ""
                 let noteContent = rawText.hasPrefix("# ") ? rawText : "# \(title)\n\n\(rawText)"
-                let safeName = title
-                    .components(separatedBy: .whitespacesAndNewlines)
-                    .joined(separator: "-")
-                    .replacingOccurrences(of: "/", with: "-")
-                try NoteStore.shared.writeFile(
-                    "Notes/Inbox/\(timestamp)-\(safeName).md",
-                    content: noteContent
-                )
+                try writeMarkdownNote(title: title, timestamp: timestamp, noteContent: noteContent)
             } else {
                 let docPath = try NoteStore.shared.writeDocument(
                     data, category: "Inbox", filename: filename)
@@ -658,6 +665,57 @@ struct AddDocumentView: View {
             "Notes/Inbox/\(timestamp).md",
             content: lines.joined(separator: "\n")
         )
+    }
+
+    // Markdown's own destination routing (E31, 2026-07-06) — parallels
+    // writeToDestination above, but the payload is the imported note's full
+    // content rather than a short 📎 link stub, since for a markdown import
+    // the content itself IS the note, not an attachment to reference.
+    //
+    // Inbox stays a direct write (not the shared writeInbox() helper) to
+    // avoid double-wrapping a "# title" heading — noteContent already has
+    // one (either from the source file or synthesized above), and it keeps
+    // the nicer `<timestamp>-<title>.md` filename markdown imports have
+    // always used, rather than falling back to a bare timestamp filename.
+    private func writeMarkdownNote(title: String, timestamp: String, noteContent: String) throws {
+        switch destination {
+        case .inbox:
+            let safeName = title
+                .components(separatedBy: .whitespacesAndNewlines)
+                .joined(separator: "-")
+                .replacingOccurrences(of: "/", with: "-")
+            try NoteStore.shared.writeFile(
+                "Notes/Inbox/\(timestamp)-\(safeName).md",
+                content: noteContent
+            )
+
+        case .today:
+            do {
+                try NoteStore.shared.appendToDailyNote("\n" + noteContent)
+            } catch {
+                try NoteStore.shared.writeFile("Notes/Inbox/\(timestamp).md", content: noteContent)
+            }
+
+        case .project:
+            do {
+                let safe = confirmedProject
+                    .components(separatedBy: .whitespacesAndNewlines).joined(separator: "-")
+                    .replacingOccurrences(of: "/", with: "-")
+                let projPath = "Notes/Projects/\(safe).md"
+                let existing = (try? NoteStore.shared.readFile(projPath)) ?? "# \(confirmedProject)\n\n"
+                let sep = existing.hasSuffix("\n\n") ? "" : existing.hasSuffix("\n") ? "\n" : "\n\n"
+                try NoteStore.shared.writeFile(projPath, content: existing + sep + noteContent + "\n")
+            } catch {
+                try NoteStore.shared.writeFile("Notes/Inbox/\(timestamp).md", content: noteContent)
+            }
+
+        case .place:
+            do {
+                try NoteStore.shared.appendToPlaceNote(for: confirmedPlace, text: noteContent)
+            } catch {
+                try NoteStore.shared.writeFile("Notes/Inbox/\(timestamp).md", content: noteContent)
+            }
+        }
     }
 }
 

@@ -48,29 +48,39 @@ struct DayflowAnytimeView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if ThingsService.shared.isLoadingAnytime && ThingsService.shared.anytimeTasks.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if ThingsService.shared.anytimeTasks.isEmpty {
-                            Text("Nothing here.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .padding(.top, 24)
-                        } else {
-                            ForEach(grouped, id: \.list) { group in
-                                listGroup(group)
+            // Skin fix 2026-07-22 (Session 32) — same card treatment as the
+            // home screen / Notes / Upcoming. See DayflowSkin.swift.
+            Group {
+                if ThingsService.shared.isLoadingAnytime && ThingsService.shared.anytimeTasks.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if ThingsService.shared.anytimeTasks.isEmpty {
+                                Text("Nothing here.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 24)
+                            } else {
+                                ForEach(grouped, id: \.list) { group in
+                                    listGroup(group)
+                                }
                             }
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 24)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 24)
+                    .refreshable { await ThingsService.shared.fetchAnytime() }
                 }
-                .refreshable { await ThingsService.shared.fetchAnytime() }
             }
+            .dayflowCard()
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
         }
+        // Skin fix 2026-07-22 (Session 32) — same warm gradient as the home
+        // screen. See DayflowSkin.swift.
+        .dayflowSkinBackground()
         .task { await ThingsService.shared.fetchAnytime() }
         .sheet(item: $editingTask) { task in
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
@@ -93,8 +103,10 @@ struct DayflowAnytimeView: View {
             .buttonStyle(.plain)
 
             Spacer()
+            // Skin fix 2026-07-22 (Session 32) — was .custom("Georgia", ...).
+            // See DayflowSkin.swift.
             Text("Anytime")
-                .font(.custom("Georgia", size: 20).weight(.bold))
+                .font(.dayflowSerif(20))
             Spacer()
 
             Color.clear.frame(width: 32, height: 32)

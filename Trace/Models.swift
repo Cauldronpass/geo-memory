@@ -58,6 +58,25 @@ struct Person: Identifiable, Codable {
     var isArchived: Bool { relationshipStrength == "archived" }
 }
 
+// MARK: - WikiLinkTarget
+//
+// Moved here from NotesView.swift (2026-07-19, Dayflow Session 1) — it's
+// PersonDetailView/PlaceDetailView's own discriminated union (used by
+// onWikiTap to present the right detail sheet), not something specific to
+// NotesView, and it only depends on Place/Person, both already here. No
+// behavior change for Trace — NotesView.swift still resolves it via the
+// same Trace/TraceMac target membership as before.
+enum WikiLinkTarget: Identifiable {
+    case place(Place)
+    case person(Person)
+    var id: String {
+        switch self {
+        case .place(let p):  return "place-\(p.id)"
+        case .person(let p): return "person-\(p.id)"
+        }
+    }
+}
+
 struct PersonDetail: Identifiable {
     let id: String
     var name: String

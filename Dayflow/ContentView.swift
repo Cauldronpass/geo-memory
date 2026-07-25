@@ -3,16 +3,21 @@
 //  Dayflow
 //
 //  The real home screen — top bar (browse menu: Upcoming/Calendar/Anytime/
-//  Inbox, Yesterday/Today/Tomorrow day-pill, settings gear), a serif date
-//  headline, the real Agenda section (DayflowAgendaSection.swift, build order
-//  step 3), and the real Daily Note section (DayflowDailyNoteSection.swift +
-//  DayflowNoteFullPageView.swift, build order step 4). Browse views (step 5)
-//  are wired for real as of this pass — see DayflowUpcomingView.swift,
-//  DayflowCalendarBrowseView.swift, DayflowAnytimeView.swift. Inbox (step 5b)
-//  added 2026-07-20 — see DayflowInboxView.swift. Settings (step 6) added
-//  2026-07-20 — see DayflowSettingsView.swift. Calendar write support (step 7)
-//  added 2026-07-20 — see CalendarService.createEvent and saveDraft()'s
-//  `.event` case below. Widget (step 8) is the only step left unbuilt.
+//  Unfiled Tasks, Yesterday/Today/Tomorrow day-pill, settings gear), a serif
+//  date headline, the real Agenda section (DayflowAgendaSection.swift, build
+//  order step 3), and the real Daily Note section
+//  (DayflowDailyNoteSection.swift + DayflowNoteFullPageView.swift, build
+//  order step 4). Browse views (step 5) are wired for real as of this pass —
+//  see DayflowUpcomingView.swift, DayflowCalendarBrowseView.swift,
+//  DayflowAnytimeView.swift. The top-bar Menu's fourth entry (step 5b) added
+//  2026-07-20 as "Inbox" — see DayflowInboxView.swift — then renamed to
+//  "Unfiled Tasks" 2026-07-24 (Session 44 addendum 10) to free up the
+//  "Inbox" name for the unrelated notes-staging feature reached by swiping
+//  right on this screen (`showNotesInbox` below) — see
+//  DayflowNotesInboxView.swift. Settings (step 6) added 2026-07-20 — see
+//  DayflowSettingsView.swift. Calendar write support (step 7) added
+//  2026-07-20 — see CalendarService.createEvent and saveDraft()'s `.event`
+//  case below. Widget (step 8) is the only step left unbuilt.
 //
 //  **`ThingsService.addTask()` silent-failure fix, added 2026-07-20.** That
 //  method used to discard its HTTP response entirely (see its own header
@@ -47,10 +52,18 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @State private var selectedDate: Date = DayflowRelativeDay.today.date()
     @State private var showQuickAdd = false
+    /// Which mode `showQuickAdd`'s sheet opens into — added 2026-07-24
+    /// alongside the Dayflow widget's "+" tap target, which deep-links
+    /// straight into Event mode instead of the sheet's own Task-mode
+    /// default. The normal Agenda "+" (`onOpenQuickAdd` below) explicitly
+    /// resets this to `.task` on every open, so a stale `.event` from an
+    /// earlier widget tap can't leak into the next normal-path open.
+    @State private var quickAddInitialKind: DayflowEntryKind = .task
     @Environment(\.scenePhase) private var scenePhase
     // Agenda's collapse state, lifted out of DayflowAgendaSection so this
     // screen can bind to it (DayflowAgendaSection.swift's own header comment
@@ -58,6 +71,16 @@ struct ContentView: View {
     // just flexes to fill whatever space Agenda leaves, collapsed or not.
     @State private var agendaCollapsed = false
     @State private var showNoteFullPage = false
+    /// Session 38 addendum 5 — David found the home card's Daily Note
+    /// didn't pick up edits made in the full-page view after dismissing
+    /// back to this screen. Root cause: the card's `DayflowDailyNoteEditor`
+    /// only reloads when `date` changes or the app returns from the
+    /// background (Session 31's fix) — neither fires when a
+    /// `.fullScreenCover` is presented and dismissed within the same
+    /// foreground session, so the card kept showing whatever it had loaded
+    /// before the full page was opened. Bumped in `onDismiss` below and
+    /// threaded down to force a fresh reload.
+    @State private var dailyNoteReloadToken = 0
     // Browse menu destination (Upcoming/Calendar/Anytime) — one optional
     // value driving a single .fullScreenCover(item:) rather than three Bool
     // flags. See DayflowModels.swift's "Browse views" section.
@@ -88,6 +111,28 @@ struct ContentView: View {
     /// folded into `browseDestination`, since it's reached from Daily Note's
     /// own header, not the top-bar calendar-icon Browse menu.
     @State private var showNotes = false
+    /// Session 21, 2026-07-20 — tapping the serif date headline opens
+    /// DayflowCalendarBrowseView directly. A separate Bool rather than
+    /// reusing `browseDestination`, since this isn't part of that Menu's
+    /// Upcoming/Anytime/Inbox/Search family — same "own Bool, own
+    /// fullScreenCover" precedent `showNotes` above already set for a
+    /// header-icon entry point that isn't part of that Menu either.
+    ///
+    /// **Session 24, 2026-07-21 — this is now the ONLY door into Calendar
+    /// browsing from the main screen.** The top-bar Menu used to also have a
+    /// "Calendar" entry opening this exact same view; removed per David's
+    /// call after walking the navigation fresh — see DayflowModels.swift's
+    /// `DayflowBrowseDestination` header comment for the full reasoning.
+    @State private var showDateCalendar = false
+    /// Added 2026-07-24 (Session 44 addendum 10) — David's Inbox concept,
+    /// reached by swiping right on the home screen (see the `.gesture(...)`
+    /// on this screen's root VStack below), deliberately NOT part of
+    /// `browseDestination`'s Upcoming/Anytime/Unfiled Tasks/Search family —
+    /// same "own Bool, own fullScreenCover" precedent `showNotes`/
+    /// `showDateCalendar` above already set for entry points that aren't
+    /// reached from that top-bar Menu. See DayflowNotesInboxView.swift's
+    /// header comment for the full feature design.
+    @State private var showNotesInbox = false
 
     private var dateHeadlineText: String {
         let f = DateFormatter()
@@ -108,21 +153,33 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 12) {
                 topBar
 
-                Text(dateHeadlineText)
-                    .font(.custom("Georgia", size: 26).weight(.bold))
-                    .padding(.top, 2)
-                    .padding(.bottom, 4)
+                Button {
+                    showDateCalendar = true
+                } label: {
+                    Text(dateHeadlineText)
+                        // Skin locked 2026-07-21 (Session 29) — was
+                        // .custom("Georgia", ...); David flagged Georgia's
+                        // capital J as visibly off vs. Parchment's real
+                        // letterforms. `design: .serif` resolves to New York
+                        // on Apple platforms, which is the actual fix — see
+                        // DayflowSkin.swift.
+                        .font(.dayflowSerif(26))
+                        .padding(.top, 2)
+                        .padding(.bottom, 4)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
 
                 DayflowAgendaSection(
                     date: selectedDate,
-                    onOpenQuickAdd: { showQuickAdd = true },
+                    onOpenQuickAdd: { quickAddInitialKind = .task; showQuickAdd = true },
                     isCollapsed: $agendaCollapsed
                 )
                 .id(agendaRefreshToken)
 
                 DayflowDailyNoteSection(
                     date: selectedDate,
-                    onShare: { log("Share — not built yet") },
+                    reloadToken: dailyNoteReloadToken,
                     onExpand: { showNoteFullPage = true },
                     onOpenNotes: { showNotes = true }
                 )
@@ -130,9 +187,50 @@ struct ContentView: View {
             .padding()
             .frame(maxHeight: .infinity)
             .toolbar(.hidden, for: .navigationBar)
+            // Skin fix 2026-07-21 (Session 30, round 3) — was chained onto
+            // the NavigationStack itself (outside this closure). David
+            // reported zero visible change across two rounds of gradient
+            // tweaks, even after a clean build — the real cause: a
+            // `.background()` applied outside a `NavigationStack` doesn't
+            // reliably show through, because the nav controller's own opaque
+            // backing view sits on top of it. Moved onto this VStack (the
+            // actual content NavigationStack hosts) instead, which is the
+            // documented fix for this exact symptom. See DayflowSkin.swift.
+            .dayflowSkinBackground()
+            // Swipe-right-to-Inbox, added 2026-07-24 (Session 44 addendum
+            // 10) — David's explicit ask, discussed and confirmed together:
+            // the Inbox stays "not front and center," reached only by
+            // swiping right on the home screen, not a Menu entry. Attached
+            // to this whole VStack rather than confined to a header strip
+            // (contrast Jot's CaptureView.swift, where the equivalent
+            // swipe-to-day gesture was deliberately confined to the header
+            // row to avoid competing with JotTextView's own UITextView
+            // gestures) — confirmed by grep before building this that
+            // neither this file, DayflowAgendaSection.swift, nor
+            // DayflowDailyNoteSection.swift define any DragGesture/
+            // TabView/swipeActions of their own, so there's nothing already
+            // using horizontal drag on this screen to compete with. Still
+            // worth confirming on-device specifically: that normal taps on
+            // Agenda rows, the Daily Note card, and the top bar all still
+            // feel completely unaffected — the mostly-horizontal + distance
+            // gating below is the same conflict-avoidance pattern proven
+            // out for Jot, but this is a bigger, more content-dense surface
+            // than that one header row was.
+            .gesture(
+                DragGesture(minimumDistance: 30)
+                    .onEnded { value in
+                        let horizontal = value.translation.width
+                        let vertical = value.translation.height
+                        guard horizontal > 0,
+                              horizontal > abs(vertical) * 1.5,
+                              horizontal > 50 else { return }
+                        showNotesInbox = true
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
+            )
         }
         .sheet(isPresented: $showQuickAdd) {
-            DayflowQuickAddSheet { draft in
+            DayflowQuickAddSheet(initialKind: quickAddInitialKind) { draft in
                 saveDraft(draft)
             }
             // A single fixed detent, not [.medium, .large]. With more than one
@@ -144,7 +242,13 @@ struct ContentView: View {
             // content. One detent means there's nothing larger to promote to.
             .presentationDetents([.medium])
         }
-        .fullScreenCover(isPresented: $showNoteFullPage) {
+        .fullScreenCover(isPresented: $showNoteFullPage, onDismiss: {
+            // Session 38 addendum 5 — see `dailyNoteReloadToken`'s own
+            // comment above. Without this, the home card kept showing
+            // whatever it had loaded before the full page opened, even
+            // after edits made there were saved to disk.
+            dailyNoteReloadToken += 1
+        }) {
             // Session 18, 2026-07-20 — `selectedDate` is now a real Binding, not a
             // one-shot `initialDate:` seed. Navigating dates inside the full-page
             // view (its Today/Tomorrow pill, or its Calendar picker) updates this
@@ -164,15 +268,22 @@ struct ContentView: View {
             // "share the one real date" pattern as showNoteFullPage above.
             DayflowNotesView(selectedDate: $selectedDate)
         }
+        .fullScreenCover(isPresented: $showDateCalendar) {
+            // Session 21, 2026-07-20 — DayflowCalendarBrowseView straight off
+            // the date headline. Session 24, 2026-07-21: this is now the only
+            // door into Calendar browsing from the main screen.
+            DayflowCalendarBrowseView(onSelect: { picked in selectedDate = picked })
+        }
+        .fullScreenCover(isPresented: $showNotesInbox) {
+            // Session 44 addendum 10 — swipe-right destination. See
+            // `showNotesInbox`'s own declaration above and
+            // DayflowNotesInboxView.swift's header comment.
+            DayflowNotesInboxView()
+        }
         .fullScreenCover(item: $browseDestination) { destination in
             switch destination {
             case .upcoming:
-                DayflowUpcomingView(onSwitchToCalendar: { browseDestination = .calendar })
-            case .calendar:
-                DayflowCalendarBrowseView(
-                    onSelect: { picked in selectedDate = picked },
-                    onSwitchToUpcoming: { browseDestination = .upcoming }
-                )
+                DayflowUpcomingView()
             case .anytime:
                 DayflowAnytimeView()
             case .inbox:
@@ -201,6 +312,19 @@ struct ContentView: View {
         } message: {
             Text(saveErrorMessage ?? "")
         }
+        // Added 2026-07-24 for the Dayflow widget's two tap targets: the
+        // "+" sends `dayflow://addEvent` (opens straight into the quick-add
+        // sheet, Event mode preset — see `quickAddInitialKind` above),
+        // everywhere else on the card sends a plain `dayflow://open` (just
+        // opens the app, no extra state to set — same as launching normally,
+        // so there's nothing to do here for that case beyond not crashing on
+        // an unrecognized host).
+        .onOpenURL { url in
+            if url.host == "addEvent" {
+                quickAddInitialKind = .event
+                showQuickAdd = true
+            }
+        }
     }
 
     // MARK: Top bar
@@ -208,24 +332,41 @@ struct ContentView: View {
     private var topBar: some View {
         HStack {
             Menu {
+                // "Calendar" removed from this menu 2026-07-21 (Session 24) —
+                // see DayflowModels.swift's `DayflowBrowseDestination` header
+                // comment for the full reasoning. This menu is now purely the
+                // Things/task-browsing family; Calendar/notes browsing has
+                // exactly one door, the date headline below, plus
+                // DayflowNoteFullPageView's own calendar icon.
                 Button { browseDestination = .upcoming } label: {
                     Label("Upcoming", systemImage: "calendar.day.timeline.left")
-                }
-                Button { browseDestination = .calendar } label: {
-                    Label("Calendar", systemImage: "calendar")
                 }
                 Button { browseDestination = .anytime } label: {
                     Label("Anytime", systemImage: "books.vertical")
                 }
+                // Renamed from "Inbox" 2026-07-24 (Session 44 addendum 10) —
+                // "Inbox" now means the notes-staging feature (evergreen
+                // notes waiting to be filed to a Project/Person/Place),
+                // reached by swiping right on the home screen, not this
+                // Things-task screen. Icon changed from "tray" to
+                // "checklist" for the same reason — "tray" is already the
+                // established icon for the notes concept (QuickAppendSheet's
+                // Inbox destination, TraceMacInboxView's empty state).
                 Button { browseDestination = .inbox } label: {
-                    Label("Inbox", systemImage: "tray")
+                    Label("Unfiled Tasks", systemImage: "checklist")
                 }
                 Button { browseDestination = .search } label: {
                     Label("Search", systemImage: "magnifyingglass")
                 }
             } label: {
+                // Skin fix 2026-07-21 (Session 30, post-implementation) — was
+                // unstyled, which let `Menu`'s default label tinting render
+                // this icon in the system accent blue instead of the locked
+                // monochrome look. David caught this comparing a real build
+                // against Dayflow-Skin-Mockup.html. See DayflowSkin.swift.
                 Image(systemName: "calendar")
                     .font(.system(size: 15))
+                    .foregroundStyle(Color.dayflowInk)
                     .frame(width: 32, height: 32)
                     .background(.background, in: Circle())
                     .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
@@ -243,6 +384,11 @@ struct ContentView: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 15))
+                // Skin fix 2026-07-21 (Session 30) — explicit ink color so
+                // this can't pick up accent tinting either, matching the
+                // Menu-icon fix above even though .buttonStyle(.plain) alone
+                // was likely already preventing it here.
+                .foregroundStyle(Color.dayflowInk)
                 .frame(width: 32, height: 32)
                 .background(.background, in: Circle())
                 .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
@@ -257,17 +403,26 @@ struct ContentView: View {
                     withAnimation(.easeInOut(duration: 0.15)) { selectedDate = day.date() }
                 } label: {
                     Text(day.label)
-                        .font(.system(size: 13))
-                        .foregroundStyle(isActive(day) ? .white : .secondary)
+                        // Skin fix 2026-07-21 (Session 30, post-implementation)
+                        // — was a solid blue capsule + white text, the
+                        // original app's pre-skin styling, never touched by
+                        // Session 29/30 since it wasn't assumed to need
+                        // fixing. Locked mockup wants a white pill + bold
+                        // near-black text for the active day, muted warm-gray
+                        // text (no fill) for the inactive days. See
+                        // DayflowSkin.swift.
+                        .font(.system(size: 13, weight: isActive(day) ? .bold : .medium))
+                        .foregroundStyle(isActive(day) ? Color.dayflowInk : Color.dayflowPillInactiveText)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
-                        .background(isActive(day) ? Color.blue : Color.clear, in: Capsule())
+                        .background(isActive(day) ? Color.white : Color.clear, in: Capsule())
+                        .shadow(color: .black.opacity(isActive(day) ? 0.10 : 0), radius: 2, x: 0, y: 1)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(3)
-        .background(.quaternary.opacity(0.3), in: Capsule())
+        .background(Color.dayflowInk.opacity(0.055), in: Capsule())
     }
 
     private func isActive(_ day: DayflowRelativeDay) -> Bool {
@@ -319,18 +474,65 @@ struct ContentView: View {
             // are the Start/End time pickers — CalendarService combines all
             // three itself (see that method's header comment for why they
             // can't just be used as-is).
+            //
+            // **Buffer events added 2026-07-24** (backlog item 12, walked
+            // through via HTML mockup review first). `draft.bufferBefore`/
+            // `.bufferAfter` each add a separate 15-minute "Buffer" calendar
+            // hold immediately before/after the real event — deliberately
+            // separate EKEvents, not a widened start/end on the real event
+            // itself, so the calendar still shows the meeting's actual real
+            // time; the buffer is just travel time blocked off around it.
+            // Written as up to three sequential `createEvent` calls sharing
+            // the same target calendar, in chronological order (buffer
+            // before → real event → buffer after) purely for readable
+            // console logging — EventKit doesn't care about write order.
+            // Known gap, same as `DayflowQuickAddSheet`'s own doc comment on
+            // this feature: no rollback if an earlier call in the sequence
+            // succeeds and a later one fails (e.g. a written "Buffer" event
+            // with no matching real meeting if the main `createEvent` call
+            // then fails) — consistent with how this codebase already
+            // doesn't attempt multi-call transactional rollback elsewhere
+            // (Things task creation has the same property).
             let calendarIdentifier = UserDefaults.standard.string(forKey: "default_calendar_identifier")
             Task {
-                let success = await CalendarService.shared.createEvent(
+                var allSucceeded = true
+
+                if draft.bufferBefore {
+                    let bufferStart = Calendar.current.date(byAdding: .minute, value: -15, to: draft.eventStart) ?? draft.eventStart
+                    let ok = await CalendarService.shared.createEvent(
+                        title: "Buffer",
+                        date: draft.eventDate,
+                        startTime: bufferStart,
+                        endTime: draft.eventStart,
+                        calendarIdentifier: calendarIdentifier
+                    )
+                    allSucceeded = allSucceeded && ok
+                }
+
+                let mainSuccess = await CalendarService.shared.createEvent(
                     title: draft.title,
                     date: draft.eventDate,
                     startTime: draft.eventStart,
                     endTime: draft.eventEnd,
                     calendarIdentifier: calendarIdentifier
                 )
+                allSucceeded = allSucceeded && mainSuccess
+
+                if draft.bufferAfter {
+                    let bufferEnd = Calendar.current.date(byAdding: .minute, value: 15, to: draft.eventEnd) ?? draft.eventEnd
+                    let ok = await CalendarService.shared.createEvent(
+                        title: "Buffer",
+                        date: draft.eventDate,
+                        startTime: draft.eventEnd,
+                        endTime: bufferEnd,
+                        calendarIdentifier: calendarIdentifier
+                    )
+                    allSucceeded = allSucceeded && ok
+                }
+
                 await MainActor.run {
-                    if success {
-                        log("Event created: \(draft.title)")
+                    if allSucceeded {
+                        log("Event created: \(draft.title)\(draft.bufferBefore || draft.bufferAfter ? " (+ buffer)" : "")")
                     } else {
                         log("Event creation FAILED (check Calendar access + Settings → Default Calendar): \(draft.title)")
                         saveErrorMessage = "\"\(draft.title)\" wasn't saved to Calendar. Check Calendar access in iOS Settings and your Default Calendar in Dayflow Settings, then try again."
@@ -338,7 +540,7 @@ struct ContentView: View {
                     // Only force an Agenda refresh if the new event actually
                     // lands on the day currently in view — no visible reason
                     // to tear the view down otherwise.
-                    if success && Calendar.current.isDate(draft.eventDate, inSameDayAs: selectedDate) {
+                    if allSucceeded && Calendar.current.isDate(draft.eventDate, inSameDayAs: selectedDate) {
                         agendaRefreshToken = UUID()
                     }
                 }

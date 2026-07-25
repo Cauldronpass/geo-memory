@@ -950,7 +950,8 @@ struct TraceMacPlaceDetail: View {
                 Text("Info").tag(1)
                 Text("Visits").tag(2)
                 Text("Notes").tag(3)
-                Text("Settings").tag(4)
+                Text("Documents").tag(4)
+                Text("Settings").tag(5)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
@@ -962,6 +963,7 @@ struct TraceMacPlaceDetail: View {
                 case 1: infoTab
                 case 2: visitsTab
                 case 3: notesTab
+                case 4: documentsTab
                 default: settingsTab
                 }
             }
@@ -1217,7 +1219,14 @@ struct TraceMacPlaceDetail: View {
     // MARK: - Notes
 
     private var notesTab: some View {
-        TraceMacNoteEditor(relativePath: noteRelativePath)
+        PlaceNotesTab(placeName: livePlace.name, notePath: noteRelativePath)
+            .environment(noteStore)
+    }
+
+    // MARK: - Documents (backlinks)
+
+    private var documentsTab: some View {
+        PlaceDocumentsTab(placeName: livePlace.name)
             .environment(noteStore)
     }
 
@@ -1287,6 +1296,285 @@ struct TraceMacPlaceDetail: View {
             }
             .padding(20)
         }
+    }
+}
+
+// MARK: - Place Notes tab (own note + content-based backlinks)
+
+/// Wraps the place's own note editor with a "Mentioned in" section below it —
+/// other notes elsewhere in the vault whose body `[[wikilinks]]` this place.
+struct PlaceNotesTab: View {
+    let placeName: String
+    let notePath: String
+
+    @Environment(NoteStore.self) private var noteStore
+    @State private var mentions: [NoteMention] = []
+    @State private var previewTarget: NotePreviewTarget? = nil
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TraceMacNoteEditor(relativePath: notePath)
+                .environment(noteStore)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            MentionedInSection(mentions: mentions) { mention in
+                previewTarget = NotePreviewTarget(path: mention.relativePath)
+            }
+        }
+        .task { await loadMentions() }
+        .sheet(item: $previewTarget) { target in
+            MacNotePreviewSheet(relativePath: target.path)
+                .environment(noteStore)
+        }
+    }
+
+    private func loadMentions() async {
+        let name = placeName
+        let excludePath = notePath
+        mentions = await Task.detached(priority: .utility) {
+            NoteStore.shared.findWikilinkMentions(of: name, excluding: excludePath)
+        }.value
+    }
+}
+
+// MARK: - Place Documents tab (backlinks — Phase 5)
+
+/// Documents linked to a place via the sidecar `linked_note` field.
+/// Heuristic match (no dedicated `places:` field on TraceMacDocument yet):
+/// category == "Place" AND linkedNote path contains the place name.
+/// Known limitation: a renamed place note breaks the match — accepted scope,
+/// see Session-88-Workplan.md Phase 5 + HANDOFF.md Session 91.
+struct PlaceDocumentsTab: View {
+    let placeName: String
+
+    @Environment(NoteStore.self) private var noteStore
+    @State private var docStore: TraceMacDocumentStore? = nil
+
+    private var linkedDocs: [TraceMacDocument] {
+        guard let docStore else { return [] }
+        return docStore.documents
+            .filter { $0.category == "Place" && ($0.linkedNote?.localizedCaseInsensitiveContains(placeName) ?? false) }
+            .sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+    }
+
+    var body: some View {
+        Group {
+            if docStore?.isLoading == true {
+                ProgressView("Loading…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if linkedDocs.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "doc.richtext")
+                        .font(.system(size: 36, weight: .ultraLight))
+                        .foregroundStyle(.tertiary)
+                    Text("No documents linked to \(placeName)")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(linkedDocs) { doc in
+                            DocumentBacklinkRow(doc: doc)
+                            Divider().padding(.leading, 42)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .task {
+            if docStore == nil { docStore = TraceMacDocumentStore(noteStore: noteStore) }
+            await docStore?.reload()
+        }
+    }
+}
+
+// MARK: - Shared document backlink row (People Phase 4 + Places Phase 5)
+
+/// Row: doc icon, title, category pill, linked note name. Tap navigates to the
+/// document in Documents via the same `.selectDocument` notification pattern
+/// used elsewhere (see `.onReceive(.selectDocument)` in this file).
+struct DocumentBacklinkRow: View {
+    let doc: TraceMacDocument
+
+    private var linkedNoteName: String? {
+        guard let linked = doc.linkedNote, !linked.isEmpty else { return nil }
+        return linked.components(separatedBy: "/").last?
+            .replacingOccurrences(of: ".md", with: "")
+    }
+
+    var body: some View {
+        Button {
+            NotificationCenter.default.post(
+                name: .selectDocument, object: nil,
+                userInfo: ["relativePath": doc.relativePath]
+            )
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: doc.isPDF ? "doc.fill" : doc.isImage ? "photo" : "doc.text")
+                    .foregroundStyle(doc.isPDF ? .red : doc.isImage ? .blue : .secondary)
+                    .font(.body).frame(width: 20)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(doc.title).font(.body).lineLimit(1).foregroundStyle(.primary)
+                    HStack(spacing: 6) {
+                        Text(doc.category)
+                            .font(.caption2)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.15))
+                            .clipShape(Capsule())
+                        if let linkedNoteName {
+                            Text(linkedNoteName)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Mentioned In section (content-based backlinks — shared by People + Place Notes tabs)
+
+/// Collapsible, sortable list of notes whose body contains a `[[Name]]` wikilink pointing at
+/// this person/place. Sort is a growable enum by design — add a case + a branch in
+/// `sortedMentions(_:)` to offer another sort later (alphabetical, oldest-first, etc.).
+/// Hidden entirely (returns EmptyView) when there are no mentions.
+struct MentionedInSection: View {
+    let mentions: [NoteMention]
+    let onSelect: (NoteMention) -> Void
+
+    @State private var isExpanded = true
+    @State private var sort: MentionSort = .newestFirst
+
+    enum MentionSort: String, CaseIterable, Identifiable {
+        case newestFirst = "Latest first"
+        var id: String { rawValue }
+    }
+
+    private func sortedMentions(_ items: [NoteMention]) -> [NoteMention] {
+        switch sort {
+        case .newestFirst:
+            return items.sorted { ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
+        }
+    }
+
+    var body: some View {
+        if !mentions.isEmpty {
+            VStack(spacing: 0) {
+                Divider()
+                HStack {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            Text("Mentioned in (\(mentions.count))")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    // Sort menu is a sibling of the collapse button (not part of its label),
+                    // so tapping it doesn't also toggle isExpanded.
+                    Menu {
+                        ForEach(MentionSort.allCases) { option in
+                            Button {
+                                sort = option
+                            } label: {
+                                if sort == option {
+                                    Label(option.rawValue, systemImage: "checkmark")
+                                } else {
+                                    Text(option.rawValue)
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+
+                if isExpanded {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(sortedMentions(mentions)) { mention in
+                                mentionRow(mention)
+                                Divider().padding(.leading, 42)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 220)
+                }
+            }
+        }
+    }
+
+    private func mentionRow(_ mention: NoteMention) -> some View {
+        Button { onSelect(mention) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.text")
+                    .foregroundStyle(.secondary).font(.body).frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(mention.title).font(.body).lineLimit(1).foregroundStyle(.primary)
+                    if let modified = mention.modified {
+                        Text(modified, style: .date).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Identifiable wrapper so a plain note path can drive `.sheet(item:)`.
+struct NotePreviewTarget: Identifiable, Hashable {
+    let path: String
+    var id: String { path }
+}
+
+/// Minimal read/write preview for an arbitrary note path — used when a "Mentioned in" row
+/// might point at a daily note, project note, or any other note type, not just a person/place
+/// canonical note. Deliberately lighter than `MacProjectNoteDetailView` (which assumes
+/// project-style frontmatter + pulls associated Documents/People/Places).
+struct MacNotePreviewSheet: View {
+    let relativePath: String
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(NoteStore.self) private var noteStore
+
+    private var title: String {
+        (relativePath as NSString).lastPathComponent.replacingOccurrences(of: ".md", with: "")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(title).font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }
+            }
+            .padding()
+            Divider()
+            TraceMacNoteEditor(relativePath: relativePath)
+                .environment(noteStore)
+        }
+        .frame(minWidth: 520, minHeight: 480)
     }
 }
 
