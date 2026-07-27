@@ -2,38 +2,77 @@ import SwiftUI
 
 // MARK: - NotesView
 //
-// Five-tab notes screen backed by NoteStore (Trace iCloud container).
+// Session 48 (Trace redesign) — trimmed from five tabs to two, per Session 47
+// addendum's locked mockup (trace-redesign-mockup-v7.html, "Notes" frames).
 //
-//  Daily     — today's Calendar/YYYY-MM-DD.md, editable inline; tap again to toggle calendar (week + month notes)
-//  Projects  — Notes/Projects/*.md
-//  Places    — Notes/Places/*.md (one file per place)
-//  Trips     — Trip management (placeholder, full build pending)
-//  Docs      — Documents/*/  (iCloud document library with AI scan)
+//  Day   — today's Calendar/YYYY-MM-DD.md, editable inline, plus that day's
+//          Visits. The collapsible calendar above it is shared with Week (see
+//          calendarSection below).
+//  Week  — auto-populated rollup of that week's Visits ("reframed from
+//          Horizons" per the addendum — no longer a freeform note; see
+//          WeekRollupTab). Same shared calendar.
+//
+// Removed: Projects and Places (both former NoteFileListTab tabs — the data
+// they browsed still exists and is still edited directly elsewhere: Dayflow's
+// DayflowProjectNoteView now owns freeform project notes, and
+// PlaceDetailView's own Notes tab already edits Notes/Places/*.md directly —
+// this only removed a second, now-redundant front door). Trips (retired in
+// favor of the new Endeavor system, not yet built). The freeform Horizons
+// week/month note editor and the Month note entirely (David doesn't use
+// Month — see Dayflow-HANDOFF.md's Session 47 addendum).
+//
+// Docs (iOSDocumentsView) has no home in the locked mockup either — it's not
+// shown in any of the six v7 frames — but Session 47's addendum doesn't say
+// to remove it, and the future standalone Documents app it's slated to move
+// into isn't build-ready yet (no mockup). Kept reachable via a toolbar
+// button instead of a third segment, so it doesn't compromise the mockup's
+// clean two-segment Day/Week design. Flagged as a judgment call in this
+// session's HANDOFF addendum, not an explicit instruction either way.
+//
+// The calendar itself (MonthCalendarView, below) is now collapsible —
+// collapsed to the single week containing `selectedDate` by default, tap the
+// title to expand to the full month. Day and Week share ONE calendar/
+// selection state (lifted up here) rather than each owning their own, since
+// the mockup shows them as two views of the same underlying date, not two
+// independent calendars.
 
 struct NotesView: View {
 
     @Environment(NotionService.self) private var notion
     @State private var noteStore = NoteStore.shared
-    @State private var selectedTab: NoteTab = .daily
-    @State private var showCalendar = false
+    @State private var selectedTab: NoteTab = .day
     @State private var showingSearch = false
-    @State private var showingFABNewNote = false
-    @State private var fabNewNoteName = ""
-    @State private var isCreatingFABNote = false
-    @State private var fabNoteSubfolder: String = "Notes/Projects"
+    @State private var showingDocs = false
     @State private var showingFABDailyPicker = false
     @State private var fabDailyDate: Date = Date()
-    @State private var showingFABPlacePicker = false
+
+    // Shared calendar state — see header comment above.
+    @State private var selectedDate: Date = Date()
+    @State private var displayMonth: Date = Date()
+    @State private var isCalendarExpanded: Bool = false
+    @State private var datesWithNotes: Set<String> = []
+    @State private var weeksWithVisits: Set<String> = []
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                tabBar
+                TraceSegmentedControl(options: NoteTab.allCases, label: { $0.title }, selection: $selectedTab)
+                    .padding(.horizontal)
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
+                calendarSection
+                Divider()
                 tabContent
             }
-            .navigationTitle(selectedTab == .daily && showCalendar ? "Calendar" : selectedTab.title)
+            .traceBackground()
+            .navigationTitle(selectedTab.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { showingDocs = true } label: {
+                        Image(systemName: "doc.richtext")
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showingSearch = true } label: {
                         Image(systemName: "magnifyingglass")
@@ -43,26 +82,14 @@ struct NotesView: View {
             .sheet(isPresented: $showingSearch) {
                 GlobalSearchView()
             }
-            .sheet(isPresented: $showingFABNewNote) {
-                NewNoteSheet(name: $fabNewNoteName, isCreating: isCreatingFABNote) {
-                    createFABNote()
-                }
-            }
-            .sheet(isPresented: $showingFABPlacePicker) {
-                FABPlaceNoteSheet(places: notion.places) { place in
-                    selectedTab = .places
-                    let filename = "\(place.name).md"
-                    NotificationCenter.default.post(
-                        name: .traceNotesOpenPlaceNote,
-                        object: nil,
-                        userInfo: ["filename": filename, "placeName": place.name]
-                    )
-                }
+            .sheet(isPresented: $showingDocs) {
+                NavigationStack { iOSDocumentsView() }
             }
             .sheet(isPresented: $showingFABDailyPicker) {
                 FABDailyPickerSheet(selectedDate: $fabDailyDate) { date in
-                    selectedTab = .daily
-                    showCalendar = false
+                    selectedTab = .day
+                    selectedDate = date
+                    isCalendarExpanded = false
                     NotificationCenter.default.post(
                         name: .traceNotesOpenDay,
                         object: nil,
@@ -71,74 +98,45 @@ struct NotesView: View {
                 }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .traceNotesNewNote)) { notif in
-            let type = notif.userInfo?["type"] as? String ?? "projects"
-            switch type {
-            case "daily":
-                fabDailyDate = Date()
-                showingFABDailyPicker = true
-            case "projects":
-                selectedTab = .projects
-                fabNoteSubfolder = "Notes/Projects"
-                fabNewNoteName = ""
-                showingFABNewNote = true
-            case "places":
-                selectedTab = .places
-                showingFABPlacePicker = true
-            default:
-                selectedTab = .projects
-                fabNoteSubfolder = "Notes/Projects"
-                fabNewNoteName = ""
-                showingFABNewNote = true
-            }
+        .task {
+            loadDatesWithNotes()
+            loadWeeksWithVisits()
+        }
+        .onChange(of: notion.visits.count) { _, _ in loadWeeksWithVisits() }
+        .onReceive(NotificationCenter.default.publisher(for: .traceNotesNewNote)) { _ in
+            // Only "Daily Note" is left as a FAB option now (Project/Place/
+            // Horizon Note dropped — see ContentView.swift's fabNotesButtons).
+            fabDailyDate = Date()
+            showingFABDailyPicker = true
         }
     }
 
-    private func createFABNote() {
-        let name = fabNewNoteName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        isCreatingFABNote = true
-        Task {
-            let path = "\(fabNoteSubfolder)/\(name).md"
-            try? noteStore.writeFile(path, content: "# \(name)\n")
-            await MainActor.run {
-                showingFABNewNote = false
-                fabNewNoteName = ""
-                isCreatingFABNote = false
-            }
-            NotificationCenter.default.post(name: .traceNotesRefresh, object: nil)
-        }
-    }
+    // MARK: - Shared calendar
 
-    // MARK: - Tab bar
-
-    private var tabBar: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                ForEach(NoteTab.allCases) { tab in
-                    Button {
-                        if tab == .daily && selectedTab == .daily {
-                            showCalendar.toggle()
-                        } else {
-                            selectedTab = tab
-                            showCalendar = false
-                        }
-                    } label: {
-                        VStack(spacing: 4) {
-                            Image(systemName: tab == .daily && selectedTab == .daily && showCalendar ? "calendar.badge.checkmark" : tab.icon)
-                                .font(.system(size: 16))
-                            Text(tab.title)
-                                .font(.caption2)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .foregroundStyle(selectedTab == tab ? Color.accentColor : .secondary)
-                    }
-                }
+    private var calendarSection: some View {
+        MonthCalendarView(
+            displayMonth: $displayMonth,
+            isExpanded: $isCalendarExpanded,
+            selectedDate: selectedDate,
+            datesWithNotes: datesWithNotes,
+            weeksWithVisits: weeksWithVisits,
+            weekNumberTitle: selectedTab == .week,
+            onDayCellTap: { date in
+                selectedDate = date
+                isCalendarExpanded = false
+                selectedTab = .day
+            },
+            onWeekNumberTap: { weekDate in
+                selectedDate = weekDate
+                isCalendarExpanded = false
+                selectedTab = .week
+            },
+            onPageWeek: { direction in
+                selectedDate = Calendar.current.date(byAdding: .day, value: direction * 7, to: selectedDate) ?? selectedDate
             }
-            .background(.bar)
-            Divider()
-        }
+        )
+        .padding(.horizontal, 8)
+        .background(Color.white)
     }
 
     // MARK: - Tab content
@@ -146,17 +144,45 @@ struct NotesView: View {
     @ViewBuilder
     private var tabContent: some View {
         switch selectedTab {
-        case .daily:
-            DailyNoteTab(showCalendar: $showCalendar)
-        case .projects:
-            NoteFileListTab(subfolder: "Notes/Projects", emptyMessage: "No project notes yet.\nTap the pencil to create one.")
-        case .places:
-            NoteFileListTab(subfolder: "Notes/Places", emptyMessage: "No place notes yet.\nPlace notes are created automatically when you tap Notes on a place.")
-        case .trips:
-            TripsPlaceholderTab()
-        case .docs:
-            iOSDocumentsView()
+        case .day:
+            DailyNoteTab(selectedDate: $selectedDate, onNoteExistenceChanged: loadDatesWithNotes)
+        case .week:
+            WeekRollupTab(selectedDate: selectedDate)
         }
+    }
+
+    // MARK: - Helpers
+
+    private func loadDatesWithNotes() {
+        Task {
+            let files = (try? noteStore.listFiles(in: "Calendar")) ?? []
+            // Only mark a date if the file has actual content. Empty files are left behind
+            // by moveDailyNote/clearNote — they must not show a dot on the calendar.
+            var dates = Set<String>()
+            for file in files {
+                let content = (try? noteStore.readFile("Calendar/\(file)")) ?? ""
+                if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    dates.insert(file.replacingOccurrences(of: ".md", with: ""))
+                }
+            }
+            await MainActor.run { datesWithNotes = dates }
+        }
+    }
+
+    /// Which ISO weeks have at least one Visit — drives the CW-number orange
+    /// marker in the collapsed/expanded calendar. Repurposed from the old
+    /// "week note file exists" check (there's no week-note file anymore, see
+    /// this file's header comment) to "Trace-native, Visit-data-driven" per
+    /// the Session 47 addendum's own framing of the new Week pane.
+    private func loadWeeksWithVisits() {
+        var isoCal = Calendar(identifier: .iso8601)
+        isoCal.locale = Locale(identifier: "en_US_POSIX")
+        let weeks = notion.visits.map { visit -> String in
+            let week = isoCal.component(.weekOfYear, from: visit.date)
+            let year = isoCal.component(.yearForWeekOfYear, from: visit.date)
+            return String(format: "%d-W%02d.md", year, week)
+        }
+        weeksWithVisits = Set(weeks)
     }
 }
 
@@ -168,28 +194,17 @@ struct NotesView: View {
 // behavior change — Trace/TraceMac already carry Models.swift.
 
 // MARK: - NoteTab enum
+// Trimmed to Day/Week per the Session 47 addendum — see this file's header
+// comment for what happened to the other three (Projects/Places/Trips/Docs).
 
 enum NoteTab: String, CaseIterable, Identifiable {
-    case daily, projects, places, trips, docs
+    case day, week
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .daily:    return "Daily"
-        case .projects: return "Projects"
-        case .places:   return "Places"
-        case .trips:    return "Trips"
-        case .docs:     return "Docs"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .daily:    return "calendar"
-        case .projects: return "folder"
-        case .places:   return "mappin"
-        case .trips:    return "airplane"
-        case .docs:     return "doc.richtext"
+        case .day:  return "Day"
+        case .week: return "Week"
         }
     }
 }
@@ -198,30 +213,22 @@ enum NoteTab: String, CaseIterable, Identifiable {
 
 struct DailyNoteTab: View {
 
-    @Binding var showCalendar: Bool
+    @Binding var selectedDate: Date
+    /// Told when a save/clear/move changes whether `selectedDate`'s file has
+    /// content — lets the parent NotesView refresh the calendar's note dots
+    /// (datesWithNotes is now owned there, shared with Week's calendar too).
+    let onNoteExistenceChanged: () -> Void
 
     @Environment(NotionService.self) private var notion
     @State private var noteStore = NoteStore.shared
     @State private var content: String = ""
     @State private var isLoading = true
     @State private var errorMessage: String?
-    @State private var selectedDate: Date = Date()
-    // E15 — calendar bottom panel
-    @State private var panelNotePreview: String = ""
-    @State private var panelIsLoading: Bool = false
-    @State private var selectedPanelVisit: Visit? = nil
-    @State private var displayMonth: Date = Date()
-    @State private var datesWithNotes: Set<String> = []
+    @State private var selectedVisit: Visit? = nil
     @State private var showingMoveContent: Bool = false
     @State private var timestampTrigger: Date? = nil
     @State private var showingClearConfirm: Bool = false
     @State private var isEditorFocused: Bool = false
-    // E3 — week/month note support
-    @State private var existingWeekNotes: Set<String> = []
-    @State private var monthNoteExists: Bool = false
-    @State private var weekNoteTargetDate: Date = Date()
-    @State private var showingWeekNote: Bool = false
-    @State private var showingMonthNote: Bool = false
     // E1 — block promote
     @State private var longPressedBlock: BlockInfo? = nil
     /// Session 45 addendum 6 — set by MarkdownEditorView's onCaptureTap when a
@@ -232,44 +239,29 @@ struct DailyNoteTab: View {
     // E6b — wikilink tap navigation
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
 
+    private var visitsForDay: [Visit] {
+        let cal = Calendar.current
+        return notion.visits
+            .filter { cal.isDate($0.date, inSameDayAs: selectedDate) }
+            .sorted { $0.date < $1.date }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            if showCalendar {
-                calendarHeader
-                Divider()
-                MonthCalendarView(
-                    displayMonth: $displayMonth,
-                    selectedDate: selectedDate,
-                    datesWithNotes: datesWithNotes,
-                    existingWeekNotes: existingWeekNotes,
-                    onDateSelected: { date in
-                        // E15: single tap selects date + refreshes panel — stays on calendar
-                        selectedDate = date
-                        displayMonth = date
-                        loadPanelContent()
-                    },
-                    onDateLongPressed: { date in
-                        // E15: long press opens the note directly
-                        selectedDate = date
-                        showCalendar = false
-                        load()
-                    },
-                    onWeekNote: { weekDate in
-                        weekNoteTargetDate = weekDate
-                        showingWeekNote = true
-                    }
-                )
-                calendarBottomPanel
+            editorHeader
+            Divider()
+            if !noteStore.hasAccess {
+                notLinkedView
+            } else if isLoading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let err = errorMessage {
+                errorView(err)
             } else {
-                editorHeader
-                Divider()
-                if !noteStore.hasAccess {
-                    notLinkedView
-                } else if isLoading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let err = errorMessage {
-                    errorView(err)
-                } else {
+                VStack(spacing: 0) {
+                    if !visitsForDay.isEmpty {
+                        visitsRow
+                        Divider()
+                    }
                     MarkdownEditorView(
                         text: $content,
                         onSave: { newText in save(newText) },
@@ -295,33 +287,9 @@ struct DailyNoteTab: View {
         }
         .task {
             load()
-            loadDatesWithNotes()
         }
-        .onChange(of: showCalendar) { _, isOn in
-            if isOn {
-                displayMonth = selectedDate
-                refreshHorizonNoteExistence()
-                loadPanelContent()
-            }
-        }
-        .onChange(of: displayMonth) { _, _ in
-            if showCalendar { refreshHorizonNoteExistence() }
-        }
-        .sheet(isPresented: $showingWeekNote, onDismiss: { refreshHorizonNoteExistence() }) {
-            NavigationStack {
-                NoteEditorView(
-                    relativePath: "Notes/Horizons/\(weekFilename(for: weekNoteTargetDate))",
-                    title: weekTitle(for: weekNoteTargetDate)
-                )
-            }
-        }
-        .sheet(isPresented: $showingMonthNote, onDismiss: { refreshHorizonNoteExistence() }) {
-            NavigationStack {
-                NoteEditorView(
-                    relativePath: "Notes/Horizons/\(monthFilename(for: displayMonth))",
-                    title: monthTitle(for: displayMonth)
-                )
-            }
+        .onChange(of: selectedDate) { _, _ in
+            load()
         }
         .sheet(item: $longPressedBlock) { block in
             BlockPromoteSheet(block: block) { action in
@@ -329,7 +297,7 @@ struct DailyNoteTab: View {
             }
             .environment(notion)
         }
-        .sheet(item: $selectedPanelVisit) { visit in
+        .sheet(item: $selectedVisit) { visit in
             VisitDetailView(visit: visit)
                 .environment(notion)
         }
@@ -378,13 +346,7 @@ struct DailyNoteTab: View {
         .sheet(isPresented: $showingMoveContent) {
             MoveDailyContentSheet(sourceDate: selectedDate, sourceContent: content) { newContent in
                 content = newContent
-                let formatter = DateFormatter()
-                formatter.locale = Locale(identifier: "en_US_POSIX")
-                formatter.dateFormat = "yyyy-MM-dd"
-                if newContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    datesWithNotes.remove(formatter.string(from: selectedDate))
-                }
-                loadDatesWithNotes()
+                onNoteExistenceChanged()
             }
         }
         .confirmationDialog(
@@ -399,13 +361,15 @@ struct DailyNoteTab: View {
         }
     }
 
-    // MARK: Editor header (chevrons + calendar toggle)
+    // MARK: Editor header (chevrons + actions)
+    // Calendar toggle button removed — the shared calendar (NotesView's
+    // calendarSection) is always visible above this tab now, not a modal
+    // overlay this view controlled itself. See NotesView.swift header comment.
 
     private var editorHeader: some View {
         HStack(spacing: 0) {
             Button {
                 selectedDate = Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) ?? selectedDate
-                load()
             } label: {
                 Image(systemName: "chevron.left").frame(width: 44, height: 44)
             }
@@ -414,7 +378,6 @@ struct DailyNoteTab: View {
 
             Button {
                 selectedDate = Date()
-                load()
             } label: {
                 Text(selectedDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().year()))
                     .font(.subheadline.weight(.medium))
@@ -425,7 +388,6 @@ struct DailyNoteTab: View {
 
             Button {
                 selectedDate = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) ?? selectedDate
-                load()
             } label: {
                 Image(systemName: "chevron.right").frame(width: 44, height: 44)
             }
@@ -462,152 +424,40 @@ struct DailyNoteTab: View {
         .background(.bar)
     }
 
-    // MARK: Calendar header (month nav + tappable month title → month note)
+    // MARK: Visits-today row
+    // New in Session 48 — always-visible (not modal, unlike the old E15
+    // calendar bottom panel) so a Visit logged today is one glance away
+    // without leaving the note.
 
-    private var calendarHeader: some View {
-        HStack(spacing: 0) {
-            Button {
-                displayMonth = Calendar.current.date(byAdding: .month, value: -1, to: displayMonth) ?? displayMonth
-            } label: {
-                Image(systemName: "chevron.left").frame(width: 44, height: 44)
-            }
-
-            Spacer()
-
-            // Tappable title — opens month note; dot if note exists
-            Button {
-                showingMonthNote = true
-            } label: {
-                HStack(spacing: 4) {
-                    Text(displayMonth.formatted(.dateTime.month(.wide).year()))
-                        .font(.subheadline.weight(.semibold))
-                    if monthNoteExists {
-                        Circle().fill(Color.orange).frame(width: 5, height: 5)
+    private var visitsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(visitsForDay) { visit in
+                    Button { selectedVisit = visit } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "mappin.circle.fill")
+                                .foregroundStyle(.orange)
+                                .font(.caption)
+                            Text(visit.placeName)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.primary)
+                            if let rating = visit.rating {
+                                Text(String(repeating: "★", count: rating))
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(Color(UIColor.secondarySystemGroupedBackground)))
                     }
-                }
-                .foregroundStyle(.primary)
-            }
-
-            Spacer()
-
-            Button {
-                displayMonth = Calendar.current.date(byAdding: .month, value: 1, to: displayMonth) ?? displayMonth
-            } label: {
-                Image(systemName: "chevron.right").frame(width: 44, height: 44)
-            }
-        }
-        .padding(.horizontal, 4)
-        .background(.bar)
-    }
-
-    // MARK: Calendar bottom panel (E15)
-
-    private var calendarBottomPanel: some View {
-        let cal = Calendar.current
-        let visitsForDay = notion.visits
-            .filter { cal.isDate($0.date, inSameDayAs: selectedDate) }
-            .sorted { $0.date < $1.date }
-
-        return VStack(spacing: 0) {
-            Divider()
-
-            // Header: date label + "Open note" button
-            HStack {
-                Text(selectedDate.formatted(.dateTime.weekday(.wide).month(.wide).day()))
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Button {
-                    showCalendar = false
-                    load()
-                } label: {
-                    HStack(spacing: 3) {
-                        Text("Open note")
-                        Image(systemName: "arrow.up.right")
-                            .font(.caption)
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.orange)
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Color(UIColor.secondarySystemGroupedBackground))
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-
-                    // Note preview
-                    if panelIsLoading {
-                        HStack(spacing: 8) {
-                            ProgressView().scaleEffect(0.8)
-                            Text("Loading…").font(.callout).foregroundStyle(.secondary)
-                        }
-                        .padding(16)
-                    } else if panelNotePreview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        HStack(spacing: 8) {
-                            Image(systemName: "note.text").foregroundStyle(.tertiary)
-                            Text("No note for this day").font(.callout).foregroundStyle(.tertiary)
-                        }
-                        .padding(16)
-                    } else {
-                        Text(panelNotePreview)
-                            .font(.callout)
-                            .lineLimit(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
-                    }
-
-                    // Visits for this day
-                    if !visitsForDay.isEmpty {
-                        Divider().padding(.horizontal, 16)
-
-                        Label("Visits", systemImage: "mappin.circle")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                            .padding(.bottom, 4)
-
-                        ForEach(visitsForDay) { visit in
-                            Button { selectedPanelVisit = visit } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "mappin.circle.fill")
-                                        .foregroundStyle(.orange)
-                                        .font(.subheadline)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(visit.placeName)
-                                            .font(.callout.weight(.medium))
-                                            .foregroundStyle(.primary)
-                                        if let notes = visit.notes, !notes.isEmpty {
-                                            Text(notes)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(2)
-                                        }
-                                    }
-                                    Spacer()
-                                    if let rating = visit.rating {
-                                        Text(String(repeating: "★", count: rating))
-                                            .font(.caption)
-                                            .foregroundStyle(.orange)
-                                    }
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 6)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.bottom, 8)
-                    }
-                }
-            }
-            .background(Color(UIColor.systemGroupedBackground))
+            .padding(.vertical, 8)
         }
+        .background(Color(UIColor.systemGroupedBackground))
     }
 
     // MARK: Helpers
@@ -623,17 +473,6 @@ struct DailyNoteTab: View {
                 errorMessage = error.localizedDescription
             }
             isLoading = false
-        }
-    }
-
-    private func loadPanelContent() {
-        guard showCalendar else { return }
-        panelIsLoading = true
-        panelNotePreview = ""
-        Task {
-            let raw = (try? noteStore.readDailyNote(date: selectedDate)) ?? ""
-            panelNotePreview = stripDateHeader(raw)
-            panelIsLoading = false
         }
     }
 
@@ -664,7 +503,7 @@ struct DailyNoteTab: View {
                 ? ""
                 : "# \(dateStr)\n\n\(text)"
             try? noteStore.writeFile(path, content: fileContent)
-            datesWithNotes.insert(dateStr)
+            onNoteExistenceChanged()
         }
     }
 
@@ -711,68 +550,15 @@ struct DailyNoteTab: View {
         // The date header is not re-added so the file is truly blank.
         try? noteStore.writeFile("Calendar/\(dateStr).md", content: "")
         content = ""
-        datesWithNotes.remove(dateStr)
+        onNoteExistenceChanged()
     }
 
-    private func loadDatesWithNotes() {
-        Task {
-            let files = (try? noteStore.listFiles(in: "Calendar")) ?? []
-            // Only mark a date if the file has actual content. Empty files are left behind
-            // by moveDailyNote/clearNote — they must not show a dot on the calendar.
-            var dates = Set<String>()
-            for file in files {
-                let content = (try? noteStore.readFile("Calendar/\(file)")) ?? ""
-                if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    dates.insert(file.replacingOccurrences(of: ".md", with: ""))
-                }
-            }
-            await MainActor.run { datesWithNotes = dates }
-        }
-    }
-
-    // MARK: - E3: Week / month note helpers
-
-    private func weekFilename(for date: Date) -> String {
-        var cal = Calendar(identifier: .iso8601)
-        cal.locale = Locale(identifier: "en_US_POSIX")
-        let week = cal.component(.weekOfYear, from: date)
-        let year = cal.component(.yearForWeekOfYear, from: date)
-        return String(format: "%d-W%02d.md", year, week)
-    }
-
-    private func monthFilename(for date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM"
-        return "\(f.string(from: date)).md"
-    }
-
-    private func weekTitle(for date: Date) -> String {
-        var cal = Calendar(identifier: .iso8601)
-        cal.locale = Locale(identifier: "en_US_POSIX")
-        let week = cal.component(.weekOfYear, from: date)
-        let year = cal.component(.yearForWeekOfYear, from: date)
-        return String(format: "Week %d · %d", week, year)
-    }
-
-    private func monthTitle(for date: Date) -> String {
-        date.formatted(.dateTime.month(.wide).year())
-    }
-
-    private func refreshHorizonNoteExistence() {
-        Task {
-            let allFiles = Set((try? noteStore.listFiles(in: "Notes/Horizons")) ?? [])
-            // Week files match YYYY-Www.md
-            let weekFiles = allFiles.filter {
-                $0.range(of: #"^\d{4}-W\d{2}\.md$"#, options: .regularExpression) != nil
-            }
-            let mFile = monthFilename(for: displayMonth)
-            await MainActor.run {
-                existingWeekNotes = weekFiles
-                monthNoteExists = allFiles.contains(mFile)
-            }
-        }
-    }
+    // E3's week/month note helpers (weekFilename/monthFilename/weekTitle/
+    // monthTitle/refreshHorizonNoteExistence) and loadDatesWithNotes were
+    // removed here in Session 48 — the freeform Horizons week/month note
+    // editor is gone (see this file's header comment) and datesWithNotes is
+    // now owned by the parent NotesView (shared with Week's calendar), which
+    // calls its own loadDatesWithNotes() via onNoteExistenceChanged().
 
     // MARK: - E1: Block action
 
@@ -878,12 +664,35 @@ struct DailyNoteTab: View {
 struct MonthCalendarView: View {
 
     @Binding var displayMonth: Date
+    /// Session 48 — collapse/expand replaces the old always-full-month grid.
+    /// Collapsed shows only the week row containing `selectedDate`; expanded
+    /// shows the full `displayMonth` grid. Owned by the parent (NotesView) so
+    /// Day and Week share one collapse state along with the rest of the
+    /// shared calendar state — see this file's header comment.
+    @Binding var isExpanded: Bool
     let selectedDate: Date
     let datesWithNotes: Set<String>
-    let existingWeekNotes: Set<String>
-    let onDateSelected: (Date) -> Void
-    var onDateLongPressed: ((Date) -> Void)? = nil
-    let onWeekNote: (Date) -> Void
+    /// Renamed from `existingWeekNotes` — there's no week-note file anymore,
+    /// this now drives the CW-number's orange marker off Visit data instead
+    /// (see NotesView.loadWeeksWithVisits).
+    let weeksWithVisits: Set<String>
+    /// True on the Week tab — swaps the header title from "Month Year" to
+    /// "Week NN · Year" so the collapsed calendar's title matches whichever
+    /// tab it's paired with. Not spelled out verbatim in the addendum;
+    /// flagged as a judgment call in this session's HANDOFF addendum.
+    let weekNumberTitle: Bool
+    /// Tap a day cell — mockup: "jump to that day (lands back in Day,
+    /// collapsed)". Replaces the old onDateSelected/onDateLongPressed pair;
+    /// there's no separate "just preview" tap anymore, one tap now does what
+    /// the old long-press did.
+    let onDayCellTap: (Date) -> Void
+    /// Tap a CW number — mockup: "jump to that week (lands in Week,
+    /// collapsed)". Replaces the old onWeekNote (which opened a freeform
+    /// week-note editor sheet — gone, see file header comment).
+    let onWeekNumberTap: (Date) -> Void
+    /// Page by one week (±1) while collapsed. Only used when !isExpanded —
+    /// expanded paging still moves `displayMonth` by month, handled locally.
+    let onPageWeek: (Int) -> Void
 
     private let cal = Calendar.current
 
@@ -914,8 +723,18 @@ struct MonthCalendarView: View {
         return result
     }
 
+    /// The 7 dates of the week containing `selectedDate`, independent of
+    /// `displayMonth` — collapsed paging (onPageWeek) moves `selectedDate`,
+    /// not `displayMonth`, so this must track selectedDate directly.
+    private var collapsedWeek: [Date?] {
+        guard let weekStart = cal.dateInterval(of: .weekOfYear, for: selectedDate)?.start else { return [] }
+        return (0..<7).map { cal.date(byAdding: .day, value: $0, to: weekStart) }
+    }
+
     var body: some View {
         VStack(spacing: 6) {
+            header
+
             // Column headers: blank above week-number | locale day labels
             HStack(spacing: 0) {
                 Text("").font(.caption2.weight(.medium)).frame(width: 32)
@@ -928,15 +747,76 @@ struct MonthCalendarView: View {
             }
             .padding(.horizontal, 8)
 
-            // Week rows (7 day cells + W cell each)
-            VStack(spacing: 4) {
-                ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
-                    weekRow(week)
+            if isExpanded {
+                VStack(spacing: 4) {
+                    ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                        weekRow(week)
+                    }
                 }
+                .padding(.horizontal, 8)
+            } else {
+                weekRow(collapsedWeek)
+                    .padding(.horizontal, 8)
             }
-            .padding(.horizontal, 8)
         }
         .padding(.vertical, 8)
+    }
+
+    private var header: some View {
+        HStack(spacing: 0) {
+            Button {
+                if isExpanded {
+                    displayMonth = cal.date(byAdding: .month, value: -1, to: displayMonth) ?? displayMonth
+                } else {
+                    onPageWeek(-1)
+                }
+            } label: {
+                Image(systemName: "chevron.left").frame(width: 32, height: 32)
+            }
+
+            Spacer()
+
+            Button {
+                if !isExpanded { displayMonth = selectedDate }
+                isExpanded.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Text(headerTitle)
+                        .font(.subheadline.weight(.semibold))
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .foregroundStyle(.primary)
+            }
+
+            Spacer()
+
+            Button {
+                if isExpanded {
+                    displayMonth = cal.date(byAdding: .month, value: 1, to: displayMonth) ?? displayMonth
+                } else {
+                    onPageWeek(1)
+                }
+            } label: {
+                Image(systemName: "chevron.right").frame(width: 32, height: 32)
+            }
+        }
+        .padding(.horizontal, 8)
+    }
+
+    private var headerTitle: String {
+        if isExpanded {
+            return displayMonth.formatted(.dateTime.month(.wide).year())
+        }
+        if weekNumberTitle {
+            var isoCal = Calendar(identifier: .iso8601)
+            isoCal.locale = Locale(identifier: "en_US_POSIX")
+            let week = isoCal.component(.weekOfYear, from: selectedDate)
+            let year = isoCal.component(.yearForWeekOfYear, from: selectedDate)
+            return "Week \(week) · \(year)"
+        }
+        return selectedDate.formatted(.dateTime.month(.wide).year())
     }
 
     @ViewBuilder
@@ -949,14 +829,14 @@ struct MonthCalendarView: View {
         }) ?? dates.first ?? displayMonth
         let wFile = weekFilename(for: rep)
         let wNum  = weekNumber(for: rep)
-        let hasNote = existingWeekNotes.contains(wFile)
+        let hasVisits = weeksWithVisits.contains(wFile)
 
         HStack(spacing: 0) {
             // Week number — left label, tappable
-            Button { onWeekNote(rep) } label: {
+            Button { onWeekNumberTap(rep) } label: {
                 Text("\(wNum)")
                     .font(.system(.caption2, design: .rounded).weight(.semibold))
-                    .foregroundStyle(hasNote ? Color.orange : Color(UIColor.tertiaryLabel))
+                    .foregroundStyle(hasVisits ? Color.orange : Color(UIColor.tertiaryLabel))
                     .frame(width: 32, alignment: .center)
             }
             .buttonStyle(.plain)
@@ -968,8 +848,7 @@ struct MonthCalendarView: View {
                         isSelected: cal.isDate(date, inSameDayAs: selectedDate),
                         isToday: cal.isDateInToday(date),
                         hasNote: datesWithNotes.contains(isoString(date)),
-                        onTap: { onDateSelected(date) },
-                        onLongPress: onDateLongPressed.map { handler in { handler(date) } }
+                        onTap: { onDayCellTap(date) }
                     )
                 } else {
                     Color.clear
@@ -1015,7 +894,6 @@ private struct DayCell: View {
     let isToday: Bool
     let hasNote: Bool
     let onTap: () -> Void
-    var onLongPress: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 2) {
@@ -1034,10 +912,6 @@ private struct DayCell: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
-        .gesture(
-            LongPressGesture(minimumDuration: 0.5)
-                .onEnded { _ in onLongPress?() }
-        )
         .frame(maxWidth: .infinity)
     }
 
@@ -1052,251 +926,164 @@ private struct DayCell: View {
     }
 }
 
-// MARK: - Note file list tab (Horizons / Projects / Places)
+// MARK: - Week rollup tab
+// New in Session 48 — replaces the old freeform Horizons week-note editor.
+// Per the addendum: "reframed from Horizons" — auto-populated from Visit
+// data (grouped by day), read-only, no more typing a week note by hand.
 
-struct NoteFileListTab: View {
+struct WeekRollupTab: View {
+    let selectedDate: Date
 
-    let subfolder: String
-    let emptyMessage: String
+    @Environment(NotionService.self) private var notion
+    @State private var selectedVisit: Visit? = nil
 
-    @State private var noteStore = NoteStore.shared
-    @State private var files: [String] = []
-    @State private var isLoading = true
-    @State private var selectedFile: String?
-    @State private var showingNewNote = false
-    @State private var newNoteName = ""
-    @State private var isCreating = false
-    @State private var fileToMove: String? = nil
-    @State private var fileContents: [String: String] = [:]
-    @State private var isSearching: Bool = false
-    @State private var searchText: String = ""
+    private var isoCal: Calendar {
+        var c = Calendar(identifier: .iso8601)
+        c.locale = Locale(identifier: "en_US_POSIX")
+        return c
+    }
+
+    private var weekInterval: DateInterval? {
+        Calendar.current.dateInterval(of: .weekOfYear, for: selectedDate)
+    }
+
+    private var weekLabel: String {
+        let week = isoCal.component(.weekOfYear, from: selectedDate)
+        let year = isoCal.component(.yearForWeekOfYear, from: selectedDate)
+        return "Week \(week) · \(year)"
+    }
+
+    private var visitsThisWeek: [Visit] {
+        guard let interval = weekInterval else { return [] }
+        return notion.visits
+            .filter { interval.contains($0.date) }
+            .sorted { $0.date < $1.date }
+    }
+
+    /// Visits grouped by calendar day, in day order across the week. Only
+    /// days with at least one Visit are kept (empty days aren't shown — this
+    /// is a rollup of what happened, not a full 7-day skeleton).
+    private var visitsByDay: [(date: Date, visits: [Visit])] {
+        guard let interval = weekInterval else { return [] }
+        let cal = Calendar.current
+        var days: [Date] = []
+        var cursor = interval.start
+        while cursor < interval.end {
+            days.append(cursor)
+            cursor = cal.date(byAdding: .day, value: 1, to: cursor) ?? interval.end
+        }
+        return days
+            .map { day in (date: day, visits: visitsThisWeek.filter { cal.isDate($0.date, inSameDayAs: day) }) }
+            .filter { !$0.visits.isEmpty }
+    }
 
     var body: some View {
-        Group {
-            if let filename = selectedFile {
-                // Inline editor — keeps the parent Daily/Horizons/Projects/Places tab bar visible.
-                NoteEditorView(
-                    relativePath: "\(subfolder)/\(filename)",
-                    title: filename.replacingOccurrences(of: ".md", with: ""),
-                    onBack: {
-                        selectedFile = nil
-                        loadFiles()   // refresh list in case the note was renamed or deleted
-                    }
-                )
-            } else if isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if files.isEmpty {
-                ContentUnavailableView(
-                    "No Notes",
-                    systemImage: "note.text",
-                    description: Text(emptyMessage)
-                )
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) { newNoteButton }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                if visitsThisWeek.isEmpty {
+                    emptyState
+                } else {
+                    placesVisitedSection
                 }
-            } else {
-                VStack(spacing: 0) {
-                    if isSearching {
-                        searchBar
-                        Divider()
+            }
+            .padding(16)
+        }
+        .traceBackground()
+        .sheet(item: $selectedVisit) { visit in
+            VisitDetailView(visit: visit)
+                .environment(notion)
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(weekLabel)
+                .font(.headline)
+            Text("Auto-populated from your Visits this week. For freeform writing, use Day.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "mappin.slash")
+                .font(.system(size: 32, weight: .thin))
+                .foregroundStyle(.tertiary)
+            Text("No Visits logged this week")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
+    }
+
+    private var placesVisitedSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Places Visited")
+                .traceSectionTitleStyle()
+
+            VStack(spacing: 0) {
+                ForEach(Array(visitsByDay.enumerated()), id: \.offset) { index, day in
+                    dayGroup(day.date, day.visits)
+                    if index != visitsByDay.count - 1 {
+                        Divider().padding(.leading, 16)
                     }
-                    let shown = displayedFiles
-                    if shown.isEmpty {
-                        ContentUnavailableView(
-                            "No Matching Notes",
-                            systemImage: "magnifyingglass",
-                            description: Text("No notes match your search.")
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        List(shown, id: \.self) { filename in
-                            Button {
-                                selectedFile = filename
-                            } label: {
-                                HStack {
-                                    Image(systemName: "doc.text")
-                                        .foregroundStyle(.secondary)
-                                    Text(filename.replacingOccurrences(of: ".md", with: ""))
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .foregroundStyle(.tertiary)
-                                        .font(.caption)
-                                }
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    deleteFile(filename)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                Button {
-                                    fileToMove = filename
-                                } label: {
-                                    Label("Move", systemImage: "folder.badge.arrow.right")
-                                }
-                                .tint(.indigo)
+                }
+            }
+            .traceCard()
+        }
+    }
+
+    @ViewBuilder
+    private func dayGroup(_ date: Date, _ visits: [Visit]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 4)
+
+            ForEach(visits) { visit in
+                Button { selectedVisit = visit } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "mappin.circle.fill")
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(visit.placeName)
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(.primary)
+                            // Session 48 simplification — the mockup labels each
+                            // row with an activity-style tag (e.g. "Dinner",
+                            // "Workout"); Visit doesn't carry that field, only a
+                            // linked Place, so this uses the Place's own
+                            // category as the closest available stand-in.
+                            // Flagged in this session's HANDOFF addendum.
+                            if let category = notion.places.first(where: { $0.id == visit.placeID })?.category,
+                               !category.isEmpty {
+                                Text(category)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
-                        .listStyle(.plain)
+                        Spacer()
+                        if let rating = visit.rating {
+                            Text(String(repeating: "★", count: rating))
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
-                }
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) { newNoteButton }
-                    ToolbarItem(placement: .navigationBarTrailing) { searchToggleButton }
-                }
-            }
-        }
-        .task { loadFiles() }
-        .onReceive(NotificationCenter.default.publisher(for: .traceNotesRefresh)) { _ in loadFiles() }
-        .onReceive(NotificationCenter.default.publisher(for: .traceNotesOpenPlaceNote)) { notif in
-            guard subfolder == "Notes/Places",
-                  let filename = notif.userInfo?["filename"] as? String,
-                  let placeName = notif.userInfo?["placeName"] as? String else { return }
-            // Create file if it doesn't exist, then open it
-            Task {
-                if !files.contains(filename) {
-                    try? noteStore.writeFile("Notes/Places/\(filename)", content: "# \(placeName)\n")
-                    files = (try? noteStore.listFiles(in: subfolder)) ?? []
-                }
-                await MainActor.run { selectedFile = filename }
-            }
-        }
-        .sheet(isPresented: $showingNewNote) {
-            NewNoteSheet(name: $newNoteName, isCreating: isCreating) {
-                createNote()
-            }
-        }
-        .sheet(isPresented: Binding(get: { fileToMove != nil }, set: { if !$0 { fileToMove = nil } })) {
-            if let filename = fileToMove {
-                MoveNoteSheet(filename: filename, currentSubfolder: subfolder) { destSubfolder in
-                    moveFile(filename, to: destSubfolder)
-                    fileToMove = nil
-                }
-            }
-        }
-    }
-
-    private var newNoteButton: some View {
-        Button {
-            newNoteName = ""
-            showingNewNote = true
-        } label: {
-            Image(systemName: "square.and.pencil")
-        }
-    }
-
-    private var searchToggleButton: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isSearching.toggle()
-                if !isSearching { searchText = "" }
-            }
-        } label: {
-            Image(systemName: isSearching ? "magnifyingglass.circle.fill" : "magnifyingglass")
-        }
-    }
-
-    private func createNote() {
-        let name = newNoteName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        isCreating = true
-        Task {
-            let filename = "\(name).md"
-            let path = "\(subfolder)/\(filename)"
-            try? noteStore.writeFile(path, content: "# \(name)\n")
-            await MainActor.run {
-                showingNewNote = false
-                newNoteName = ""
-                isCreating = false
-            }
-            // Reload then navigate into the new note
-            files = (try? noteStore.listFiles(in: subfolder)) ?? []
-            await MainActor.run { selectedFile = filename }
-        }
-    }
-
-    private func deleteFile(_ filename: String) {
-        try? noteStore.deleteFile("\(subfolder)/\(filename)")
-        files.removeAll { $0 == filename }
-    }
-
-    private func moveFile(_ filename: String, to destSubfolder: String) {
-        let source = "\(subfolder)/\(filename)"
-        let dest   = "\(destSubfolder)/\(filename)"
-        do {
-            try noteStore.moveFile(from: source, to: dest)
-            files.removeAll { $0 == filename }
-        } catch {
-            // silently ignore — file stays in list if move fails
-        }
-    }
-
-    private func loadFiles() {
-        isLoading = true
-        Task {
-            files = (try? noteStore.listFiles(in: subfolder)) ?? []
-            isLoading = false
-            loadFileContents()
-        }
-    }
-
-    /// Reads every file in the current subfolder into fileContents so tag chip
-    /// filtering can run synchronously against local strings.
-    private func loadFileContents() {
-        var contents: [String: String] = [:]
-        for filename in files {
-            contents[filename] = (try? noteStore.readFile("\(subfolder)/\(filename)")) ?? ""
-        }
-        fileContents = contents
-    }
-
-    // MARK: - Search helpers
-
-    /// Files visible after applying the search bar text.
-    /// #tag tokens require the tag in note content; plain tokens match filename or content.
-    /// AND logic across all tokens.
-    private var displayedFiles: [String] {
-        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return files }
-
-        let tokens = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-        let tagTokens   = tokens.filter {  $0.hasPrefix("#") }.map { $0.dropFirst().lowercased() }
-        let plainTokens = tokens.filter { !$0.hasPrefix("#") }.map { $0.lowercased() }
-
-        return files.filter { filename in
-            let content     = (fileContents[filename] ?? "").lowercased()
-            let nameLower   = filename.lowercased().replacingOccurrences(of: ".md", with: "")
-            let tagsMatch   = tagTokens.allSatisfy   { content.contains("#\($0)") }
-            let plainMatch  = plainTokens.allSatisfy { nameLower.contains($0) || content.contains($0) }
-            return tagsMatch && plainMatch
-        }
-    }
-
-    /// Inline search bar shown below the nav bar when isSearching is true.
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .font(.subheadline)
-            TextField("Search notes, #tags…", text: $searchText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.search)
-            if !searchText.isEmpty {
-                Button {
-                    searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
     }
 }
 
@@ -1333,96 +1120,14 @@ private struct FABDailyPickerSheet: View {
     }
 }
 
-// MARK: - FAB Place Note Picker Sheet
-
-private struct FABPlaceNoteSheet: View {
-    let places: [Place]
-    let onSelect: (Place) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var searchText = ""
-
-    private var filteredPlaces: [Place] {
-        if searchText.isEmpty { return places.sorted { $0.name < $1.name } }
-        return places
-            .filter { $0.name.localizedCaseInsensitiveContains(searchText) }
-            .sorted { $0.name < $1.name }
-    }
-
-    var body: some View {
-        NavigationStack {
-            List(filteredPlaces, id: \.id) { place in
-                Button {
-                    onSelect(place)
-                    dismiss()
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(place.name)
-                            .foregroundStyle(.primary)
-                        if !place.category.isEmpty {
-                            Text(place.category)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .searchable(text: $searchText, prompt: "Search places")
-            .navigationTitle("Place Note")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-}
-
-// MARK: - New note name sheet
-
-private struct NewNoteSheet: View {
-    @Binding var name: String
-    let isCreating: Bool
-    let onCreate: () -> Void
-    @Environment(\.dismiss) private var dismiss
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Note title", text: $name)
-                        .focused($focused)
-                        .onSubmit { if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { onCreate() } }
-                }
-            }
-            .navigationTitle("New Note")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    if isCreating {
-                        ProgressView().scaleEffect(0.8)
-                    } else {
-                        Button("Create") { onCreate() }
-                            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-            }
-            .onAppear { focused = true }
-        }
-        .presentationDetents([.height(180)])
-    }
-}
-
 // MARK: - Note editor (full-screen or inline for a single file)
 //
 // When `onBack` is nil  → pushed via NavigationDestination; uses .navigationTitle + .toolbar.
-// When `onBack` is set  → rendered inline inside NoteFileListTab; shows its own header row so
-//                          the parent tab bar (Daily/Horizons/Projects/Places) stays visible above.
+// When `onBack` is set  → rendered inline (GlobalSearchView's own result-detail
+//                          state, see below); shows its own header row instead.
+// Session 48 — NoteFileListTab (this struct's other inline caller) was
+// removed with the Projects/Places tabs; GlobalSearchView is now the only
+// caller left, still self-contained and untouched otherwise.
 
 struct NoteEditorView: View {
 
@@ -2163,277 +1868,6 @@ struct MoveNoteSheet: View {
         }
         .presentationDetents([.height(280)])
         .presentationDragIndicator(.visible)
-    }
-}
-
-// MARK: - Trips Placeholder Tab
-
-struct TripsPlaceholderTab: View {
-    var body: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "airplane")
-                .font(.system(size: 48, weight: .thin))
-                .foregroundStyle(.tertiary)
-            Text("Trips")
-                .font(.title3).fontWeight(.semibold)
-            Text("Trip management is coming soon.\nYour trips will appear here.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Spacer()
-        }
-        .padding()
-    }
-}
-
-// MARK: - E3: Horizons Note Tab
-
-struct HorizonsNoteTab: View {
-
-    @State private var noteStore = NoteStore.shared
-    @State private var files: [String] = []
-    @State private var isLoading = true
-    @State private var selectedFile: String? = nil
-    @State private var showingNewNote = false
-    @State private var newNoteName = ""
-    @State private var isCreating = false
-
-    private let subfolder = "Notes/Horizons"
-
-    private var isoCal: Calendar = {
-        var c = Calendar(identifier: .iso8601)
-        c.locale = Locale(identifier: "en_US_POSIX")
-        return c
-    }()
-
-    private var currentWeekFilename: String {
-        let week = isoCal.component(.weekOfYear, from: Date())
-        let year = isoCal.component(.yearForWeekOfYear, from: Date())
-        return String(format: "%d-W%02d.md", year, week)
-    }
-
-    private var currentMonthFilename: String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM"
-        return "\(f.string(from: Date())).md"
-    }
-
-    /// Files not pinned (excluding current week and month)
-    private var otherFiles: [String] {
-        files.filter { $0 != currentWeekFilename && $0 != currentMonthFilename }
-    }
-
-    private var futureFiles: [String] {
-        otherFiles.filter { isFileFuture($0) }.sorted()
-    }
-
-    private var pastFiles: [String] {
-        otherFiles.filter { !isFileFuture($0) }.sorted(by: >)
-    }
-
-    /// Returns true if the filename represents a future week or month.
-    private func isFileFuture(_ filename: String) -> Bool {
-        let name = filename.replacingOccurrences(of: ".md", with: "")
-        // Week file: YYYY-Www
-        if name.range(of: #"^\d{4}-W\d{2}$"#, options: .regularExpression) != nil {
-            let parts = name.components(separatedBy: "-W")
-            guard parts.count == 2,
-                  let year = Int(parts[0]),
-                  let week = Int(parts[1]) else { return false }
-            let currentWeek = isoCal.component(.weekOfYear, from: Date())
-            let currentYear = isoCal.component(.yearForWeekOfYear, from: Date())
-            return (year, week) > (currentYear, currentWeek)
-        }
-        // Month file: YYYY-MM
-        if name.range(of: #"^\d{4}-\d{2}$"#, options: .regularExpression) != nil {
-            let parts = name.components(separatedBy: "-")
-            guard parts.count == 2,
-                  let year = Int(parts[0]),
-                  let month = Int(parts[1]) else { return false }
-            let currentMonth = Calendar.current.component(.month, from: Date())
-            let currentYear = Calendar.current.component(.year, from: Date())
-            return (year, month) > (currentYear, currentMonth)
-        }
-        return false
-    }
-
-    var body: some View {
-        Group {
-            if let filename = selectedFile {
-                NoteEditorView(
-                    relativePath: "\(subfolder)/\(filename)",
-                    title: filename.replacingOccurrences(of: ".md", with: ""),
-                    onBack: {
-                        selectedFile = nil
-                        loadFiles()
-                    }
-                )
-            } else if isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    // Pinned section — current week + month always at top
-                    Section("This Period") {
-                        HorizonPinnedRow(
-                            filename: currentWeekFilename,
-                            icon: "calendar.badge.clock",
-                            label: weekLabel,
-                            color: .orange,
-                            exists: files.contains(currentWeekFilename)
-                        ) {
-                            selectedFile = currentWeekFilename
-                        }
-                        HorizonPinnedRow(
-                            filename: currentMonthFilename,
-                            icon: "calendar",
-                            label: monthLabel,
-                            color: .blue,
-                            exists: files.contains(currentMonthFilename)
-                        ) {
-                            selectedFile = currentMonthFilename
-                        }
-                    }
-
-                    if !futureFiles.isEmpty {
-                        Section("Next") {
-                            ForEach(futureFiles, id: \.self) { filename in
-                                horizonRow(filename)
-                            }
-                        }
-                    }
-
-                    if !pastFiles.isEmpty {
-                        Section("Past") {
-                            ForEach(pastFiles, id: \.self) { filename in
-                                horizonRow(filename)
-                            }
-                        }
-                    }
-                }
-                .listStyle(.insetGrouped)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            newNoteName = ""
-                            showingNewNote = true
-                        } label: {
-                            Image(systemName: "square.and.pencil")
-                        }
-                    }
-                }
-            }
-        }
-        .task { loadFiles() }
-        .onReceive(NotificationCenter.default.publisher(for: .traceNotesRefresh)) { _ in loadFiles() }
-        .sheet(isPresented: $showingNewNote) {
-            NewNoteSheet(name: $newNoteName, isCreating: isCreating) {
-                createNote()
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func horizonRow(_ filename: String) -> some View {
-        Button {
-            selectedFile = filename
-        } label: {
-            HStack {
-                Image(systemName: "doc.text")
-                    .foregroundStyle(.secondary)
-                Text(filename.replacingOccurrences(of: ".md", with: ""))
-                    .foregroundStyle(.primary)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.tertiary)
-                    .font(.caption)
-            }
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button(role: .destructive) {
-                try? noteStore.deleteFile("\(subfolder)/\(filename)")
-                files.removeAll { $0 == filename }
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
-    }
-
-    private var weekLabel: String {
-        let week = isoCal.component(.weekOfYear, from: Date())
-        let year = isoCal.component(.yearForWeekOfYear, from: Date())
-        return String(format: "Week %d · %d", week, year)
-    }
-
-    private var monthLabel: String {
-        Date().formatted(.dateTime.month(.wide).year())
-    }
-
-    private func loadFiles() {
-        isLoading = true
-        Task {
-            files = (try? noteStore.listFiles(in: subfolder)) ?? []
-            isLoading = false
-        }
-    }
-
-    private func createNote() {
-        let name = newNoteName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        isCreating = true
-        Task {
-            let filename = "\(name).md"
-            let path = "\(subfolder)/\(filename)"
-            try? noteStore.writeFile(path, content: "# \(name)\n")
-            await MainActor.run {
-                showingNewNote = false
-                newNoteName = ""
-                isCreating = false
-            }
-            files = (try? noteStore.listFiles(in: subfolder)) ?? []
-            await MainActor.run { selectedFile = filename }
-        }
-    }
-}
-
-// MARK: - Horizon Pinned Row
-
-private struct HorizonPinnedRow: View {
-    let filename: String
-    let icon: String
-    let label: String
-    let color: Color
-    let exists: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-                    .background(color)
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(label)
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                    Text(exists ? "Has content" : "Tap to create")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.tertiary)
-                    .font(.caption)
-            }
-            .padding(.vertical, 2)
-        }
     }
 }
 

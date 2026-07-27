@@ -104,7 +104,8 @@ struct BilliardsView: View {
         .navigationTitle("Billiards")
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
-        .lifeJumpMenu()
+        // Session 48 — .lifeJumpMenu() call removed, see FitnessView.swift's
+        // matching comment for why.
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {

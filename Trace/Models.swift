@@ -54,6 +54,13 @@ struct Person: Identifiable, Codable {
     var relationship: String?
     var relationshipStrength: String?   // "new", "active", "dormant", or "archived"
     var agenda: String?     // Newline-delimited; fetched alongside name/relationship in fetchPeople
+    /// Session 48 (Trace redesign) — bulk-fetched alongside the rest of Person
+    /// so Home's "Coming Up" birthdays list doesn't need a per-person detail
+    /// fetch. Previously this field only existed on PersonDetail (see below);
+    /// same Notion "Birthday" property, just also pulled into the lightweight
+    /// list model now. Year component is whatever Notion has on file — treat
+    /// as month/day only when computing "next occurrence."
+    var birthday: Date? = nil
 
     var isArchived: Bool { relationshipStrength == "archived" }
 }

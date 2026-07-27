@@ -22,17 +22,25 @@
 //     same layout, two skins (`DayflowWidgetSkin`). Default is Light, i.e.
 //     exactly the widget's original look, so existing placements don't
 //     change appearance on update.
-//   - THREE tap targets now (was two): the blue "+" opens Dayflow straight
-//     into the quick-add sheet in Event mode (`dayflow://addEvent`); the
-//     date block (month/weekday/number) opens the Jot capture app via a
+//   - THREE tap targets: the blue "+" opens Dayflow straight into the
+//     quick-add sheet in Event mode (`dayflow://addEvent`); the date block
+//     (month/weekday/number) opens the Jot capture app via a
 //     `dayflow://openJot` relay — iOS widgets can only launch their own
 //     containing app, so Dayflow catches this URL and immediately hands off
 //     with `UIApplication.open("jot://open")` (DayflowContentView.swift's
 //     `.onOpenURL`; the `jot` scheme is already registered on the Jot target
 //     for JotWidget). Expect a sub-second Dayflow flash on the way — flagged
-//     to David before building, accepted. Everywhere else on the card just
-//     opens Dayflow (`dayflow://open`). The `dayflow` scheme lives on the
-//     Dayflow APP target's Info tab (not this widget target).
+//     to David before building, accepted.
+//   - **Everywhere else on the card (2026-07-26): opens Fantastical, not
+//     Dayflow.** David's ask — he had no quick way to reach Fantastical (his
+//     preferred calendar app) from the widget, and was fine trading away the
+//     "tap the card to open Dayflow" shortcut for it since Dayflow is always
+//     reachable from the home screen anyway. Same relay pattern as Jot:
+//     `.widgetURL(dayflow://openCalendar)`, Dayflow's `.onOpenURL` catches it
+//     and hands off to Fantastical (`fantastical2://`), falling back to
+//     Apple's own Calendar app (`calshow://`) if Fantastical isn't
+//     installed. The `dayflow` scheme lives on the Dayflow APP target's Info
+//     tab (not this widget target).
 //
 // **Gap-tile logic is intentionally DUPLICATED here, not shared**, from
 // DayflowAgendaSection.swift's private `timedRows(now:)`/`gapLabel(_:)`/
@@ -55,33 +63,51 @@
 // background. The big date/weekday block and "TODAY" label are left showing
 // today's real date either way — only the row itself is tagged.
 //
-// **Weather (added 2026-07-25)** — `DayflowProvider.fetchWeather()`:
-//   - WeatherKit `WeatherService`, queried for `.current` + `.daily`; shows
-//     today's high/low in the locale's unit plus the current condition's
-//     `symbolName` as a multicolor SF Symbol.
+// **Weather (added 2026-07-25, switched off WeatherKit 2026-07-26)** —
+// `DayflowProvider.fetchWeather()`:
+//   - **Source is now Open-Meteo (open-meteo.com), not WeatherKit.** David
+//     hit a persistent `WDSJWTAuthenticatorServiceListener Code=2` WeatherKit
+//     auth error that traced back to Apple's Paid Applications Agreement
+//     needing to be fully signed (banking + tax info) even though Dayflow is
+//     free — David didn't want to add a bank account or sign a W-9 just to
+//     unblock a free app's weather widget, so this swaps in a free,
+//     no-API-key, no-account REST API instead. Open-Meteo's non-commercial
+//     free tier is 10,000 calls/day; a single-user widget on a 15–30 min
+//     cache cycle is nowhere close. See `fetchOpenMeteoWeather(for:)` below
+//     for the request/response handling and `sfSymbolName(forWeatherCode:isDay:)`
+//     for the WMO-code → SF Symbol mapping (Open-Meteo returns a numeric WMO
+//     weather code, not an SF Symbol name the way WeatherKit's
+//     `CurrentWeather.symbolName` did, so this maps it by hand).
+//   - Shows today's high/low, converted from Open-Meteo's Celsius response
+//     into the locale's unit (same `UnitTemperature(forLocale:)` conversion
+//     WeatherKit's version used) plus a multicolor SF Symbol for the current
+//     condition.
 //   - Location comes from `CLLocationManager().location` — the system's
 //     cached fix, which a widget process gets when the CONTAINING APP holds
 //     location authorization and this widget's Info.plist has
 //     `NSWidgetWantsLocation` = YES. Widgets can't prompt for permission
 //     themselves; DayflowApp.swift now primes when-in-use authorization at
-//     app launch (see `DayflowLocationPrimer` there).
+//     app launch (see `DayflowLocationPrimer` there). Unchanged by the
+//     Open-Meteo switch — Open-Meteo just needs a lat/long, same as before.
 //   - Cached in the `group.com.david.trace` App Group UserDefaults (suite
 //     name inlined below rather than referencing AppGroup.swift — that file
 //     isn't in this widget target's membership, and one string constant
 //     isn't worth adding it): fresh within 30 min → no network call at all;
-//     on any failure (no location fix, offline, WeatherKit error) a stale
+//     on any failure (no location fix, offline, network/API error) a stale
 //     cache up to 6 h old is shown rather than nothing; past that the
 //     weather block simply disappears (layout collapses gracefully — TODAY
 //     keeps the header line to itself).
-//   - MANUAL XCODE SETUP this needs (one-time, David-side): (1) WeatherKit
-//     capability on the DayflowWidget EXTENSION target (Signing &
-//     Capabilities → + Capability → WeatherKit; automatic signing updates
-//     the App ID), (2) `NSWidgetWantsLocation` = YES in the DayflowWidget
-//     target's Info.plist, (3) `NSLocationWhenInUseUsageDescription` string
-//     on the DAYFLOW APP target's Info tab, (4) launch Dayflow once and
-//     accept the location prompt, (5) optionally confirm the App Group
-//     `group.com.david.trace` is also on the widget extension target — only
-//     the weather CACHE depends on it; live fetches work without it.
+//   - MANUAL XCODE SETUP this needs (one-time, David-side): (1)
+//     `NSWidgetWantsLocation` = YES in the DayflowWidget target's Info.plist,
+//     (2) `NSLocationWhenInUseUsageDescription` string on the DAYFLOW APP
+//     target's Info tab, (3) launch Dayflow once and accept the location
+//     prompt, (4) optionally confirm the App Group `group.com.david.trace`
+//     is also on the widget extension target — only the weather CACHE
+//     depends on it; live fetches work without it. **The WeatherKit
+//     capability is no longer required** — David can remove it from the
+//     DayflowWidget extension target's Signing & Capabilities if he wants to
+//     tidy up, but leaving it there is harmless too since nothing calls it
+//     anymore.
 //
 // **Known gap, flagged rather than silently handled**: DayflowAgendaSection
 // filters out a small list of placeholder/never-attend meeting titles
@@ -105,7 +131,6 @@ import WidgetKit
 import SwiftUI
 import EventKit
 import AppIntents
-import WeatherKit
 import CoreLocation
 
 // MARK: - Appearance configuration (Edit Widget → Appearance)
@@ -326,8 +351,8 @@ struct DayflowProvider: AppIntentTimelineProvider {
     /// keeps the manager creation/read on the main thread, matching how
     /// `DayflowLocationPrimer` (DayflowApp.swift) and every other
     /// `CLLocationManager` use in this codebase already runs. Everything
-    /// else in this function (WeatherKit call, cache read/write) is
-    /// actor-agnostic, so this costs nothing.
+    /// else in this function (the Open-Meteo network call, cache
+    /// read/write) is actor-agnostic, so this costs nothing.
     /// **TEMPORARY debug return value added 2026-07-25** — see
     /// `DayflowWidgetEntry.weatherDebug`'s comment for why (no device
     /// connection, TestFlight-only, can't read Console.app). Now returns the
@@ -364,22 +389,7 @@ struct DayflowProvider: AppIntentTimelineProvider {
             return (stale, debug)
         }
         do {
-            let (current, daily) = try await WeatherService.shared.weather(
-                for: location, including: .current, .daily
-            )
-            let unit = UnitTemperature(forLocale: .current)
-            let calendar = Calendar.current
-            guard let today = daily.first(where: { calendar.isDateInToday($0.date) }) ?? daily.first else {
-                let stale = cachedWeather(maxAge: weatherStaleCapSeconds)
-                storeDebugText("no-daily-entry")
-                return (stale, "no-daily-entry")
-            }
-            let weather = DayflowWidgetWeather(
-                hi: Int(today.highTemperature.converted(to: unit).value.rounded()),
-                lo: Int(today.lowTemperature.converted(to: unit).value.rounded()),
-                symbolName: current.symbolName,
-                fetchedAt: Date()
-            )
+            let weather = try await fetchOpenMeteoWeather(for: location)
             storeWeather(weather)
             storeDebugText("live-ok hi:\(weather.hi) lo:\(weather.lo)")
             return (weather, "live-ok")
@@ -392,6 +402,97 @@ struct DayflowProvider: AppIntentTimelineProvider {
             storeDebugText("wx-err full: \(String(describing: error))")
             let errText = String(describing: error).prefix(160)
             return (stale, stale != nil ? "wx-err,stale-cache" : "wx-err:\(errText)")
+        }
+    }
+
+    /// **Added 2026-07-26, replaces the old WeatherKit call.** Open-Meteo
+    /// (open-meteo.com) — free, no API key, no account, no Apple Paid
+    /// Applications Agreement required. See the file header's Weather
+    /// section for why this was swapped in. Always requests Celsius from
+    /// the API and converts client-side to the locale's unit, matching
+    /// exactly how the old WeatherKit path converted its
+    /// `Measurement<UnitTemperature>` values — so the rest of the pipeline
+    /// (cache struct, `weatherView`'s rendering) didn't need to change.
+    private static func fetchOpenMeteoWeather(for location: CLLocation) async throws -> DayflowWidgetWeather {
+        var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
+        components.queryItems = [
+            URLQueryItem(name: "latitude", value: String(location.coordinate.latitude)),
+            URLQueryItem(name: "longitude", value: String(location.coordinate.longitude)),
+            URLQueryItem(name: "current", value: "weather_code,is_day"),
+            URLQueryItem(name: "daily", value: "temperature_2m_max,temperature_2m_min"),
+            URLQueryItem(name: "temperature_unit", value: "celsius"),
+            URLQueryItem(name: "timezone", value: "auto"),
+            URLQueryItem(name: "forecast_days", value: "1"),
+        ]
+        guard let url = components.url else { throw OpenMeteoError.badURL }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw OpenMeteoError.badResponse(statusCode: code)
+        }
+        let decoded = try JSONDecoder().decode(OpenMeteoResponse.self, from: data)
+        guard let hiC = decoded.daily.temperature_2m_max.first,
+              let loC = decoded.daily.temperature_2m_min.first
+        else {
+            throw OpenMeteoError.missingDailyData
+        }
+        let unit = UnitTemperature(forLocale: .current)
+        let hi = Measurement(value: hiC, unit: UnitTemperature.celsius).converted(to: unit).value.rounded()
+        let lo = Measurement(value: loC, unit: UnitTemperature.celsius).converted(to: unit).value.rounded()
+        return DayflowWidgetWeather(
+            hi: Int(hi),
+            lo: Int(lo),
+            symbolName: Self.sfSymbolName(forWeatherCode: decoded.current.weatherCode, isDay: decoded.current.isDay == 1),
+            fetchedAt: Date()
+        )
+    }
+
+    private enum OpenMeteoError: Error {
+        case badURL
+        case badResponse(statusCode: Int)
+        case missingDailyData
+    }
+
+    /// Minimal decode target — only pulls the fields this widget actually
+    /// uses out of Open-Meteo's response.
+    private struct OpenMeteoResponse: Codable {
+        struct Current: Codable {
+            let weatherCode: Int
+            let isDay: Int
+            enum CodingKeys: String, CodingKey {
+                case weatherCode = "weather_code"
+                case isDay = "is_day"
+            }
+        }
+        struct Daily: Codable {
+            let temperature_2m_max: [Double]
+            let temperature_2m_min: [Double]
+        }
+        let current: Current
+        let daily: Daily
+    }
+
+    /// Maps Open-Meteo's numeric WMO weather codes
+    /// (https://open-meteo.com/en/docs — "WMO Weather interpretation
+    /// codes") to an SF Symbol name, multicolor-rendered the same way
+    /// WeatherKit's own `CurrentWeather.symbolName` was in `weatherView`.
+    /// Not an exhaustive 1:1 of every WMO code — collapses adjacent
+    /// intensities (e.g. light/moderate/dense drizzle) onto one icon, which
+    /// is the same level of detail a glance at a home screen widget needs.
+    private static func sfSymbolName(forWeatherCode code: Int, isDay: Bool) -> String {
+        switch code {
+        case 0: return isDay ? "sun.max.fill" : "moon.stars.fill"
+        case 1, 2: return isDay ? "cloud.sun.fill" : "cloud.moon.fill"
+        case 3: return "cloud.fill"
+        case 45, 48: return "cloud.fog.fill"
+        case 51, 53, 55: return "cloud.drizzle.fill"
+        case 56, 57, 66, 67: return "cloud.sleet.fill"
+        case 61, 63, 80, 81: return "cloud.rain.fill"
+        case 65, 82: return "cloud.heavyrain.fill"
+        case 71, 73, 77, 85: return "cloud.snow.fill"
+        case 75, 86: return "snow"
+        case 95, 96, 99: return "cloud.bolt.rain.fill"
+        default: return "cloud.fill"
         }
     }
 
@@ -629,7 +730,12 @@ struct DayflowWidgetView: View {
             .padding(13)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .containerBackground(skin.background, for: .widget)
-            .widgetURL(URL(string: "dayflow://open"))
+            // Changed 2026-07-26 from `dayflow://open` — David's ask: the
+            // card's default tap now relays to Fantastical instead of
+            // opening Dayflow (see file header). The "+" and date-block
+            // Link()s above still claim their own regions and are
+            // unaffected by this.
+            .widgetURL(URL(string: "dayflow://openCalendar"))
 
             Link(destination: URL(string: "dayflow://addEvent")!) {
                 Text("+")

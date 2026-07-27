@@ -413,7 +413,11 @@ class NotionService {
             let relationship = select(props["Relationship"])
             let relationshipStrength = select(props["Relationship Strength"])
             let agenda = richText(props["Agenda"])
-            return Person(id: id, name: name, relationship: relationship, relationshipStrength: relationshipStrength, agenda: agenda)
+            // Session 48 — bulk birthday pull for Home's "Coming Up" list (see
+            // Person.birthday's own comment in Models.swift). Same "Birthday"
+            // property fetchPersonDetail() already reads individually below.
+            let birthday = dateProp(props["Birthday"])
+            return Person(id: id, name: name, relationship: relationship, relationshipStrength: relationshipStrength, agenda: agenda, birthday: birthday)
         }
     }
 

@@ -2,238 +2,227 @@ import SwiftUI
 import CoreLocation
 import Combine
 
-// MARK: - Time-of-day theme
-
-private enum HomeTheme {
-    case morning, afternoon, evening
-
-    static var current: HomeTheme {
-        let hour = Calendar.current.component(.hour, from: Date())
-        switch hour {
-        case 5..<12: return .morning
-        case 12..<17: return .afternoon
-        default:     return .evening
-        }
-    }
-
-    var greeting: String {
-        switch self {
-        case .morning:   return "Good morning"
-        case .afternoon: return "Good afternoon"
-        case .evening:   return "Good evening"
-        }
-    }
-
-    // Teal / Amber / Purple — lightest fill
-    var headerBg: Color {
-        switch self {
-        case .morning:   return Color(red: 0.882, green: 0.961, blue: 0.933)
-        case .afternoon: return Color(red: 0.980, green: 0.933, blue: 0.855)
-        case .evening:   return Color(red: 0.933, green: 0.929, blue: 0.996)
-        }
-    }
-
-    var headerTitle: Color {
-        switch self {
-        case .morning:   return Color(red: 0.016, green: 0.204, blue: 0.173)
-        case .afternoon: return Color(red: 0.255, green: 0.141, blue: 0.008)
-        case .evening:   return Color(red: 0.149, green: 0.129, blue: 0.361)
-        }
-    }
-
-    var headerSub: Color {
-        switch self {
-        case .morning:   return Color(red: 0.059, green: 0.431, blue: 0.337)
-        case .afternoon: return Color(red: 0.522, green: 0.310, blue: 0.043)
-        case .evening:   return Color(red: 0.325, green: 0.290, blue: 0.718)
-        }
-    }
-}
-
 // MARK: - HomeView
+//
+// Session 48 (Trace redesign) — full rebuild per Session 47 addendum's locked
+// mockup (trace-redesign-mockup-v7.html, "Home" frame). Removed entirely per
+// that addendum: the time-of-day greeting theme, the Oura widget, Apple Watch
+// Activity Rings, the Things integration, the Horizons week/month note
+// helpers, and the second Calendar/Daily-note pass (Notes > Daily already
+// owns that data). Also dropped, following the mockup itself rather than the
+// addendum prose (the mockup is the source of truth per the Session 48
+// starter prompt): the "Next Up" calendar-events card and the
+// nearby-geofenced-place card — neither appears anywhere in v7's Home frame.
+//
+// The FAB is no longer owned by this view — ContentView.swift now shows its
+// existing global quick-capture menu on every tab including Home (previously
+// Home had no FAB at all). The mockup's own sketch of a dedicated
+// tap-for-text/hold-for-voice natural-language capture FAB is NOT built here:
+// Session 47's addendum explicitly flags that parsing approach as an
+// undecided open question "for whenever this gets built."
+//
+// Session 48 follow-up (same day, after David used the first build) —
+// reworked per his direct feedback:
+//   - Recent was one long merged Visits+Interactions feed and monopolized the
+//     screen; it's now two short side-by-side lists (Visits, Interactions),
+//     each capped at 5 with a chevron/"See All" that opens the existing full
+//     screen for that type (VisitsView as a sheet, matching how PlacesView
+//     already presents it; PeopleView's Interactions segment as a sheet).
+//     The 30-day back-window is gone — capping by count made it redundant.
+//   - Coming Up's "N people have something queued" row was a bug, not just a
+//     thin design: it only ever opened agendaPeople.first regardless of N.
+//     Now each queued person is its own row (mirroring how birthdays already
+//     render), with a one-line preview of their first agenda item instead of
+//     just a name list.
+//   - This Week's tiles are now tappable (jump straight to Fitness/Billiards)
+//     and each gained a lifetime line — Orange Theory's total class count,
+//     Billiards' overall 8-Ball/9-Ball win-loss record (reusing the same
+//     format/result filter BilliardsView.swift already computes). The
+//     separate Jump To grid is removed — redundant now that the tiles
+//     themselves are the jump targets, and it frees vertical space.
+//   - Dropped the "placement TBD" caption from the stat tiles — now that
+//     they're tappable and clearly placed/usable, it read as clutter rather
+//     than a real open question. The underlying question (do Fitness/
+//     Billiards deserve their own tab someday) is unchanged and still live,
+//     just not restated in the UI itself.
+//
+// All styling routes through TraceSkin.
 
 struct HomeView: View {
     @Environment(NotionService.self) private var notion
     @Environment(LocationManager.self) private var locationManager
 
-    @State private var selectedVisit: Visit?
-    @State private var navigateToPlace: Place?
-    @State private var calPageIndex = 0
-    @State private var selectedCalEvent: NextCalendarEvent? = nil
-    @State private var notePlanContent: String = ""
-    @State private var notePlanLoaded: Bool = false
-    @State private var weekNoteContent: String = ""
-    @State private var monthNoteContent: String = ""
-    @State private var showNotesView: Bool = false
-    @State private var showingMoveDailyNote: Bool = false
-    @State private var showingVisitsView: Bool = false
-    @State private var showingQuickAppend: Bool = false
-    @State private var showingWeekNote: Bool = false
-    @State private var showingMonthNote: Bool = false
-    @State private var notePageIndex: Int = 0
+    private enum HomeSegment: String, CaseIterable { case recent = "Recent", comingUp = "Coming Up" }
 
-    private var oura: OuraService { OuraService.shared }
-    private var cal: CalendarService { CalendarService.shared }
-    private var things: ThingsService { ThingsService.shared }
-    private var healthKit: HealthKitService { HealthKitService.shared }
-    private let theme = HomeTheme.current
+    @State private var homeSegment: HomeSegment = .recent
+    @State private var selectedVisit: Visit? = nil
+    @State private var selectedPerson: Person? = nil
+    /// Session 48 follow-up — which tab selectedPerson's sheet should open to.
+    /// Birthday rows leave this false (default Info tab); Coming Up's agenda
+    /// rows set it true first so the sheet lands on the person's Log tab
+    /// (Agenda + Interactions) instead of the top of their card.
+    @State private var openPersonToAgenda = false
+    /// Session 48 follow-up — tapping a Recent > Interactions row now opens
+    /// the interaction itself (InteractionDetailSheet, promoted to internal
+    /// visibility in PersonDetailView.swift for this) rather than the whole
+    /// person's card, per David's request.
+    @State private var selectedInteraction: Interaction? = nil
+    @State private var navigateToFitness = false
+    @State private var navigateToBilliards = false
+    @State private var showingAllVisits = false
+    @State private var showingAllInteractions = false
 
-    // MARK: - Next Up items (calendar + bedtime merged)
+    private var cal: Calendar { Calendar.current }
 
-    private enum NextUpItem: Identifiable {
-        case event(NextCalendarEvent)
-        case bedtime(OuraSleepTime)
-
-        var id: String {
-            switch self {
-            case .event(let e):   return "event-\(e.startDate.timeIntervalSince1970)"
-            case .bedtime:        return "bedtime"
-            }
-        }
-
-        var sortDate: Date {
-            switch self {
-            case .event(let e):   return e.startDate
-            case .bedtime(let s): return s.bedtimeDate ?? Date.distantFuture
-            }
-        }
-    }
-
-    /// Merged, time-sorted list of upcoming calendar events + tonight's bedtime.
-    /// After noon: uses Oura recommendation if available, otherwise 10:30 PM default.
-    private var nextUpItems: [NextUpItem] {
-        var items: [NextUpItem] = cal.upcomingEvents.map { .event($0) }
-        let hour = Calendar.current.component(.hour, from: Date())
-        // Show bedtime from 4 PM onward; keep showing even after it passes (red "past bedtime")
-        // until midnight so the reminder remains visible late at night.
-        if hour >= 16 || hour < 2 {
-            let st = oura.sleepTime ?? OuraSleepTime.userDefault()
-            if st.bedtimeDate != nil {
-                items.append(.bedtime(st))
-            }
-        }
-        return items.sorted { $0.sortDate < $1.sortDate }
-    }
-
-    // MARK: Computed data
-
-    private var nearbyPlace: Place? {
-        guard let userLoc = locationManager.location else { return nil }
-        return notion.places.first { place in
-            guard !place.geofenceExcluded && place.status != "Archived" else { return false }
-            let radius = Double(place.geofenceRadius ?? (place.frequent ? 200 : 150))
-            return CLLocation(latitude: place.latitude, longitude: place.longitude)
-                .distance(from: userLoc) <= radius
-        }
-    }
+    // MARK: - Recent — Visits and Interactions, each its own short list
 
     private var recentVisits: [Visit] {
-        Array(notion.visits.sorted { $0.date > $1.date }.prefix(3))
+        notion.visits.sorted { $0.date > $1.date }
     }
 
-    private func companions(for visit: Visit) -> [Person] {
-        notion.people.filter { visit.peopleIDs.contains($0.id) }
+    private var recentInteractionsList: [Interaction] {
+        notion.recentInteractions.sorted { $0.date > $1.date }
     }
 
-    private func placeFor(_ visit: Visit) -> Place? {
-        notion.places.first { $0.id == visit.placeID }
+    private func person(for interaction: Interaction) -> Person? {
+        interaction.personIDs.compactMap { id in notion.people.first { $0.id == id } }.first
     }
 
-    private func placeVisits(_ place: Place) -> [Visit] {
-        notion.visits.filter { $0.placeID == place.id }.sorted { $0.date > $1.date }
+    // MARK: - Coming Up — birthdays + agenda-queued people, ~30 days forward
+
+    private struct UpcomingBirthday: Identifiable {
+        let person: Person
+        let nextOccurrence: Date
+        var id: String { person.id }
+        var daysAway: Int {
+            Calendar.current.dateComponents(
+                [.day],
+                from: Calendar.current.startOfDay(for: Date()),
+                to: nextOccurrence
+            ).day ?? 0
+        }
     }
 
-    private func avgRating(_ place: Place) -> Double? {
-        let r = notion.visits.filter { $0.placeID == place.id }.compactMap { $0.rating }
-        guard !r.isEmpty else { return nil }
-        return Double(r.reduce(0, +)) / Double(r.count)
+    /// Next occurrence of each person's birthday (month/day only — the stored
+    /// year is whatever Notion has on file, not meaningful here), rolled
+    /// forward a year if this year's date has already passed. Capped to a
+    /// ~30-day forward window.
+    private var upcomingBirthdays: [UpcomingBirthday] {
+        let today = cal.startOfDay(for: Date())
+        return notion.people.compactMap { person -> UpcomingBirthday? in
+            guard let birthday = person.birthday else { return nil }
+            var comps = cal.dateComponents([.month, .day], from: birthday)
+            comps.year = cal.component(.year, from: today)
+            guard let thisYear = cal.date(from: comps) else { return nil }
+            var next = thisYear
+            if next < today {
+                comps.year = (comps.year ?? 0) + 1
+                guard let nextYear = cal.date(from: comps) else { return nil }
+                next = nextYear
+            }
+            return UpcomingBirthday(person: person, nextOccurrence: next)
+        }
+        .filter { $0.daysAway <= 30 }
+        .sorted { $0.nextOccurrence < $1.nextOccurrence }
     }
 
-    // MARK: Body
+    private var agendaPeople: [Person] {
+        notion.people
+            .filter { !($0.agenda ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .sorted { $0.name < $1.name }
+    }
+
+    /// First non-empty line of a person's agenda field, as a row preview.
+    /// `Person.agenda` is newline-delimited (see Models.swift).
+    private func agendaPreview(_ person: Person) -> String {
+        (person.agenda ?? "")
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .first
+            .map(String.init) ?? "Something queued"
+    }
+
+    // MARK: - This Week stats
+
+    private var thisWeekRange: Range<Date>? {
+        cal.dateInterval(of: .weekOfYear, for: Date()).map { $0.start..<$0.end }
+    }
+
+    private var thisWeekOTWorkouts: [Workout] {
+        guard let range = thisWeekRange else { return [] }
+        return notion.workouts.filter { $0.isOTF && range.contains($0.date) }.sorted { $0.date > $1.date }
+    }
+
+    private var thisWeekBilliards: [BilliardsSession] {
+        guard let range = thisWeekRange else { return [] }
+        return notion.billiardsSessions.filter { range.contains($0.date) }.sorted { $0.date > $1.date }
+    }
+
+    private var lifetimeOTCount: Int {
+        notion.workouts.filter { $0.isOTF }.count
+    }
+
+    /// Overall 8-Ball/9-Ball win-loss record across all logged sessions —
+    /// same format/result filter BilliardsView.swift already uses for its own
+    /// stats header, reused here rather than re-deriving the logic.
+    private var lifetimeBilliardsRecord: String {
+        let eightW = notion.billiardsSessions.filter { $0.format == "8-Ball" && $0.result == "Win" }.count
+        let eightL = notion.billiardsSessions.filter { $0.format == "8-Ball" && $0.result == "Loss" }.count
+        let nineW  = notion.billiardsSessions.filter { $0.format == "9-Ball" && $0.result == "Win" }.count
+        let nineL  = notion.billiardsSessions.filter { $0.format == "9-Ball" && $0.result == "Loss" }.count
+        return "8-Ball \(eightW)-\(eightL) · 9-Ball \(nineW)-\(nineL)"
+    }
+
+    // MARK: - Body
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 0) {
-                    headerSection
-
-                    VStack(spacing: 10) {
-                        ouraSection
-                        activityRingsSection
-                        calendarSection
-                        noteSection
-                        thingsSection
-                        placeSection
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 28)
+                VStack(alignment: .leading, spacing: 20) {
+                    header
+                    recentComingUpSection
+                    thisWeekSection
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .padding(.bottom, 28)
             }
-            .scrollContentBackground(.hidden)
-            .background(Color(UIColor.systemGroupedBackground))
+            .traceBackground()
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
                         NotificationCenter.default.post(name: .traceOpenLeftDrawer, object: nil)
                     } label: {
-                        Image(systemName: "line.3.horizontal")
-                            .foregroundStyle(theme.headerTitle)
+                        Image(systemName: "line.3.horizontal").foregroundStyle(Color.traceInk)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         NotificationCenter.default.post(name: .traceOpenRightDrawer, object: nil)
                     } label: {
-                        Image(systemName: "tray")
-                            .foregroundStyle(theme.headerTitle)
+                        Image(systemName: "tray").foregroundStyle(Color.traceInk)
                     }
                 }
             }
-            .navigationDestination(item: $navigateToPlace) { place in
-                PlaceDetailView(place: place)
-                    .environment(NotionService.shared)
-                    .environment(LocationManager.shared)
+            .navigationDestination(isPresented: $navigateToFitness) {
+                FitnessView().environment(notion)
+            }
+            .navigationDestination(isPresented: $navigateToBilliards) {
+                BilliardsView().environment(notion)
             }
         }
         .task {
-            await oura.fetchToday()
-            await cal.requestAndFetch()
-            await things.fetch()
             await notion.fetchVisits()
-            await healthKit.requestAuthorizationAndFetch()
-            if let content = try? NoteStore.shared.readDailyNote() {
-                notePlanContent = content
+            await notion.fetchRecentInteractions()
+            await notion.fetchWorkouts()
+            if notion.billiardsSessions.isEmpty {
+                await notion.fetchBilliardsSessions()
             }
-            notePlanLoaded = true
-            weekNoteContent = (try? NoteStore.shared.readFile(weekNoteRelativePath)) ?? ""
-            monthNoteContent = (try? NoteStore.shared.readFile(monthNoteRelativePath)) ?? ""
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             Task {
-                await cal.fetchUpcomingEvents()
-                await things.fetch()
                 await notion.fetchVisits()
-                await oura.fetchToday()
-                await healthKit.fetchToday()
-                if let content = try? NoteStore.shared.readDailyNote() {
-                    notePlanContent = content
-                }
-                weekNoteContent = (try? NoteStore.shared.readFile(weekNoteRelativePath)) ?? ""
-                monthNoteContent = (try? NoteStore.shared.readFile(monthNoteRelativePath)) ?? ""
-            }
-        }
-        // Reload preview whenever the daily note changes (e.g. from NotesView or capture drawer).
-        .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { _ in
-            if let content = try? NoteStore.shared.readDailyNote() {
-                notePlanContent = content
-            }
-        }
-        .onReceive(Timer.publish(every: 900, on: .main, in: .common).autoconnect()) { _ in
-            Task {
-                await oura.fetchToday()
-                await healthKit.fetchToday()
+                await notion.fetchRecentInteractions()
             }
         }
         .sheet(item: $selectedVisit) { visit in
@@ -241,24 +230,48 @@ struct HomeView: View {
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
         }
+        .sheet(item: $selectedPerson) { person in
+            PersonDetailView(personID: person.id, personName: person.name, openToAgenda: openPersonToAgenda)
+                .environment(NotionService.shared)
+        }
+        .sheet(item: $selectedInteraction) { interaction in
+            InteractionDetailSheet(interaction: interaction)
+        }
+        // "See All" destinations for the two Recent columns — both presented
+        // as sheets rather than pushes, matching how VisitsView is already
+        // shown elsewhere (PlacesView presents it as a sheet too, since it
+        // owns its own internal NavigationStack). PeopleView doesn't own one
+        // itself (ContentView supplies it for the People tab), so it's
+        // wrapped here for a "Done" toolbar button.
+        .sheet(isPresented: $showingAllVisits) {
+            VisitsView().environment(notion)
+        }
+        .sheet(isPresented: $showingAllInteractions) {
+            NavigationStack {
+                PeopleView()
+                    .environment(notion)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showingAllInteractions = false }
+                        }
+                    }
+            }
+        }
     }
 
-    // MARK: – Header
+    // MARK: - Header
 
-    private var headerSection: some View {
+    private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(dateString)
-                .font(.subheadline)
-                .foregroundStyle(theme.headerSub)
-            Text("\(theme.greeting), David")
-                .font(.title2.weight(.medium))
-                .foregroundStyle(theme.headerTitle)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(Color.traceSecondary)
+                .textCase(.uppercase)
+            Text("Home")
+                .font(.system(size: 27, weight: .bold))
+                .foregroundStyle(Color.traceInk)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 16)
-        .background(theme.headerBg)
     }
 
     private var dateString: String {
@@ -267,1158 +280,276 @@ struct HomeView: View {
         return f.string(from: Date())
     }
 
-    // MARK: – Oura
+    // MARK: - Recent / Coming Up
 
-    @ViewBuilder
-    private var ouraSection: some View {
-        if let err = oura.lastError, oura.sleep == nil {
-            sectionCard {
-                HStack {
-                    Image(systemName: "exclamationmark.circle")
-                        .foregroundStyle(.secondary)
-                    Text(err)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 5) {
-                sectionLabel("Oura ring")
-                HStack(spacing: 7) {
-                    ouraTile(
-                        label: "Sleep",
-                        score: oura.sleep?.score,
-                        detail: OuraService.formatDuration(oura.sleep?.totalSleepDuration)
-                             ?? oura.sleep?.lowestHeartRate.map { "HR \($0) bpm" }
-                    )
-                    ouraTile(
-                        label: "Readiness",
-                        score: oura.readiness?.score,
-                        detail: oura.sleep?.averageHrv.map { "HRV \($0)ms" }
-                             ?? oura.sleep?.lowestHeartRate.map { "HR \($0) bpm" }
-                    )
-                }
+    private var recentComingUpSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TraceSegmentedControl(options: HomeSegment.allCases, label: { $0.rawValue }, selection: $homeSegment)
+            if homeSegment == .recent {
+                recentSplitRow
+            } else {
+                comingUpCard.traceCard()
             }
         }
     }
 
-    /// Oura score → (background, label, value) color triple matching Oura's app palette.
-    private func ouraTileColors(_ score: Int?) -> (bg: Color, label: Color, value: Color) {
-        guard let score else {
-            // No data — neutral
-            return (
-                Color(UIColor.secondarySystemGroupedBackground),
-                Color.secondary.opacity(0.6),
-                Color.secondary.opacity(0.3)
+    private var recentSplitRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            recentColumn(
+                title: "Visits",
+                icon: "mappin.circle.fill",
+                iconColor: .teal,
+                items: Array(recentVisits.prefix(5)),
+                rowTitle: { $0.placeName },
+                rowDate: { $0.date },
+                onTap: { selectedVisit = $0 },
+                onSeeAll: { showingAllVisits = true }
             )
-        }
-        if score >= 85 {
-            // Optimal — green
-            return (
-                Color(red: 0.871, green: 0.957, blue: 0.925),
-                Color(red: 0.063, green: 0.435, blue: 0.310),
-                Color(red: 0.012, green: 0.220, blue: 0.157)
-            )
-        } else if score >= 70 {
-            // Good — amber
-            return (
-                Color(red: 0.997, green: 0.953, blue: 0.867),
-                Color(red: 0.580, green: 0.380, blue: 0.020),
-                Color(red: 0.380, green: 0.230, blue: 0.008)
-            )
-        } else {
-            // Pay attention — red
-            return (
-                Color(red: 0.998, green: 0.898, blue: 0.898),
-                Color(red: 0.680, green: 0.130, blue: 0.130),
-                Color(red: 0.480, green: 0.060, blue: 0.060)
+            recentColumn(
+                title: "Interactions",
+                icon: "person.crop.circle.fill",
+                iconColor: .purple,
+                items: Array(recentInteractionsList.prefix(5)),
+                rowTitle: { person(for: $0)?.name ?? $0.summary },
+                rowDate: { $0.date },
+                // Session 48 follow-up — opens the interaction itself now,
+                // not the person's whole card (see selectedInteraction above).
+                onTap: { selectedInteraction = $0 },
+                onSeeAll: { showingAllInteractions = true }
             )
         }
     }
 
-    private func ouraTile(label: String, score: Int?, detail: String?) -> some View {
-        let (bg, labelColor, valueColor) = ouraTileColors(score)
-        return VStack(alignment: .center, spacing: 2) {
-            Text(label)
-                .font(.system(size: 10))
-                .foregroundStyle(labelColor)
-            Group {
-                if let score {
-                    Text("\(score)")
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundStyle(valueColor)
-                } else {
-                    Text("–")
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundStyle(labelColor)
-                }
-            }
-            Text(detail ?? " ")
-                .font(.system(size: 9))
-                .foregroundStyle(labelColor)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
-        .background(bg, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    // MARK: – Activity Rings (Apple Watch / HealthKit)
-
-    @ViewBuilder
-    private var activityRingsSection: some View {
-        if healthKit.isAvailable {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    sectionLabel("Activity")
-                    Spacer()
-                    Button {
-                        UIApplication.shared.open(URL(string: "x-apple-health://")!)
-                    } label: {
-                        Image(systemName: "heart.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+    /// Shared shape for both Recent columns — a short (capped) list in its
+    /// own card, a title row with a "See All" chevron, and compact rows
+    /// (icon + title + relative date) sized to sit side by side on one
+    /// screen width. Generic over any Identifiable item so Visit and
+    /// Interaction (different types) can share this instead of duplicating
+    /// near-identical column views.
+    private func recentColumn<Item: Identifiable>(
+        title: String,
+        icon: String,
+        iconColor: Color,
+        items: [Item],
+        rowTitle: @escaping (Item) -> String,
+        rowDate: @escaping (Item) -> Date,
+        onTap: @escaping (Item) -> Void,
+        onSeeAll: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.traceSecondary)
+                    .textCase(.uppercase)
+                Spacer(minLength: 4)
+                Button(action: onSeeAll) {
+                    HStack(spacing: 2) {
+                        Text("See All").font(.caption2.weight(.semibold))
+                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
                     }
-                    .buttonStyle(.plain)
-                }
-                HStack(spacing: 7) {
-                    activityRingTile(
-                        label: "Move",
-                        value: healthKit.moveCalories.map { Int($0) }.map { "\($0)" } ?? "–",
-                        unit: "kcal",
-                        goal: healthKit.moveGoal.map { Int($0) }.map { "/ \($0)" },
-                        progress: healthKit.moveProgress() ?? 0,
-                        color: Color(red: 1.0, green: 0.22, blue: 0.36)
-                    )
-                    activityRingTile(
-                        label: "Exercise",
-                        value: healthKit.exerciseMinutes.map { Int($0) }.map { "\($0)" } ?? "–",
-                        unit: "min",
-                        goal: healthKit.exerciseGoal.map { Int($0) }.map { "/ \($0)" },
-                        progress: healthKit.exerciseProgress() ?? 0,
-                        color: Color(red: 0.42, green: 0.95, blue: 0.39)
-                    )
-                    activityRingTile(
-                        label: "Stand",
-                        value: healthKit.standHours.map { Int($0) }.map { "\($0)" } ?? "–",
-                        unit: "hrs",
-                        goal: healthKit.standGoal.map { Int($0) }.map { "/ \($0)" },
-                        progress: healthKit.standProgress() ?? 0,
-                        color: Color(red: 0.18, green: 0.85, blue: 0.95)
-                    )
-                }
-            }
-        }
-    }
-
-    private func activityRingTile(label: String, value: String, unit: String,
-                                   goal: String?, progress: Double, color: Color) -> some View {
-        VStack(alignment: .center, spacing: 6) {
-            // Ring graphic
-            ZStack {
-                Circle()
-                    .stroke(color.opacity(0.18), lineWidth: 9)
-                Circle()
-                    .trim(from: 0, to: min(CGFloat(progress), 1.0))
-                    .stroke(color, style: StrokeStyle(lineWidth: 9, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                // Overdone second lap (>100%) — thin inner ring
-                if progress > 1.0 {
-                    Circle()
-                        .trim(from: 0, to: min(CGFloat(progress - 1.0), 1.0))
-                        .stroke(color.opacity(0.55), style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                }
-            }
-            .frame(width: 42, height: 42)
-
-            Text(label)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(color)
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(value)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(Color.primary)
-                Text(unit)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            if let goal {
-                Text(goal)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
-        .background(Color(UIColor.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    // MARK: – Calendar
-
-    @ViewBuilder
-    private var calendarSection: some View {
-        let items = nextUpItems
-
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                sectionLabel("Next up")
-                Spacer()
-                if items.count > 1 {
-                    HStack(spacing: 4) {
-                        ForEach(0..<items.count, id: \.self) { i in
-                            Circle()
-                                .fill(i == calPageIndex
-                                      ? theme.headerSub
-                                      : Color.secondary.opacity(0.3))
-                                .frame(width: 5, height: 5)
-                        }
-                    }
-                }
-                Button {
-                    UIApplication.shared.open(URL(string: "fantastical://")!)
-                } label: {
-                    Image(systemName: "calendar")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.traceSecondary)
                 }
                 .buttonStyle(.plain)
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
 
             if items.isEmpty {
-                HStack(spacing: 10) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.secondary.opacity(0.25))
-                        .frame(width: 3, height: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("No events in the next 18 hours")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        if let next = cal.nextEventBeyondWindow {
-                            Text("Next: \(next.nextEventLabel)")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(Color(UIColor.secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 10))
-            } else if items.count == 1 {
-                nextUpCard(items[0])
-            } else {
-                TabView(selection: $calPageIndex) {
-                    ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
-                        nextUpCard(item).tag(idx)
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .frame(height: 56)
-            }
-        }
-        .sheet(item: $selectedCalEvent) { event in
-            CalendarEventDetailSheet(event: event)
-        }
-    }
-
-    @ViewBuilder
-    private func nextUpCard(_ item: NextUpItem) -> some View {
-        switch item {
-        case .event(let event):  eventCard(event)
-        case .bedtime(let st):   bedtimeCard(st)
-        }
-    }
-
-    private func eventCard(_ event: NextCalendarEvent) -> some View {
-        Button {
-            selectedCalEvent = event
-        } label: {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(event.color)
-                    .frame(width: 3, height: 36)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(event.title)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text("\(event.startTimeString) · \(event.durationLabel) · \(event.calendarTitle)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                Text(event.timeLabel)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(event.color)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color(UIColor.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 10))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func bedtimeCard(_ st: OuraSleepTime) -> some View {
-        let bedtimeStr = st.bedtimeDate.map {
-            DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short)
-        } ?? "Tonight"
-
-        let minsUntilBed: Int? = st.bedtimeDate.map { Int($0.timeIntervalSinceNow / 60) }
-        let timeLabel: String = {
-            guard let mins = minsUntilBed else { return "" }
-            if mins < 0  { return "past bedtime" }
-            if mins < 60 { return "in \(mins)m" }
-            let h = mins / 60; let m = mins % 60
-            return m > 0 ? "in \(h)h \(m)m" : "in \(h)h"
-        }()
-
-        let isOura = st.isOuraRecommended
-        let accentColor = isOura ? Color.indigo : Color.secondary
-        let timeLabelColor: Color = {
-            guard let mins = minsUntilBed else { return accentColor }
-            if mins < 0   { return .red }
-            if mins <= 30 { return Color(red: 0.95, green: 0.75, blue: 0.1) }
-            return accentColor
-        }()
-        let cardTitle = isOura ? "Recommended bedtime" : "Target bedtime"
-        let subtitle: String = {
-            if isOura {
-                return st.recommendationLabel.isEmpty ? bedtimeStr : "\(bedtimeStr) · \(st.recommendationLabel)"
-            } else {
-                return "\(bedtimeStr) · your default"
-            }
-        }()
-
-        return HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(accentColor.opacity(0.6))
-                .frame(width: 3, height: 36)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    Image(systemName: isOura ? "moon.stars" : "moon")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(accentColor)
-                    Text(cardTitle)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                }
-                Text(subtitle)
+                Text("Nothing yet")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            if !timeLabel.isEmpty {
-                Text(timeLabel)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(timeLabelColor)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color(UIColor.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    // MARK: – Daily note
-
-    @ViewBuilder
-    private var noteSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                sectionLabel("Notes")
-                Spacer()
-                Button { showNotesView = true } label: {
-                    Image(systemName: "note.text")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                // Move-to-tomorrow only relevant on the daily card
-                if notePageIndex == 0 {
-                    Button {
-                        showingMoveDailyNote = true
-                    } label: {
-                        Image(systemName: "arrow.right.square")
-                            .font(.caption)
-                            .foregroundStyle(notePlanContent.isEmpty ? .tertiary : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(notePlanContent.isEmpty)
-                }
-            }
-
-            TabView(selection: $notePageIndex) {
-                // Card 0 — Daily note
-                noteCard(
-                    label: dailyCardLabel,
-                    labelColor: .accentColor,
-                    isLoading: !notePlanLoaded,
-                    isEmpty: notePlanContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    preview: notePlanPreviewAttributed,
-                    emptyPrompt: "Long-press to add a note, or tap to open Notes…",
-                    onTap: { showNotesView = true },
-                    onLongPress: { showingQuickAppend = true }
-                )
-                .tag(0)
-
-                // Card 1 — Week note
-                noteCard(
-                    label: weekLabel,
-                    labelColor: .orange,
-                    isLoading: false,
-                    isEmpty: weekNoteContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    preview: horizonPreview(weekNoteContent),
-                    emptyPrompt: "Tap to start this week's note…",
-                    onTap: { showingWeekNote = true },
-                    onLongPress: { showingWeekNote = true }
-                )
-                .tag(1)
-
-                // Card 2 — Month note
-                noteCard(
-                    label: monthLabel,
-                    labelColor: .blue,
-                    isLoading: false,
-                    isEmpty: monthNoteContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    preview: horizonPreview(monthNoteContent),
-                    emptyPrompt: "Tap to start this month's note…",
-                    onTap: { showingMonthNote = true },
-                    onLongPress: { showingMonthNote = true }
-                )
-                .tag(2)
-            }
-            .tabViewStyle(.page(indexDisplayMode: .always))
-            .frame(height: 130)
-        }
-        .sheet(isPresented: $showNotesView, onDismiss: {
-            Task {
-                if let content = try? NoteStore.shared.readDailyNote() {
-                    notePlanContent = content
-                }
-            }
-        }) {
-            NotesView()
-        }
-        .sheet(isPresented: $showingWeekNote, onDismiss: {
-            weekNoteContent = (try? NoteStore.shared.readFile(weekNoteRelativePath)) ?? ""
-        }) {
-            NavigationStack {
-                NoteEditorView(relativePath: weekNoteRelativePath, title: weekLabel)
-            }
-        }
-        .sheet(isPresented: $showingMonthNote, onDismiss: {
-            monthNoteContent = (try? NoteStore.shared.readFile(monthNoteRelativePath)) ?? ""
-        }) {
-            NavigationStack {
-                NoteEditorView(relativePath: monthNoteRelativePath, title: monthLabel)
-            }
-        }
-        .sheet(isPresented: $showingQuickAppend) {
-            QuickAppendSheet {
-                notePlanContent = (try? NoteStore.shared.readDailyNote()) ?? ""
-            }
-        }
-        .sheet(isPresented: $showingMoveDailyNote) {
-            MoveDailyContentSheet(sourceDate: Date(), sourceContent: notePlanContent) { newContent in
-                notePlanContent = newContent
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func noteCard(
-        label: String,
-        labelColor: Color,
-        isLoading: Bool,
-        isEmpty: Bool,
-        preview: AttributedString,
-        emptyPrompt: String,
-        onTap: @escaping () -> Void,
-        onLongPress: @escaping () -> Void
-    ) -> some View {
-        if isLoading {
-            sectionCard {
-                ProgressView().frame(maxWidth: .infinity)
-            }
-            .padding(.horizontal, 2)
-        } else {
-            Button(action: onTap) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(label)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(labelColor)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(labelColor.opacity(0.12), in: Capsule())
-                    if isEmpty {
-                        Text(emptyPrompt)
-                            .font(.subheadline)
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Text(preview)
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                            .multilineTextAlignment(.leading)
-                            .lineLimit(3)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .background(Color(UIColor.secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 10))
-            }
-            .buttonStyle(.plain)
-            .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
-            .padding(.horizontal, 2)
-        }
-    }
-
-    // Renders the daily note preview with live bold/italic using SwiftUI's AttributedString
-    // markdown parser. Heading and bullet prefixes are stripped; inline ** and * are rendered
-    // as actual bold/italic so the preview matches what the user wrote.
-    private var notePlanPreviewAttributed: AttributedString {
-        var lines = notePlanContent.components(separatedBy: "\n")
-        // Strip the date header (# YYYY-MM-DD) and leading blank lines
-        if let first = lines.first,
-           first.hasPrefix("# "),
-           first.dropFirst(2).range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil {
-            lines.removeFirst()
-            while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
-                lines.removeFirst()
-            }
-        }
-        let preview = lines
-            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            .prefix(3)
-            .map { stripLinePrefix($0) }
-            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            .joined(separator: "\n")
-        return styledPreview(preview)
-    }
-
-    // Strips heading/bullet/checkbox line prefixes, and converts image/PDF link
-    // syntax to human-readable captions for the home screen preview.
-    private func stripLinePrefix(_ line: String) -> String {
-        var s = line
-
-        // Thumbnail image: !![desc](path) → "📷 desc"
-        // Plain image:     ![desc](path)  → "📷 desc"
-        // Match both; the !![...] check must come first.
-        if s.hasPrefix("!![") || s.hasPrefix("![") {
-            let markerLen = s.hasPrefix("!![") ? 3 : 2
-            let afterMarker = s.index(s.startIndex, offsetBy: markerLen)
-            if let closeRange = s.range(of: "](", range: afterMarker..<s.endIndex) {
-                let desc = String(s[afterMarker..<closeRange.lowerBound])
-                return "📷 \(desc.isEmpty ? "photo" : desc)"
-            }
-        }
-
-        // PDF link: 📎 [desc](path) → "📎 desc"
-        let paperclip = "📎 ["
-        if s.hasPrefix(paperclip) {
-            let afterMarker = s.index(s.startIndex, offsetBy: paperclip.count)
-            if let closeRange = s.range(of: "](", range: afterMarker..<s.endIndex) {
-                let desc = String(s[afterMarker..<closeRange.lowerBound])
-                return "📎 \(desc.isEmpty ? "document" : desc)"
-            }
-        }
-
-        for prefix in ["### ", "## ", "# "] {
-            if s.hasPrefix(prefix) { return String(s.dropFirst(prefix.count)) }
-        }
-        for prefix in ["- [x] ", "- [ ] ", "• ", "- "] {
-            if s.hasPrefix(prefix) { return String(s.dropFirst(prefix.count)) }
-        }
-        return s
-    }
-
-    /// Builds an AttributedString from raw markdown preview text, manually handling
-    /// **bold**, *italic*, ~~strikethrough~~, and ==highlight== (yellow bg). SwiftUI's
-    /// built-in markdown parser doesn't understand ~~ or == syntax, so we do the full pass ourselves.
-    private func styledPreview(_ raw: String) -> AttributedString {
-        struct Span {
-            let start: String.Index; let end: String.Index
-            let inner: String
-            let isBold: Bool; let isItalic: Bool; let isHighlight: Bool; let isStrike: Bool
-        }
-        var spans: [Span] = []
-
-        func collect(pattern: String, markerLen: Int, bold: Bool, italic: Bool, highlight: Bool, strike: Bool = false) {
-            guard let re = try? NSRegularExpression(pattern: pattern) else { return }
-            let ns = raw as NSString
-            for m in re.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)) {
-                guard let fullRange = Range(m.range, in: raw) else { continue }
-                let innerNS = NSRange(location: m.range.location + markerLen,
-                                     length: m.range.length - 2 * markerLen)
-                guard innerNS.length > 0 else { continue }
-                let inner = ns.substring(with: innerNS)
-                spans.append(Span(start: fullRange.lowerBound, end: fullRange.upperBound,
-                                  inner: inner, isBold: bold, isItalic: italic, isHighlight: highlight, isStrike: strike))
-            }
-        }
-        collect(pattern: #"\*\*(.+?)\*\*"#,             markerLen: 2, bold: true,  italic: false, highlight: false)
-        collect(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#, markerLen: 1, bold: false, italic: true,  highlight: false)
-        collect(pattern: "==(.+?)==",                    markerLen: 2, bold: false, italic: false, highlight: true)
-        collect(pattern: #"~~(.+?)~~"#,                  markerLen: 2, bold: false, italic: false, highlight: false, strike: true)
-        spans.sort { $0.start < $1.start }
-
-        var result = AttributedString()
-        var cursor = raw.startIndex
-
-        func seg(_ str: String, bold: Bool = false, italic: Bool = false, highlight: Bool = false, strike: Bool = false) {
-            guard !str.isEmpty else { return }
-            var a = AttributedString(str)
-            if bold        { a.font = .system(size: 14, weight: .semibold) }
-            else if italic { a.font = .system(size: 14).italic() }
-            else           { a.font = .system(size: 14) }
-            if highlight   { a.backgroundColor = Color(UIColor.systemYellow.withAlphaComponent(0.4)) }
-            if strike      { a.strikethroughStyle = .single }
-            result += a
-        }
-
-        for span in spans {
-            guard span.start >= cursor else { continue }
-            seg(String(raw[cursor..<span.start]))
-            seg(span.inner, bold: span.isBold, italic: span.isItalic, highlight: span.isHighlight, strike: span.isStrike)
-            cursor = span.end
-        }
-        if cursor < raw.endIndex { seg(String(raw[cursor...])) }
-        return result
-    }
-
-    // MARK: – Things
-
-    @State private var showingAddTask = false
-    @State private var newTaskTitle = ""
-
-    @ViewBuilder
-    private var thingsSection: some View {
-        if !things.shouldShow && things.isConfigured {
-            let thingsGreen = Color(red: 0.114, green: 0.620, blue: 0.459)
-            sectionCard {
-                HStack(spacing: 8) {
-                    Image(systemName: things.isLoading ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle")
-                        .foregroundStyle(.secondary)
-                        .font(.system(size: 13))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(things.isLoading ? "Connecting to Things…" : "Things unreachable")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        if let err = things.lastError, !things.isLoading {
-                            Text(err)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(2)
-                        }
-                    }
-                    Spacer()
-                    Button {
-                        UIApplication.shared.open(URL(string: "things:///show?id=today")!)
-                    } label: {
-                        Text("Open →")
-                            .font(.system(size: 10))
-                            .foregroundStyle(thingsGreen)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.vertical, 4)
-            }
-        } else if things.shouldShow {
-            let shown = Array(things.tasks.prefix(5))
-            let thingsGreen = Color(red: 0.114, green: 0.620, blue: 0.459)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    sectionLabel("Today in Things")
-                    Spacer()
-                    if things.inboxCount > 0 {
-                        HStack(spacing: 3) {
-                            Image(systemName: "tray")
-                                .font(.system(size: 9, weight: .semibold))
-                            Text("\(things.inboxCount)")
-                                .font(.system(size: 10, weight: .bold))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(thingsGreen)
-                        .clipShape(Capsule())
-                    }
-                    if things.totalCount > 5 {
-                        Text("\(shown.count) of \(things.totalCount)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                    // Add task button
-                    Button {
-                        newTaskTitle = ""
-                        showingAddTask = true
-                    } label: {
-                        Image(systemName: "plus.circle")
-                            .font(.system(size: 14))
-                            .foregroundStyle(thingsGreen)
-                    }
-                    .buttonStyle(.plain)
-                    Button {
-                        UIApplication.shared.open(URL(string: "things:///show?id=today")!)
-                    } label: {
-                        Text("Open →")
-                            .font(.system(size: 10))
-                            .foregroundStyle(thingsGreen)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                VStack(alignment: .leading, spacing: 0) {
-                    if shown.isEmpty {
-                        Text(things.isLoading ? "Loading…" : "No tasks today")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                    }
-                    ForEach(shown) { task in
-                        HStack(alignment: .center, spacing: 10) {
-                            // Tappable completion circle
-                            Button {
-                                Task { await things.complete(taskID: task.id) }
-                            } label: {
-                                Image(systemName: "circle")
-                                    .font(.system(size: 18))
-                                    .foregroundStyle(thingsGreen)
-                            }
-                            .buttonStyle(.plain)
-
-                            Text(task.title)
-                                .font(.subheadline)
-                                .foregroundStyle(.primary)
-                                .lineLimit(2)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-
-                            if let list = task.list, !list.isEmpty {
-                                Text(list)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-
-                        if task.id != shown.last?.id {
-                            Divider().padding(.leading, 40)
-                        }
-                    }
-                }
-                .background(Color(UIColor.secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 10))
-            }
-            .alert("Add to Things", isPresented: $showingAddTask) {
-                TextField("Task title", text: $newTaskTitle)
-                Button("Today") {
-                    let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !title.isEmpty else { return }
-                    Task { await things.addTask(title: title, toToday: true) }
-                }
-                Button("Inbox") {
-                    let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !title.isEmpty else { return }
-                    Task { await things.addTask(title: title, toToday: false) }
-                }
-                Button("Cancel", role: .cancel) { }
-            }
-        }
-    }
-
-    // MARK: - Horizons note helpers
-
-    private var isoCal: Calendar = {
-        var c = Calendar(identifier: .iso8601)
-        c.locale = Locale(identifier: "en_US_POSIX")
-        return c
-    }()
-
-    private var currentWeekFilename: String {
-        let week = isoCal.component(.weekOfYear, from: Date())
-        let year = isoCal.component(.yearForWeekOfYear, from: Date())
-        return String(format: "%d-W%02d.md", year, week)
-    }
-
-    private var currentMonthFilename: String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM"
-        return "\(f.string(from: Date())).md"
-    }
-
-    private var weekNoteRelativePath: String { "Notes/Horizons/\(currentWeekFilename)" }
-    private var monthNoteRelativePath: String { "Notes/Horizons/\(currentMonthFilename)" }
-
-    private var weekLabel: String {
-        let week = isoCal.component(.weekOfYear, from: Date())
-        return "Week \(week)"
-    }
-
-    private var monthLabel: String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "MMMM yyyy"
-        return f.string(from: Date())
-    }
-
-    private var dailyCardLabel: String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "MMM d"
-        return "Daily · \(f.string(from: Date()))"
-    }
-
-    private func horizonPreview(_ raw: String) -> AttributedString {
-        let lines = raw.components(separatedBy: "\n")
-            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            .prefix(3)
-            .map { stripLinePrefix($0) }
-            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        return styledPreview(lines.joined(separator: "\n"))
-    }
-
-    // MARK: – Place / recent visits
-
-    @ViewBuilder
-    private var placeSection: some View {
-        if let place = nearbyPlace {
-            placeMemoryCard(place)
-        } else {
-            recentVisitsSection
-        }
-    }
-
-    // At a known place
-    private func placeMemoryCard(_ place: Place) -> some View {
-        let visits = placeVisits(place)
-        let lastVisit = visits.first
-        let rating = avgRating(place)
-
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                sectionLabel("You're at a saved place")
-                Spacer()
-                Circle()
-                    .fill(Color(red: 0.114, green: 0.620, blue: 0.459))
-                    .frame(width: 7, height: 7)
-            }
-            VStack(spacing: 0) {
-                // Place row — taps to PlaceDetailView
-                Button { navigateToPlace = place } label: {
-                    HStack(spacing: 10) {
-                        placeIconView(place)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(place.name)
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            Text([place.category, place.city]
-                                .filter { !$0.isEmpty }.joined(separator: " · "))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    .foregroundStyle(Color.traceTertiary)
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                }
-                .buttonStyle(.plain)
-
-                Divider().padding(.horizontal, 12)
-
-                // Stats row
-                HStack(spacing: 0) {
-                    statCell(value: "\(visits.count)", label: "visits")
-                    Divider().frame(height: 28)
-
-                    if let lv = lastVisit {
-                        Button { selectedVisit = lv } label: {
-                            statCell(
-                                value: shortDate(lv.date),
-                                label: "last visit",
-                                valueColor: Color(red: 0.094, green: 0.371, blue: 0.647)
-                            )
+                    .padding(.bottom, 12)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                        Button { onTap(item) } label: {
+                            HStack(spacing: 8) {
+                                ZStack {
+                                    Circle().fill(iconColor.opacity(0.15)).frame(width: 26, height: 26)
+                                    Image(systemName: icon)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(iconColor)
+                                }
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(rowTitle(item))
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(Color.traceInk)
+                                        .lineLimit(1)
+                                    Text(relativeDate(rowDate(item)))
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.traceSecondary)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                    } else {
-                        statCell(value: "–", label: "last visit")
-                    }
-
-                    Divider().frame(height: 28)
-                    statCell(
-                        value: rating.map { String(format: "★ %.1f", $0) } ?? "–",
-                        label: "avg rating"
-                    )
-                }
-                .padding(.vertical, 8)
-            }
-            .background(Color(UIColor.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 10))
-        }
-    }
-
-    // Fallback: recent visits list
-    private var recentVisitsSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                sectionLabel("Recent visits")
-                Spacer()
-                Button { showingVisitsView = true } label: {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            VStack(spacing: 0) {
-                ForEach(Array(recentVisits.enumerated()), id: \.element.id) { idx, visit in
-                    let place = placeFor(visit)
-                    let comps = companions(for: visit)
-
-                    Button { selectedVisit = visit } label: {
-                        HStack(spacing: 10) {
-                            placeIconView(place)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(visit.placeName)
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                HStack(spacing: 4) {
-                                    Text(relativeDate(visit.date))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    if let cnt = place?.visitCount, cnt > 0 {
-                                        Text("·").font(.caption).foregroundStyle(.secondary)
-                                        Text("\(cnt) visits").font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    if !comps.isEmpty {
-                                        Text("·").font(.caption).foregroundStyle(.secondary)
-                                        companionRow(comps)
-                                    }
-                                }
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                        if idx < items.count - 1 {
+                            Divider().padding(.leading, 12)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                    }
-                    .buttonStyle(.plain)
-
-                    if idx < recentVisits.count - 1 {
-                        Divider().padding(.horizontal, 12)
                     }
                 }
-            }
-            .background(Color(UIColor.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 10))
-        }
-        .sheet(isPresented: $showingVisitsView) {
-            NavigationStack {
-                VisitsView()
-                    .environment(NotionService.shared)
-                    .environment(LocationManager.shared)
+                .padding(.bottom, 4)
             }
         }
-    }
-
-    // MARK: – Reusable sub-views
-
-    private func placeIconView(_ place: Place?) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(placeColor(for: place?.category ?? ""))
-                .frame(width: 34, height: 34)
-            Image(systemName: placeIcon(for: place?.category ?? ""))
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-        }
-    }
-
-    private func companionRow(_ comps: [Person]) -> some View {
-        HStack(spacing: 2) {
-            ForEach(comps.prefix(3)) { person in
-                let initials = person.name
-                    .components(separatedBy: " ")
-                    .compactMap { $0.first.map { String($0) } }
-                    .prefix(2).joined()
-                let colors = companionColors(person.name)
-                Text(initials)
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(colors.text)
-                    .frame(width: 15, height: 15)
-                    .background(colors.bg, in: Circle())
-            }
-            Text(comps.prefix(2).map { $0.name.components(separatedBy: " ").first ?? $0.name }
-                .joined(separator: ", "))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func companionColors(_ name: String) -> (bg: Color, text: Color) {
-        let options: [(Color, Color)] = [
-            (Color(red: 0.933, green: 0.929, blue: 0.996), Color(red: 0.149, green: 0.129, blue: 0.361)),
-            (Color(red: 0.882, green: 0.961, blue: 0.933), Color(red: 0.016, green: 0.204, blue: 0.173)),
-            (Color(red: 0.980, green: 0.927, blue: 0.906), Color(red: 0.290, green: 0.113, blue: 0.047)),
-            (Color(red: 0.900, green: 0.953, blue: 0.871), Color(red: 0.092, green: 0.428, blue: 0.067)),
-        ]
-        return options[abs(name.hashValue) % options.count]
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .traceCard()
     }
 
     @ViewBuilder
-    private func sectionCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(UIColor.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-    }
-
-    private func statCell(value: String, label: String, valueColor: Color = .primary) -> some View {
-        VStack(spacing: 1) {
-            Text(value)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(valueColor)
-            Text(label)
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
+    private var comingUpCard: some View {
+        if upcomingBirthdays.isEmpty && agendaPeople.isEmpty {
+            emptyRow("Nothing queued in the next 30 days")
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(upcomingBirthdays.enumerated()), id: \.element.id) { idx, bday in
+                    Button { openPersonToAgenda = false; selectedPerson = bday.person } label: {
+                        activityRow(
+                            icon: "birthday.cake.fill", iconColor: .pink,
+                            title: "\(bday.person.name)'s birthday",
+                            subtitle: "In \(bday.daysAway) day\(bday.daysAway == 1 ? "" : "s") · "
+                                + bday.nextOccurrence.formatted(.dateTime.month(.abbreviated).day()),
+                            trailing: nil
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    if idx < upcomingBirthdays.count - 1 || !agendaPeople.isEmpty {
+                        Divider().padding(.leading, 54)
+                    }
+                }
+                // Session 48 follow-up — each queued person is now its own
+                // row (was previously one summary row that only ever opened
+                // agendaPeople.first, a real bug David caught: tapping it
+                // never reached anyone but the first person regardless of
+                // how many were actually queued).
+                ForEach(Array(agendaPeople.enumerated()), id: \.element.id) { idx, person in
+                    Button { openPersonToAgenda = true; selectedPerson = person } label: {
+                        activityRow(
+                            icon: "bubble.left.and.bubble.right.fill", iconColor: .blue,
+                            title: person.name,
+                            subtitle: agendaPreview(person),
+                            trailing: nil
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    if idx < agendaPeople.count - 1 {
+                        Divider().padding(.leading, 54)
+                    }
+                }
+            }
         }
-        .frame(maxWidth: .infinity)
     }
 
-    private func shortDate(_ date: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "MMM d"
-        return f.string(from: date)
+    @ViewBuilder
+    private func activityRow(icon: String, iconColor: Color, title: String, subtitle: String, trailing: String?) -> some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle().fill(iconColor.opacity(0.15)).frame(width: 34, height: 34)
+                Image(systemName: icon).font(.system(size: 14, weight: .semibold)).foregroundStyle(iconColor)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.subheadline.weight(.medium)).foregroundStyle(Color.traceInk).lineLimit(1)
+                Text(subtitle).font(.caption).foregroundStyle(Color.traceSecondary).lineLimit(1)
+            }
+            Spacer()
+            if let trailing {
+                Text(trailing).font(.caption).foregroundStyle(Color.traceSecondary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+
+    private func emptyRow(_ text: String) -> some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(Color.traceSecondary)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 24)
     }
 
     private func relativeDate(_ date: Date) -> String {
-        let cal = Calendar.current
-        if cal.isDateInToday(date) {
-            let mins = Int(Date().timeIntervalSince(date) / 60)
-            if mins < 1  { return "Just now" }
-            if mins < 60 { return "\(mins)m ago" }
-            return "\(mins / 60)h ago"
-        }
+        if cal.isDateInToday(date) { return "Today" }
         if cal.isDateInYesterday(date) { return "Yesterday" }
         let days = cal.dateComponents([.day], from: date, to: Date()).day ?? 0
-        if days < 7 { return "\(days) days ago" }
+        if days < 7 { return "\(days)d ago" }
         let f = DateFormatter(); f.dateFormat = "MMM d"
         return f.string(from: date)
     }
-}
 
-// MARK: - Calendar Event Detail Sheet
+    // MARK: - This Week
 
-private struct CalendarEventDetailSheet: View {
-    let event: NextCalendarEvent
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Pull indicator
-            Capsule()
-                .fill(Color.secondary.opacity(0.3))
-                .frame(width: 36, height: 4)
-                .padding(.top, 12)
-                .padding(.bottom, 20)
-
-            // Color bar + title
-            HStack(alignment: .top, spacing: 14) {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(event.color)
-                    .frame(width: 4, height: 52)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(event.title)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(event.calendarTitle)
-                        .font(.subheadline)
-                        .foregroundStyle(event.color)
-                }
-                Spacer()
+    private var thisWeekSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("This Week").traceSectionTitleStyle()
+            HStack(spacing: 10) {
+                statTile(
+                    icon: "figure.run", color: .orange, label: "Orange Theory",
+                    value: "\(thisWeekOTWorkouts.count) class\(thisWeekOTWorkouts.count == 1 ? "" : "es")",
+                    detail: thisWeekOTWorkouts.first.map { workoutDetail($0) },
+                    lifetime: "\(lifetimeOTCount) lifetime class\(lifetimeOTCount == 1 ? "" : "es")",
+                    action: { navigateToFitness = true }
+                )
+                statTile(
+                    icon: "circle.grid.3x3.fill", color: Color(.systemGray), label: "Billiards",
+                    value: "\(thisWeekBilliards.count) session\(thisWeekBilliards.count == 1 ? "" : "s")",
+                    detail: thisWeekBilliards.first.map { billiardsDetail($0) },
+                    lifetime: lifetimeBilliardsRecord,
+                    action: { navigateToBilliards = true }
+                )
             }
-            .padding(.horizontal, 24)
-
-            Divider().padding(.vertical, 20).padding(.horizontal, 24)
-
-            // Detail rows
-            VStack(spacing: 14) {
-                detailRow(icon: "clock", label: "Time", value: timeRangeString)
-                detailRow(icon: "timer", label: "Duration", value: event.durationLabel)
-                detailRow(icon: "calendar", label: "When", value: event.timeLabel)
-            }
-            .padding(.horizontal, 24)
-
-            Spacer()
-
-            // Open in Fantastical
-            Button {
-                UIApplication.shared.open(URL(string: "fantastical://")!)
-                dismiss()
-            } label: {
-                HStack {
-                    Image(systemName: "calendar.badge.plus")
-                    Text("Open in Fantastical")
-                        .fontWeight(.medium)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(Color(red: 0.98, green: 0.35, blue: 0.24))
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 32)
         }
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.hidden)
     }
 
-    private var timeRangeString: String {
-        let start = DateFormatter.localizedString(from: event.startDate, dateStyle: .none, timeStyle: .short)
-        let end   = DateFormatter.localizedString(from: event.endDate,   dateStyle: .none, timeStyle: .short)
-        return "\(start) – \(end)"
+    private func workoutDetail(_ w: Workout) -> String {
+        var parts = ["Last: \(w.date.formatted(.dateTime.weekday(.abbreviated)))"]
+        if let splat = w.splatPoints { parts.append("Splat +\(splat)") }
+        return parts.joined(separator: ", ")
     }
 
-    private func detailRow(icon: String, label: String, value: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .frame(width: 20)
-                .foregroundStyle(.secondary)
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .fontWeight(.medium)
+    private func billiardsDetail(_ s: BilliardsSession) -> String {
+        var parts = ["Last: \(s.date.formatted(.dateTime.weekday(.abbreviated)))"]
+        if let mine = s.myTeamPoints, let theirs = s.opponentTeamPoints {
+            parts.append("\(mine)–\(theirs)")
+        } else if let result = s.result {
+            parts.append(result)
         }
-        .font(.subheadline)
+        return parts.joined(separator: ", ")
+    }
+
+    /// Session 48 follow-up — tiles are now tappable (jump straight to
+    /// Fitness/Billiards, replacing the separate Jump To grid this same
+    /// change removed) and each carries a lifetime line under the existing
+    /// "Last: ..." detail. The old "placement TBD" caption is gone — see this
+    /// file's header comment for why.
+    private func statTile(icon: String, color: Color, label: String, value: String, detail: String?, lifetime: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    ZStack {
+                        Circle().fill(color.opacity(0.15)).frame(width: 24, height: 24)
+                        Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(color)
+                    }
+                    Text(label).font(.caption.weight(.semibold)).foregroundStyle(Color.traceInk)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.traceTertiary)
+                }
+                Text(value).font(.system(size: 17, weight: .bold)).foregroundStyle(Color.traceInk)
+                if let detail {
+                    Text(detail).font(.caption2).foregroundStyle(Color.traceSecondary).lineLimit(1)
+                }
+                Text(lifetime).font(.caption2.weight(.medium)).foregroundStyle(Color.traceTertiary).lineLimit(1)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .traceCard()
+        }
+        .buttonStyle(.plain)
     }
 }

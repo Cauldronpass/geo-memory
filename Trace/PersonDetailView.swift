@@ -106,7 +106,20 @@ struct PersonDetailView: View {
     @State private var detail: PersonDetail?
     @State private var isLoading = true
     @State private var loadError: String?
-    @State private var selectedTab: PersonTab = .info
+    @State private var selectedTab: PersonTab
+
+    /// Session 48 follow-up — David wants tapping an agenda-queued person on
+    /// Home's Coming Up card to land directly on their Log tab (Agenda +
+    /// Interactions) instead of the default Info tab. `openToAgenda` only
+    /// affects which tab is selected on first appearance; everywhere else
+    /// that constructs this view (People list, Activity/Notes deep links,
+    /// etc.) keeps calling the plain two-arg form, which still defaults to
+    /// Info via this init's default parameter.
+    init(personID: String, personName: String, openToAgenda: Bool = false) {
+        self.personID = personID
+        self.personName = personName
+        _selectedTab = State(initialValue: openToAgenda ? .log : .info)
+    }
 
     // Info tab
     @State private var isArchived = false
@@ -1149,7 +1162,12 @@ private struct InteractionPhotoTile: View {
 
 // MARK: - Interaction Detail Sheet
 
-private struct InteractionDetailSheet: View {
+// Visibility dropped from `private` to internal — Session 48 follow-up,
+// same category of fix as LogInteractionSheet just below (Dayflow hand-off
+// note applies to that one). HomeView.swift's Recent > Interactions column
+// now opens this directly on tap instead of the containing person's whole
+// card, per David's request — `private` restricted it to file scope.
+struct InteractionDetailSheet: View {
     let interaction: Interaction
 
     @Environment(\.dismiss) private var dismiss

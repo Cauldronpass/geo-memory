@@ -125,13 +125,15 @@ extension Notification.Name {
     static let traceNotesOpenPlaceNote = Notification.Name("TraceNotesOpenPlaceNote")
 }
 
-// MARK: - Life tab sections (shared between ContentView long-press and LifeView navigation)
-
-enum LifeSection: Hashable {
-    case activity, trips, fitness, billiards, people
-}
-
 // MARK: - UNUserNotificationCenterDelegate
+// Session 48 — LifeSection enum removed (was Life-tab-only, unused after the
+// Trace redesign retired that tab; see LifeView.swift/ContentView.swift's own
+// header comments). The five notification names below it
+// (traceLifeDeepLink/tracePeopleVisible/tracePeopleHidden/
+// traceActivityVisible/traceActivityHidden) are left in place even though
+// nothing posts or observes them anymore — harmless unused constants, and
+// removing them isn't worth the risk of missing a caller this session's greps
+// didn't catch.
 // Handles "Check In" tap on geofence notifications.
 
 extension AppDelegate: UNUserNotificationCenterDelegate {

@@ -448,6 +448,83 @@ struct VisitsCalendarView: View {
     }
 }
 
+// MARK: - Mixed Day Picker Sheet
+// Restored here in Session 48's build-error follow-up — this struct lived in
+// LifeView.swift and was deleted along with the rest of that file's Activity
+// calendar (LifeCalendarView + its Day*Sheet family), on the assumption
+// nothing else referenced it. That assumption was wrong: VisitsCalendarView
+// above (unrelated to the retired Life tab — this is the Visits list's own
+// calendar toggle) uses it too, for the "multiple visits landed on the same
+// day" disambiguation sheet. Moved here since this is now its only caller.
+
+struct MixedDayPickerSheet: View {
+    let entries: [CalendarEntry]
+    let onSelect: (CalendarEntry) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var date: Date { entries[0].date }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            VStack(alignment: .leading, spacing: 3) {
+                Text(date.formatted(.dateTime.weekday(.wide)))
+                    .font(.title2.bold())
+                Text(date.formatted(.dateTime.month(.wide).day(.defaultDigits)))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+
+            Divider()
+
+            ForEach(entries) { entry in
+                Button {
+                    onSelect(entry)
+                    dismiss()
+                } label: {
+                    HStack(spacing: 14) {
+                        entryIcon(entry)
+                        Text(entry.displayName)
+                            .font(.body)
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.leading)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 14)
+                }
+                .buttonStyle(.plain)
+                if entry.id != entries.last?.id {
+                    Divider().padding(.leading, 60)
+                }
+            }
+
+            Spacer()
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+
+    @ViewBuilder
+    private func entryIcon(_ entry: CalendarEntry) -> some View {
+        if entry.shape == .square {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(entry.color)
+                .frame(width: 32, height: 32)
+        } else {
+            Circle()
+                .fill(entry.color)
+                .frame(width: 32, height: 32)
+        }
+    }
+}
+
 struct VisitRow: View {
     let visit: Visit
     @Environment(NotionService.self) private var notion

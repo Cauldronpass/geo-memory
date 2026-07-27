@@ -329,6 +329,17 @@ struct ContentView: View {
         // way to Jot; flagged to David before building, accepted. If Jot
         // isn't installed, `open` just fails silently and the user stays in
         // Dayflow — acceptable, and on David's phone Jot is always there.
+        //
+        // `openCalendar` added 2026-07-26: the widget's default tap
+        // (everywhere except the "+" and the date block) used to send plain
+        // `dayflow://open`; now it sends `dayflow://openCalendar` instead,
+        // and Dayflow relays straight to Fantastical (`fantastical2://`),
+        // David's preferred calendar app, same one-hop pattern as Jot above.
+        // Falls back to Apple's built-in Calendar (`calshow://`) if
+        // Fantastical isn't installed — `open(_:options:completionHandler:)`
+        // reports success/failure without needing an `LSApplicationQueriesSchemes`
+        // entry in Info.plist (that restriction only applies to
+        // `canOpenURL(_:)`), so no Info.plist change was needed for this.
         .onOpenURL { url in
             if url.host == "addEvent" {
                 quickAddInitialKind = .event
@@ -336,6 +347,14 @@ struct ContentView: View {
             } else if url.host == "openJot" {
                 if let jotURL = URL(string: "jot://open") {
                     UIApplication.shared.open(jotURL)
+                }
+            } else if url.host == "openCalendar" {
+                if let fantasticalURL = URL(string: "fantastical2://") {
+                    UIApplication.shared.open(fantasticalURL, options: [:]) { success in
+                        if !success, let calShowURL = URL(string: "calshow://") {
+                            UIApplication.shared.open(calShowURL)
+                        }
+                    }
                 }
             }
         }

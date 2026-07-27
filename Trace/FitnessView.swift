@@ -78,7 +78,11 @@ struct FitnessView: View {
         .navigationTitle("Fitness")
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
-        .lifeJumpMenu()
+        // Session 48 — .lifeJumpMenu() call removed here (the modifier itself
+        // was already deleted from ContentView.swift when Life was retired;
+        // this call site was missed by that session's grep and caused a
+        // build error — caught from an Xcode issue-navigator screenshot and
+        // fixed the same session).
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showWizard = true } label: { Image(systemName: "plus") }
