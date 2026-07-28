@@ -59,6 +59,12 @@
 // pattern `DayflowWikiSummaryView.swift`'s hand-off buttons already use —
 // see `DayflowInboxFilingSheet`'s own header comment for the full design
 // writeup and the locked remove-from-Inbox-immediately decision.
+//
+// **New project from the filing sheet** — added 2026-07-27, David's ask: the
+// Project section listed only projects that already existed, so filing a note
+// into a brand-new project meant leaving this sheet entirely. A "New project…"
+// row now sits at the top of that section (name prompt → creates and files in
+// one step). See `showNewProjectPrompt`/`fileToNewProject()` below.
 
 import SwiftUI
 
@@ -362,6 +368,18 @@ struct DayflowInboxFilingSheet: View {
     /// being interleaved alphabetically with ones that have never been
     /// written to.
     @State private var searchText = ""
+    /// Added 2026-07-27 — David's ask: "the inbox should allow me to add a new
+    /// project." The Project section only ever listed what `Notes/Projects`
+    /// already held, so a note belonging to a not-yet-existing project meant
+    /// backing out of this sheet, creating the project over in
+    /// DayflowNotesView (itself behind that view's Projects scope pill), then
+    /// coming back and re-filing. No new NoteStore work was needed:
+    /// `fileInboxNote`'s `.project` case routes through `appendToNamedNote`,
+    /// which already writes the file with a `# Title` template when it
+    /// doesn't exist yet — so "create a project and file into it" is just an
+    /// ordinary `.project(name)` filing with a name that isn't in the list.
+    @State private var showNewProjectPrompt = false
+    @State private var newProjectName = ""
 
     private var projectCandidates: [(name: String, modified: Date)] {
         ((try? NoteStore.shared.listFiles(in: "Notes/Projects")) ?? [])
@@ -407,6 +425,16 @@ struct DayflowInboxFilingSheet: View {
                 }
 
                 Section("Project") {
+                    // Above the list, not below it: this is the row that
+                    // matters when nothing in the list is right, and the list
+                    // is capped at 5 + search (see `visible`), so a trailing
+                    // create row would sit at an unpredictable offset.
+                    Button {
+                        newProjectName = ""
+                        showNewProjectPrompt = true
+                    } label: {
+                        Label("New project\u{2026}", systemImage: "plus.circle.fill")
+                    }
                     filingRows(all: projectCandidates, emptyText: "No projects yet") { name in
                         file(to: .project(name))
                     }
@@ -443,6 +471,16 @@ struct DayflowInboxFilingSheet: View {
                 Button("OK") { errorMessage = nil }
             } message: {
                 Text(errorMessage ?? "Check iCloud, then try again.")
+            }
+            // Same `.alert` + `TextField` + Create pattern
+            // DayflowNotesView.swift's own "New Project Note" prompt uses, so
+            // creating a project feels identical on both screens.
+            .alert("New Project", isPresented: $showNewProjectPrompt) {
+                TextField("Project name", text: $newProjectName)
+                Button("Cancel", role: .cancel) { newProjectName = "" }
+                Button("Create & File") { fileToNewProject() }
+            } message: {
+                Text("Files this note into a new project note.")
             }
             // Loading overlay while the Claude prefill call for a "Log as
             // Interaction"/"Log as Visit" swipe action is in flight — a swipe
@@ -498,6 +536,34 @@ struct DayflowInboxFilingSheet: View {
                     }
             }
         }
+    }
+
+    /// Creates the project by filing into it — see `showNewProjectPrompt`'s
+    /// comment above for why no explicit create step is needed.
+    ///
+    /// Case-insensitive reuse rather than blind create: typing "endeavor" when
+    /// "Endeavor" already exists should file into that project, not spawn a
+    /// near-duplicate beside it. `fileInboxNote` builds the path from the name
+    /// unsanitized and untouched (deliberately — see its own doc comment), so
+    /// the two really would be separate files on a case-sensitive volume and
+    /// an unpredictable single one otherwise.
+    ///
+    /// "/" is rejected outright for the same unsanitized-path reason: it would
+    /// either land the note in a phantom subfolder or fail the write. Not a
+    /// case DayflowNotesView's `createProject()` guards either, but worth
+    /// catching here rather than carrying the gap forward.
+    private func fileToNewProject() {
+        let typed = newProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        newProjectName = ""
+        guard !typed.isEmpty else { return }
+        guard !typed.contains("/") else {
+            errorMessage = "Project names can't contain \"/\"."
+            return
+        }
+        let match = projectCandidates.first {
+            $0.name.localizedCaseInsensitiveCompare(typed) == .orderedSame
+        }
+        file(to: .project(match?.name ?? typed))
     }
 
     private func file(to destination: NoteStore.InboxFilingDestination) {

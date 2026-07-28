@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.david.Satchel</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>satchel</string>
+			</array>
+		</dict>
+	</array>
+	<!-- Satchel's only network use is HTTPS to the Anthropic API for the
+	     document scan, which is exempt encryption. Declaring it here answers
+	     the export-compliance question at build time instead of prompting on
+	     every single upload to App Store Connect. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

@@ -390,7 +390,17 @@ struct DayflowNotesView: View {
         case .projects: newProjectRow
         case .places:   traceHandoffRow(title: "Add a Place in Trace", urlHost: "addplace")
         case .people:   traceHandoffRow(title: "Add a Person in Trace", urlHost: "addperson")
-        case .all, .daily: EmptyView()
+        // 2026-07-27 — the All tab renders `projectNotesSection` too (see
+        // `browseContent` below), so it needs the create button that belongs
+        // with that list. Session 25's scope-conditional rewrite correctly
+        // stopped this row from rendering on Places/People, but it also
+        // dropped it from All, where the project list still shows. David hit
+        // exactly that: full project list on the default tab, no way to add
+        // one, and no reason to guess the button was hiding behind the
+        // Projects pill. Daily stays empty (no browse list, nothing to
+        // create there).
+        case .all:      newProjectRow
+        case .daily:    EmptyView()
         }
     }
 

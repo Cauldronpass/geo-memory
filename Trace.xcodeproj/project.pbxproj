@@ -95,6 +95,7 @@
 		6368648C3013C923000A3F02 /* JotWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = JotWidgetExtension.entitlements; sourceTree = "<group>"; };
 		636864933013DD38000A3F02 /* DayflowWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DayflowWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		636864B930147846000A3F02 /* DayflowWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DayflowWidgetExtension.entitlements; sourceTree = "<group>"; };
+		636864C430170629000A3F02 /* Satchel.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Satchel.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		638DB1C22FE7852600A0523F /* EventKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = EventKit.framework; path = System/Library/Frameworks/EventKit.framework; sourceTree = SDKROOT; };
 		638DB1CA2FE881FF00A0523F /* TraceWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TraceWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		638DB1CB2FE881FF00A0523F /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
@@ -180,6 +181,24 @@
 			);
 			target = 636864923013DD38000A3F02 /* DayflowWidgetExtension */;
 		};
+		636864D13017079B000A3F02 /* Exceptions for "Satchel" folder in "Satchel" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 636864C330170629000A3F02 /* Satchel */;
+		};
+		636864D3301708CF000A3F02 /* Exceptions for "Trace" folder in "Satchel" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Config.swift,
+				IOSDocumentScanService.swift,
+				IOSDocumentStore.swift,
+				NoteStore.swift,
+				TraceDocumentModels.swift,
+			);
+			target = 636864C330170629000A3F02 /* Satchel */;
+		};
 		638DB08E2FE252C700A0523F /* Exceptions for "Trace" folder in "Trace" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -258,6 +277,14 @@
 			path = DayflowWidget;
 			sourceTree = "<group>";
 		};
+		636864C530170629000A3F02 /* Satchel */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				636864D13017079B000A3F02 /* Exceptions for "Satchel" folder in "Satchel" target */,
+			);
+			path = Satchel;
+			sourceTree = "<group>";
+		};
 		638DB1CF2FE881FF00A0523F /* TraceWidget */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -276,6 +303,7 @@
 				6368646D30131C4F000A3F02 /* Exceptions for "Trace" folder in "Jot" target */,
 				6368648B3013C8E5000A3F02 /* Exceptions for "Trace" folder in "JotWidgetExtension" target */,
 				636864A73013DE54000A3F02 /* Exceptions for "Trace" folder in "DayflowWidgetExtension" target */,
+				636864D3301708CF000A3F02 /* Exceptions for "Trace" folder in "Satchel" target */,
 			);
 			path = Trace;
 			sourceTree = "<group>";
@@ -325,6 +353,13 @@
 			files = (
 				636864953013DD38000A3F02 /* SwiftUI.framework in Frameworks */,
 				636864943013DD38000A3F02 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		636864C130170629000A3F02 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -387,6 +422,7 @@
 				6368645E30131A80000A3F02 /* Jot */,
 				636864763013C740000A3F02 /* JotWidget */,
 				636864963013DD38000A3F02 /* DayflowWidget */,
+				636864C530170629000A3F02 /* Satchel */,
 				638DB1C12FE7852500A0523F /* Frameworks */,
 				63DCBCB52FDEF667009EBC1B /* Products */,
 			);
@@ -403,6 +439,7 @@
 				6368645D30131A80000A3F02 /* Jot.app */,
 				636864733013C740000A3F02 /* JotWidgetExtension.appex */,
 				636864933013DD38000A3F02 /* DayflowWidgetExtension.appex */,
+				636864C430170629000A3F02 /* Satchel.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -501,6 +538,28 @@
 			productName = DayflowWidgetExtension;
 			productReference = 636864933013DD38000A3F02 /* DayflowWidgetExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
+		};
+		636864C330170629000A3F02 /* Satchel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 636864CC3017062A000A3F02 /* Build configuration list for PBXNativeTarget "Satchel" */;
+			buildPhases = (
+				636864C030170629000A3F02 /* Sources */,
+				636864C130170629000A3F02 /* Frameworks */,
+				636864C230170629000A3F02 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				636864C530170629000A3F02 /* Satchel */,
+			);
+			name = Satchel;
+			packageProductDependencies = (
+			);
+			productName = Satchel;
+			productReference = 636864C430170629000A3F02 /* Satchel.app */;
+			productType = "com.apple.product-type.application";
 		};
 		638DB1C92FE881FF00A0523F /* TraceWidgetExtension */ = {
 			isa = PBXNativeTarget;
@@ -616,6 +675,9 @@
 					636864923013DD38000A3F02 = {
 						CreatedOnToolsVersion = 26.6;
 					};
+					636864C330170629000A3F02 = {
+						CreatedOnToolsVersion = 26.6;
+					};
 					638DB1C92FE881FF00A0523F = {
 						CreatedOnToolsVersion = 26.5;
 					};
@@ -653,6 +715,7 @@
 				6368645C30131A80000A3F02 /* Jot */,
 				636864723013C740000A3F02 /* JotWidgetExtension */,
 				636864923013DD38000A3F02 /* DayflowWidgetExtension */,
+				636864C330170629000A3F02 /* Satchel */,
 			);
 		};
 /* End PBXProject section */
@@ -680,6 +743,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		636864913013DD38000A3F02 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		636864C230170629000A3F02 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -739,6 +809,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		6368648F3013DD38000A3F02 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		636864C030170629000A3F02 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -806,7 +883,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Dayflow/Dayflow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -844,7 +921,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Dayflow/Dayflow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1019,7 +1096,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = DayflowWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DayflowWidget/Info.plist;
@@ -1052,7 +1129,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = DayflowWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DayflowWidget/Info.plist;
@@ -1071,6 +1148,78 @@
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		636864CD3017062A000A3F02 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Satchel/Satchel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Satchel/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Satchel uses the camera to scan documents and take photos";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Satchel imports photos you choose from your library";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Satchel;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		636864CE3017062A000A3F02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Satchel/Satchel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KZFRL4A856;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Satchel/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Satchel uses the camera to scan documents and take photos";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Satchel imports photos you choose from your library";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.david.Satchel;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -1543,6 +1692,15 @@
 			buildConfigurations = (
 				636864A23013DD3A000A3F02 /* Debug */,
 				636864A33013DD3A000A3F02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		636864CC3017062A000A3F02 /* Build configuration list for PBXNativeTarget "Satchel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				636864CD3017062A000A3F02 /* Debug */,
+				636864CE3017062A000A3F02 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
