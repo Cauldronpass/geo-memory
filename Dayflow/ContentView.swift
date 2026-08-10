@@ -134,6 +134,35 @@ struct ContentView: View {
     /// header comment for the full feature design.
     @State private var showNotesInbox = false
 
+    // MARK: dayflow://note?path= routing (E35, 2026-07-29)
+    //
+    // Satchel's counterpart to `trace://note?path=`. A document filed against a
+    // day note, an Endeavor or a project note can now jump to it; until this
+    // existed Satchel WITHHELD the button rather than offer one that goes
+    // nowhere (see `noteOwnerAppURL` in SatchelLibraryView).
+    //
+    // Held as a pending path rather than acted on immediately, because on a cold
+    // launch `onOpenURL` fires before this view's `.task` and before NoteStore
+    // has resolved the iCloud container. Same shape as Trace's
+    // `pendingNotePath`/`resolvePendingNoteLink()` and Satchel's `drainRouter()`
+    // — the third time this pattern has been needed, which is why all three now
+    // look alike.
+    @State private var pendingNotePath: String? = nil
+    /// `dayflow://endeavor?id=japan-2026`. Kept separate from `pendingNotePath`
+    /// because it is a different key, not a different path: Satchel files
+    /// documents against the slug, so the slug is what it can hand over, and a
+    /// renamed note cannot break the link.
+    @State private var pendingEndeavorID: String? = nil
+    /// Held only so `hasAccess` can be OBSERVED. `NoteStore` resolves the iCloud
+    /// container on a background queue and flips `hasAccess` on the main queue
+    /// whenever that finishes, which on a cold launch is routinely longer than
+    /// any delay worth hard-coding — see the note on the `onChange` below.
+    @State private var noteStore = NoteStore.shared
+    @State private var endeavorRoute: EndeavorRouteRef? = nil
+    /// Set alongside `showNotes` so `DayflowNotesView` opens straight into a
+    /// project instead of its browse list.
+    @State private var routedProjectTitle: String? = nil
+
     private var dateHeadlineText: String {
         let f = DateFormatter()
         f.dateFormat = "EEEE, d MMMM"
@@ -181,7 +210,18 @@ struct ContentView: View {
                     date: selectedDate,
                     reloadToken: dailyNoteReloadToken,
                     onExpand: { showNoteFullPage = true },
-                    onOpenNotes: { showNotes = true }
+                    onOpenNotes: {
+                        // Clear the deep-link destination first. **REGRESSION,
+                        // introduced and fixed the same day (2026-07-30):**
+                        // `routedProjectTitle` is set by
+                        // `dayflow://note?path=Notes/Projects/…` and was never
+                        // cleared, so once David had followed one such link from
+                        // Satchel, every later tap of this button re-opened Home
+                        // Bills and he had to back out of it. A one-shot route has
+                        // to be consumed, not merely acted on.
+                        routedProjectTitle = nil
+                        showNotes = true
+                    }
                 )
             }
             .padding()
@@ -260,13 +300,16 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             DayflowSettingsView()
         }
-        .fullScreenCover(isPresented: $showNotes) {
+        // Second half of the same fix: clearing on dismiss means the value cannot
+        // outlive the presentation it was set for, whatever opens Notes next.
+        .fullScreenCover(isPresented: $showNotes, onDismiss: { routedProjectTitle = nil }) {
             // Session 19, 2026-07-20 — DayflowNotesView now shares this same
             // `selectedDate` binding so a tapped Daily search result inside it
             // (jumping to DayflowNoteFullPageView for that date) also moves
             // Agenda + the main Daily Note card once you're back here — same
             // "share the one real date" pattern as showNoteFullPage above.
-            DayflowNotesView(selectedDate: $selectedDate)
+            DayflowNotesView(selectedDate: $selectedDate,
+                             initialProjectTitle: routedProjectTitle)
         }
         .fullScreenCover(isPresented: $showDateCalendar) {
             // Session 21, 2026-07-20 — DayflowCalendarBrowseView straight off
@@ -302,6 +345,9 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 Task { await ThingsService.shared.refreshAll() }
+                // A hand-off that arrived while the container was still settling
+                // gets another chance here rather than being lost.
+                resolveNoteRoute()
             }
         }
         .alert("Couldn't save", isPresented: Binding(
@@ -348,6 +394,53 @@ struct ContentView: View {
                 if let jotURL = URL(string: "jot://open") {
                     UIApplication.shared.open(jotURL)
                 }
+            } else if url.host == "endeavor" {
+                // dayflow://endeavor?id=japan-2026 — Satchel's jump from a
+                // document filed to a trip. By id, since that is what the
+                // sidecar carries and what survives the note being renamed.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let id = comps.queryItems?.first(where: { $0.name == "id" })?.value {
+                    pendingEndeavorID = id
+                    resolveNoteRoute()
+                }
+            } else if url.host == "note" {
+                // dayflow://note?path=Calendar/2026-07-29.md
+                // dayflow://note?path=Notes/Endeavors/Japan.md
+                // dayflow://note?path=Notes/Projects/Kitchen.md
+                //
+                // Parsed with `URLComponents`, not by string surgery: an
+                // Endeavor called "Mum & Dad's 50th" carries both a space and
+                // an ampersand, and an unescaped ampersand truncates the path.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let path = comps.queryItems?.first(where: { $0.name == "path" })?.value {
+                    pendingNotePath = path
+                    resolveNoteRoute()
+                }
+            } else if url.host == "launch" {
+                // The launcher widget's four tiles (Session 68).
+                //
+                // **A widget can only ever hand its URL to its own container**,
+                // so the tiles cannot address Jot, Trace or Satchel directly —
+                // they address Dayflow, and Dayflow re-opens the real scheme.
+                // Same shape as `openCalendar` below, which hands off to
+                // Fantastical, and the only route an extension has.
+                //
+                // `today` is deliberately a no-op: opening Dayflow IS the action,
+                // and the tile exists so the row reads as four equal choices
+                // rather than three buttons and a gap.
+                let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "target" })?.value
+                let scheme: String? = {
+                    switch target {
+                    case "capture": return "jot://"
+                    case "checkin": return "trace://checkin"
+                    case "file":    return "satchel://scan"
+                    default:        return nil          // "today", or anything unknown
+                    }
+                }()
+                if let scheme, let dest = URL(string: scheme) {
+                    UIApplication.shared.open(dest)
+                }
             } else if url.host == "openCalendar" {
                 if let fantasticalURL = URL(string: "fantastical2://") {
                     UIApplication.shared.open(fantasticalURL, options: [:]) { success in
@@ -358,6 +451,200 @@ struct ContentView: View {
                 }
             }
         }
+        // Cold launch, first attempt. 50ms is a guess and IS SOMETIMES WRONG —
+        // David hit exactly that on 2026-07-29: the first tap of "Open in
+        // Dayflow" landed on the home screen and the second worked. So this is
+        // the optimistic path, not the mechanism.
+        .task {
+            try? await Task.sleep(for: .milliseconds(50))
+            resolveNoteRoute()
+        }
+        // THE MECHANISM. `NoteStore` resolves the iCloud container on a
+        // background queue and sets `hasAccess` on the main queue when it
+        // finishes; on a cold launch that lost the race with the 50ms guess
+        // above, and nothing fired afterwards, so the hand-off was simply
+        // dropped. Waiting for the actual signal cannot lose a race.
+        //
+        // Trace has done it this way all along — it retries
+        // `resolvePendingNoteLink()` off `notion.places.count` and
+        // `notion.people.count` rather than off a timer. Dayflow's copy of the
+        // pattern picked up the delay and not the observer.
+        .onChange(of: noteStore.hasAccess) { _, granted in
+            if granted { resolveNoteRoute() }
+        }
+        .sheet(item: $endeavorRoute) { ref in
+            NavigationStack {
+                DayflowEndeavorView(endeavorID: ref.id)
+            }
+        }
+    }
+
+    // MARK: - Note routing
+
+    /// Identifiable wrapper so a slug can drive `.sheet(item:)`. A bare `String?`
+    /// cannot — `String` is not `Identifiable`. Same reason `EndeavorRef` exists
+    /// in DayflowEndeavorViews.swift; that one is `private` to its file, which is
+    /// why this is not simply reused.
+    struct EndeavorRouteRef: Identifiable, Hashable {
+        let id: String
+    }
+
+    /// Anything currently covering the home screen.
+    ///
+    /// **This is why a hand-off used to be swallowed.** David, 2026-07-30: tapping
+    /// "Open in Dayflow" for Japan worked from the home screen, and did nothing if
+    /// he had left Dayflow inside the Home Bills project. Two separate SwiftUI
+    /// facts, both fatal:
+    ///
+    /// 1. A `sheet` cannot present from a view that is underneath a
+    ///    `fullScreenCover`. The Endeavor sheet is attached to this view, so the
+    ///    request was simply dropped.
+    /// 2. Setting an already-`true` `isPresented` flag does nothing. So the
+    ///    project route (`showNotes = true`) was a no-op when Notes was already
+    ///    open, and `initialProjectTitle` never reached a freshly built screen.
+    ///
+    /// `showDateCalendar` is deliberately absent: it is a transient picker that
+    /// closes on its own selection, and force-closing it would be the one case
+    /// where clearing does more harm than the stuck route it prevents.
+    private var isPresentingSomething: Bool {
+        showNotes || showNoteFullPage || showNotesInbox || showSettings
+            || showQuickAdd || browseDestination != nil || endeavorRoute != nil
+    }
+
+    /// Clears whatever is open, then performs the presentation.
+    ///
+    /// Nothing to clear is the common case and stays synchronous. When there IS
+    /// something open, the dismissal is applied with animations off and the new
+    /// presentation follows one short hop later — SwiftUI drops a presentation
+    /// requested in the same update as a dismissal. Animations are disabled rather
+    /// than waited out, so the hop is about letting the state change land, not
+    /// about matching a transition duration; a hard-coded delay long enough to
+    /// outlast an animation is the mistake already recorded above this one.
+    private func route(_ present: @escaping () -> Void) {
+        guard isPresentingSomething else {
+            present()
+            return
+        }
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) {
+            showNotes = false
+            showNoteFullPage = false
+            showNotesInbox = false
+            showSettings = false
+            showQuickAdd = false
+            browseDestination = nil
+            endeavorRoute = nil
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { present() }
+    }
+
+    /// Acts on `pendingNotePath` if it can, leaves it alone if it cannot.
+    ///
+    /// **Returns WITHOUT clearing the path when the container is unavailable**, so
+    /// a later call retries. Clearing on a failed attempt is how a hand-off
+    /// silently does nothing on a cold launch, which is the bug this pattern
+    /// exists to avoid.
+    ///
+    /// An unrecognised prefix IS cleared — People and Places belong to Trace and
+    /// Horizons has no screen to open yet, so retrying forever would just leave a
+    /// stale path waiting to fire at a confusing moment.
+    private func resolveNoteRoute() {
+        resolveEndeavorRoute()
+
+        guard let path = pendingNotePath else { return }
+        guard NoteStore.shared.hasAccess else { return }
+
+        if path.hasPrefix("Notes/Endeavors/") {
+            // Reload first: on a cold launch nothing has scanned this folder yet,
+            // and matching against an empty list would look exactly like a note
+            // that does not exist.
+            EndeavorStore.shared.reload()
+            guard let match = EndeavorStore.shared.endeavors
+                    .first(where: { $0.relativePath == path }) else {
+                // The note is genuinely gone, or renamed. Do not retry.
+                pendingNotePath = nil
+                return
+            }
+            pendingNotePath = nil
+            route { endeavorRoute = EndeavorRouteRef(id: match.id) }
+
+        } else if path.hasPrefix("Calendar/") {
+            guard let date = Self.dayNoteDate(from: path) else {
+                pendingNotePath = nil
+                return
+            }
+            pendingNotePath = nil
+            selectedDate = date
+            route { showNoteFullPage = true }
+
+        } else if path.hasPrefix("Notes/Projects/") {
+            let title = ((path as NSString).lastPathComponent as NSString)
+                .deletingPathExtension
+            pendingNotePath = nil
+            guard !title.isEmpty else { return }
+            // **INSIDE `route`, not before it.** This was set before, on the
+            // reasoning that the cover's content closure reads it when the screen
+            // is built — true, and it missed what `route` does on the way there.
+            //
+            // When something is already presented, `route` sets every
+            // `isPresented` flag to false and re-presents 0.1s later. Dropping
+            // `showNotes` fires the cover's `onDismiss`, which is
+            // `{ routedProjectTitle = nil }` — added 2026-07-30 so a stale title
+            // could not outlive its presentation, and correct on its own terms.
+            // **So the route set the title and the dismissal it triggered wiped
+            // it, 0.1s before the screen that wanted it was built.**
+            //
+            // Which is why it always landed on the bare notes list, why it did so
+            // on the second attempt as reliably as the first, and why three fixes
+            // aimed at appearance, ordering and one-shot state all missed: the
+            // value was gone before any of them ran.
+            //
+            // Setting it inside `present()` puts it after the dismissal and in
+            // the same synchronous block as `showNotes = true`, so the content
+            // closure sees it. The no-presentation path is unaffected: `route`
+            // calls `present()` immediately there.
+            route {
+                routedProjectTitle = title
+                showNotes = true
+            }
+
+        } else {
+            // Notes/People and Notes/Places are Trace's, and Satchel sends those
+            // to `trace://note`. Notes/Horizons has no deep link yet — logged as
+            // part of E35 rather than half-built here.
+            pendingNotePath = nil
+        }
+    }
+
+    /// Same retry contract as `resolveNoteRoute`: leaves the id in place when the
+    /// container is not ready, clears it when the Endeavor genuinely is not there.
+    private func resolveEndeavorRoute() {
+        guard let id = pendingEndeavorID else { return }
+        guard NoteStore.shared.hasAccess else { return }
+
+        EndeavorStore.shared.reload()
+        guard EndeavorStore.shared.endeavor(id: id) != nil else {
+            // Deleted, or a slug from a note that never made it to this device.
+            pendingEndeavorID = nil
+            return
+        }
+        pendingEndeavorID = nil
+        route { endeavorRoute = EndeavorRouteRef(id: id) }
+    }
+
+    private static let dayNoteFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    /// `Calendar/2026-07-29.md` → that date. Nil for anything else, including a
+    /// day note whose name has been edited by hand into something unparseable.
+    private static func dayNoteDate(from path: String) -> Date? {
+        let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        return dayNoteFormatter.date(from: stem)
     }
 
     // MARK: Top bar

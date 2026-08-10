@@ -5,16 +5,29 @@
 //
 // Session 50 (2026-07-27) — defensive parity with `IOSDocumentStore`.
 //
-// Satchel writes five extra sidecar keys (`endeavor`, `endeavor_name`, `pinned`,
-// `icon`, `tint` — scope doc §4) into the SAME shared `Documents/` folder this
-// store reads. This file is a separate implementation from the iOS store, and
-// as written it rebuilt each sidecar from scratch on every save, so one edit in
-// TraceMac's Documents view would silently erase a document's pin, icon, tint
+// Satchel writes extra sidecar keys into the SAME shared `Documents/` folder
+// this store reads. This file is a separate implementation from the iOS store,
+// and as written it rebuilt each sidecar from scratch on every save, so one edit
+// in TraceMac's Documents view would silently erase a document's pin, icon, tint
 // and Endeavor.
 //
+// THE RULE, not the list (Session 63, 2026-08-01). The original version of this
+// comment named five keys — `endeavor`, `endeavor_name`, `pinned`, `icon`,
+// `tint` — and the parser and renderer each carried a matching hand-kept list.
+// `remind` was then added on iOS. Nothing here knew about it, so for a month any
+// Mac save silently deleted a reminder date set on iPhone.
+//
+// A guard written as an enumeration of the things it guards is wrong the moment
+// the set grows, and it is wrong silently, because the omission compiles. So:
+// **the only correct way to add a sidecar key on iOS is to add it here in the
+// same change.** `SidecarData`, `parseSidecar` and `renderSidecar` are one table
+// read in three directions and must be edited together. If you are reading this
+// because a key went missing again, that is the bug, and the fix is not to add
+// a sixth entry to a list.
+//
 // Two changes, both non-behavioural for existing Mac features:
-//   1. The parser reads the five keys, so `TraceMacDocument` carries them on the
-//      Mac too and nothing renders blank if Mac UI ever wants them.
+//   1. The parser reads the Satchel keys, so `TraceMacDocument` carries them on
+//      the Mac too and nothing renders blank if Mac UI ever wants them.
 //   2. `saveSidecar` merges rather than replaces — same preserve-by-default
 //      semantics as the iOS store, so all three TraceMacDocumentsView call sites
 //      stay correct with no edits.
@@ -120,6 +133,7 @@ class TraceMacDocumentStore {
                     kitOrder: sidecar?.kitOrder,
                     icon: sidecar?.icon,
                     tint: sidecar?.tint,
+                    remindOn: sidecar?.remindOn,
                     note: body.note,
                     summary: body.summary
                 )
@@ -143,10 +157,13 @@ class TraceMacDocumentStore {
     /// Writes a document's sidecar.
     ///
     /// `title`, `tags`, `linkedNote`, `people`, `description` and `date` behave
-    /// exactly as they always have. Satchel's five keys are **not parameters**
-    /// here — the Mac has no UI that sets them — and are instead read back from
-    /// the sidecar on disk and re-emitted unchanged. That is the whole point of
-    /// this method: TraceMac must not destroy metadata it does not manage.
+    /// exactly as they always have. Satchel's keys are **not parameters** here —
+    /// the Mac has no UI that sets them — and are instead read back from the
+    /// sidecar on disk and re-emitted unchanged. That is the whole point of this
+    /// method: TraceMac must not destroy metadata it does not manage.
+    ///
+    /// Every `existing?.x ?? doc.x` line below must have a counterpart in
+    /// `SidecarData`, `parseSidecar` and `renderSidecar`. Four places, one key.
     func saveSidecar(
         for doc: TraceMacDocument,
         title: String,
@@ -181,6 +198,7 @@ class TraceMacDocumentStore {
         data.icon         = existing?.icon         ?? doc.icon
         data.tint         = existing?.tint         ?? doc.tint
         data.kitOrder     = existing?.kitOrder     ?? doc.kitOrder
+        data.remindOn     = existing?.remindOn     ?? doc.remindOn
 
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
     }
@@ -204,13 +222,53 @@ class TraceMacDocumentStore {
 
     // MARK: - Import
 
-    func importDocument(from sourceURL: URL) throws {
+    /// Imports a file, optionally filing it against an Endeavor in the same step.
+    ///
+    /// **This is the first Mac writer of Satchel's `endeavor` keys**, and the
+    /// header comment above saying the Mac deliberately has none is now out of
+    /// date rather than wrong: it was written when Satchel v1 was iOS-only and
+    /// the Mac's only job was to not destroy what it did not manage. TraceMac
+    /// now has the whole Documents section and an Endeavors destination, and
+    /// David asked for exactly this. The non-destruction rule is untouched —
+    /// `saveSidecar` still merges, and this method only ever writes a sidecar
+    /// for a file it has just created, which by definition has none.
+    ///
+    /// **Both association keys are written, on purpose.** `endeavor` is what
+    /// Satchel's capture sets and what the Mac's rail filters on; `linked_note`
+    /// is what `SatchelDocumentChips` on the phone filters on, keyed to the
+    /// Endeavor note's own path. They are two different associations that
+    /// happen to mean the same thing here, and writing one without the other
+    /// produces a document that is visible on one device and invisible on the
+    /// other. Setting both is cheaper than choosing, and matches what a
+    /// document filed from the phone's Endeavor screen already carries.
+    @discardableResult
+    func importDocument(from sourceURL: URL, filedTo endeavor: Endeavor? = nil) throws -> String {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd-HHmmss"
         let timestamp = fmt.string(from: Date())
         let filename = "\(timestamp)-\(sourceURL.lastPathComponent)"
         let data = try Data(contentsOf: sourceURL)
-        try noteStore.writeDocument(data, category: "Inbox", filename: filename)
+        let relativePath = try noteStore.writeDocument(data, category: "Inbox", filename: filename)
+        guard let endeavor else { return relativePath }
+
+        // Same derivation `moveDocument` uses: drop the extension, add `.md`.
+        let ext = sourceURL.pathExtension
+        let base = (!ext.isEmpty && relativePath.hasSuffix(".\(ext)"))
+            ? String(relativePath.dropLast(ext.count + 1))
+            : relativePath
+        let sidecarPath = "\(base).md"
+
+        var data2 = SidecarData()
+        // The original name, not the timestamped filename. The timestamp exists
+        // so two files called `boarding-pass.pdf` can coexist on disk; showing
+        // it in the rail would be leaking a storage detail into a title.
+        data2.title       = sourceURL.deletingPathExtension().lastPathComponent
+        data2.created     = Date()
+        data2.endeavor     = endeavor.id
+        data2.endeavorName = endeavor.name
+        data2.linkedNote   = endeavor.relativePath
+        try noteStore.writeFile(sidecarPath, content: renderSidecar(data2))
+        return relativePath
     }
 
     // MARK: - Helpers
@@ -245,6 +303,18 @@ class TraceMacDocumentStore {
         var icon: DocumentIcon?
         var tint: DocumentTint?
         var kitOrder: Int?
+        /// Sidecar key `remind`. Session 63 (2026-08-01).
+        ///
+        /// This field did not exist and its absence was destroying data. The
+        /// header comment on this file lists the five Satchel keys it protects;
+        /// `remind` was added on iOS *after* that comment was written, so the
+        /// parser had no `case` for it and the renderer never emitted it. Since
+        /// `saveSidecar` rebuilds frontmatter from this struct, retitling a
+        /// document on the Mac silently erased a reminder date set on iPhone.
+        ///
+        /// The guard was a hand-kept list of the things it guarded, which is a
+        /// guard that goes wrong the first time the set grows. It grew.
+        var remindOn: Date?
     }
 
 
@@ -377,6 +447,12 @@ class TraceMacDocumentStore {
             let escaped = trimmedDesc.replacingOccurrences(of: "\"", with: "'")
             content += "description: \"\(escaped)\"\n"
         }
+        // `remind` sits between `description` and `icon` because that is where
+        // `IOSDocumentStore.renderSidecar` puts it. Position matters as much as
+        // presence here: emitting the same key in a different order makes every
+        // document edited on both machines rewrite its sidecar on each save,
+        // which is the iCloud churn the comment above is about.
+        if let remind = data.remindOn { content += "remind: \(fmt.string(from: remind))\n" }
         if let icon = data.icon { content += "icon: \(icon.rawValue)\n" }
         if let tint = data.tint { content += "tint: \(tint.rawValue)\n" }
         if let endeavor = data.endeavor, !endeavor.isEmpty {
@@ -464,6 +540,8 @@ class TraceMacDocumentStore {
                 data.icon = DocumentIcon.parse(value)
             case "tint":
                 data.tint = DocumentTint.parse(value)
+            case "remind":
+                data.remindOn = dateFmt.date(from: value)
             case "kit_order", "pin_order":
                 data.kitOrder = Int(value.trimmingCharacters(in: .whitespaces))
 

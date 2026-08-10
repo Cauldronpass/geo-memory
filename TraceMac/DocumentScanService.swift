@@ -15,6 +15,7 @@ enum DocumentScanError: LocalizedError {
     case apiError(String)
     case parseError(String)
     case unsupportedFormat
+    case noKey
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,19 @@ enum DocumentScanError: LocalizedError {
         case .apiError(let msg):     return "API error: \(msg)"
         case .parseError(let msg):   return "Parse error: \(msg)"
         case .unsupportedFormat:     return "Unsupported file format."
+        case .noKey:
+            // Session 63 (2026-08-02). David saw the raw 401 JSON printed under
+            // a document: `{"type":"error","error":{"type":"authentication_error"
+            // ,"message":"API key is invalid."}}`.
+            //
+            // The key lives in App Group `UserDefaults`, and **App Groups are
+            // per-device** — they share between apps on one machine, not
+            // between a Mac and an iPhone. The key entered on the phone was
+            // never going to be here. That is configuration, not a fault, and
+            // the app should say which one rather than making a doomed call
+            // and pasting the server's reply on screen.
+            return "No Claude API key on this Mac. Add one in Settings (⌘,). "
+                 + "Keys are stored per-device, so the one on your iPhone does not carry over."
         }
     }
 }
@@ -50,6 +64,13 @@ enum DocumentScanService {
         existingTags: [String],
         userContext: String = ""
     ) async throws -> DocumentScanResult {
+        // Checked before any work: rendering pages and base64-encoding an image
+        // only to be told the request was unauthenticated wastes time and, on a
+        // large scan, a noticeable amount of it.
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DocumentScanError.noKey
+        }
+
         guard let fileURL = noteStore.resolvedURL(for: doc.relativePath) else {
             throw DocumentScanError.noContent
         }

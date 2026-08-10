@@ -160,7 +160,7 @@ enum iOSDocumentScanService {
                 throw iOSDocumentScanError.noContent
             }
             let data = await Task.detached(priority: .userInitiated) {
-                resizeImageData(raw, maxDimension: 1536)
+                ScanImage.downscaled(raw, maxDimension: 1536)
             }.value
             return try await sendForText(imageData: data, prompt: instruction)
         }
@@ -273,7 +273,7 @@ enum iOSDocumentScanService {
         // Resize to max 1024px before sending — iPhone photos are 3-5 MB and make
         // the base64 payload huge. Resizing cuts upload time from minutes to seconds.
         let data = await Task.detached(priority: .userInitiated) {
-            resizeImageData(rawData, maxDimension: 1024)
+            ScanImage.downscaled(rawData, maxDimension: 1024)
         }.value
         let prompt = buildPrompt(content: nil, existingTags: existingTags,
                                  isText: false, filename: filename, userContext: userContext,
@@ -282,55 +282,11 @@ enum iOSDocumentScanService {
     }
 
     // MARK: - Image resize helper
-
-    /// Downscale via ImageIO.
-    ///
-    /// `nonisolated` and UIKit-free on purpose: this runs inside `Task.detached`,
-    /// and the previous `UIGraphicsImageRenderer` implementation was main-actor
-    /// isolated, which warns today and fails to compile under Swift 6. ImageIO
-    /// has no actor isolation, decodes straight to the target size instead of
-    /// materialising the full-resolution bitmap first, and applies the EXIF
-    /// orientation transform so portrait photos are not sent to the model sideways.
-    ///
-    /// Returns the original bytes untouched when the image is already within
-    /// bounds, which keeps small PNG screenshots lossless and keeps
-    /// `detectMediaType` honest about what is actually being uploaded.
-    private nonisolated static func resizeImageData(_ data: Data, maxDimension: CGFloat) -> Data {
-        guard maxDimension > 0,
-              let source = CGImageSourceCreateWithData(data as CFData, nil),
-              CGImageSourceGetCount(source) > 0 else { return data }
-
-        // Already small enough? Hand back the original bytes.
-        // Read as Double — CFNumber bridges cleanly to Double, not to CGFloat.
-        let limit = Double(maxDimension)
-        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let width = props[kCGImagePropertyPixelWidth] as? Double,
-           let height = props[kCGImagePropertyPixelHeight] as? Double,
-           width <= limit, height <= limit {
-            return data
-        }
-
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: Int(maxDimension)
-        ]
-        guard let scaled = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return data
-        }
-
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            output as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil
-        ) else { return data }
-
-        let destinationOptions: [CFString: Any] = [
-            kCGImageDestinationLossyCompressionQuality: 0.85
-        ]
-        CGImageDestinationAddImage(destination, scaled, destinationOptions as CFDictionary)
-        guard CGImageDestinationFinalize(destination), output.length > 0 else { return data }
-        return output as Data
-    }
+    //
+    // MOVED to `ScanImage.downscaled` in NoteStore.swift, 2026-08-01, when it turned
+    // out `OTScanService` and `BilliardsScanService` had never had one. The
+    // implementation and its reasoning went across unchanged; only the address
+    // moved, so there is one of these rather than three.
 
     // MARK: - Prompt
 
@@ -346,6 +302,17 @@ enum iOSDocumentScanService {
             ? ""
             : "\n\nUser-provided context (treat as authoritative): \(userContext)"
 
+        // THE TEMPLATE AND THE RULES MUST NOT DISAGREE. This block used to offer
+        // `"title": "…" or null` unconditionally, while `titleRule` below told the
+        // model never to return null for an app-generated filename. The model is
+        // Haiku — a small model follows the concrete output template over a
+        // paragraph of prose further down, so it took the null every time. On
+        // device that looked like the AI half-working: correct icon, correct
+        // tint, good tags, no title and no description. Found 2026-07-28.
+        let titleSlot = filenameIsGenerated
+            ? "\"Short descriptive title\""
+            : "\"Short descriptive title\" or null"
+
         return """
         Analyze this \(docRef) and return JSON only — no explanation, no markdown fences.
 
@@ -353,14 +320,15 @@ enum iOSDocumentScanService {
         {
           "tags": ["tag1", "tag2", "tag3"],
           "description": "One to two sentence summary of what this document is.",
-          "title": "Short descriptive title" or null,
+          "title": \(titleSlot),
           "icon": "one token from the icon list below",
           "tint": "one token from the tint list below"
         }
 
         Rules:
+        - EVERY key above is required. Never omit one, and never return an empty string for description.
         - tags: 2–5 short lowercase words or phrases. \(tagHint)
-        - description: factual, concise. Include key amounts, dates, or parties if present.
+        - description: factual, concise, never empty. Include key amounts, dates, or parties if present.
         - title: \(titleRule(filename: filename, stamp: stamp, generated: filenameIsGenerated))
         - icon: EXACTLY one token from this list, nothing else. Choose what the document IS, not what it is about. Reserve "photo" for images with no other identifiable purpose — if a photograph is OF a receipt, a card, a vehicle or a whiteboard, use that icon instead.
         \(DocumentIcon.promptGuide)

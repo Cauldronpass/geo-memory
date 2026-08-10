@@ -266,7 +266,31 @@ struct CheckInView: View {
                     if preselectedPlace != nil { dismiss() } else { selectedPlace = nil }
                 }
             }
+            // A SECOND WAY TO COMMIT, IN THE BAR.
+            //
+            // The Check In button is the last row of the Form, so the keyboard
+            // covers it the moment you tap into Notes — David, 2026-08-01:
+            // "when i add a note to a visit the keyboard covers up the save
+            // button." The row is still there and still works; it is simply
+            // underneath the thing you had to open to use it.
+            //
+            // The bar is the one place a keyboard cannot reach, which is why
+            // every other sheet in this app puts its commit there. The big row
+            // stays: it is the obvious target when the keyboard is down, and
+            // two doors to one action is fine when they are plainly the same
+            // action.
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Check In") {
+                    Task { await performCheckIn(place: place) }
+                }
+                .fontWeight(.semibold)
+                .disabled(isLoading)
+            }
         }
+        // Swipe the list to put the keyboard away, so the big button is
+        // reachable without hunting for a Done key that this form has no
+        // reason to own.
+        .scrollDismissesKeyboard(.interactively)
         .alert("Error", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }

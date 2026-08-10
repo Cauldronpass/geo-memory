@@ -1,4 +1,7 @@
 import Foundation
+import EventKit
+import ImageIO
+import UniformTypeIdentifiers
 import SwiftUI
 
 // MARK: - NoteStore
@@ -7,22 +10,148 @@ import SwiftUI
 // Files live at: iCloud Drive → Trace → (Calendar / Notes / Photos / Documents)
 // No user setup required — iCloud capability in Xcode handles everything.
 
+// MARK: - Claude API key store
+//
+// **Here because this is the only file every relevant target compiles.**
+// Computed from `project.pbxproj` rather than guessed, after getting it wrong
+// twice on 2026-08-01:
+//
+//   Config.swift      Trace, Dayflow, Satchel
+//   Models.swift      Trace, Dayflow, Jot, TraceMac
+//   AppGroup.swift    Trace, Satchel, SatchelShareExtension
+//   NoteStore.swift   Trace, Dayflow, Jot, JotWidget, Satchel, TraceMac  <-- all of them
+//
+// Putting the store in `Config` broke TraceMac (which has no Config); moving it
+// to `Models` broke Satchel (which has no Models). There is no third guess: this
+// is the only shared floor. Foundation-only on purpose, so it stays that way —
+// the SwiftUI settings section that reads it lives in `Models.swift`.
+
+/// Read/write for the shared Claude key. One place, so no screen invents its own
+/// suite name or spelling of the key.
+enum ClaudeKeyStore {
+    static let suiteName = "group.com.david.trace"
+    static let defaultsKey = "claude_api_key"
+
+    static var key: String {
+        UserDefaults(suiteName: suiteName)?.string(forKey: defaultsKey) ?? ""
+    }
+
+    static var hasKey: Bool { !key.isEmpty }
+
+    static func set(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let defaults = UserDefaults(suiteName: suiteName) else { return }
+        if trimmed.isEmpty {
+            defaults.removeObject(forKey: defaultsKey)
+        } else {
+            defaults.set(trimmed, forKey: defaultsKey)
+        }
+    }
+
+    /// Never show a key in full. Enough to confirm which one is loaded, not
+    /// enough to be worth a screenshot.
+    static var masked: String {
+        let k = key
+        guard k.count > 12 else { return k.isEmpty ? "Not set" : "Set" }
+        return "\(k.prefix(8))…\(k.suffix(4))"
+    }
+}
+
+// ── Concurrency, Session 65 ───────────────────────────────────────────────
+//
+// The project sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so this class
+// is on the main actor without saying so. Four places in the apps deliberately
+// read notes OFF the main thread — the Mac's day-preview scan and the People
+// and Places backlink scans, all `Task.detached` — because one file read per
+// row inside a list row builder is how a scroll turns to treacle.
+//
+// Those cross-actor calls are warnings today and errors the moment the language
+// mode moves to 6. **They were not fixable by adding `await`**: that compiles
+// and defeats the point, hopping straight back to the main actor and doing a
+// main-thread scan with extra steps.
+//
+// So the read-only file methods below are `nonisolated`, which is what they
+// already were in spirit. There is precedent in this very file: `downscaled`
+// and `maxDimension` are `nonisolated` for the same reason, and their comments
+// say so.
+//
+// **The one claim being made, stated plainly.** `documentsURL` is `nonisolated`:
+// written exactly once, during container resolution at launch, on the main
+// thread, and only read afterwards.
+//
+// **It took three builds and the compiler contradicted itself once**, so the
+// reasoning is here rather than in a changelog.
+//
+//   1. `nonisolated(unsafe)` → *"has no effect on property 'documentsURL',
+//      consider using 'nonisolated'."* `@Observable` had rewritten the stored
+//      property into a computed one over hidden storage, and `(unsafe)` means
+//      nothing on a computed property.
+//   2. `nonisolated` → *"cannot be applied to mutable stored properties."*
+//      Which is the opposite premise. Both diagnostics are locally correct and
+//      together they are unsatisfiable, because the macro is what decides which
+//      of the two the property is.
+//   3. `@ObservationIgnored` settles it. The property becomes a genuine stored
+//      `var` again, which is exactly what `nonisolated(unsafe)` is for.
+//
+// **`@ObservationIgnored` costs nothing here, and that is checked rather than
+// assumed.** Nothing observes this value. It is `private`; the only way out is
+// the `containerURL` accessor, and all six call sites read it inside a function
+// body — `IOSDocumentStore`, `MarkdownEditorView`, `TraceMacPhotosView`,
+// `TraceMacDocumentStore` — never in a `View` body where a re-render would
+// depend on it. What views actually watch is `hasAccess`, which stays observed;
+// `TraceSatchelHandoff`'s own comment records that pattern and the three bugs
+// that taught it.
+//
+// `shared` went round the same loop for the same reason. *"'nonisolated(unsafe)'
+// is unnecessary for a constant with 'Sendable' type 'NoteStore'"* means **drop
+// the `(unsafe)`**, not drop the annotation — read as the latter, it came back
+// as four *"Main actor-isolated static property 'shared' cannot be accessed
+// from outside of the actor"*.
+//
+// ── The rule the two of them add up to ────────────────────────────────────
+//
+// Under `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, anything a nonisolated
+// caller must reach needs one of exactly two spellings, and which one is
+// decided by mutability alone:
+//
+//   • immutable stored `let` of a `Sendable` type  →  `nonisolated`
+//   • mutable stored `var`                          →  `nonisolated(unsafe)`,
+//     plus `@ObservationIgnored` inside an `@Observable` class
+//
+// Both were guessed at first and corrected by a build. Written down so the next
+// one is not.
+//
+// The reason this is documentation rather than a new risk: **the detached scans
+// have been reading it from a background thread since they were written.**
+// Swift 6 is naming a situation that already existed, not creating one. If that
+// ever stops being true — if anything reassigns `documentsURL` after launch —
+// this annotation becomes a lie and the fix is a real one, not another
+// `unsafe`.
 @Observable
 class NoteStore {
-    static let shared = NoteStore()
+    /// `nonisolated` and not `nonisolated(unsafe)`: an immutable stored `let` of
+    /// a `Sendable` type needs no unsafety opt-out to leave the actor. See the
+    /// rule in the concurrency note above.
+    nonisolated static let shared = NoteStore()
 
     /// True once the iCloud container URL has been resolved.
     var hasAccess: Bool = false
 
     /// The Documents subdirectory of Trace's iCloud container.
     /// This is the user-visible root (appears as "Trace" in Files app).
-    private var documentsURL: URL?
+    ///
+    /// Written once at launch on the main thread, read forever after, including
+    /// from the detached scans. `@ObservationIgnored` is what makes the
+    /// `nonisolated(unsafe)` legal AND meaningful — see the numbered sequence in
+    /// the concurrency note on the class, and the check that nothing observes
+    /// this.
+    @ObservationIgnored nonisolated(unsafe) private var documentsURL: URL?
 
     /// The resolved container path, for display in Settings debug panel.
     var containerPath: String = "resolving…"
 
     /// Public accessor for the resolved documents root — used by TagIndex for note scanning.
-    var containerURL: URL? { documentsURL }
+    nonisolated var containerURL: URL? { documentsURL }
 
     /// True when running in Simulator (iCloud unavailable) — uses app Documents folder instead.
     private(set) var isLocalMode: Bool = false
@@ -178,6 +307,15 @@ class NoteStore {
                 NotificationCenter.default.post(
                     name: .noteStorePlaceNoteDidChange,
                     object: placeName
+                )
+            } else if path.contains("/Notes/Endeavors/") {
+                // Added Session 64, when TraceMac gained an Endeavors section
+                // and the Mac started writing trip logs. Both apps read this
+                // folder now, so a write on one device has to be able to reach
+                // the other. Same shape as the three cases around it.
+                NotificationCenter.default.post(
+                    name: .noteStoreEndeavorsDidChange,
+                    object: "Notes/Endeavors/\(filename)"
                 )
             } else if path.contains("/Notes/Inbox/") {
                 NotificationCenter.default.post(
@@ -395,6 +533,314 @@ class NoteStore {
         }
     }
 
+    /// Records a ticked agenda item in the person's own note, under `## Done`.
+    ///
+    /// David, 2026-08-01: *"clearing an agenda would not delete it right? where do
+    /// the items i no longer need for agendas live?"*
+    ///
+    /// **They lived nowhere, and that was wrong.** Ticking deleted the line from a
+    /// 2000-character Notion field and that was the end of it. The argument for
+    /// that — the record of having spoken to someone is the interaction log — holds
+    /// for the conversation and not for the intention. "I meant to ask about
+    /// Megan's new place, and on 1 August I did" is worth keeping and belongs
+    /// nowhere near a live queue.
+    ///
+    /// The person's note is the right home: it already exists for every person, it
+    /// is plain markdown he reads in Obsidian, and it does not consume the Notion
+    /// field that the live agenda has to fit inside.
+    ///
+    /// Appended under a heading rather than written to a marked block that gets
+    /// rewritten — same rule as the Endeavor trip log. Anything he types under
+    /// these lines is his.
+    func logCompletedAgendaItem(person: String, text: String, on date: Date = Date()) {
+        let name = person.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !body.isEmpty else { return }
+
+        let path = "Notes/People/\(name).md"
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd"
+        let line = "- \(fmt.string(from: date)) \(body)"
+
+        let existing = (try? readFile(path)) ?? ""
+        if let range = existing.range(of: "## Done") {
+            // Under the heading, newest first — not at the end of the file, which
+            // may have other sections after this one.
+            //
+            // The blank line that follows the heading is consumed and re-laid
+            // rather than written around. Inserting straight after "## Done"
+            // pushed that blank between the new entry and the previous one, and
+            // the list came out ragged from the second item onwards.
+            let head = String(existing[..<range.upperBound])
+            let rest = String(existing[range.upperBound...])
+                .drop(while: { $0 == "\n" })
+            try? writeFile(path, content: head + "\n\n" + line
+                                 + (rest.isEmpty ? "\n" : "\n" + rest))
+        } else {
+            try? appendToNamedNote(relativePath: path, title: name,
+                                   text: "## Done\n\n" + line)
+        }
+    }
+
+    /// The `## Done` lines from a person's note, newest first, as `(date, text)`.
+    ///
+    /// Read back rather than kept in a second store, so the note stays the single
+    /// record. If David edits or deletes a line in Obsidian, this reflects it —
+    /// which is the point of putting the history somewhere he already reads.
+    ///
+    /// Stops at the next heading. Anything he writes below the section is his and
+    /// is not going to be parsed as history.
+    func completedAgendaItems(person: String) -> [(date: String, text: String)] {
+        let name = person.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let content = try? readFile("Notes/People/\(name).md"),
+              let range = content.range(of: "## Done") else { return [] }
+
+        var out: [(String, String)] = []
+        for raw in content[range.upperBound...].components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#") { break }
+            guard line.hasPrefix("- ") else { continue }
+            let body = String(line.dropFirst(2))
+            if body.count > 11, body.dropFirst(10).first == " ",
+               body.prefix(10).allSatisfy({ $0.isNumber || $0 == "-" }) {
+                out.append((String(body.prefix(10)),
+                            String(body.dropFirst(11)).trimmingCharacters(in: .whitespaces)))
+            } else {
+                out.append(("", body))
+            }
+        }
+        return out
+    }
+
+    /// Creates `Notes/People/<name>.md` as an empty stub when it does not
+    /// already exist. Never touches a note that has content.
+    ///
+    /// **Why a person needs a file the moment they exist.** People live in
+    /// Notion; their notes live here. Satchel's "File to a note" picker lists
+    /// FILES, so a person with no note is not offerable — David added Bronwyn,
+    /// went to file a document to her, and she was simply not in the list, with
+    /// nothing on screen to explain why. The picker was speaking in notes while
+    /// he was thinking in people.
+    ///
+    /// Fixed here rather than in the picker on purpose: Satchel does not compile
+    /// `NotionService` and must not start. Its locked design is cached-only,
+    /// render with no network — "opens instantly on a plane" — so teaching the
+    /// picker to read the Notion people list would trade that away for one
+    /// dropdown. Guaranteeing the file exists gets the same result and keeps
+    /// Satchel offline.
+    ///
+    /// The path is built from the raw name, unsanitized, to match
+    /// `PersonDetailView.swift`'s `Notes/People/\(personName).md` exactly — see
+    /// the note on `fileInboxNote` above. A differently-sanitized filename here
+    /// would render fine in the picker and match nothing on the reverse lookup,
+    /// so the document chip would never appear on the person's page and nothing
+    /// would say why.
+    func ensurePersonNote(name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let path = "Notes/People/\(trimmed).md"
+        let existing = (try? readFile(path)) ?? ""
+        guard existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        try writeFile(path, content: "# \(trimmed)\n\n")
+    }
+
+    /// Removes a person's note **only if nothing was ever written in it**.
+    ///
+    /// David, 2026-08-01, seeing two deleted test people still listed in Satchel's
+    /// note picker: *"why do I still see test person and test person too when
+    /// they've both been deleted?"*
+    ///
+    /// Because deleting a person archives the Notion page and **deliberately keeps
+    /// the note file** — "it may hold years of writing" — and Satchel's picker is a
+    /// filesystem scan, not a Notion read. Two correct decisions produced a wrong
+    /// result together.
+    ///
+    /// That promise is right for a real person and absurd for a stub. `Test
+    /// person.md` was 15 bytes: `# Test person` and a newline, which is exactly
+    /// what `ensurePersonNote` writes and nothing more. Nothing is being protected
+    /// by keeping it.
+    ///
+    /// So the test is deliberately narrow: the file must reduce to its own title
+    /// heading and whitespace. **One line of prose under the heading and it stays.**
+    /// Returns true when it deleted something, so callers can word themselves
+    /// honestly.
+    @discardableResult
+    func deletePersonNoteIfUntouched(name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let path = "Notes/People/\(trimmed).md"
+        guard let existing = try? readFile(path) else { return false }
+
+        let remainder = existing
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .filter { $0 != "# \(trimmed)" }
+
+        guard remainder.isEmpty else { return false }
+        do { try deleteFile(path); return true } catch { return false }
+    }
+
+    // MARK: - Project archiving
+    //
+    // David, 2026-08-01: *"in dayflow, how do i archive the projects? right now
+    // they just stay there forever."* There was no archive concept at all —
+    // projects are files in `Notes/Projects/` and every list of them is a folder
+    // scan.
+    //
+    // **A subfolder, not a flag.** `listFiles` does not recurse, so moving a note
+    // into `Notes/Projects/Archive/` removes it from all SIX surfaces that scan
+    // that folder — Dayflow's Notes browse and inbox filing sheet, its
+    // related-notes engine, Trace's Notes tab, quick append and Move to Project,
+    // and Satchel's note picker — without one of them being taught a new rule. A
+    // `#archived` tag would have kept the path intact and required editing all six,
+    // and the sixth is the one that gets missed.
+    //
+    // It is also legible outside the app: a folder in Obsidian and in Files.
+
+    static let projectsFolder = "Notes/Projects"
+    static let archivedProjectsFolder = "Notes/Projects/Archive"
+    /// Daily notes are NOT under `Notes/`. They are a sibling top-level folder in
+    /// the same container, one file per day, named `yyyy-MM-dd.md`. The path was
+    /// a bare string literal in eleven places in this file alone before D64
+    /// needed a second reader of it.
+    static let dailyFolder = "Calendar"
+
+    /// Every note a `[[wikilink]]` is allowed to point at.
+    ///
+    /// **Project notes and Daily notes only** (D49). David: *"link to daily notes
+    /// and project notes only available. I cant see myself linking to other
+    /// endeavors."* So no Endeavors, no Inbox, no Horizons, and no Person or
+    /// Place notes — those two names already resolve to the Notion record, which
+    /// is the thing you actually want when you click one.
+    ///
+    /// `title` is the filename without `.md`, which is what goes inside the
+    /// brackets. For a Project note that is its name; for a Daily note it is the
+    /// date, so `[[2026-08-16]]` links to that day.
+    ///
+    /// Two `contentsOfDirectory` calls. Cheap, but not free per keystroke, so
+    /// callers should refresh when a wikilink session *opens* rather than on
+    /// every character.
+    /// Every `[[target]]` named in a body, in order, deduplicated.
+    ///
+    /// **The forward direction.** `findWikilinkMentions` below answers "which
+    /// notes link to this name" by walking the container and regexing every file;
+    /// this answers "what does this one body link to" and does not touch disk.
+    /// Both are needed and neither can be built from the other cheaply.
+    ///
+    /// Same pattern the two text storages render with, deliberately: if the
+    /// renderer treats `[[A|B]]` as a link to A, so must anything that lists what
+    /// a note links to, or the rail and the page disagree about what is there.
+    /// A default label for a markdown link to `url`: the host, without `www.`.
+    ///
+    /// **Not an empty label.** Both text storages render `[label](url)` with the
+    /// pattern `\[([^\]]+)\]\(([^)]+)\)` — one or more label characters,
+    /// deliberately, so a bare `[]` in prose is not mistaken for a link. So
+    /// `[](https://…)` matches nothing and sits on the page as raw markdown,
+    /// which is exactly what David saw: *"it doesnt seem to be able to add the
+    /// proper mark down."*
+    ///
+    /// `zola.com` is a real label, renders immediately, and is usually close
+    /// enough to keep. Callers select it so typing replaces it.
+    nonisolated static func linkLabel(for url: String) -> String {
+        guard let host = URL(string: url)?.host, !host.isEmpty else { return "link" }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+
+    nonisolated static func wikilinkTargets(in body: String) -> [String] {
+        guard body.contains("[["),
+              let regex = try? NSRegularExpression(
+                  pattern: #"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]"#) else { return [] }
+        let ns = body as NSString
+        var seen = Set<String>()
+        var out: [String] = []
+        for m in regex.matches(in: body, range: NSRange(location: 0, length: ns.length)) {
+            guard m.numberOfRanges >= 2, m.range(at: 1).location != NSNotFound else { continue }
+            let target = ns.substring(with: m.range(at: 1))
+                .trimmingCharacters(in: .whitespaces)
+            guard !target.isEmpty, seen.insert(target.lowercased()).inserted else { continue }
+            out.append(target)
+        }
+        return out
+    }
+
+    func linkableNotes() -> [LinkableNote] {
+        let projects = ((try? listFiles(in: Self.projectsFolder)) ?? [])
+            .map { LinkableNote(title: String($0.dropLast(3)),
+                                relativePath: "\(Self.projectsFolder)/\($0)",
+                                isDaily: false) }
+        let daily = ((try? listFiles(in: Self.dailyFolder)) ?? [])
+            .map { LinkableNote(title: String($0.dropLast(3)),
+                                relativePath: "\(Self.dailyFolder)/\($0)",
+                                isDaily: true) }
+        return projects + daily
+    }
+
+    func listArchivedProjects() -> [String] {
+        ((try? listFiles(in: Self.archivedProjectsFolder)) ?? [])
+            .map { $0.replacingOccurrences(of: ".md", with: "") }
+    }
+
+    @discardableResult
+    func archiveProject(name: String) -> Bool {
+        moveProject(name: name,
+                    from: Self.projectsFolder, to: Self.archivedProjectsFolder)
+    }
+
+    @discardableResult
+    func unarchiveProject(name: String) -> Bool {
+        moveProject(name: name,
+                    from: Self.archivedProjectsFolder, to: Self.projectsFolder)
+    }
+
+    private func moveProject(name: String, from: String, to: String) -> Bool {
+        guard let documentsURL else { return false }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let src = documentsURL.appendingPathComponent("\(from)/\(trimmed).md")
+        let dstFolder = documentsURL.appendingPathComponent(to)
+        let dst = dstFolder.appendingPathComponent("\(trimmed).md")
+        guard FileManager.default.fileExists(atPath: src.path),
+              !FileManager.default.fileExists(atPath: dst.path) else { return false }
+
+        do {
+            try FileManager.default.createDirectory(at: dstFolder,
+                                                    withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: src, to: dst)
+        } catch { return false }
+
+        // THE LINK COST OF MOVING, PAID HERE. Satchel writes `linked_note:` into a
+        // document's sidecar as a LITERAL PATH — David's ComEd bill points at
+        // `Notes/Projects/Home Bills.md`. A move that did not do this would leave a
+        // document pointing at a file that is no longer there, and nothing would
+        // report it: the link would simply stop resolving.
+        retargetLinkedNotes(from: "\(from)/\(trimmed).md", to: "\(to)/\(trimmed).md")
+        return true
+    }
+
+    /// Rewrites `linked_note:` in every document sidecar that names `old`.
+    ///
+    /// Walks `Documents/` rather than a known list because sidecars live in dated
+    /// subfolders (`Documents/2026/`, `Documents/Inbox/`, `Documents/Other/`) and
+    /// more will appear each year.
+    private func retargetLinkedNotes(from old: String, to new: String) {
+        guard let documentsURL else { return }
+        let root = documentsURL.appendingPathComponent("Documents")
+        guard let walker = FileManager.default.enumerator(at: root,
+                                                          includingPropertiesForKeys: nil,
+                                                          options: [.skipsHiddenFiles]) else { return }
+        for case let url as URL in walker where url.pathExtension == "md" {
+            guard let text = try? String(contentsOf: url, encoding: .utf8),
+                  text.contains("linked_note: \(old)") else { continue }
+            let updated = text.replacingOccurrences(of: "linked_note: \(old)",
+                                                    with: "linked_note: \(new)")
+            try? updated.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
     // MARK: - Weekly check-in log
 
     /// Appends a check-in entry to the current week's Horizons note under a "Check-in Log:" section.
@@ -557,7 +1003,9 @@ class NoteStore {
 
     // MARK: - Generic file read / write
 
-    func readFile(_ relativePath: String) throws -> String {
+    /// `nonisolated`: called from the Mac's detached day-preview scan. Pure
+    /// filesystem read, touching only `documentsURL`.
+    nonisolated func readFile(_ relativePath: String) throws -> String {
         guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
         let fileURL = documentsURL.appendingPathComponent(relativePath)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return "" }
@@ -594,11 +1042,28 @@ class NoteStore {
                 NotificationCenter.default.post(name: .noteStoreInboxDidChange, object: relativePath)
             }
         }
+        // A general "some note changed" signal, added 2026-07-30.
+        //
+        // The three notifications above are each about one folder and one consumer.
+        // Anything that derives from notes ACROSS folders — the tag counts on
+        // Dayflow's notes screen were the first — had nothing to observe, so it
+        // only refreshed when its whole screen was rebuilt. David removed a tag
+        // from an Endeavor, went back to the notes list, and the filter chip was
+        // still there; leaving the screen entirely and returning cleared it.
+        //
+        // Posted for every write, not filtered by folder: a filter here is a second
+        // place to keep in step with whatever the consumers care about, and the
+        // editor already debounces its saves so this does not fire per keystroke.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .noteStoreFileDidChange, object: relativePath)
+        }
     }
 
     /// Resolves a relative path (e.g. "Photos/2026/06/photo.jpg") to an absolute file URL.
     /// Returns nil if the iCloud container has not yet been resolved.
-    func resolvedURL(for relativePath: String) -> URL? {
+    /// `nonisolated`: one line of path arithmetic, and the thumbnail loader
+    /// wants it without a hop.
+    nonisolated func resolvedURL(for relativePath: String) -> URL? {
         documentsURL?.appendingPathComponent(relativePath)
     }
 
@@ -618,6 +1083,21 @@ class NoteStore {
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .noteStoreInboxDidChange, object: relativePath)
             }
+        }
+        // A general "some note changed" signal, added 2026-07-30.
+        //
+        // The three notifications above are each about one folder and one consumer.
+        // Anything that derives from notes ACROSS folders — the tag counts on
+        // Dayflow's notes screen were the first — had nothing to observe, so it
+        // only refreshed when its whole screen was rebuilt. David removed a tag
+        // from an Endeavor, went back to the notes list, and the filter chip was
+        // still there; leaving the screen entirely and returning cleared it.
+        //
+        // Posted for every write, not filtered by folder: a filter here is a second
+        // place to keep in step with whatever the consumers care about, and the
+        // editor already debounces its saves so this does not fire per keystroke.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .noteStoreFileDidChange, object: relativePath)
         }
     }
 
@@ -684,12 +1164,26 @@ class NoteStore {
     /// `name` (case-insensitive on the bracket contents — not a substring match, since Trace's
     /// own `[[...]]` autocomplete always inserts the full display name). Excludes `excludePath`
     /// so an entity's own canonical note never appears as "mentioning itself".
+    ///
+    /// **Aliases count, 2026-08-01.** `[[Bronwyn Kelly|Bronwyn]]` is a mention of Bronwyn
+    /// Kelly. This is the ONLY place in either app that matches a wikilink by name rather
+    /// than by rendering one, so it is also the only place that could have quietly stopped
+    /// counting them the moment the Endeavor trip log started writing the alias form — the
+    /// note would still look right, the link would still open, and the person's "Mentioned
+    /// In" list would simply have been missing it. Five call sites read this one method
+    /// (Dayflow backlinks and wiki summary, TraceMac's two), so the fix belongs here and
+    /// nowhere else.
+    ///
     /// Synchronous filesystem walk — call off the main thread (e.g. `Task.detached`), same
     /// convention `TagIndex.seedFromNotes` uses for its tag scan.
-    func findWikilinkMentions(of name: String, excluding excludePath: String? = nil) -> [NoteMention] {
+    /// `nonisolated`: this is the whole reason the People and Places backlink
+    /// sections run it on a `Task.detached`. It enumerates the entire container
+    /// and reads every `.md` in it, which is exactly the work that must not
+    /// happen on the main thread.
+    nonisolated func findWikilinkMentions(of name: String, excluding excludePath: String? = nil) -> [NoteMention] {
         guard let documentsURL else { return [] }
         let escaped = NSRegularExpression.escapedPattern(for: name)
-        guard let regex = try? NSRegularExpression(pattern: "\\[\\[\(escaped)\\]\\]", options: .caseInsensitive) else {
+        guard let regex = try? NSRegularExpression(pattern: "\\[\\[\(escaped)(?:\\|[^\\]]*)?\\]\\]", options: .caseInsensitive) else {
             return []
         }
 
@@ -738,6 +1232,15 @@ extension Notification.Name {
     /// Posted after a Notes/Places/ file is written. `object` is the place name string.
     static let noteStorePlaceNoteDidChange = Notification.Name("com.david.trace.noteStorePlaceNoteDidChange")
     static let noteStoreInboxDidChange = Notification.Name("com.david.trace.noteStoreInboxDidChange")
+    /// Posted when an Endeavor note changes on **another device**, via the
+    /// iCloud metadata query. Not posted by `writeFile` — a store does not need
+    /// telling about its own save, and posting on local writes would make every
+    /// save round-trip through a reload.
+    static let noteStoreEndeavorsDidChange = Notification.Name("com.david.trace.noteStoreEndeavorsDidChange")
+    /// Posted after ANY file is written through `writeFile`. `object` is the
+    /// relative path. For consumers that derive something from notes across
+    /// folders and therefore cannot use the three folder-specific signals above.
+    static let noteStoreFileDidChange = Notification.Name("com.david.trace.noteStoreFileDidChange")
 }
 
 // MARK: - Error
@@ -748,4 +1251,328 @@ enum NoteStoreError: LocalizedError {
     var errorDescription: String? {
         "iCloud is not available. Make sure you are signed in to iCloud in Settings."
     }
+}
+
+// MARK: - Image downscaling for the vision calls
+//
+// **This existed and two of the three callers never used it.** `resizeImageData`
+// was written carefully inside `IOSDocumentScanService` — ImageIO rather than
+// UIKit so it is actor-free, decoding straight to the target size, EXIF transform
+// applied — and `OTScanService` and `BilliardsScanService` both sent
+// `item.loadTransferable(type: Data.self)` straight to base64 at full resolution.
+//
+// David, 2026-08-01, scanning an OrangeTheory stats photo: *"The network
+// connection was lost."* That is `NSURLErrorNetworkConnectionLost`, the ordinary
+// outcome of a multi-megabyte POST dying in flight — a 12MP photo is several MB
+// before base64 adds a third again on top.
+//
+// **It lives in NoteStore.swift because that is the only file EVERY target
+// compiles.** It went into `Models.swift` first and Satchel would not build:
+// `Cannot find 'ScanImage' in scope`. Satchel compiles `IOSDocumentScanService`
+// and does NOT compile `Models.swift`. Read from the project's own exception
+// sets rather than assumed:
+//
+//   Dayflow            Config, Models, NoteStore, TraceDocumentModels
+//   Jot                Models, NoteStore
+//   JotWidgetExtension NoteStore
+//   Satchel            Config, IOSDocumentScanService, NoteStore, TraceDocumentModels
+//   TraceMac           BilliardsScanService, Models, NoteStore, OTScanService, …
+//
+// The intersection is one file. This is the THIRD time that boundary has bitten
+// in two days — `ClaudeKeyStore` hit it twice on the way to the same answer.
+// ImageIO and UniformTypeIdentifiers are on both platforms, so the floor holds.
+
+enum ScanImage {
+
+    /// What the vision calls send. 1536 on the long edge, matching the document
+    /// scanner and close to the point past which the model gains nothing.
+    ///
+    /// `nonisolated` because `downscaled` is, and it is used as that method's
+    /// default argument. Without it: "Main actor-isolated static property
+    /// 'maxDimension' can not be referenced from a nonisolated context" — a
+    /// warning today and an error under Swift 6.
+    nonisolated static let maxDimension: CGFloat = 1536
+
+    /// Downscale via ImageIO.
+    ///
+    /// `nonisolated` and UIKit-free on purpose: callers run inside `Task.detached`,
+    /// and a `UIGraphicsImageRenderer` implementation would be main-actor isolated,
+    /// which warns today and fails to compile under Swift 6. ImageIO has no actor
+    /// isolation, decodes straight to the target size instead of materialising the
+    /// full-resolution bitmap first, and applies the EXIF orientation transform so
+    /// portrait photos are not sent to the model sideways.
+    ///
+    /// Returns the original bytes untouched when the image is already within
+    /// bounds, which keeps small PNG screenshots lossless and keeps every caller's
+    /// media-type sniffing honest about what is actually being uploaded.
+    nonisolated static func downscaled(_ data: Data,
+                                       maxDimension: CGFloat = ScanImage.maxDimension) -> Data {
+        guard maxDimension > 0,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) > 0 else { return data }
+
+        // Already small enough? Hand back the original bytes.
+        // Read as Double — CFNumber bridges cleanly to Double, not to CGFloat.
+        let limit = Double(maxDimension)
+        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = props[kCGImagePropertyPixelWidth] as? Double,
+           let height = props[kCGImagePropertyPixelHeight] as? Double,
+           width <= limit, height <= limit {
+            return data
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int(maxDimension)
+        ]
+        guard let scaled = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return data
+        }
+
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil
+        ) else { return data }
+
+        CGImageDestinationAddImage(destination, scaled,
+                                   [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        guard CGImageDestinationFinalize(destination), output.length > 0 else { return data }
+        return output as Data
+    }
+}
+
+// MARK: - Apple Reminders
+//
+// David, 2026-08-01: *"can we connect this entire system to IOS reminders? Is
+// that an approach with a way to set the reminder?"*
+//
+// **Most of this already existed.** Trace declares `NSRemindersUsageDescription`,
+// and `MarkdownEditorView`'s coordinator has had a working iOS 17 access flow and
+// `EKReminder` write since the Tweek send feature (the 🪶 badges). What it did not
+// have was a caller outside a text editor.
+//
+// Lifted here rather than reached into, because it is wanted from three places
+// now — a person's agenda item in Trace, an Endeavor in Dayflow, a document in
+// Satchel — and `NoteStore.swift` is the only file every target compiles. The
+// editor's own copy is left alone: it carries badge state and retry behaviour
+// that belong to a markdown line, not to this.
+//
+// **Trace owns the date; this only sets an alarm.** David chose that explicitly.
+// A reminder created here is a copy, not the record — nothing reads back from it,
+// and deleting it in Apple's app does not touch the agenda item. Two-way
+// completion is a separate, larger piece and is deliberately not pretended at.
+//
+// Each app that calls this needs its own Reminders usage description. Trace has
+// one. **Dayflow and Satchel do not yet** — a call from either would be denied
+// silently, or crash on some OS versions, until that string is added.
+
+/// What a "Remind me" button is doing right now.
+///
+/// **In NoteStore.swift because three apps need it.** It started in
+/// `PersonDetailView`, which is Trace-only, and Dayflow's Endeavor sheet
+/// referenced it within the hour — the same cross-target boundary that has now
+/// caught me four times in two days. `NoteStore.swift` is the only file every
+/// target compiles, and Satchel is next.
+enum ReminderButtonState: Equatable {
+    case idle, working, added, failed(String)
+}
+
+enum ReminderService {
+
+    enum Failure: Error { case denied, saveFailed }
+
+    /// The list new reminders land in. **"Trace", David's call, 2026-08-01.**
+    ///
+    /// **Its own key, not the Tweek one.** These were briefly sharing
+    /// `tweek_reminders_list`, which was wrong in a way that would only have shown
+    /// up later: the editor's send-to-Tweek exists so a task gets swept into his
+    /// weekly planner, and a birthday reminder has no business being swept
+    /// anywhere. Two purposes, two lists, two keys — and the Tweek send is left
+    /// exactly as it was.
+    ///
+    /// Read from the App Group so all three apps agree. The editor's own copy
+    /// still reads `UserDefaults.standard`, which is fine now that they are not
+    /// pretending to be the same setting.
+    static let listKey = "trace_reminders_list"
+
+    static var listName: String {
+        UserDefaults(suiteName: "group.com.david.trace")?.string(forKey: listKey) ?? "Trace"
+    }
+
+    /// The list to write into, creating it the first time.
+    ///
+    /// **Creating it matters.** `calendars(for:).first { $0.title == … }` returns
+    /// nil until the list exists, and the old fallback quietly used the default
+    /// list instead — so the first reminder would land somewhere he did not choose,
+    /// with nothing on screen to say why, and the list named in the UI would not
+    /// exist. Now it is made once and used thereafter.
+    ///
+    /// Still falls back to the default list if creation fails, because a reminder
+    /// in the wrong list beats no reminder at all.
+    private static func targetList(_ store: EKEventStore) -> EKCalendar? {
+        let lists = store.calendars(for: .reminder)
+        if let existing = lists.first(where: { $0.title == listName }) { return existing }
+
+        // A source that can actually hold reminders. The default list's source is
+        // the right answer when there is one; otherwise take the first that is
+        // modifiable, since a read-only source would fail on save.
+        guard let source = store.defaultCalendarForNewReminders()?.source
+                ?? lists.first(where: { $0.allowsContentModifications })?.source
+        else { return store.defaultCalendarForNewReminders() }
+
+        let made = EKCalendar(for: .reminder, eventStore: store)
+        made.title = listName
+        made.source = source
+        do {
+            try store.saveCalendar(made, commit: true)
+            return made
+        } catch {
+            return store.defaultCalendarForNewReminders()
+        }
+    }
+
+    static func requestAccess(_ store: EKEventStore) async -> Bool {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            switch EKEventStore.authorizationStatus(for: .reminder) {
+            case .fullAccess: return true
+            case .notDetermined:
+                return (try? await store.requestFullAccessToReminders()) ?? false
+            default: return false
+            }
+        } else {
+            switch EKEventStore.authorizationStatus(for: .reminder) {
+            case .authorized: return true
+            case .notDetermined:
+                return await withCheckedContinuation { c in
+                    store.requestAccess(to: .reminder) { granted, _ in c.resume(returning: granted) }
+                }
+            default: return false
+            }
+        }
+    }
+
+    // MARK: Linking a reminder back to the item that made it
+    //
+    // David: *"then i have to turn that reminder off as well?"* — yes, and he was
+    // right to object. Ticking in Trace now completes the reminder in Apple's app.
+    //
+    // **One direction only, and deliberately.** Trace → Reminders is where the
+    // decision is made. The reverse would mean reading his whole reminders list on
+    // every launch for the less useful half of the problem.
+    //
+    // The identifier is kept OUTSIDE the agenda line. Putting it in the text would
+    // show up in Notion and in Obsidian, and this is bookkeeping, not content.
+    private static let linkKey = "reminder_links"
+
+    private static var links: [String: String] {
+        get { UserDefaults(suiteName: "group.com.david.trace")?
+                .dictionary(forKey: linkKey) as? [String: String] ?? [:] }
+        set { UserDefaults(suiteName: "group.com.david.trace")?
+                .set(newValue, forKey: linkKey) }
+    }
+
+    /// Whether something already made a reminder for this key. Callers need it to
+    /// decide between moving one and making a second.
+    static func isLinked(_ key: String) -> Bool { links[key] != nil }
+
+    static func link(_ identifier: String, to key: String) {
+        var all = links; all[key] = identifier; links = all
+    }
+
+    /// Re-keys when the item text or date changes, so an edit does not orphan the
+    /// reminder it already created.
+    static func relink(from old: String, to new: String) {
+        guard old != new, let id = links[old] else { return }
+        var all = links; all[new] = id; all[old] = nil; links = all
+    }
+
+    /// Moves a linked reminder's date. Silent when there is no link.
+    ///
+    /// **This existed as a bug for about an hour.** Editing an agenda item's date
+    /// called `relink`, which moved the KEY to the new line and left the reminder
+    /// itself pointing at the old day. So changing "chase this on the 14th" to the
+    /// 20th produced a reminder that still fired on the 14th, and nothing said so.
+    /// A link is not a schedule; both have to move.
+    static func reschedule(key: String, to due: Date?) async {
+        guard let id = links[key] else { return }
+        let store = EKEventStore()
+        guard await requestAccess(store) else { return }
+        guard let reminder = store.calendarItem(withIdentifier: id) as? EKReminder else { return }
+
+        reminder.alarms?.forEach { reminder.removeAlarm($0) }
+        if let due {
+            reminder.dueDateComponents = Calendar.current
+                .dateComponents([.year, .month, .day], from: due)
+            reminder.addAlarm(EKAlarm(absoluteDate: Calendar.current
+                .date(bySettingHour: 9, minute: 0, second: 0, of: due) ?? due))
+        } else {
+            reminder.dueDateComponents = nil
+        }
+        try? store.save(reminder, commit: true)
+    }
+
+    /// Marks the linked reminder complete and forgets it. Silent when there is no
+    /// link, which is the common case — most items never had a reminder.
+    static func complete(key: String) async {
+        guard let id = links[key] else { return }
+        var all = links; all[key] = nil; links = all
+
+        let store = EKEventStore()
+        guard await requestAccess(store) else { return }
+        guard let reminder = store.calendarItem(withIdentifier: id) as? EKReminder else { return }
+        reminder.isCompleted = true
+        try? store.save(reminder, commit: true)
+    }
+
+    /// Creates one reminder. `due` sets a dated (not timed) reminder, matching how
+    /// an agenda item is dated — a day, not a moment.
+    ///
+    /// Returns the identifier so the caller can link it to whatever made it.
+    @discardableResult
+    /// `repeatsYearly` is for dates that are annual by nature. A birthday
+    /// reminder without it is a one-shot: it fires once, and next year nothing
+    /// happens and nothing explains why. **The date recurs whether or not the
+    /// reminder does**, which is exactly the kind of gap that looks like the app
+    /// forgetting.
+    static func add(title: String, due: Date?, notes: String? = nil,
+                    repeatsYearly: Bool = false) async throws -> String {
+        let store = EKEventStore()
+        guard await requestAccess(store) else { throw Failure.denied }
+
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = title
+        reminder.notes = notes
+        reminder.calendar = targetList(store)
+
+        if let due {
+            reminder.dueDateComponents = Calendar.current
+                .dateComponents([.year, .month, .day], from: due)
+            // An alarm as well as a due date. A due date alone files the reminder
+            // under a day; it does not speak up, which is the entire point here.
+            reminder.addAlarm(EKAlarm(absoluteDate: Calendar.current
+                .date(bySettingHour: 9, minute: 0, second: 0, of: due) ?? due))
+            if repeatsYearly {
+                reminder.addRecurrenceRule(
+                    EKRecurrenceRule(recurrenceWith: .yearly, interval: 1, end: nil))
+            }
+        }
+
+        do { try store.save(reminder, commit: true) } catch { throw Failure.saveFailed }
+        return reminder.calendarItemIdentifier
+    }
+}
+
+
+/// A note that a `[[wikilink]]` may target. See `NoteStore.linkableNotes()`.
+///
+/// Deliberately NOT `NoteMention`. That type is the *reverse* index — "which
+/// notes link to this name" — and carries a modification date it reads per file
+/// during a whole-container walk. This is the forward direction and must be
+/// cheap enough to rebuild whenever someone types `[[`.
+struct LinkableNote: Identifiable, Hashable {
+    let title: String
+    let relativePath: String
+    let isDaily: Bool
+    var id: String { relativePath }
 }

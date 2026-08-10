@@ -100,6 +100,7 @@ class iOSDocumentStore {
                     kitOrder: sidecar?.kitOrder,
                     icon: sidecar?.icon,
                     tint: sidecar?.tint,
+                    remindOn: sidecar?.remindOn,
                     note: body.note,
                     summary: body.summary
                 )
@@ -186,6 +187,10 @@ class iOSDocumentStore {
         icon: DocumentIcon? = nil,
         tint: DocumentTint? = nil,
         kitOrder: Int? = nil,
+        /// `.some(nil)` clears the date; `nil` leaves it alone. A plain `Date?`
+        /// could not express "remove this" — the same distinction `endeavor`
+        /// solves with an empty string.
+        remindOn: Date?? = nil,
         note: String? = nil,
         summary: String? = nil
     ) throws -> TraceMacDocument {
@@ -203,7 +208,8 @@ class iOSDocumentStore {
             pinned: doc.pinned,
             icon: doc.icon,
             tint: doc.tint,
-            kitOrder: doc.kitOrder
+            kitOrder: doc.kitOrder,
+            remindOn: doc.remindOn
         )
 
         if data.title == nil   { data.title = doc.title }
@@ -215,6 +221,7 @@ class iOSDocumentStore {
         if let icon     { data.icon     = icon }
         if let tint     { data.tint     = tint }
         if let kitOrder { data.kitOrder = kitOrder }
+        if let remindOn { data.remindOn = remindOn }
 
         var body = readBody(at: doc.sidecarPath)
         if body.isEmpty { body.note = doc.note; body.summary = doc.summary }
@@ -230,6 +237,7 @@ class iOSDocumentStore {
         updated.icon         = data.icon
         updated.tint         = data.tint
         updated.kitOrder     = data.kitOrder
+        updated.remindOn     = data.remindOn
         updated.note         = body.note
         updated.summary      = body.summary
 
@@ -285,6 +293,12 @@ class iOSDocumentStore {
     @discardableResult
     func setAppearance(icon: DocumentIcon, tint: DocumentTint, for doc: TraceMacDocument) throws -> TraceMacDocument {
         try updateSidecar(for: doc, icon: icon, tint: tint)
+    }
+
+    /// Sets or clears the date this document needs attention.
+    @discardableResult
+    func setReminder(on date: Date?, for doc: TraceMacDocument) throws -> TraceMacDocument {
+        try updateSidecar(for: doc, remindOn: .some(date))
     }
 
     /// Convenience: file a document against an Endeavor. Pass `nil` for both to
@@ -371,6 +385,7 @@ class iOSDocumentStore {
         var icon: DocumentIcon?
         var tint: DocumentTint?
         var kitOrder: Int?
+        var remindOn: Date?
 
         init(
             title: String? = nil,
@@ -384,7 +399,8 @@ class iOSDocumentStore {
             pinned: Bool? = nil,
             icon: DocumentIcon? = nil,
             tint: DocumentTint? = nil,
-            kitOrder: Int? = nil
+            kitOrder: Int? = nil,
+            remindOn: Date? = nil
         ) {
             self.title = title
             self.tags = tags
@@ -398,6 +414,7 @@ class iOSDocumentStore {
             self.icon = icon
             self.tint = tint
             self.kitOrder = kitOrder
+            self.remindOn = remindOn
         }
     }
 
@@ -528,6 +545,7 @@ class iOSDocumentStore {
             let escaped = trimmedDesc.replacingOccurrences(of: "\"", with: "'")
             content += "description: \"\(escaped)\"\n"
         }
+        if let remind = data.remindOn { content += "remind: \(fmt.string(from: remind))\n" }
         if let icon = data.icon { content += "icon: \(icon.rawValue)\n" }
         if let tint = data.tint { content += "tint: \(tint.rawValue)\n" }
         if let endeavor = data.endeavor, !endeavor.isEmpty {
@@ -600,6 +618,8 @@ class iOSDocumentStore {
             // `pin_order` is the key's original name from earlier the same day,
             // read so nothing written in between scrambles. Only `kit_order` is
             // ever written.
+            case "remind":
+                data.remindOn = dateFmt.date(from: value)
             case "kit_order", "pin_order":
                 data.kitOrder = Int(value.trimmingCharacters(in: .whitespaces))
 

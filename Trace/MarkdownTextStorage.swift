@@ -110,28 +110,65 @@ final class MarkdownTextStorage: NSTextStorage {
 
     // MARK: - Process editing
 
+    // MARK: processEditing — DELIBERATELY NO LONGER RESTYLES
+    //
+    // This override used to call `applyStyles()` and then re-issue
+    // `edited(.editedAttributes, range: paragraphRange…)`. **That is the bug the
+    // Mac spent Session 65 on** (D50), ported here 2026-08-04. It is the standard
+    // syntax-highlighter pattern and it is wrong for an editor with hidden
+    // markers, for a reason that is a property of `NSTextStorage` rather than of
+    // this code:
+    //
+    // `NSTextStorage` **merges** edit notifications. The `.editedAttributes` edit
+    // issued from inside `processEditing` is coalesced with the user's own
+    // `.editedCharacters` edit into ONE notification spanning the union of both
+    // ranges. The layout manager then "fixes" the selection across all of it —
+    // which is the caret jumping to the end of the note, or down a row, that
+    // David reported for weeks. (Christian Tietze documented the mechanism in
+    // 2017; see `TraceMac-Editor-Options.md`.)
+    //
+    // Eight different ranges were tried on the Mac before the range turned out to
+    // be the wrong variable. **The fix is to style outside the edit cycle**, from
+    // the delegate's `textViewDidChange`, where the attribute edit is its own
+    // notification and cannot be merged into anything. See
+    // `applyStylesForEdit()` below and `Coordinator.restyleAfterEdit(in:)`.
+    //
+    // **The fix is to style outside the edit cycle.** The Mac does that from its
+    // delegate's `textDidChange`. iOS cannot: this editor has a dozen paths that
+    // call `textStorage.replaceCharacters` directly and return false from
+    // `shouldChangeTextIn`, so the delegate callback never fires for list
+    // continuation, bullet conversion, timestamp insertion, badge appends or the
+    // initial load. Driving styling from the delegate would have left every one
+    // of those unstyled — a worse bug than the one being fixed.
+    //
+    // So the trigger stays here and only the *timing* moves: a hop to the next
+    // runloop turn, at which point the edit cycle has finished and the
+    // `.editedAttributes` notification is its own rather than merged into the
+    // user's. Every mutation path still restyles, and none of them can drag the
+    // caret with them.
+    //
+    // Coalesced on `restylePending`: fast typing must not queue one full pass per
+    // character.
     override func processEditing() {
-        // Restyle only on character edits, and re-notify the layout manager afterward.
-        //
-        // applyStyles() rewrites attributes through the private `backing` store, which emits no
-        // change notifications. The framework therefore only repaints glyphs inside the user's
-        // own edited range; anything applyStyles recolored outside it — most visibly the
-        // line-start ☐ while you type to its right — keeps a stale (blank) glyph until the line
-        // is edited directly. Re-issuing `edited(.editedAttributes,…)` over the edited paragraph
-        // tells the layout manager to repaint the whole affected line, box included.
-        //
-        // Guarding on `.editedCharacters` is what prevents recursion: the `.editedAttributes`
-        // edit we add below comes back through processEditing once with `.editedCharacters` NOT
-        // set, so applyStyles + the re-notify are skipped and the pass terminates. (This is the
-        // standard NSTextStorage syntax-highlighter pattern. Do NOT poke the layout manager
-        // directly here — invalidateDisplay/invalidateLayout mid-cycle hangs or corrupts layout.)
-        if editedMask.contains(.editedCharacters) {
-            applyStyles()
-            let para = (backing.string as NSString).paragraphRange(for: editedRange)
-            edited(.editedAttributes, range: para, changeInLength: 0)
+        if editedMask.contains(.editedCharacters), !restylePending {
+            restylePending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.restylePending = false
+                self.applyStylesForEdit()
+            }
         }
         super.processEditing()
     }
+
+    private var restylePending = false
+
+    /// The text view this storage draws into, set once in `makeUIView`.
+    ///
+    /// Only used to force a repaint — see `applyStylesForEdit()`. Weak, and the
+    /// storage works without it: no host means styling still happens and only the
+    /// forced redraw is skipped.
+    weak var hostTextView: UITextView?
 
     // MARK: - Full-document styling pass
     // Re-styles every line on each edit. Fine for note-sized documents (< 100 KB).
@@ -313,6 +350,39 @@ final class MarkdownTextStorage: NSTextStorage {
     ///   notifications the same way it does after character edits. Without an explicit
     ///   setNeedsDisplay() call in the Coordinator, the LM's new 1pt line heights are
     ///   computed but the on-screen pixels are never refreshed (fold appears to do nothing).
+    /// The `textViewDidChange` entry point. **This is the one the editor uses.**
+    ///
+    /// `applyStyles()` writes through the private `backing`, which emits no
+    /// notifications at all, so the layout manager repaints only what the user
+    /// physically typed and anything recoloured outside that range keeps a stale
+    /// glyph — most visibly a line-start ☐ going blank while you type to its
+    /// right. One `edited(.editedAttributes,…)` over the whole document fixes
+    /// that.
+    ///
+    /// **Whole document, and safely so**, because this runs outside the edit
+    /// cycle: the notification is its own, not merged into the user's, so a wide
+    /// range costs a repaint rather than moving the caret. Notes are small.
+    ///
+    /// Deliberately NOT `applyStylesAndNotify()` below, which additionally calls
+    /// `invalidateLayout` on every layout manager. That is needed for folding,
+    /// where paragraph line heights change; on an ordinary keystroke it is a full
+    /// re-layout per character.
+    func applyStylesForEdit() {
+        guard backing.length > 0 else { return }
+        applyStyles()
+        let full = NSRange(location: 0, length: backing.length)
+        beginEditing()
+        edited(.editedAttributes, range: full, changeInLength: 0)
+        endEditing()
+        // D53. Not belt-and-braces. Range invalidation can only dirty the area a
+        // character range *currently* occupies, and stale pixels sit where
+        // characters USED to be — below the used rect, mapped to no character at
+        // all. Only a view-level redraw reaches them. That is the "row went
+        // missing" and "the row is drawn twice" symptom, which are the same bug
+        // in two directions.
+        hostTextView?.setNeedsDisplay()
+    }
+
     func applyStylesAndNotify() {
         guard backing.length > 0 else { return }
         applyStyles()   // writes fold-hiding paragraph styles + clear color to backing
@@ -517,6 +587,40 @@ final class MarkdownTextStorage: NSTextStorage {
                 .strikethroughColor: Self.dimColor
             ], range: textRange)
         }
+
+        // INLINE MARKUP INSIDE A CHECKBOX LINE. Added 2026-08-03.
+        //
+        // David: *"the wikilink for Hannah in the Sunday Aug 2nd note is not
+        // clickable."* It was `☐ Check on apartment insurance for
+        // [[Hannah Weiss]]` — a wikilink inside a checkbox line.
+        //
+        // `styleLine` **returns** after calling this method, so until now none
+        // of the inline stylers ran on a checkbox line at all. No wikilinks, so
+        // no `.wikiTarget` attribute, so `onWikiTap` had nothing to find and the
+        // link was dead. Bold, italic, strikethrough, highlight, hashtags and
+        // URLs were equally inert there, and the `[[ ]]` brackets showed raw.
+        //
+        // **The Mac has always done this correctly** — `MacMarkdownTextStorage
+        // .styleCheckbox` ends by running the inline stylers over the text after
+        // the marker. This is that, ported. The two files are two renderers of
+        // one on-disk format, and this is the third time a rule existed on one
+        // side and not the other.
+        //
+        // Run over `textLine` with `textRange` as the base, exactly as the Mac
+        // does: the stylers take a line and the absolute range it starts at, so
+        // dropping the `☐ ` prefix from both keeps their offsets aligned.
+        //
+        // Wikilinks run LAST for the same reason they do in `styleLine` —
+        // nothing after them can override the hidden `[[` / `]]` attributes.
+        let textLine = String(line.dropFirst(2))
+        applyBold(in: textLine, lineRange: textRange)
+        applyItalic(in: textLine, lineRange: textRange)
+        applyStrike(in: textLine, lineRange: textRange)
+        applyHighlight(in: textLine, lineRange: textRange)
+        applyHashtags(in: textLine, lineRange: textRange)
+        applyLinks(in: textLine, lineRange: textRange)
+        applyMarkdownLinks(in: textLine, lineRange: textRange)
+        applyWikilinks(in: textLine, lineRange: textRange)
     }
 
     // MARK: Bold — **text**
@@ -670,17 +774,32 @@ final class MarkdownTextStorage: NSTextStorage {
         }
     }
 
-    // MARK: Wikilinks — [[name]]
-    // Hides `[[` and `]]` (2 chars each); colors the inner name in linkColor.
-    // Adds .wikiTarget attribute on the name span so handleTap/handleLongPress can
-    // detect it without a second regex pass. .wikiTarget is re-derived from text on
+    // MARK: Wikilinks — [[name]] and [[target|display]]
+    // Hides the brackets (and, on an alias, the `target|` half); colors what is left
+    // in linkColor. Adds .wikiTarget on the visible span so handleTap/handleLongPress
+    // can detect it without a second regex pass. .wikiTarget is re-derived from text on
     // every applyStyles() pass (unlike .sendTarget which is user-set state), so no
     // snapshot/restore needed.
+    //
+    // ALIASES, 2026-08-01. `[[Nick's on the Lake (formerly known as Popeye's)|Nick's on
+    // the Lake]]` shows "Nick's on the Lake" and still resolves against the full Notion
+    // name, which is the string resolveWikiLink() matches on. Written by the Endeavor
+    // trip log (TripLogName in DayflowEndeavor.swift). Typed wikilinks and the
+    // autocomplete pills still produce the plain form and take the path they always
+    // did. Obsidian uses this exact syntax, so the file also reads correctly in David's
+    // vault rather than only inside these apps.
+    //
+    // THE TWO FORMS SHARE ONE CODE PATH. They differ only in where the visible span
+    // starts: everything from the match start up to it is hidden, everything from its
+    // end to the match end is hidden. Written that way deliberately — as two branches
+    // it would be possible to hide the right characters for one form and the wrong
+    // ones for the other, and a wrong hide is invisible in the editor and permanent in
+    // the file.
 
     private func applyWikilinks(in line: String, lineRange: NSRange) {
         guard line.contains("[["),
               let regex = try? NSRegularExpression(
-                  pattern: #"\[\[([^\]]+)\]\]"#) else { return }
+                  pattern: #"\[\[([^\]|]+)(?:\|([^\]]*))?\]\]"#) else { return }
         let ns = line as NSString
         let hidden: [NSAttributedString.Key: Any] = [
             .font: Self.hiddenFont,
@@ -688,40 +807,58 @@ final class MarkdownTextStorage: NSTextStorage {
         ]
         for m in regex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
             guard m.numberOfRanges >= 2, m.range.length >= 5 else { continue }
-            let nameRange = m.range(at: 1)
-            guard nameRange.location != NSNotFound, nameRange.length > 0 else { continue }
-            let name = ns.substring(with: nameRange)
-            let base = lineRange.location + m.range.location
-            let total = m.range.length
+            let targetRange = m.range(at: 1)
+            guard targetRange.location != NSNotFound, targetRange.length > 0 else { continue }
+            let target = ns.substring(with: targetRange)
 
-            // Hide opening [[
-            // Strip any residual .link or .foregroundColor set by applyLinks before hiding.
-            let openRange = NSRange(location: base, length: 2)
-            backing.removeAttribute(.link,            range: openRange)
-            backing.removeAttribute(.foregroundColor, range: openRange)
-            backing.addAttributes(hidden, range: openRange)
+            // The display half, when there is one. A degenerate `[[name|]]` shows the
+            // target rather than rendering as nothing at all — an empty visible span
+            // would leave a wikilink that cannot be seen, tapped or deleted.
+            let aliasRange = m.numberOfRanges >= 3
+                ? m.range(at: 2)
+                : NSRange(location: NSNotFound, length: 0)
+            let visible = (aliasRange.location != NSNotFound && aliasRange.length > 0)
+                ? aliasRange
+                : targetRange
 
-            // Color the name span and tag it for tap detection.
-            // Remove .link first — NSDataDetector (applyLinks) may have matched the name
-            // text if it looks like a domain. We handle wikilink taps via .wikiTarget, not
-            // UITextView's native link menu.
-            let nameBase = lineRange.location + nameRange.location
-            let nameNsRange = NSRange(location: nameBase, length: nameRange.length)
-            backing.removeAttribute(.link, range: nameNsRange)
+            let matchStart = m.range.location
+            let matchEnd   = m.range.location + m.range.length
+            let visibleEnd = visible.location + visible.length
+
+            // Hide the leading `[[`, plus `target|` when this is an alias.
+            // Strip any residual .link or .foregroundColor set by applyLinks first.
+            let prefixLen = visible.location - matchStart
+            if prefixLen > 0 {
+                let openRange = NSRange(location: lineRange.location + matchStart,
+                                        length: prefixLen)
+                backing.removeAttribute(.link,            range: openRange)
+                backing.removeAttribute(.foregroundColor, range: openRange)
+                backing.removeAttribute(.wikiTarget,      range: openRange)
+                backing.addAttributes(hidden, range: openRange)
+            }
+
+            // Color the visible span and tag it for tap detection.
+            // Remove .link first — NSDataDetector (applyLinks) may have matched the
+            // text if it looks like a domain. We handle wikilink taps via .wikiTarget,
+            // not UITextView's native link menu.
+            let visibleNsRange = NSRange(location: lineRange.location + visible.location,
+                                         length: visible.length)
+            backing.removeAttribute(.link, range: visibleNsRange)
             backing.addAttributes([
                 .foregroundColor: Self.linkColor,
-                .wikiTarget:      name
-            ], range: nameNsRange)
+                .wikiTarget:      target
+            ], range: visibleNsRange)
 
-            // Hide closing ]]
-            // Strip residual .link, .foregroundColor, and .wikiTarget (the name addAttributes
-            // above writes just up to nameNsRange.length, but we defensively clear adjacent
-            // attributes on the 2-char close range before applying hidden.)
-            let closeRange = NSRange(location: base + total - 2, length: 2)
-            backing.removeAttribute(.link,            range: closeRange)
-            backing.removeAttribute(.foregroundColor, range: closeRange)
-            backing.removeAttribute(.wikiTarget,      range: closeRange)
-            backing.addAttributes(hidden, range: closeRange)
+            // Hide the trailing `]]`, plus a `|` and any empty-alias remainder.
+            let suffixLen = matchEnd - visibleEnd
+            if suffixLen > 0 {
+                let closeRange = NSRange(location: lineRange.location + visibleEnd,
+                                         length: suffixLen)
+                backing.removeAttribute(.link,            range: closeRange)
+                backing.removeAttribute(.foregroundColor, range: closeRange)
+                backing.removeAttribute(.wikiTarget,      range: closeRange)
+                backing.addAttributes(hidden, range: closeRange)
+            }
         }
     }
 
@@ -758,7 +895,10 @@ final class MarkdownTextStorage: NSTextStorage {
 
             // Color label in linkColor + set .link so shouldInteractWith fires on tap
             let labelBase = lineRange.location + labelRange.location
-            var labelAttrs: [NSAttributedString.Key: Any] = [.foregroundColor: Self.linkColor]
+            var labelAttrs: [NSAttributedString.Key: Any] = [
+                .foregroundColor: Self.linkColor,
+                .mdLinkLabel: true
+            ]
             if let url = URL(string: urlStr) { labelAttrs[.link] = url }
             backing.addAttributes(labelAttrs,
                                   range: NSRange(location: labelBase, length: labelRange.length))
@@ -798,6 +938,14 @@ final class MarkdownTextStorage: NSTextStorage {
             guard pathRange.location != NSNotFound else { continue }
             let path = ns.substring(with: pathRange)
             let base = lineRange.location + m.range.location
+
+            // Same `.link` strip as `applyPDFLinks` above. Images are currently
+            // protected by `applyMarkdownLinks`' `(?<![!])` lookbehind, so this
+            // is defensive rather than a fix — but relying on another function's
+            // regex to stay exclusive is the kind of coupling that breaks
+            // silently, and the whole point of running last is to win.
+            backing.removeAttribute(.link,
+                                    range: NSRange(location: base, length: m.range.length))
 
             // Hide `![` (2 ASCII chars at start of match)
             backing.addAttributes(hidden, range: NSRange(location: base, length: 2))
@@ -895,6 +1043,26 @@ final class MarkdownTextStorage: NSTextStorage {
             let path = ns.substring(with: pathRange)
             let base = lineRange.location + m.range.location
 
+            // STRIP `.link` FIRST, over the whole match.
+            //
+            // `applyMarkdownLinks` runs before this one and its `(?<![!])`
+            // lookbehind only excludes IMAGE links. A PDF line is
+            // `📎 [desc](path)` — the character before `[` is a space, so it
+            // matches, and the label gets `.foregroundColor: linkColor` plus a
+            // `.link`. UITextView renders any `.link` range with
+            // `linkTextAttributes`, which OVERRIDES a foreground colour set
+            // afterwards, so the orange below never appeared: David's PDF
+            // attachments rendered blue (screenshot, 2026-07-31), and his
+            // earlier "I click on the blue word and nothing happens" is the
+            // same cause — `.link` routes the tap through
+            // `shouldInteractWith(url:)` instead of `handleTap`, which is what
+            // reads `.pdfNoteStorePath`.
+            //
+            // `applyWikilinks` and `applyMarkdownLinks` both already do this.
+            // This function and `applyImageLinks` were the two that did not.
+            backing.removeAttribute(.link,
+                                    range: NSRange(location: base, length: m.range.length))
+
             // Keep `📎 ` (3 UTF-16 units) visible in orange; store path for tap detection
             backing.addAttributes([
                 .foregroundColor: orange,
@@ -948,6 +1116,13 @@ extension NSAttributedString.Key {
     /// Re-derived from text on every applyStyles() pass; no snapshot/restore needed.
     /// Read by handleTap (navigate) and handleLongPress (select name for editing).
     static let wikiTarget         = NSAttributedString.Key("com.david.trace.wikiTarget")
+    /// Marks the visible label span of a `[label](url)` link.
+    ///
+    /// `.link` is no good for this: `NSDataDetector` sets it on bare URLs too, so
+    /// it cannot tell a named link from an address someone typed. This is on the
+    /// label characters only, which is exactly the range a long-press should
+    /// select — the same trick `.wikiTarget` already plays for `[[name]]`.
+    static let mdLinkLabel        = NSAttributedString.Key("com.david.trace.mdLinkLabel")
     /// Bool marker — set alongside .backgroundColor on search-result highlight spans.
     /// Lets applySearchHighlights clear only its own marks without touching markdown bg attrs.
     /// processEditing() does NOT call applyStyles() for attribute-only edits, so these are

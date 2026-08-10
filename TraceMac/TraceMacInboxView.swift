@@ -24,6 +24,15 @@ struct TraceMacInboxView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            MacSectionHeader("Inbox")
+            columns
+        }
+    }
+
+    /// Split out only so `body` can put the shared section header above it
+    /// without re-indenting the whole view; nothing inside changed.
+    private var columns: some View {
         HStack(spacing: 0) {
             // Left: file list
             if !listCollapsed {
@@ -34,14 +43,7 @@ struct TraceMacInboxView: View {
                     Divider()
                     if files.isEmpty {
                         Spacer()
-                        VStack(spacing: 8) {
-                            Image(systemName: "tray")
-                                .font(.system(size: 36, weight: .thin))
-                                .foregroundStyle(.tertiary)
-                            Text("Your inbox is clear.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        MacEmptyState.list("tray", "Your inbox is clear.")
                         Spacer()
                     } else {
                         List(filtered, selection: $selectedFile) { file in
@@ -82,13 +84,7 @@ struct TraceMacInboxView: View {
                     TraceMacNoteEditor(relativePath: "Notes/Inbox/\(file.filename)")
                         .environment(noteStore)
                 } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: "tray")
-                            .font(.system(size: 40, weight: .thin))
-                            .foregroundStyle(.tertiary)
-                        Text("Select an item")
-                            .foregroundStyle(.secondary)
-                    }
+                    MacEmptyState.placeholder("tray", "Select an item")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }

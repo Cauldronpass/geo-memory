@@ -293,6 +293,21 @@ struct TraceMacDocument: Identifiable, Hashable {
     // order, and every call site appends new arguments at the end. Inserting
     // these in the middle is what broke the build on 2026-07-27.
 
+    /// When this document needs attention, sidecar key `remind`.
+    ///
+    /// David, 2026-08-01: *"For satchel if there is no copy of the date how is it
+    /// saved? I would want to see items with dates somehow."*
+    ///
+    /// I had left it out on purpose that morning, reasoning that a stored date
+    /// with no screen reading it is a field with no reader. **He then asked for
+    /// the screen**, which retires the argument: the Library now has a Due
+    /// section, so the date has somewhere to be read.
+    ///
+    /// Declared before the two body fields but after everything else, per the
+    /// rule at the top of this block — the memberwise initialiser follows
+    /// declaration order and every call site appends at the end.
+    var remindOn: Date? = nil
+
     /// David's own note about the document, under `## Note`.
     /// **Never written by AI** — sharing a field with the summary would mean
     /// re-summarising deletes what he typed.

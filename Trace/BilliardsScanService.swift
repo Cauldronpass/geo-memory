@@ -101,7 +101,10 @@ enum BilliardsScanService {
     /// Sends `imageData` to Claude and returns extracted APA scorecard stats.
     /// Accepts any format Anthropic supports (JPEG, PNG, GIF, WebP) — format is auto-detected.
     static func scan(imageData: Data) async throws -> BilliardsScanResult {
-        let base64 = imageData.base64EncodedString()
+        // Same fix as OTScanService, applied at the same time rather than waiting
+        // for a scorecard photo to fail the same way. See `ScanImage`.
+        let prepared = ScanImage.downscaled(imageData)
+        let base64 = prepared.base64EncodedString()
 
         let body: [String: Any] = [
             "model": model,
@@ -114,7 +117,7 @@ enum BilliardsScanService {
                             "type": "image",
                             "source": [
                                 "type": "base64",
-                                "media_type": mediaType(for: imageData),
+                                "media_type": mediaType(for: prepared),
                                 "data": base64
                             ]
                         ],

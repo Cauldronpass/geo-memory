@@ -60,11 +60,19 @@ extension View {
     /// The locked card treatment — larger radius, soft warm-tinted shadow, no
     /// stroke border. Replaces the previous `.background(.background, in:
     /// RoundedRectangle(cornerRadius: 16))` + quaternary-stroke overlay used
-    /// on both the Agenda and Daily Note cards before this skin. Deliberately
-    /// keeps the adaptive `.background` material (not a hardcoded white) so
-    /// dark mode — not addressed by this round of mockup work, see the
-    /// Design Plan's "Not yet decided" note — doesn't regress; only light
-    /// mode was actually designed against.
+    /// on both the Agenda and Daily Note cards before this skin. It keeps the
+    /// adaptive `.background` material rather than a hardcoded white.
+    ///
+    /// **That reasoning was wrong, and is kept here as the record.** The stated
+    /// intent was that staying adaptive meant dark mode "doesn't regress". But
+    /// the canvas behind these cards is `dayflowSkinBackground`, a HARDCODED
+    /// cream gradient — so in dark mode the cards render black on cream, which
+    /// is precisely the regression the choice was meant to avoid. David hit it
+    /// on device 2026-07-28.
+    ///
+    /// The app now defaults to light, so this is inert. If dark mode is ever
+    /// done properly it is a pass over the whole token set — canvas, cards, ink,
+    /// hairlines — not a material swap here.
     func dayflowCard() -> some View {
         self
             .background(.background, in: RoundedRectangle(cornerRadius: 22))

@@ -82,13 +82,30 @@
 //     into the locale's unit (same `UnitTemperature(forLocale:)` conversion
 //     WeatherKit's version used) plus a multicolor SF Symbol for the current
 //     condition.
-//   - Location comes from `CLLocationManager().location` — the system's
-//     cached fix, which a widget process gets when the CONTAINING APP holds
-//     location authorization and this widget's Info.plist has
-//     `NSWidgetWantsLocation` = YES. Widgets can't prompt for permission
-//     themselves; DayflowApp.swift now primes when-in-use authorization at
-//     app launch (see `DayflowLocationPrimer` there). Unchanged by the
-//     Open-Meteo switch — Open-Meteo just needs a lat/long, same as before.
+//   - **Rain chip, added 2026-08-02 (Session 63).** A blue droplet and a
+//     percentage at the right edge of the header, drawn ONLY when
+//     `precipitation_probability_max` is 40% or higher (threshold chosen by
+//     David; see `precipChipThreshold`). Dry days are unchanged. This exists
+//     because the SF Symbol reports the `current` block — conditions right
+//     now — while the temperatures beside it describe the whole day, so a dry
+//     morning before an afternoon storm renders a sun and said nothing about
+//     the storm. See `weatherView`'s comment for why this was built instead of
+//     the "turn the icon blue when it rains" that was originally asked for.
+//   - **Location, corrected 2026-08-02 (Session 63).** This block used to
+//     say the fix came from `CLLocationManager().location` — "the system's
+//     cached fix, which a widget process gets when the containing app holds
+//     authorization". That was wrong, and it is why the widget showed
+//     `no-fix(whenInUse)` in red for a week: `.location` is the last fix
+//     *that manager instance* retrieved, and a manager created fresh in a
+//     freshly launched widget process has retrieved none. There is no
+//     ambient fix to read. The widget has to ASK — `requestLocation()` plus
+//     a delegate callback — which is what `DayflowWidgetLocationFetcher`
+//     below now does, with a retained manager, a resume-once continuation
+//     and an 8s timeout. Read that type's doc comment before touching any
+//     of this. `NSWidgetWantsLocation` was always necessary and never
+//     sufficient; `whenInUse` authorization IS enough (the level was never
+//     the problem); widgets still can't prompt, so DayflowApp.swift's
+//     `DayflowLocationPrimer` still does that at app launch.
 //   - Cached in the `group.com.david.trace` App Group UserDefaults (suite
 //     name inlined below rather than referencing AppGroup.swift — that file
 //     isn't in this widget target's membership, and one string constant
@@ -99,6 +116,10 @@
 //     keeps the header line to itself).
 //   - MANUAL XCODE SETUP this needs (one-time, David-side): (1)
 //     `NSWidgetWantsLocation` = YES in the DayflowWidget target's Info.plist,
+//     (1b) added 2026-08-02: `NSLocationWhenInUseUsageDescription` on the
+//     WIDGET target's Info.plist too, not just the app's — a widget that
+//     calls `requestLocation()` is widely reported to need its own purpose
+//     string, and a missing one fails silently as `kCLErrorDenied`,
 //     (2) `NSLocationWhenInUseUsageDescription` string on the DAYFLOW APP
 //     target's Info tab, (3) launch Dayflow once and accept the location
 //     prompt, (4) optionally confirm the App Group `group.com.david.trace`
@@ -148,6 +169,47 @@ enum DayflowWidgetAppearance: String, AppEnum {
     ]
 }
 
+// MARK: - Active endeavor
+//
+// **The counterpart of `EndeavorWidgetFeed` in DayflowEndeavor.swift.** Dayflow
+// publishes a list of endeavors with their date ranges into the shared
+// container; this reads it and decides which one is today's. Change either side
+// and you must change the other — the shape and the key are the contract, and
+// they are duplicated because this target cannot see Dayflow's code.
+//
+// **Why a list of ranges rather than "the active one".** If Dayflow published a
+// single answer, a trip starting tomorrow would stay dark until the app was next
+// opened, because nothing runs at midnight to change it. Deciding here means the
+// widget's own timeline refresh across a date boundary is enough.
+
+private struct PublishedEndeavor: Codable {
+    let id: String
+    let name: String
+    let starts: Date
+    let ends: Date
+}
+
+enum ActiveEndeavorFeed {
+    private static let suiteName = "group.com.david.trace"
+    private static let key = "dayflow_endeavor_feed"
+
+    /// The endeavor covering `date`, soonest-ending first when several overlap.
+    /// David's rule: the nearest deadline is the one you need to be told about.
+    static func active(on date: Date = Date()) -> (id: String, name: String)? {
+        guard let defaults = UserDefaults(suiteName: suiteName),
+              let data = defaults.data(forKey: key),
+              let feed = try? JSONDecoder().decode([PublishedEndeavor].self, from: data)
+        else { return nil }
+
+        let today = Calendar.current.startOfDay(for: date)
+        let match = feed
+            .filter { $0.starts <= today && today <= $0.ends }
+            .min { $0.ends < $1.ends }
+        guard let match else { return nil }
+        return (match.id, match.name)
+    }
+}
+
 struct DayflowWidgetConfigIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Dayflow"
     static var description = IntentDescription("Choose how the widget looks.")
@@ -166,6 +228,9 @@ struct DayflowWidgetEntry: TimelineEntry {
     let calendarUnavailable: Bool
     let weather: DayflowWidgetWeather?
     let appearance: DayflowWidgetAppearance
+    /// Today's endeavor, if any. Replaces the "TODAY" label — see the label's
+    /// own comment for why that slot rather than a row of its own.
+    var activeEndeavor: (id: String, name: String)? = nil
     /// **TEMPORARY, added 2026-07-25** — David can't connect his phone to
     /// his Mac (company restrictions block it) and is on TestFlight, so
     /// there's no way to read Console.app or an attached debugger while
@@ -186,6 +251,18 @@ struct DayflowWidgetWeather: Codable {
     let lo: Int
     let symbolName: String
     let fetchedAt: Date
+    /// Chance of precipitation for the day, 0–100, from Open-Meteo's
+    /// `precipitation_probability_max`. Added Session 63 (2026-08-02).
+    ///
+    /// **Optional for two reasons, both load-bearing.** Open-Meteo can return
+    /// `null` for this at some locations, and more importantly this struct
+    /// doubles as the App Group cache payload — a cached blob written before
+    /// this field existed has no key for it. Swift's synthesized `Codable`
+    /// decodes `Optional` properties with `decodeIfPresent`, so old blobs
+    /// still decode, as `nil`, instead of failing outright and blanking the
+    /// weather for up to six hours after the update lands. A non-optional
+    /// `Int` here would have been a silent regression on install day.
+    let precipChance: Int?
 }
 
 enum DayflowWidgetRow: Identifiable {
@@ -205,6 +282,112 @@ enum DayflowWidgetRow: Identifiable {
         case .gap(let id, _): return id
         case .tomorrow(let id, _, _): return id
         }
+    }
+}
+
+// MARK: - Location for the widget
+
+/// **Session 63 (2026-08-02) — this is why weather never appeared.**
+///
+/// David's widget had been showing `no-fix(whenInUse)` in red for a week. That
+/// string means authorization was granted and `CLLocationManager().location`
+/// came back `nil` anyway. The code above it carried this comment:
+///
+/// > `CLLocationManager().location` is the system's cached fix — a widget
+/// > process can't run live location updates or prompt, but it CAN read this
+/// > when the containing app has authorization and this target's Info.plist
+/// > opts in via NSWidgetWantsLocation.
+///
+/// **That is wrong, and it was the bug.** In a widget extension `.location` is
+/// documented as "the most recently retrieved location" — meaning the most
+/// recent one *this manager instance* retrieved. A freshly created manager in a
+/// freshly launched widget process has never retrieved anything, so the
+/// property is `nil` no matter how the app is authorized. There is no ambient
+/// system fix to read. A widget has to **ask**, via `requestLocation()` and a
+/// delegate callback, exactly like an app does.
+///
+/// Everything else that was tried against this bug was aimed at the wrong
+/// thing. `NSWidgetWantsLocation` was already set and was always necessary but
+/// never sufficient. The `@MainActor` fix on 2026-07-25 was correct on its own
+/// terms — a `CLLocationManager` does need a main-thread run loop — but it
+/// could not help, because the call it was protecting never asked for a fix.
+/// And the authorization level is a red herring: `whenInUse` is enough. The
+/// widget was reading an empty property, patiently, on the right thread.
+///
+/// Three things this class has to get right, all of them ways the naive version
+/// fails in a widget specifically:
+///
+/// 1. **The manager must outlive the request.** A local `CLLocationManager`
+///    deallocates the moment the enclosing function suspends, and the delegate
+///    callback never arrives. Hence `shared`.
+/// 2. **The continuation must resume exactly once.** Resuming twice traps.
+///    `didUpdateLocations`, `didFailWithError` and the timeout can all fire, so
+///    `finish` is the single door and it nils the continuation on the way out.
+/// 3. **There must be a timeout.** WidgetKit gives timeline generation a wall
+///    clock budget; a location request that never calls back would hang the
+///    widget rather than fail it. Eight seconds, then give up and let the
+///    caller fall through to the stale cache.
+///
+/// Also `locations.last` rather than `locations.last!`: an empty array in the
+/// callback is rare but real, and the force-unwrap version is a known widget
+/// crash.
+@MainActor
+final class DayflowWidgetLocationFetcher: NSObject, CLLocationManagerDelegate {
+
+    static let shared = DayflowWidgetLocationFetcher()
+
+    private let manager = CLLocationManager()
+    private var continuation: CheckedContinuation<CLLocation?, Never>?
+
+    private override init() {
+        super.init()
+        manager.delegate = self
+        // Weather for a city-sized area. Kilometre accuracy returns faster and
+        // costs less power than the default, and the Open-Meteo call rounds to
+        // a grid cell anyway.
+        manager.desiredAccuracy = kCLLocationAccuracyKilometer
+    }
+
+    var authorizationStatus: CLAuthorizationStatus { manager.authorizationStatus }
+
+    /// The widget-specific authorization signal, distinct from
+    /// `authorizationStatus`. If this is `false` while the status looks fine,
+    /// the problem is the extension's Info.plist or entitlements rather than
+    /// anything the user did — worth having in the debug string, because those
+    /// two failures look identical from the widget face.
+    var isAuthorizedForWidgetUpdates: Bool { manager.isAuthorizedForWidgetUpdates }
+
+    func currentLocation(timeout: TimeInterval = 8) async -> CLLocation? {
+        // A second caller while one is in flight gets nil rather than stomping
+        // the first one's continuation.
+        guard continuation == nil else { return nil }
+
+        return await withCheckedContinuation { (cont: CheckedContinuation<CLLocation?, Never>) in
+            continuation = cont
+            manager.requestLocation()
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                self?.finish(nil)
+            }
+        }
+    }
+
+    /// The only place the continuation is ever resumed.
+    private func finish(_ location: CLLocation?) {
+        guard let cont = continuation else { return }
+        continuation = nil
+        cont.resume(returning: location)
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager,
+                                     didUpdateLocations locations: [CLLocation]) {
+        let last = locations.last
+        Task { @MainActor in self.finish(last) }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager,
+                                     didFailWithError error: Error) {
+        Task { @MainActor in self.finish(nil) }
     }
 }
 
@@ -364,34 +547,45 @@ struct DayflowProvider: AppIntentTimelineProvider {
             storeDebugText("cache-fresh")
             return (fresh, "cache-fresh")
         }
-        // `CLLocationManager().location` is the system's cached fix — a
-        // widget process can't run live location updates or prompt, but it
-        // CAN read this when the containing app has authorization and this
-        // target's Info.plist opts in via NSWidgetWantsLocation. One shared
-        // instance for both the auth check and the location read (the old
-        // class method `CLLocationManager.authorizationStatus()` is
-        // deprecated in favor of the instance property since iOS 14).
-        let manager = CLLocationManager()
-        let authStatus = manager.authorizationStatus
-        guard let location = manager.location else {
+        // **Rewritten Session 63 (2026-08-02).** This used to read
+        // `CLLocationManager().location` and treat `nil` as "no fix
+        // available". In a widget that property is always `nil` — see
+        // `DayflowWidgetLocationFetcher` for the full explanation. The widget
+        // has to request a fix and wait for the delegate callback, which is
+        // what `currentLocation()` does.
+        let fetcher = DayflowWidgetLocationFetcher.shared
+        let authStatus = fetcher.authorizationStatus
+        let authLabel: String
+        switch authStatus {
+        case .notDetermined: authLabel = "notDet"
+        case .restricted: authLabel = "restricted"
+        case .denied: authLabel = "denied"
+        case .authorizedAlways: authLabel = "always"
+        case .authorizedWhenInUse: authLabel = "whenInUse"
+        @unknown default: authLabel = "unknown"
+        }
+        // A widget can never prompt, so an unauthorized state is terminal here
+        // and `requestLocation()` would only fail slowly. Fail fast and say so.
+        guard authStatus == .authorizedWhenInUse || authStatus == .authorizedAlways else {
             let stale = cachedWeather(maxAge: weatherStaleCapSeconds)
-            let authLabel: String
-            switch authStatus {
-            case .notDetermined: authLabel = "notDet"
-            case .restricted: authLabel = "restricted"
-            case .denied: authLabel = "denied"
-            case .authorizedAlways: authLabel = "always"
-            case .authorizedWhenInUse: authLabel = "whenInUse"
-            @unknown default: authLabel = "unknown"
-            }
-            let debug = stale != nil ? "no-fix,stale-cache(\(authLabel))" : "no-fix(\(authLabel))"
+            let debug = "no-auth(\(authLabel)) — open Dayflow once to grant location"
             storeDebugText(debug)
-            return (stale, debug)
+            return (stale, stale != nil ? "no-auth,stale-cache" : "no-auth(\(authLabel))")
+        }
+        let widgetAuth = fetcher.isAuthorizedForWidgetUpdates
+        guard let location = await fetcher.currentLocation() else {
+            let stale = cachedWeather(maxAge: weatherStaleCapSeconds)
+            // `widgetAuth:0` here means the extension itself is not cleared for
+            // location — Info.plist / entitlements — rather than the request
+            // simply timing out. The two are indistinguishable without it.
+            let debug = "req-fail(\(authLabel),widgetAuth:\(widgetAuth ? 1 : 0))"
+            storeDebugText(debug)
+            return (stale, stale != nil ? "\(debug),stale-cache" : debug)
         }
         do {
             let weather = try await fetchOpenMeteoWeather(for: location)
             storeWeather(weather)
-            storeDebugText("live-ok hi:\(weather.hi) lo:\(weather.lo)")
+            storeDebugText("live-ok hi:\(weather.hi) lo:\(weather.lo) p:\(weather.precipChance.map(String.init) ?? "-")")
             return (weather, "live-ok")
         } catch {
             let stale = cachedWeather(maxAge: weatherStaleCapSeconds)
@@ -419,7 +613,11 @@ struct DayflowProvider: AppIntentTimelineProvider {
             URLQueryItem(name: "latitude", value: String(location.coordinate.latitude)),
             URLQueryItem(name: "longitude", value: String(location.coordinate.longitude)),
             URLQueryItem(name: "current", value: "weather_code,is_day"),
-            URLQueryItem(name: "daily", value: "temperature_2m_max,temperature_2m_min"),
+            // `precipitation_probability_max` added Session 63 (2026-08-02) for
+            // the rain chip. Same request, one more daily variable — no extra
+            // round trip, no extra latency, and it rides the existing 30-minute
+            // cache like everything else here.
+            URLQueryItem(name: "daily", value: "temperature_2m_max,temperature_2m_min,precipitation_probability_max"),
             URLQueryItem(name: "temperature_unit", value: "celsius"),
             URLQueryItem(name: "timezone", value: "auto"),
             URLQueryItem(name: "forecast_days", value: "1"),
@@ -443,7 +641,9 @@ struct DayflowProvider: AppIntentTimelineProvider {
             hi: Int(hi),
             lo: Int(lo),
             symbolName: Self.sfSymbolName(forWeatherCode: decoded.current.weatherCode, isDay: decoded.current.isDay == 1),
-            fetchedAt: Date()
+            fetchedAt: Date(),
+            precipChance: (decoded.daily.precipitation_probability_max?.first ?? nil)
+                .map { Int($0.rounded()) }
         )
     }
 
@@ -467,6 +667,30 @@ struct DayflowProvider: AppIntentTimelineProvider {
         struct Daily: Codable {
             let temperature_2m_max: [Double]
             let temperature_2m_min: [Double]
+            /// **`Double`, not `Int`, and doubly optional.** Three separate
+            /// hedges, each against a real failure:
+            ///
+            /// - **`Double`** because that is what Open-Meteo declares. Their
+            ///   own OpenAPI spec (`openapi/forecast.yml` in
+            ///   github.com/open-meteo/open-meteo) types this field as
+            ///   `number` / `format: float`, same as the temperatures beside
+            ///   it — checked 2026-08-02, after shipping it as a hedge and
+            ///   before David had to trust the hedge. So `Int` here would not
+            ///   have been cautious-vs-not, it would have been wrong by
+            ///   contract, working only for as long as their encoder happened
+            ///   to drop trailing zeros. A throw on `40.0` takes the whole
+            ///   `Daily` down with it and the **temperatures** vanish over a
+            ///   field that is decoration. The caller rounds.
+            /// - **The array optional** so a response without the variable at
+            ///   all (or a future request that stops asking for it) still
+            ///   yields temperatures.
+            /// - **The element optional** because individual entries come back
+            ///   `null` at some locations.
+            ///
+            /// The general rule, learned the expensive way one commit earlier
+            /// in this same file: an unverified assumption about someone else's
+            /// API belongs behind a hedge, not in a type signature.
+            let precipitation_probability_max: [Double?]?
         }
         let current: Current
         let daily: Daily
@@ -499,10 +723,13 @@ struct DayflowProvider: AppIntentTimelineProvider {
     @MainActor
     private func fetchEntry(appearance: DayflowWidgetAppearance) async -> DayflowWidgetEntry {
         let now = Date()
+        // Read once per render. Cheap (one UserDefaults blob, decoded), and
+        // every return below needs the same answer.
+        let active = ActiveEndeavorFeed.active(on: now)
         let (weather, weatherDebug) = await Self.fetchWeather()
         guard Self.hasCalendarAccess else {
             return DayflowWidgetEntry(date: now, rows: [], calendarUnavailable: true,
-                                      weather: weather, appearance: appearance, weatherDebug: weatherDebug)
+                                      weather: weather, appearance: appearance, activeEndeavor: active, weatherDebug: weatherDebug)
         }
         let dayEvents = await CalendarService.shared.fetchDayEvents(for: now)
         let all = dayEvents
@@ -530,11 +757,12 @@ struct DayflowProvider: AppIntentTimelineProvider {
                     calendarUnavailable: false,
                     weather: weather,
                     appearance: appearance,
+                    activeEndeavor: active,
                     weatherDebug: weatherDebug
                 )
             }
             return DayflowWidgetEntry(date: now, rows: [], calendarUnavailable: false,
-                                      weather: weather, appearance: appearance, weatherDebug: weatherDebug)
+                                      weather: weather, appearance: appearance, activeEndeavor: active, weatherDebug: weatherDebug)
         }
 
         var rows: [DayflowWidgetRow] = []
@@ -557,7 +785,7 @@ struct DayflowProvider: AppIntentTimelineProvider {
         }
 
         return DayflowWidgetEntry(date: now, rows: rows, calendarUnavailable: false,
-                                  weather: weather, appearance: appearance, weatherDebug: weatherDebug)
+                                  weather: weather, appearance: appearance, activeEndeavor: active, weatherDebug: weatherDebug)
     }
 }
 
@@ -575,6 +803,12 @@ struct DayflowWidgetSkin {
     let dayNumber: Color
     let today: Color
     let weatherText: Color
+    /// The rain chip. Deliberately the same blue as `today` rather than a
+    /// second one: both sit on the header row, and two nearly-identical
+    /// blues four inches apart reads as a mistake rather than a system. It
+    /// is a separate token anyway so the chip can change later without
+    /// dragging the "TODAY" label with it.
+    let precip: Color
     let eventText: Color
     let gapText: Color
     let gapBorder: Color
@@ -591,6 +825,7 @@ struct DayflowWidgetSkin {
         dayNumber: Color(red: 0.110, green: 0.110, blue: 0.118),
         today: Color(red: 0.231, green: 0.435, blue: 0.878),
         weatherText: Color(red: 0.420, green: 0.420, blue: 0.439),
+        precip: Color(red: 0.231, green: 0.435, blue: 0.878),
         eventText: Color(red: 0.110, green: 0.110, blue: 0.118),
         gapText: Color.black.opacity(0.5),
         gapBorder: Color.black.opacity(0.22),
@@ -608,6 +843,7 @@ struct DayflowWidgetSkin {
         dayNumber: .white,
         today: Color(red: 0.369, green: 0.620, blue: 1.0),
         weatherText: Color(red: 0.816, green: 0.816, blue: 0.835),
+        precip: Color(red: 0.369, green: 0.620, blue: 1.0),
         eventText: Color(red: 0.949, green: 0.949, blue: 0.961),
         gapText: Color.white.opacity(0.55),
         gapBorder: Color.white.opacity(0.28),
@@ -659,17 +895,58 @@ struct DayflowWidgetView: View {
                 // file header for why a widget can't launch Jot directly.
                 Link(destination: URL(string: "dayflow://openJot")!) {
                     VStack(alignment: .trailing, spacing: 0) {
+                        // Same treatment for the month. "SEPTEMBER" with 1.2pt
+                        // tracking is the widest of the twelve and sits in the same
+                        // 96pt column; fixing only the weekday would have left the
+                        // identical bug waiting for September.
                         Text(monthLabel)
                             .font(.system(size: 11, weight: .bold))
                             .tracking(1.2)
                             .foregroundStyle(skin.month)
                             .textCase(.uppercase)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        // SHRINK, DO NOT WRAP. The date column is a fixed 96pt and
+                        // "Thursday" at 20pt bold does not fit, so it broke as
+                        // "Thursda / y" — David's 30 July screenshot. Wednesday and
+                        // Saturday are longer still.
+                        //
+                        // Not a new bug: the same wrap has always happened on
+                        // long-named days. It was invisible until the overflow fix
+                        // landed, because on exactly those days the weekday was
+                        // being cropped off the top of the widget instead. One bug
+                        // was hiding the other.
+                        //
+                        // 0.6 rather than the day number's 0.7 because "Wednesday"
+                        // is the longest weekday in English and needs the extra
+                        // room; a scale floor that is too high just wraps again,
+                        // which is the failure this replaces.
                         Text(weekdayLabel)
                             .font(.system(size: 20, weight: .bold))
                             .foregroundStyle(skin.weekday)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
                             .padding(.top, 1)
                         Text(dayNumberLabel)
-                            .font(.system(size: 78, weight: .heavy))
+                            // WEIGHT ONLY. Size stays at 78 — David, 2026-07-31:
+                            // "I definitely do not want smaller... ideally same
+                            // size number but less thick."
+                            //
+                            // `.heavy` → `.bold` → `.semibold` on SF's scale
+                            // (black, heavy, bold, semibold, medium, regular).
+                            // Bold was tried on device first: "the weighting is
+                            // a little chubby still to be honest." `.medium` is
+                            // the next step if this is still not enough, though
+                            // it starts to look thin against the 20pt bold
+                            // weekday sitting directly above it.
+                            //
+                            // The scale floor below is untouched and should stay
+                            // untouched: two digits at 78pt fit the 96pt column,
+                            // so it is an emergency measure here, not the normal
+                            // case. What made the 30 July widget look lighter
+                            // than the 23rd was the WEEKDAY shrinking to fit a
+                            // long name; the number was not smaller.
+                            .font(.system(size: 78, weight: .semibold))
                             .foregroundStyle(skin.dayNumber)
                             .tracking(-3)
                             .lineLimit(1)
@@ -681,10 +958,47 @@ struct DayflowWidgetView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text("TODAY")
-                            .font(.system(size: 11, weight: .bold))
-                            .tracking(0.5)
-                            .foregroundStyle(skin.today)
+                        // WHAT TODAY IS, not just that it is today.
+                        //
+                        // The endeavor name takes this slot rather than a row of
+                        // its own: a row costs vertical space the overflow fix
+                        // just bought back, and this label's job is already to say
+                        // what kind of day this is. No endeavor, it reads TODAY
+                        // and is not a link, exactly as before.
+                        //
+                        // Its own `Link`, and **not** the date block's. That block
+                        // opens Jot and keeps doing so. Splitting it so the month
+                        // and weekday opened the endeavor was considered and
+                        // rejected: the words would say "Thursday" while the tap
+                        // opened "Japan", which is a door with no sign on it.
+                        // Here what you read is what you tap.
+                        //
+                        // `lineLimit(1)` is not optional. A long name with no
+                        // limit does not truncate under pressure, it wraps and
+                        // grows — that exact mistake made an Endeavor row 700pt
+                        // tall on 2026-07-31.
+                        if let active = entry.activeEndeavor,
+                           let url = URL(string: "dayflow://endeavor?id=\(active.id)") {
+                            Link(destination: url) {
+                                Text(active.name.uppercased())
+                                    .font(.system(size: 11, weight: .bold))
+                                    .tracking(0.5)
+                                    .foregroundStyle(skin.today)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    // Padding, not a bigger font: widens a
+                                    // deliberately small target without borrowing
+                                    // space from anything beside it.
+                                    .padding(.vertical, 4)
+                                    .padding(.trailing, 6)
+                                    .contentShape(Rectangle())
+                            }
+                        } else {
+                            Text("TODAY")
+                                .font(.system(size: 11, weight: .bold))
+                                .tracking(0.5)
+                                .foregroundStyle(skin.today)
+                        }
                         Spacer(minLength: 4)
                         weatherView
                     }
@@ -716,19 +1030,20 @@ struct DayflowWidgetView: View {
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else {
-                            VStack(alignment: .leading, spacing: 7) {
-                                ForEach(entry.rows) { row in
-                                    rowView(row)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            fittedRows
                         }
                     }
                     .frame(maxHeight: .infinity)
                 }
             }
             .padding(13)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            // `.topLeading`, not `.leading`. **This alone caused the missing date
+            // line.** `.leading` centres content vertically, so once the column was
+            // taller than the widget the overflow was cut off the TOP as well as the
+            // bottom — which is why David's 30 July screenshot lost "JULY / Monday"
+            // entirely while still showing three events. Anchored to the top, the
+            // header can no longer be the thing that disappears.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .containerBackground(skin.background, for: .widget)
             // Changed 2026-07-26 from `dayflow://open` — David's ask: the
             // card's default tap now relays to Fantastical instead of
@@ -748,6 +1063,15 @@ struct DayflowWidgetView: View {
         }
     }
 
+    /// Show the rain chip at or above this chance of precipitation.
+    ///
+    /// **40, chosen by David 2026-08-02.** 30 is the conventional
+    /// "consider an umbrella" line and was the alternative on the table; he
+    /// took the quieter one, which fires closer to the point where you would
+    /// actually change what you carry. Lower it here if it turns out to be too
+    /// silent through a Chicago summer.
+    private static let precipChipThreshold = 40
+
     @ViewBuilder
     private var weatherView: some View {
         if let weather = entry.weather {
@@ -758,6 +1082,52 @@ struct DayflowWidgetView: View {
                 Image(systemName: weather.symbolName)
                     .font(.system(size: 11))
                     .symbolRenderingMode(.multicolor)
+
+                // The rain chip. Session 63 (2026-08-02).
+                //
+                // David asked for the icon to turn blue when rain is expected.
+                // Built as this instead, for two reasons worth keeping.
+                //
+                // **The icon is already coloured** — `.symbolRenderingMode(
+                // .multicolor)` above already gives `cloud.rain.fill` blue
+                // droplets and `sun.max.fill` a yellow disc. Recolouring it
+                // would have meant dropping multicolor for a monochrome tint,
+                // trading away the yellow sun and the yellow lightning bolt to
+                // emphasise something the glyph shape already states.
+                //
+                // **And the icon reports the wrong window.** It comes from
+                // Open-Meteo's `current` block, so it is conditions *right
+                // now*, while the temperatures beside it are the day's high and
+                // low. On a dry morning before an afternoon storm the icon is a
+                // sun, and no colour rule fixes that because it is not a rain
+                // glyph to begin with. That morning is exactly when you want to
+                // be told something, and it was the case the widget was silent
+                // about. `precipitation_probability_max` is a claim about the
+                // day, which is what the row is otherwise made of.
+                //
+                // **Drawn only above the threshold, never below.** Dry days look
+                // exactly as they did before. Same rule as the Mac day column
+                // (design decision D4): mark the exception, not the norm — a
+                // widget where something is always highlighted has nothing
+                // highlighted.
+                //
+                // Not suppressed when the icon is already wet, even though 90%
+                // under a rain cloud is close to redundant. A chip that
+                // sometimes vanishes on the rainiest days of the year would
+                // read as a bug, and "when is it missing" is a worse question
+                // to leave the reader than one redundant number.
+                if let chance = weather.precipChance, chance >= Self.precipChipThreshold {
+                    HStack(spacing: 1) {
+                        Image(systemName: "drop.fill")
+                            .font(.system(size: 9))
+                        Text("\(chance)%")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundStyle(skin.precip)
+                    // One unit, so it wraps or truncates as one rather than
+                    // leaving a droplet next to a severed number.
+                    .fixedSize()
+                }
             }
         } else {
             // The debug text itself moved to a full-width row below the
@@ -765,6 +1135,91 @@ struct DayflowWidgetView: View {
             // a single line in this cramped slot was truncating before
             // David could read the actual error. Nothing shown here now,
             // matching final production behavior once weather works.
+        }
+    }
+
+    // MARK: Fitting the rows
+    //
+    // THE BUG, 2026-07-30. David: *"when I have more meetings in a day the events
+    // overflow the screen and this morning the date itself on the left was off as
+    // well."* Both symptoms, one cause: `ForEach(entry.rows)` rendered **every**
+    // row with no cap, so a busy day produced a column taller than the widget.
+    // A widget cannot scroll and cannot grow, so the surplus was simply cropped —
+    // and because the container was aligned `.leading` (vertically centred) it was
+    // cropped at BOTH ends, taking the month and weekday with it.
+    //
+    // Row height is not predictable from the event count either: a `.gap` pill is
+    // ~17pt, an `.event` ~34pt, a `.tomorrow` ~46pt, and gaps appear only between
+    // events that have space between them. Three meetings with two gaps is taller
+    // than four meetings back to back.
+    //
+    // SO: `ViewThatFits` rather than arithmetic. It renders the first candidate
+    // that actually fits, measured by SwiftUI with the real font metrics, on the
+    // real widget size for whatever device this is. No estimated line heights to be
+    // wrong about, and no per-device height table to maintain.
+    //
+    // Candidates run from `min(rows.count, 8)` rows down to 1, so the **last
+    // candidate is a single row and always fits** — there is no path where this
+    // falls through to overflowing again. Eight is the ceiling because more than
+    // eight rows cannot fit a medium widget on any device, so trying is wasted.
+
+    @ViewBuilder
+    private var fittedRows: some View {
+        let top = min(entry.rows.count, 8)
+        ViewThatFits(in: .vertical) {
+            rowsColumn(top)
+            rowsColumn(top - 1)
+            rowsColumn(top - 2)
+            rowsColumn(top - 3)
+            rowsColumn(top - 4)
+            rowsColumn(top - 5)
+            rowsColumn(top - 6)
+            rowsColumn(top - 7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// One candidate: the first `count` rows, tidied, plus an honest count of what
+    /// was left out.
+    @ViewBuilder
+    private func rowsColumn(_ count: Int) -> some View {
+        let rows = Self.tidied(Array(entry.rows.prefix(max(count, 1))))
+        let hidden = Self.meetingCount(entry.rows) - Self.meetingCount(rows)
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                rowView(row)
+                    // Only the LAST row can run under the "+" button, which is an
+                    // overlay pinned bottom-trailing. Reserving that width on every
+                    // row would truncate every title for the sake of one — which is
+                    // what put "SAP Signavio License" under the + in David's
+                    // 27 July screenshot.
+                    .padding(.trailing, index == rows.count - 1 ? 32 : 0)
+            }
+            if hidden > 0 {
+                // Silently dropping meetings is the one outcome worse than
+                // overflowing: the widget would look complete and be wrong.
+                Text("+\(hidden) more")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(skin.gapText)
+                    .padding(.trailing, 32)
+            }
+        }
+    }
+
+    /// Drops a trailing gap pill. A gap describes the space *before* the next
+    /// meeting, so one left dangling at the bottom points at something that is no
+    /// longer on screen.
+    private static func tidied(_ rows: [DayflowWidgetRow]) -> [DayflowWidgetRow] {
+        var out = rows
+        while let last = out.last, case .gap = last { out.removeLast() }
+        return out
+    }
+
+    /// Meetings only — a gap pill is not something that can be "hidden".
+    private static func meetingCount(_ rows: [DayflowWidgetRow]) -> Int {
+        rows.reduce(into: 0) { total, row in
+            if case .gap = row { return }
+            total += 1
         }
     }
 

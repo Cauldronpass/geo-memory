@@ -71,7 +71,18 @@ struct TraceMacFitnessView: View {
         let now = Date()
         switch period {
         case .week:
-            let start = cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now))!
+            // Monday-first, not `cal`. Session 64: the same Sunday-first bug
+            // David hit in the Journal's This Week panel is here too, and it
+            // is the reason TraceMacCalendar.swift exists. `Calendar.current`
+            // rolls "this week" over on Sunday morning while every week note,
+            // grid row and week header in Trace rolls over on Monday.
+            //
+            // This deliberately diverges from iOS FitnessView.swift:42, which
+            // still has the bug. The comment above says "iOS parity" and that
+            // was about the three stat periods, not about which day a week
+            // starts on. Parity with a defect is not parity worth keeping.
+            let weekCal = Calendar.traceWeek
+            let start = weekCal.date(from: weekCal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now))!
             return sortedWorkouts.filter { $0.date >= start }
         case .month:
             let start = cal.date(from: cal.dateComponents([.year, .month], from: now))!
@@ -201,26 +212,15 @@ struct TraceMacFitnessView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "figure.run")
-                .font(.system(size: 40, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text(typeFilter != nil ? "No \(typeFilter!) workouts" : "No workouts yet")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-        }
+        MacEmptyState.list("figure.run",
+                           typeFilter != nil ? "No \(typeFilter!) workouts" : "No workouts yet")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var placeholderDetail: some View {
-        VStack(spacing: 16) {
+        VStack {
             Spacer()
-            Image(systemName: "figure.run")
-                .font(.system(size: 48, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text("Select a workout")
-                .font(.title3)
-                .foregroundStyle(.secondary)
+            MacEmptyState.placeholder("figure.run", "Select a workout")
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -277,7 +277,7 @@ private struct WorkoutRow: View {
         case "OrangeTheory": return .orange
         case "Run":          return .green
         case "Bike":         return .blue
-        case "Hike":         return Color(hex: "16A34A")
+        case "Hike":         return MacPalette.green
         case "Lift":         return .purple
         default:             return .gray
         }
@@ -300,14 +300,7 @@ private struct WorkoutRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(typeColor.opacity(0.15))
-                    .frame(width: 34, height: 34)
-                Image(systemName: typeIcon)
-                    .font(.system(size: 15))
-                    .foregroundStyle(typeColor)
-            }
+            MacIconBadge(icon: typeIcon, tint: typeColor, size: .standard)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack {

@@ -68,7 +68,7 @@ struct TraceMacCalendarPanel: View {
         HStack(spacing: 0) {
             Button { step(-1) } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(MacType.heading)
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)
@@ -77,7 +77,7 @@ struct TraceMacCalendarPanel: View {
 
             Button { openMonth() } label: {
                 Text(displayMonth, format: .dateTime.month(.wide).year())
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MacType.heading)
                     .foregroundStyle(.primary)
             }
             .buttonStyle(.plain)
@@ -86,7 +86,7 @@ struct TraceMacCalendarPanel: View {
 
             Button { step(1) } label: {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(MacType.heading)
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)
@@ -104,13 +104,13 @@ struct TraceMacCalendarPanel: View {
         HStack(spacing: 0) {
             // Invisible placeholder — keeps day columns aligned with week-number column below
             Text("99")
-                .font(.system(size: 9))
+                .font(MacType.meta)
                 .foregroundStyle(.clear)
                 .frame(width: 22)
 
             ForEach(dowLabels, id: \.0) { _, letter in
                 Text(letter)
-                    .font(.system(size: 10, weight: .medium))
+                    .macLabel()
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
             }
@@ -147,7 +147,7 @@ struct TraceMacCalendarPanel: View {
             onOpenHorizonsNote(String(format: "%d-W%02d.md", yr, wn))
         } label: {
             Text("\(wn)")
-                .font(.system(size: 9))
+                .font(MacType.meta)
                 .foregroundStyle(.orange)
                 .frame(width: 22, alignment: .center)
         }
@@ -180,7 +180,7 @@ struct TraceMacCalendarPanel: View {
                             Circle().fill(Color.accentColor.opacity(0.22)).frame(width: 24, height: 24)
                         }
                         Text("\(cal.component(.day, from: date))")
-                            .font(.system(size: 11, weight: isToday ? .bold : .regular))
+                            .font(isToday ? MacType.rowEmphasis : MacType.row)
                             .foregroundStyle(isToday ? Color.white : inMonth ? Color.primary : Color(nsColor: .tertiaryLabelColor))
                     }
                     .frame(height: 24)

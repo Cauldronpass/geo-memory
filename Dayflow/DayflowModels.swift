@@ -128,7 +128,10 @@ enum DayflowRelativeDay: Int, CaseIterable, Identifiable {
 /// by `kind` + `isAllDay`, mirroring the mockup's visual distinction between
 /// "things you can complete" and "things you can't check off."
 struct DayflowAgendaItem: Identifiable {
-    enum Kind { case task, event }
+    /// `endeavor` added 2026-07-31. The agenda was already a merge of two
+    /// sources rather than a view of the calendar, which is what made a third
+    /// one cheap: no new container, no new list, one more case.
+    enum Kind { case task, event, endeavor }
 
     let id: String
     let kind: Kind
@@ -166,6 +169,9 @@ struct DayflowAgendaItem: Identifiable {
     /// Agenda tap-to-edit path, same as it already does via `metaLabel`/
     /// `taskDate` for list/date.
     let taskNotes: String?
+    /// The Endeavor's slug — nil for everything else. Mirrors `taskID`: the
+    /// row is display-ready strings, but opening the thing needs its identity.
+    let endeavorID: String?
     /// The underlying `NextCalendarEvent` — nil for tasks. Added 2026-07-21
     /// (Session 23, tap-a-calendar-event-for-details backlog item) so the
     /// Agenda row's tap handler has something to open a

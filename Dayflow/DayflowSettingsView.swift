@@ -40,7 +40,7 @@ struct DayflowSettingsView: View {
 
     @AppStorage("things_api_url") private var apiURL: String = ""
     @AppStorage("things_api_token") private var apiToken: String = ""
-    @AppStorage("dayflow_appearance") private var appearanceRaw: String = "system"
+    @AppStorage("dayflow_appearance") private var appearanceRaw: String = "light"
     @AppStorage("default_calendar_identifier") private var defaultCalendarID: String = ""
     @AppStorage("dayflow_included_calendar_ids") private var includedCalendarIDsRaw: String = ""
 
@@ -83,6 +83,11 @@ struct DayflowSettingsView: View {
                 calendarSection
                 includedCalendarsSection
                 syncSection
+                // One entry here serves Trace, Satchel and the Mac too — they
+                // all read the same App Group key. Dayflow gets the field
+                // because it is the only iOS app in the family with a Settings
+                // screen at all.
+                ClaudeAPIKeySection()
             }
             .listStyle(.insetGrouped)
             // `Form`/`List` paint their own opaque .systemGroupedBackground

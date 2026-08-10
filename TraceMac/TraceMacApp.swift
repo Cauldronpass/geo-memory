@@ -8,7 +8,7 @@ import SwiftUI
 struct TraceMacApp: App {
     @State private var noteStore = NoteStore.shared
     @State private var notionService = NotionService()
-    @State private var selectedSection: MacSection? = .daily
+    @State private var selectedSection: MacSection? = .notes
 
     var body: some Scene {
         WindowGroup {
@@ -22,25 +22,45 @@ struct TraceMacApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
         .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Note") { }
-                    .keyboardShortcut("n", modifiers: .command)
-            }
+            // Suppresses SwiftUI's default File ▸ New Window. Trace Mac is
+            // single-window on purpose: `selectedSection` lives on the App
+            // struct, so a second window would share one selection with the
+            // first and the two would fight.
+            //
+            // Session 63 (2026-08-01): this group used to hold
+            // `Button("New Note") { }` — an empty body on ⌘N. It suppressed New
+            // Window as intended, but did so by drawing a menu item that
+            // advertised an action and performed none, which is worse than the
+            // thing it was suppressing. The suppression is the actual intent, so
+            // it is now stated as an empty group.
+            //
+            // A real ⌘N belongs to whichever section is on screen — the note
+            // list already has its own New Note toolbar button — and wiring it
+            // needs a focused-section concept the app does not have until the
+            // NavigationSplitView work.
+            CommandGroup(replacing: .newItem) { }
+            // Session 63 (2026-08-02): reordered to follow the new sidebar, so
+            // ⌘1–⌘7 read top to bottom rather than in the order they were added.
+            // `Horizons` became `Weekly` (D3) and `Visits` took ⌘5 now that it
+            // is a tab rather than a sheet buried inside Places.
             CommandMenu("Go") {
-                Button("Daily")     { selectedSection = .daily }
+                Button("Notes")     { selectedSection = .notes }
                     .keyboardShortcut("1", modifiers: .command)
-                Button("Projects")  { selectedSection = .projects }
+                Button("Endeavors") { selectedSection = .endeavors }
                     .keyboardShortcut("2", modifiers: .command)
-                Button("Places")    { selectedSection = .places }
+                Button("Directory") { selectedSection = .directory }
                     .keyboardShortcut("3", modifiers: .command)
-                Button("Horizons")  { selectedSection = .horizons }
+                Button("Activity")  { selectedSection = .activity }
                     .keyboardShortcut("4", modifiers: .command)
-                Button("People")    { selectedSection = .people }
+                Button("Satchel")   { selectedSection = .documents }
                     .keyboardShortcut("5", modifiers: .command)
-                Button("Documents") { selectedSection = .documents }
-                    .keyboardShortcut("6", modifiers: .command)
+                Divider()
                 Button("Inbox")     { selectedSection = .inbox }
-                    .keyboardShortcut("7", modifiers: .command)
+                    .keyboardShortcut("6", modifiers: .command)
+                // ⌘0 / Home removed Session 64 with the Home section (D21).
+                // Nothing takes ⌘0: leaving a shortcut bound to the nearest
+                // survivor is how a muscle-memory keystroke starts landing
+                // somewhere it was never asked to go.
             }
         }
 

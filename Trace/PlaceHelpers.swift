@@ -1,4 +1,9 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 // MARK: - Flow Layout (wrapping chips)
 
@@ -125,4 +130,64 @@ struct PlacePin: View {
         }
         .shadow(radius: 3)
     }
+}
+
+
+// MARK: - Directions
+
+/// Opens turn-by-turn directions to a place in Apple Maps.
+///
+/// **Directions were written four separate times before this** — iOS's
+/// `PlaceDetailView.actionBar`, `DiscoverView`, `TraceMacDiscoverView`'s own
+/// `openDirections(to:from:)` and `FlaggedView` — and the four disagreed on the
+/// URL scheme, on whether to pass `dirflg`, and on whether to prefer
+/// `googleMapsURL` over coordinates. This is the iOS place-detail shape, which
+/// is the one David asked the Mac to copy: *"Id like directions to show up like
+/// we have in the ios version."*
+///
+/// `maps://`, **not** `https://maps.apple.com`. The http(s) form silently did
+/// nothing on iOS until Session 53 caught it, and the note above
+/// `TraceMacDiscoverView.openDirections` records the same finding. The custom
+/// scheme behaves identically under `NSWorkspace` on the Mac.
+///
+/// Coordinates rather than `googleMapsURL`: a Google URL opens a browser and
+/// makes you choose an app, where lat/long drops straight into a route. No
+/// `saddr`, so the origin is wherever you are — the Mac has no `LocationManager`
+/// to ask, and Maps resolves that itself.
+func openMapsDirections(to place: Place) {
+    let destination: String
+    if place.latitude == 0 && place.longitude == 0 {
+        // A place added by hand can have no coordinates at all, and routing to
+        // 0,0 puts you in the Gulf of Guinea. Fall back to a name search, which
+        // at least lands somewhere real.
+        let query = "\(place.name) \(place.address)".trimmingCharacters(in: .whitespaces)
+        destination = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+    } else {
+        destination = "\(place.latitude),\(place.longitude)"
+    }
+    guard !destination.isEmpty,
+          let url = URL(string: "maps://?daddr=\(destination)") else { return }
+    #if os(macOS)
+    NSWorkspace.shared.open(url)
+    #else
+    UIApplication.shared.open(url)
+    #endif
+}
+
+/// Opens a place in Maps to LOOK at it, as opposed to `openMapsDirections`,
+/// which opens it to go there.
+///
+/// `q=` plus `ll=` rather than `daddr=`: the same coordinates, but Maps drops a
+/// labelled pin and sits still instead of computing a route from wherever you
+/// are. The name is what makes the pin say something when it lands.
+func openMapsPlace(_ place: Place) {
+    guard place.latitude != 0 || place.longitude != 0 else { return }
+    let name = place.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+    guard let url = URL(string: "maps://?q=\(name)&ll=\(place.latitude),\(place.longitude)")
+    else { return }
+    #if os(macOS)
+    NSWorkspace.shared.open(url)
+    #else
+    UIApplication.shared.open(url)
+    #endif
 }

@@ -12,6 +12,80 @@ import CoreLocation
 
 /// Persists the set of known hashtags to UserDefaults.
 /// Seeded by scanning all NoteStore files on first launch; maintained incrementally.
+/// A `UITextView` that accepts an image from the clipboard.
+///
+/// **Why a subclass is required.** `UITextView` in plain-text mode
+/// (`allowsEditingTextAttributes == false`, which this editor needs — it stores
+/// markdown, not attributed runs) does two unhelpful things with an image on the
+/// pasteboard: `canPerformAction(.paste:)` returns **false**, so iOS does not even
+/// offer Paste, and `paste(_:)` would discard the item anyway. Both have to be
+/// overridden; overriding only `paste` leaves a menu with no Paste in it, which is
+/// exactly what David saw — the clipboard had the picture and the note offered
+/// nothing to do with it.
+///
+/// The handler is a closure rather than a delegate method so the coordinator owns
+/// what "insert an image" means, and this class stays about the pasteboard only.
+final class PasteAwareTextView: UITextView {
+
+    /// Set by `makeUIView`. Nil means "behave like a normal text view".
+    var pasteImageHandler: ((UIImage) -> Void)?
+
+    /// Fired when the view's width changes.
+    ///
+    /// Overlays (thumbnails, rules, checkboxes, folds) are UIViews positioned
+    /// from layout, so they have to be recomputed WHEN LAYOUT CHANGES. Every
+    /// refresh call site before this one was tied to a text change or to view
+    /// creation, both of which are coincidences that usually happen to fire late
+    /// enough — until one does not, and an overlay is sized against a view that
+    /// has no frame yet. Same conclusion as the tag-count notification added
+    /// 2026-07-30: a derived value needs a signal, not a lifecycle event.
+    var onWidthChange: (() -> Void)?
+    private var lastLaidOutWidth: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard abs(bounds.width - lastLaidOutWidth) > 0.5 else { return }
+        lastLaidOutWidth = bounds.width
+        // Async: the callback adds and removes subviews, which must not re-enter
+        // the layout pass that is currently running.
+        DispatchQueue.main.async { [weak self] in self?.onWidthChange?() }
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)),
+           pasteImageHandler != nil,
+           UIPasteboard.general.hasImages {
+            return true
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        // IMAGE WINS whenever there is one.
+        //
+        // This was "text wins when the clipboard has both", on the reasoning that
+        // copying a web article carries an image alongside the prose and the prose
+        // is what was meant. That reasoning was fine and the case was wrong.
+        //
+        // David copied a picture and pasted it into a day note on 2026-07-30, and
+        // got the literal text **`[image]`**. The source app had put a placeholder
+        // string on the pasteboard next to the image, so `hasStrings` was true and
+        // the rule dutifully chose the placeholder. The common case is not "an
+        // article containing a picture" — it is "a picture that some app also
+        // described in words".
+        //
+        // Undo covers the case this now gets wrong. Nothing covered the case it
+        // used to get wrong, because pasting a placeholder looks like the feature
+        // failing rather than choosing.
+        if let handler = pasteImageHandler,
+           let image = UIPasteboard.general.image {
+            handler(image)
+            return
+        }
+        super.paste(sender)
+    }
+}
+
 final class TagIndex {
     static let shared = TagIndex()
     private let key = "traceTagIndex"
@@ -217,6 +291,19 @@ struct ToolbarCustomizeSheet: View {
 //   • Placeholder label shown when text is empty
 //   • Timestamp insert: triggered externally via timestampTrigger binding
 
+/// Which attachment picker to open.
+///
+/// Added 2026-07-30 so the four paperclip actions can be reached from outside the
+/// keyboard accessory bar. Until now they existed only on that bar, which is
+/// only on screen while the keyboard is up — so a note you were not already
+/// typing in had no way to attach anything, and the feature read as missing.
+/// Same shape of failure as the tag Edit button and the Kit slots setting the
+/// same week: present, correct, and with no visible door.
+enum MarkdownAttachKind: String, Identifiable {
+    case camera, library, scan, pdf
+    var id: String { rawValue }
+}
+
 struct MarkdownEditorView: UIViewRepresentable {
 
     @Binding var text: String
@@ -242,14 +329,31 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// scrolls to the first hit. Purely visual — never touches the saved file.
     /// Supports the same token syntax as GlobalSearchView: plain text and #tag.
     var searchQuery: String? = nil
-    /// Controls the ☐ toolbar button. Default `true` preserves Trace's existing
-    /// behavior (a UIMenu: Keep local / Send to Things / Send to Tweek). Dayflow's
-    /// Daily Note has no "send to Things/Tweek" concept for its checklists — a
-    /// checkbox there is always just a local checkbox — so it passes `false` to
-    /// get a plain button that calls `insertCheckbox()` directly, no menu popup.
-    /// Added 2026-07-19 (Dayflow Daily Note build) rather than special-casing by
-    /// target, since this file is shared between Trace and Dayflow.
-    var checklistSendEnabled: Bool = true
+    /// Controls the ☐ toolbar button: a UIMenu (Keep local / Send to Things /
+    /// Send to Tweek) when true, a plain button that inserts a local ☐ when
+    /// false.
+    ///
+    /// **Default flipped to `false` 2026-08-04.** David: *"in trace the checkbox
+    /// still has the three options (keep local, sent to things, sent to tweek),
+    /// we got rid of that in mac."* Correct — the Mac's checkbox button has
+    /// always just inserted a checkbox, and every one of Dayflow's eight call
+    /// sites passes `false` explicitly. Trace was the only caller left on the
+    /// default, so the default was carrying one app's old behaviour and calling
+    /// it a default.
+    ///
+    /// **Two taps to get a checkbox is the actual cost.** The menu fires on
+    /// press, so the common case — a plain local checkbox, which is what every
+    /// other surface in every other app produces — took a tap and a menu
+    /// selection. A menu is right when the options are comparable; here one of
+    /// them is the answer nearly every time.
+    ///
+    /// **The send machinery is deliberately left in place**, not deleted:
+    /// `insertCheckboxAndSend`, `sendToThings`, `sendToTweek` and the
+    /// `.sendTarget` attribute all still work, and `.sendTarget` is runtime-only
+    /// so nothing on disk changes either way. Restoring the menu is passing
+    /// `true` from Trace's call sites. Deleting a working integration on an
+    /// inconsistency report would be a bigger decision than the one he made.
+    var checklistSendEnabled: Bool = false
     /// Quick Pin toolbar button (added 2026-07-25) — fires the instant it's
     /// tapped (no confirmation sheet), same "instant save" design as Jot's
     /// own Quick Pin (CaptureView.swift/JotTextView.swift, Session 45
@@ -267,6 +371,18 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// default, same shape as onWikiTap above — not every call site needs to
     /// wire it.
     var onCaptureTap: ((String) -> Void)? = nil
+    /// Set from outside to open an attachment picker, then cleared back to nil
+    /// here. Declared last on purpose: Swift requires call-site argument order to
+    /// match declaration order, so appending is the only addition that cannot
+    /// break an existing caller.
+    ///
+    /// The pickers present from `presentingViewController()`, which walks up the
+    /// responder chain from the text view and does not care whether it is first
+    /// responder — so this works with the keyboard down. Insertion lands wherever
+    /// `insertAtCursor` decides: at the cursor when the editor has focus, at the
+    /// end of the document when it does not, which is already the right answer
+    /// for a note you have not been typing in.
+    var attachTrigger: Binding<MarkdownAttachKind?>? = nil
 
     // MARK: Make
 
@@ -279,7 +395,15 @@ struct MarkdownEditorView: UIViewRepresentable {
         manager.addTextContainer(container)
         storage.addLayoutManager(manager)
 
-        let tv = UITextView(frame: .zero, textContainer: container)
+        let tv = PasteAwareTextView(frame: .zero, textContainer: container)
+        // Paste of an IMAGE, added 2026-07-30. David: *"I tried putting the
+        // picture in my clipboard then saving it to the note which didn't work."*
+        // It could not have: a plain `UITextView` with attributed editing off
+        // discards image pasteboard items silently, and does not even offer Paste
+        // when the clipboard holds only an image. See `PasteAwareTextView`.
+        tv.pasteImageHandler = { [weak coordinator = context.coordinator] image in
+            coordinator?.insertPastedImage(image)
+        }
         tv.delegate               = context.coordinator
         tv.backgroundColor        = .systemBackground
         tv.textColor              = .label
@@ -312,6 +436,10 @@ struct MarkdownEditorView: UIViewRepresentable {
         tv.addGestureRecognizer(longPress)
 
         addPlaceholder(to: tv, text: placeholder)
+
+        // D50/D53. The storage forces a repaint after each styling pass and needs
+        // a way to reach the view; set once, here, where both exist.
+        storage.hostTextView = tv
 
         if !text.isEmpty {
             storage.replaceCharacters(in: NSRange(location: 0, length: 0), with: text)
@@ -355,6 +483,19 @@ struct MarkdownEditorView: UIViewRepresentable {
             coord.refreshFoldOverlays(in: tvForThumb)
         }
 
+        // ...and again whenever the view actually gets, or changes, its width.
+        // The one-shot above runs a runloop after creation, which is not a
+        // promise that SwiftUI has laid the view out by then. See
+        // `PasteAwareTextView.onWidthChange`.
+        tv.onWidthChange = { [weak coord = context.coordinator, weak tv] in
+            guard let coord, let tv else { return }
+            tv.layoutManager.ensureLayout(for: tv.textContainer)
+            coord.refreshThumbnails(in: tv)
+            coord.refreshHorizontalRules(in: tv)
+            coord.refreshCheckboxOverlays(in: tv)
+            coord.refreshFoldOverlays(in: tv)
+        }
+
         return tv
     }
 
@@ -369,6 +510,24 @@ struct MarkdownEditorView: UIViewRepresentable {
             DispatchQueue.main.async {
                 context.coordinator.insertTimestamp()
                 triggerBinding.wrappedValue = nil
+            }
+        }
+
+        // Handle attach trigger.
+        //
+        // Guarded by a coordinator flag rather than by comparing against a last
+        // value the way the timestamp above does. `updateUIView` can run more
+        // than once before an async block clears the binding, and a duplicate
+        // here means two camera sheets, not a duplicate timestamp.
+        if let attachBinding = attachTrigger,
+           let kind = attachBinding.wrappedValue,
+           !context.coordinator.attachTriggerInFlight {
+            context.coordinator.attachTriggerInFlight = true
+            let coord = context.coordinator
+            DispatchQueue.main.async {
+                attachBinding.wrappedValue = nil
+                coord.attachTriggerInFlight = false
+                coord.triggerAttach(kind)
             }
         }
 
@@ -822,6 +981,13 @@ struct MarkdownEditorView: UIViewRepresentable {
         weak var textView: UITextView?
         private var saveWork: DispatchWorkItem?
         var lastTimestampTrigger: Date?
+        /// True between an attach request being seen in `updateUIView` and the
+        /// binding being cleared. See the call site for why this is a flag and
+        /// not a last-value comparison.
+        var attachTriggerInFlight = false
+        /// Bounded retries for a thumbnail whose line reported no usable width
+        /// yet. Keyed by path; see the guard in `refreshThumbnails`.
+        private var thumbnailLayoutRetries: [String: Int] = [:]
         /// NoteStore relative path — set by MarkdownEditorView so we can extract note date.
         var relativePath: String?
         /// Set to true when a long-press fires; prevents the tap gesture from
@@ -891,19 +1057,175 @@ struct MarkdownEditorView: UIViewRepresentable {
         // MARK: UITextViewDelegate
 
         func textViewDidChange(_ tv: UITextView) {
+            convertURLWikilink(in: tv)
             text = tv.text
             tv.viewWithTag(9_001)?.isHidden = !tv.text.isEmpty
             scheduleSave(tv.text)
-            refreshThumbnails(in: tv)
-            refreshHorizontalRules(in: tv)
-            refreshCheckboxOverlays(in: tv)
-            refreshFoldOverlays(in: tv)
+            refreshOverlaysAfterStyling(in: tv)
             checkForTextExpansion(tv)
             checkForWikilink(in: tv)
         }
 
+        /// Every overlay that is positioned from the layout, placed **after** the
+        /// styling pass rather than before it.
+        ///
+        /// David, 2026-08-04, on the first build with the new editor: *"i type a
+        /// checkbox and some text then hit return. the next row is missing the
+        /// checkbox and the cursor is aligned with the text on the line above. as
+        /// soon as i typr letters the checkbox appears."*
+        ///
+        /// **An ordering regression introduced by making styling asynchronous**
+        /// (D50/D70). These four used to run after `processEditing` had already
+        /// restyled; now the restyle is one runloop turn away, so they were
+        /// measuring a `☐` still drawn at full width and placing the overlay
+        /// against a layout that was about to change. The next keystroke ran them
+        /// again, this time after a completed pass, which is why typing a letter
+        /// made the box appear.
+        ///
+        /// The hop is what fixes it. The storage enqueues its restyle from inside
+        /// `processEditing`, which runs while the characters are being inserted —
+        /// strictly before this. Main-queue blocks run in order, so by the time
+        /// this one executes the pass is done and `ensureLayout` measures the
+        /// final geometry.
+        ///
+        /// Also called from the `shouldChangeTextIn` branches that return false:
+        /// they replace characters directly, so this delegate method never fires
+        /// for them.
+        private func refreshOverlaysAfterStyling(in tv: UITextView) {
+            DispatchQueue.main.async { [weak self, weak tv] in
+                guard let self, let tv else { return }
+                tv.layoutManager.ensureLayout(for: tv.textContainer)
+                self.refreshThumbnails(in: tv)
+                self.refreshHorizontalRules(in: tv)
+                self.refreshCheckboxOverlays(in: tv)
+                self.refreshFoldOverlays(in: tv)
+            }
+        }
+
+        /// `[[https://…]]` is a wikilink to a page that cannot exist.
+        ///
+        /// The Mac learned this in Session 67 (D63); iOS has the same hole in a
+        /// quieter shape. `insertLink()` writes the finished `[[]]` up front, so a
+        /// pasted URL lands **closed**, gets painted blue by `applyWikilinks`, and
+        /// does nothing when tapped. It looks correct, which is why it was never
+        /// reported.
+        ///
+        /// Markdown already has the form — `[label](url)` — and
+        /// `applyMarkdownLinks` already renders it here: label in link colour,
+        /// brackets and URL hidden, genuinely tappable. So the conversion fires
+        /// as soon as a scheme appears between brackets and leaves the caret in
+        /// the empty label, ready for the link text.
+        ///
+        /// Both the closed and the unclosed form, because the button writes one
+        /// and typing `[[` by hand produces the other.
+        ///
+        /// Keyed on `://`, which no place, person or note title in this vault
+        /// contains, and one that did could not be opened as a wikilink anyway.
+        @discardableResult
+        private func convertURLWikilink(in tv: UITextView) -> Bool {
+            let ns = tv.textStorage.string as NSString
+            guard ns.length > 0 else { return false }
+            let caret = min(tv.selectedRange.location, ns.length)
+            let lineRange = ns.lineRange(for: NSRange(location: min(caret, ns.length - 1), length: 0))
+            let line = ns.substring(with: lineRange)
+            guard line.contains("://") else { return false }
+            let lns = line as NSString
+            let whole = NSRange(location: 0, length: lns.length)
+
+            // Closed `[[url]]` first, then an unclosed `[[url` running to the end
+            // of the line. Order matters: the unclosed pattern would also match
+            // the opening of a closed one and eat the `]]` as part of the URL.
+            var match: NSTextCheckingResult? = nil
+            for pattern in [#"\[\[([^\[\]\n|]*://[^\[\]\n|]*)\]\]"#,
+                            #"\[\[([^\[\]\n|]*://[^\[\]\n|]*)$"#] {
+                guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                if let m = regex.firstMatch(in: line, range: whole) { match = m; break }
+            }
+            guard let m = match, m.numberOfRanges >= 2,
+                  m.range(at: 1).location != NSNotFound else { return false }
+
+            let url = lns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
+            guard !url.isEmpty else { return false }
+            // A real label, not an empty one. `applyMarkdownLinks` matches
+            // `[([^\]]+)](…)` — one or more characters — so `[](url)` renders as
+            // raw markdown and looks broken, which is what David reported.
+            let label = NoteStore.linkLabel(for: url)
+            let target = NSRange(location: lineRange.location + m.range.location, length: m.range.length)
+            tv.textStorage.replaceCharacters(in: target, with: "[\(label)](\(url))")
+            // Label SELECTED: leave it and the link reads `zola.com`, type and
+            // you have replaced it.
+            tv.selectedRange = NSRange(location: target.location + 1,
+                                       length: (label as NSString).length)
+            return true
+        }
+
         func textViewDidChangeSelection(_ tv: UITextView) {
+            nudgeCaretOutOfHeadingMarkers(in: tv)
             checkForWikilink(in: tv)
+        }
+
+        /// Keeps the caret out of a heading's hidden `#` markers.
+        ///
+        /// **This is a correctness fix, not a nicety.** `MarkdownTextStorage.styleHeading`
+        /// hides the marker with a clear colour and a 0.1pt font, so `## Open items`
+        /// has three characters at the start of the line that occupy no space and
+        /// cannot be seen. A caret can still land among them, and typing there turns
+        /// `## Open items` into `#x# Open items` — which stops being a heading, so
+        /// the text silently drops from 19pt semibold to body size with **nothing on
+        /// screen to explain why**. Nobody would guess they had typed inside an
+        /// invisible character.
+        ///
+        /// Found 2026-07-30. David: *"when i click on Summary it takes me to the end
+        /// of the row which is the right behavior, but when i click Open items I am
+        /// able to edit that title."* Same code path for both — the only difference
+        /// was where his finger landed relative to three characters he could not see.
+        /// "Summary" is short, so a tap tends to land past it; "Open items" is long
+        /// enough to tap near its start.
+        ///
+        /// Deliberately does NOT make headings read-only: this is a markdown note and
+        /// renaming a section is legitimate. It only refuses to park the caret in a
+        /// place where the next keystroke does something invisible and destructive.
+        ///
+        /// Runs here rather than in `handleTap` because `UITextView`'s own gesture
+        /// sets the caret and would overwrite anything the tap handler did. This also
+        /// covers arrow keys and long-press positioning, not just taps.
+        ///
+        /// Applies to EVERY note in Trace and Dayflow, not only Endeavors — the same
+        /// hazard has always been there. Unlike the heading type-scale question (see
+        /// `Dayflow-HANDOFF.md`, Session 55), this changes nothing visible, so it does
+        /// not need the same caution.
+        private func nudgeCaretOutOfHeadingMarkers(in tv: UITextView) {
+            let sel = tv.selectedRange
+            guard sel.length == 0 else { return }          // a selection is deliberate
+            let ns = tv.textStorage.string as NSString
+            guard ns.length > 0, sel.location <= ns.length else { return }
+
+            let lineRange = ns.lineRange(for: NSRange(location: min(sel.location, ns.length - 1),
+                                                      length: 0))
+            let line = ns.substring(with: lineRange)
+            guard let markerLen = Self.headingMarkerLength(line) else { return }
+
+            let firstVisible = lineRange.location + markerLen
+            guard sel.location < firstVisible, firstVisible <= ns.length else { return }
+            // Setting the selection re-enters this method; the second pass sees the
+            // caret already at `firstVisible` and returns, so there is no loop.
+            tv.selectedRange = NSRange(location: firstVisible, length: 0)
+        }
+
+        /// Length of a leading `#`/`##`/`###` marker INCLUDING its trailing space,
+        /// or nil when the line is not a heading.
+        ///
+        /// The trailing space is required: `#japan` is a tag, not a heading, and
+        /// `MarkdownTextStorage` styles it as one.
+        static func headingMarkerLength(_ line: String) -> Int? {
+            var hashes = 0
+            for ch in line {
+                if ch == "#" { hashes += 1 } else { break }
+            }
+            guard (1...3).contains(hashes) else { return nil }
+            let afterHashes = line.index(line.startIndex, offsetBy: hashes)
+            guard afterHashes < line.endIndex, line[afterHashes] == " " else { return nil }
+            return hashes + 1
         }
 
         func textViewDidBeginEditing(_ tv: UITextView) {
@@ -947,6 +1269,19 @@ struct MarkdownEditorView: UIViewRepresentable {
             let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(for: NSRange(location: range.location, length: 0))
             let line = ns.substring(with: lineRange)
+
+            // D52, ported from the Mac 2026-08-04. **Every branch below asks what
+            // line the caret is on and none of them asked where in it.**
+            //
+            // David: *"I went to the beginning of the top row before the checkbox
+            // and hit enter and it added an extra check box."* Correct, and
+            // inevitable: Return at offset 0 of `☐ Buy rings` reads as "continue
+            // the checkbox list" when what it means is "put a blank line above
+            // this". Same for bullets.
+            //
+            // At the very start of a line a plain newline is always right — the
+            // list carries on below, on the line it was already on.
+            guard range.location > lineRange.location else { return true }
 
             // Round bullet — "• item" or "  • item" (any leading spaces)
             // NOTE: do NOT use a raw string (#"..."#) here — \u{2022} is not interpreted in raw literals.
@@ -1001,7 +1336,7 @@ struct MarkdownEditorView: UIViewRepresentable {
                         tv.textStorage.replaceCharacters(in: range, with: "\n")
                         tv.selectedRange = NSRange(location: range.location + 1, length: 0)
                         self.text = tv.text; scheduleSave(tv.text)
-                        refreshCheckboxOverlays(in: tv)
+                        refreshOverlaysAfterStyling(in: tv)
                         let date = noteDate()
                         if target == "things" {
                             sendToThings(taskTitle: content, date: date,
@@ -1017,7 +1352,7 @@ struct MarkdownEditorView: UIViewRepresentable {
                     tv.selectedRange = NSRange(location: range.location + 3, length: 0)
                 }
                 self.text = tv.text; scheduleSave(tv.text)
-                refreshCheckboxOverlays(in: tv)
+                refreshOverlaysAfterStyling(in: tv)
                 return false
             }
 
@@ -1154,6 +1489,31 @@ struct MarkdownEditorView: UIViewRepresentable {
                                                  effectiveRange: &nameRange)
                     if nameRange.length > 0 {
                         tv.selectedRange = nameRange
+                    }
+                    return
+                }
+                // Markdown link long-press — select the visible name so it can be
+                // retyped. **Exactly the wikilink behaviour above**, which has
+                // worked since it was written, rather than a new menu: the two
+                // are the same problem (a span whose delimiters are hidden, so
+                // tapping at either edge lands in a marker you cannot see) and
+                // one gesture for both is one thing to learn.
+                //
+                // David: *"there is no way to change the description currently."*
+                // Correct — a tap opens the link, and dragging a selection across
+                // three visible characters between two invisible ones is not a
+                // way.
+                //
+                // Keyed on `.mdLinkLabel`, not `.link`: `NSDataDetector` sets
+                // `.link` on bare URLs as well, and long-pressing a plain address
+                // to "rename" it would select something that has no name.
+                if attrs[.mdLinkLabel] != nil {
+                    var labelRange = NSRange(location: 0, length: 0)
+                    _ = tv.textStorage.attribute(.mdLinkLabel, at: charIndex,
+                                                 effectiveRange: &labelRange)
+                    if labelRange.length > 0 {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        tv.selectedRange = labelRange
                     }
                     return
                 }
@@ -1516,8 +1876,55 @@ struct MarkdownEditorView: UIViewRepresentable {
             // tv.replace/insertText fires textViewDidChange → text binding + scheduleSave handled there
         }
 
+        /// The link button. **Two kinds of link, one button, decided from context.**
+        ///
+        /// David: *"the url link still provides a `[[]]` when i click the icon and
+        /// if i paste a link it doesnt offer a markdown option."* Right — this
+        /// button only ever made wikilinks. `convertURLWikilink` rescues a URL
+        /// *after* it has been pasted between the brackets, which is a repair, not
+        /// an affordance: nothing tells you that is the route, and pasting the URL
+        /// anywhere else silently does nothing.
+        ///
+        /// So the button now reads the situation, in this order:
+        ///
+        /// 1. **The selection is a URL** → `[host](url)`.
+        /// 2. **The clipboard holds a URL** → `[selection or host](clipboard)`.
+        ///    This is the phone's real case: you copied a link in Safari and came
+        ///    here to put it in. Gated on `hasURLs`, which is a Bool and does not
+        ///    touch the contents, so the pasteboard is only read when it genuinely
+        ///    holds a link and the "Pasted from" banner cannot fire on an ordinary
+        ///    wikilink.
+        /// 3. **Otherwise** → `[[]]`, exactly as before.
+        ///
+        /// The label is always selected, never empty: both storages require at
+        /// least one label character or the whole thing renders as raw markdown
+        /// (D71).
+        ///
+        /// Ported from the Mac's `beginWikilink`, with case 2 widened — on a
+        /// pointer you can select words first, on a phone you usually cannot be
+        /// bothered.
         @objc func insertLink() {
             guard let tv = textView, let range = tv.selectedTextRange else { return }
+            let selected = range.isEmpty ? "" : (tv.text(in: range) ?? "")
+
+            if selected.contains("://") {
+                let url = selected.trimmingCharacters(in: .whitespaces)
+                insertMarkdownLink(label: NoteStore.linkLabel(for: url), url: url,
+                                   over: range, in: tv)
+                return
+            }
+
+            if UIPasteboard.general.hasURLs {
+                let clip = (UIPasteboard.general.string ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if clip.contains("://"), !clip.contains(" ") {
+                    insertMarkdownLink(label: selected.isEmpty ? NoteStore.linkLabel(for: clip)
+                                                               : selected,
+                                       url: clip, over: range, in: tv)
+                    return
+                }
+            }
+
             if range.isEmpty {
                 tv.replace(range, withText: "[[]]")
                 if let afterReplace = tv.selectedTextRange?.start,
@@ -1525,8 +1932,24 @@ struct MarkdownEditorView: UIViewRepresentable {
                     tv.selectedTextRange = tv.textRange(from: newPos, to: newPos)
                 }
             } else {
-                let selected = tv.text(in: range) ?? ""
                 tv.replace(range, withText: "[[\(selected)]]")
+            }
+            text = tv.text; scheduleSave(tv.text)
+        }
+
+        /// Writes `[label](url)` and leaves the label selected, so leaving it
+        /// alone gives a working link and typing replaces it.
+        private func insertMarkdownLink(label: String, url: String,
+                                        over range: UITextRange, in tv: UITextView) {
+            let link = "[\(label)](\(url))"
+            tv.replace(range, withText: link)
+            // `replace` leaves the caret after the inserted text; walk back to
+            // just past the opening bracket. UTF-16 counts, because
+            // `selectedRange` is an `NSRange`.
+            let end = tv.selectedRange.location
+            let start = end - (link as NSString).length + 1
+            if start >= 0 {
+                tv.selectedRange = NSRange(location: start, length: (label as NSString).length)
             }
             text = tv.text; scheduleSave(tv.text)
         }
@@ -1725,7 +2148,21 @@ struct MarkdownEditorView: UIViewRepresentable {
             for itemID in order {
                 switch itemID {
                 case .checkbox:
-                    stack.addArrangedSubview(pv.makeCheckboxMenuButton(coordinator: self))
+                    // MUST honour `checklistSendEnabled`, exactly as
+                    // `makeScrollToolbar` does. This branch ignored it until
+                    // 2026-07-30, so reordering the toolbar in Dayflow silently
+                    // brought back the Send to Things / Tweek menu that Dayflow
+                    // deliberately does not have — those are Trace concepts, and
+                    // Dayflow checkboxes are local-only.
+                    //
+                    // The two builders are the same list built twice, which is why
+                    // one of them drifted. If a third special case is ever added,
+                    // extract one function rather than adding a third copy.
+                    if pv.checklistSendEnabled {
+                        stack.addArrangedSubview(pv.makeCheckboxMenuButton(coordinator: self))
+                    } else {
+                        stack.addArrangedSubview(pv.makePlainCheckboxButton(coordinator: self))
+                    }
                 case .attach:
                     stack.addArrangedSubview(pv.makeAttachMenuButton(coordinator: self))
                 default:
@@ -1772,6 +2209,32 @@ struct MarkdownEditorView: UIViewRepresentable {
         // Unified prompt for both images (![desc](path)) and PDFs (📎 [desc](path)).
         // `defaultDesc` pre-fills the field and is used as fallback on Skip.
 
+        /// Writes a pasted image into the container and inserts it, reusing the
+        /// exact path the photo picker uses — same folder (`Photos/<year>/<month>`),
+        /// same filename shape, same JPEG quality, same description prompt. A second
+        /// insertion path would be a second place for the storage decision to drift.
+        func insertPastedImage(_ image: UIImage) {
+            guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+            let now = Date()
+            let cal = Calendar.current
+            let year = cal.component(.year, from: now)
+            let month = String(format: "%02d", cal.component(.month, from: now))
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+            let filename = "\(formatter.string(from: now)).jpg"
+            Task {
+                do {
+                    let path = try NoteStore.shared.writePhoto(
+                        data, category: "\(year)/\(month)", filename: filename
+                    )
+                    await MainActor.run {
+                        self.promptForAttachmentDescription(path: path, isImage: true)
+                    }
+                } catch { }
+            }
+        }
+
         private func promptForAttachmentDescription(path: String,
                                                      isImage: Bool,
                                                      defaultDesc: String = "") {
@@ -1779,8 +2242,24 @@ struct MarkdownEditorView: UIViewRepresentable {
             // may have unmounted the view. A weak ref would be nil and nothing would insert.
             let insert: (String) -> Void = { [self] desc in
                 if isImage {
-                    self.insertAtCursor("![\(desc)](\(path))")
+                    // TWO bangs: the rendered-thumbnail form.
+                    //
+                    // This inserted one bang until 2026-07-30, which is the
+                    // compact link form — orange text, no picture. David
+                    // attached a photo and reported "there is no photo
+                    // rendering", which was exactly right. The thumbnail form
+                    // has existed all along behind long-press → "Show
+                    // Thumbnail"; it was simply never the default, and nothing
+                    // in the history suggests that was a decision rather than
+                    // the order the two features got built in.
+                    //
+                    // The long-press toggle still offers "Show as Link" for
+                    // anyone who wants the compact form, so nothing is lost.
+                    self.insertAtCursor("!![\(desc)](\(path))")
                 } else {
+                    // PDFs keep the link form: there is no thumbnail renderer
+                    // for them, so a second bang would hide the line and draw
+                    // nothing in its place.
                     self.insertAtCursor("📎 [\(desc)](\(path))")
                 }
             }
@@ -1828,6 +2307,19 @@ struct MarkdownEditorView: UIViewRepresentable {
         func triggerDocumentPicker() {
             guard let vc = presentingViewController() else { return }
             showDocumentPicker(from: vc)
+        }
+
+        /// Routes an external attach request to the same four triggers the
+        /// toolbar's UIMenu uses. Deliberately a router and not a fifth
+        /// implementation: the visible button and the toolbar button must be
+        /// able to drift apart in appearance, never in behaviour.
+        func triggerAttach(_ kind: MarkdownAttachKind) {
+            switch kind {
+            case .camera:  triggerCameraCapture()
+            case .library: triggerPhotoLibrary()
+            case .scan:    triggerDocumentCamera()
+            case .pdf:     triggerDocumentPicker()
+            }
         }
 
         // MARK: - Timestamp insert (triggered by + button via binding)
@@ -1963,29 +2455,96 @@ struct MarkdownEditorView: UIViewRepresentable {
             text = tv.text; scheduleSave(tv.text)
         }
 
+        /// Inserts an attachment as its own BLOCK, always separated from the
+        /// surrounding prose by a blank line.
+        ///
+        /// **This used to insert the raw string at the insertion point and
+        /// nothing else**, which was wrong in three ways at once, all of them
+        /// visible in one report from David on 2026-07-30. He attached a photo to
+        /// a note whose last line was a completed checkbox, and got:
+        ///
+        ///   1. the attachment welded onto the end of the checkbox line;
+        ///   2. its description struck through and dimmed, because
+        ///      `applyCheckbox` styles the whole remainder of a checked line and
+        ///      runs over whatever `applyImageLinks` had coloured;
+        ///   3. no image, because BOTH the thumbnail styler and
+        ///      `refreshThumbnails` anchor their regex to the start of a line
+        ///      (`^!!\[`), so an attachment sharing a line with prose can never
+        ///      render as one.
+        ///
+        /// A fourth, worse consequence was latent: long-press → "Remove from
+        /// Note" replaces the attachment's whole *line*, so removing a photo
+        /// welded to a checkbox would have deleted the checkbox too.
+        ///
+        /// So separation is not cosmetic here. Every consumer of these markers
+        /// already assumed a line to itself; only the writer did not.
+        ///
+        /// Callers may pass a trailing newline (three of them do) or not (two do
+        /// not). Both are accepted and normalised, rather than fixing the call
+        /// sites and leaving the next one to guess.
         private func insertAtCursor(_ str: String) {
-            if let tv = textView {
-                // Text view is live — insert directly into storage.
-                let insertLoc: Int
-                if tv.isFirstResponder, let sel = tv.selectedTextRange {
-                    insertLoc = tv.offset(from: tv.beginningOfDocument, to: sel.end)
-                } else {
-                    insertLoc = tv.textStorage.length
-                }
-                let safeInsertLoc = min(insertLoc, tv.textStorage.length)
-                tv.textStorage.replaceCharacters(
-                    in: NSRange(location: safeInsertLoc, length: 0),
-                    with: str
-                )
-                text = tv.text
-                scheduleSave(tv.text)
-            } else {
+            let block = str.trimmingCharacters(in: .newlines)
+            guard !block.isEmpty else { return }
+
+            guard let tv = textView else {
                 // textView is nil — SwiftUI dismounted the view (e.g. while camera was fullscreen).
                 // Update the binding directly; updateUIView will sync it to the text view on
                 // the next render cycle.
-                let updated = text + str
+                var body = text
+                while body.hasSuffix("\n") { body.removeLast() }
+                let updated = body.isEmpty ? block + "\n" : body + "\n\n" + block + "\n"
                 text = updated
                 onSave?(updated)
+                return
+            }
+
+            let ns = tv.textStorage.string as NSString
+            let raw: Int
+            if tv.isFirstResponder, let sel = tv.selectedTextRange {
+                raw = tv.offset(from: tv.beginningOfDocument, to: sel.end)
+            } else {
+                raw = ns.length
+            }
+            let loc = max(0, min(raw, ns.length))
+
+            // Count the newlines already present on each side, so inserting into
+            // a note that is already well spaced does not open a second gap.
+            let newline: unichar = 10
+            var before = 0
+            while before < 2, loc - before - 1 >= 0,
+                  ns.character(at: loc - before - 1) == newline { before += 1 }
+            var after = 0
+            while after < 2, loc + after < ns.length,
+                  ns.character(at: loc + after) == newline { after += 1 }
+
+            let leading  = loc == 0 ? "" : String(repeating: "\n", count: max(0, 2 - before))
+            let trailing = loc == ns.length ? "\n"
+                                            : String(repeating: "\n", count: max(0, 2 - after))
+            let insertion = leading + block + trailing
+
+            tv.textStorage.replaceCharacters(in: NSRange(location: loc, length: 0),
+                                             with: insertion)
+            text = tv.text
+            scheduleSave(tv.text)
+
+            // Leave the caret AFTER the attachment, so the next thing typed goes
+            // below the photo rather than above it.
+            if tv.isFirstResponder {
+                let caret = loc + (insertion as NSString).length
+                tv.selectedRange = NSRange(location: min(caret, tv.textStorage.length), length: 0)
+            }
+
+            // Overlays are UIViews positioned from layout, and writing straight to
+            // textStorage does not fire textViewDidChange — so nothing was
+            // refreshing them after an insert. Deferred one runloop so the layout
+            // manager has caught up before rects are queried.
+            DispatchQueue.main.async { [weak self, weak tv] in
+                guard let self, let tv else { return }
+                tv.layoutManager.ensureLayout(for: tv.textContainer)
+                self.refreshThumbnails(in: tv)
+                self.refreshHorizontalRules(in: tv)
+                self.refreshCheckboxOverlays(in: tv)
+                self.refreshFoldOverlays(in: tv)
             }
         }
 
@@ -2062,8 +2621,61 @@ struct MarkdownEditorView: UIViewRepresentable {
                     dx: tv.textContainerInset.left,
                     dy: tv.textContainerInset.top)
 
+                // WIDTH COMES FROM THE CONTAINER, NOT FROM THE LINE.
+                //
+                // This measured `lineRect.width`, from `boundingRect(forGlyphRange:)`.
+                //
+                // **That rect means two different things depending on where the
+                // line sits.** When the glyph range includes a line terminator,
+                // the rect spans the whole line fragment, i.e. the container
+                // width — correct, by accident. The LAST line of a document has
+                // no terminator, so the rect collapses to the tight bounds of the
+                // glyphs — and every glyph on a thumbnail line is deliberately
+                // hidden behind a near-zero-point font. Near-zero width, `scale`
+                // is a `min` against it, ZERO-SIZE image view: invisible, while
+                // the reserved 200pt line and the tap target stay put.
+                //
+                // **The full sequence, from David's reports 2026-07-30/31:**
+                // the photo renders correctly on insert (this inserts a trailing
+                // newline, so the marker is not the last line); about a second
+                // later the debounced save fires, `persistFullNote` TRIMS
+                // trailing whitespace, the reload replaces the storage, the
+                // marker is now the final line with no terminator, and the photo
+                // vanishes. It stays gone across reopen and force-quit because
+                // the trimmed file is what is on disk. **Adding a SECOND photo
+                // brings the first one back** — it now has a line after it — and
+                // hides the new one. David: "like the bug switched spots." That
+                // observation is what identifies the mechanism exactly; nothing
+                // about a layout race explains it.
+                //
+                // **It was never exercised before 2026-07-30.** Nothing ever
+                // wrote a `!![` line; the thumbnail form was reachable only
+                // through long-press → "Show Thumbnail". Making it the default
+                // is what started running this code in anger.
+                //
+                // `refreshHorizontalRules` already measures from `tv.bounds`
+                // a few lines below, for exactly this reason.
+                let padding = tv.textContainer.lineFragmentPadding
+                let availableWidth = tv.bounds.width
+                    - tv.textContainerInset.left - tv.textContainerInset.right
+                    - padding * 2
+                guard availableWidth > 2 else {
+                    // No frame yet. `onWidthChange` calls back when there is one;
+                    // this bounded retry is a backstop for any host whose text
+                    // view is not a `PasteAwareTextView`.
+                    let attempts = thumbnailLayoutRetries[path, default: 0]
+                    if attempts < 3 {
+                        thumbnailLayoutRetries[path] = attempts + 1
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                            guard let self, let tv = self.textView else { return }
+                            self.refreshThumbnails(in: tv)
+                        }
+                    }
+                    continue
+                }
+                thumbnailLayoutRetries[path] = nil
+
                 // Scale to fit, preserving aspect ratio, max 196pt height
-                let availableWidth = lineRect.width
                 let maxHeight: CGFloat = 196
                 let scale = min(availableWidth / img.size.width,
                                 maxHeight / img.size.height,
@@ -2072,7 +2684,7 @@ struct MarkdownEditorView: UIViewRepresentable {
                                         height: img.size.height * scale)
 
                 let iv = UIImageView(frame: CGRect(
-                    x: lineRect.origin.x,
+                    x: tv.textContainerInset.left + padding,
                     y: lineRect.origin.y + (lineRect.height - displaySize.height) / 2,
                     width:  displaySize.width,
                     height: displaySize.height

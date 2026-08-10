@@ -73,7 +73,7 @@ struct TraceMacMenuBarView: View {
 
             // Text entry
             TextEditor(text: $text)
-                .font(.system(size: 14))
+                .font(MacType.body)
                 .scrollContentBackground(.hidden)
                 .padding(8)
                 .background(Color(nsColor: .textBackgroundColor))
@@ -87,7 +87,7 @@ struct TraceMacMenuBarView: View {
                 .overlay(alignment: .topLeading) {
                     if text.isEmpty {
                         Text("Type a note…")
-                            .font(.system(size: 14))
+                            .font(MacType.body)
                             .foregroundStyle(.tertiary)
                             .padding(.horizontal, 18)
                             .padding(.top, 16)

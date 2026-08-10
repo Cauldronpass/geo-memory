@@ -58,6 +58,11 @@ struct PeopleView: View {
     @State private var selectedTab: PeopleTab = .interactions
     @State private var hasLoadedInteractions = false
     @State private var isLoadingInteractions = false
+    /// Which row is currently peeled open. **One at a time** — two half-open rows
+    /// read as a rendering fault rather than as a state.
+    @State private var openSwipeID: String? = nil
+    /// Set by the revealed Delete button; drives the confirmation.
+    @State private var pendingDelete: Person? = nil
 
     // MARK: - People tab computed
 
@@ -90,9 +95,10 @@ struct PeopleView: View {
             .compactMap { person -> (Person, [String])? in
                 guard let agenda = person.agenda,
                       !agenda.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-                let items = agenda
-                    .split(separator: "\n", omittingEmptySubsequences: true)
-                    .map(String.init)
+                // Displayed text, not the stored line. Since 2026-08-01 a line
+                // can carry a leading `yyyy-MM-dd`, and showing that raw would put
+                // a date stamp in front of every agenda item on this tab.
+                let items = AgendaLine.items(from: agenda).map(\.text)
                 if !searchText.isEmpty {
                     guard person.name.localizedCaseInsensitiveContains(searchText)
                           || items.contains(where: { $0.localizedCaseInsensitiveContains(searchText) })
@@ -116,19 +122,7 @@ struct PeopleView: View {
     }
 
     private func interactionTypeColor(_ type: String) -> Color {
-        switch type.lowercased() {
-        case "call", "phone":        return .blue
-        case "email":                return Color(.systemGray)
-        case "meeting":              return .indigo
-        case "coffee":               return Color(red: 0.55, green: 0.35, blue: 0.1)
-        case "dinner", "lunch":      return .orange
-        case "video call", "video":  return .cyan
-        case "social", "event":      return .green
-        case "text":                 return .teal
-        case "visit":                return .teal
-        case "workout":              return .orange
-        default:                     return .purple
-        }
+        InteractionStyle.color(for: type)
     }
 
     // MARK: - Body
@@ -258,6 +252,12 @@ struct PeopleView: View {
 
         LazyVStack(spacing: 0) {
             ForEach(filtered) { person in
+                TraceSwipeRow(id: person.id,
+                              openID: $openSwipeID,
+                              label: "Delete",
+                              icon: "trash") {
+                    pendingDelete = person
+                } content: {
                 Button {
                     selectedPerson = person
                 } label: {
@@ -288,6 +288,7 @@ struct PeopleView: View {
                     .padding(.vertical, 10)
                 }
                 .buttonStyle(.plain)
+                }
 
                 if person.id != filtered.last?.id {
                     Divider().padding(.leading, 60)
@@ -304,6 +305,36 @@ struct PeopleView: View {
         .traceCard()
         .padding(.horizontal)
         .padding(.bottom, 20)
+        // CONFIRMED, unlike a Mail swipe-delete. Mail's is undoable and this is
+        // not: it archives the Notion page. Same wording and the same promise
+        // about the note file as the one on PersonDetailView, deliberately —
+        // two doors to one action should not describe it differently.
+        .confirmationDialog("Delete \(pendingDelete?.name ?? "")?",
+                            isPresented: Binding(get: { pendingDelete != nil },
+                                                 set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible,
+                            presenting: pendingDelete) { person in
+            Button("Delete Person", role: .destructive) {
+                Task {
+                    try? await notion.deletePerson(id: person.id)
+                    // An UNTOUCHED note goes with them. Satchel's picker scans
+                    // files, so a stub left behind keeps a deleted person on
+                    // screen in another app. Anything actually written in the
+                    // note survives — see `deletePersonNoteIfUntouched`.
+                    NoteStore.shared.deletePersonNoteIfUntouched(name: person.name)
+                    openSwipeID = nil
+                    pendingDelete = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                // Closes the row too. Leaving it peeled open after a cancel
+                // implies the delete is still pending.
+                withAnimation(.snappy(duration: 0.2)) { openSwipeID = nil }
+                pendingDelete = nil
+            }
+        } message: { _ in
+            Text("This removes them from your people. Anything written in their note is kept.")
+        }
     }
 
     private func hasAgendaItem(_ person: Person) -> Bool {
@@ -320,8 +351,8 @@ struct PeopleView: View {
     private func peopleRowSubtitle(_ person: Person) -> some View {
         if activeFilter == .agenda,
            let agenda = person.agenda,
-           let firstItem = agenda.split(separator: "\n", omittingEmptySubsequences: true).first {
-            Text(firstItem)
+           let firstItem = AgendaLine.items(from: agenda).first {
+            Text(firstItem.text)
                 .font(.caption)
                 .foregroundStyle(Color.tracePurple)
                 .lineLimit(1)
@@ -454,6 +485,28 @@ struct PeopleView: View {
                                                 .lineLimit(1)
                                         }
                                     }
+                                    // WHERE, when there is a where.
+                                    //
+                                    // David asked whether visit-derived
+                                    // interactions deserved their own section.
+                                    // They do not: an interaction attached to a
+                                    // visit is still an interaction with a
+                                    // person, and sectioning by provenance means
+                                    // "what happened with Bronwyn" lives in two
+                                    // places and you must remember which door it
+                                    // came through.
+                                    //
+                                    // The line only draws when a visit is
+                                    // attached, so it marks those rows out
+                                    // without splitting the list, and it stays
+                                    // sorted by date like everything else.
+                                    if let visitID = interaction.visitID,
+                                       let visit = notion.visits.first(where: { $0.id == visitID }) {
+                                        Label(visit.placeName, systemImage: "mappin.circle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(.blue)
+                                            .lineLimit(1)
+                                    }
                                 }
                             }
                             .padding(.horizontal)
@@ -497,5 +550,101 @@ struct PeopleView: View {
             .traceCard()
         }
         .padding(.horizontal)
+    }
+}
+
+// MARK: - Swipe to reveal
+//
+// David, 2026-08-01: *"i need a way to delete a person in Trace. maybe a leftward
+// slide on their name."*
+//
+// **`.swipeActions` was the obvious answer and it does not apply here.** It is a
+// `List` modifier, and this screen is a `LazyVStack` of rows inside a single
+// `.traceCard()`, itself inside the page's own `ScrollView`. Using the native one
+// would mean rebuilding People as a `List`, giving up the card treatment the
+// redesign is built on, and nesting a `List` inside a `ScrollView`. Too much
+// demolition for one gesture, so the gesture is hand-rolled.
+//
+// **The delete itself already existed.** `NotionService.deletePerson` has been
+// there all along; until 2026-07-31 only TraceMac called it, and then only
+// `PersonDetailView` did. Eighth instance of the same shape this week: the
+// capability is built, and the place you would reach for it has no door.
+//
+// If a second list wants this, MOVE it to TraceSkin.swift rather than copying it.
+// Four copies of one idea is how the interaction icons ended up as speech bubbles.
+
+/// A row that peels left to reveal one destructive action.
+///
+/// The gesture is deliberately fussy about what it claims:
+///
+/// - `minimumDistance: 20`, so a plain tap still reaches the row's own button.
+/// - It engages only once the drag is more horizontal than vertical, so a
+///   diagonal scroll keeps scrolling the page instead of peeling rows open.
+/// - `openID` is owned by the caller, so opening one row closes any other.
+///
+/// The action button is hit-testable only while it is actually visible. An
+/// invisible destructive button sitting under a row's tap target is how you
+/// delete someone by accident.
+struct TraceSwipeRow<Content: View>: View {
+    let id: String
+    @Binding var openID: String?
+    let label: String
+    let icon: String
+    let action: () -> Void
+    @ViewBuilder var content: () -> Content
+
+    private let revealWidth: CGFloat = 84
+    @State private var drag: CGFloat = 0
+
+    private var isOpen: Bool { openID == id }
+    private var offset: CGFloat {
+        max(-revealWidth, min(0, (isOpen ? -revealWidth : 0) + drag))
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            Button(action: action) {
+                VStack(spacing: 3) {
+                    Image(systemName: icon)
+                        .font(.system(size: 16, weight: .semibold))
+                    Text(label)
+                        .font(.caption2.weight(.semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(width: revealWidth)
+                .frame(maxHeight: .infinity)
+                .background(Color.red)
+            }
+            .buttonStyle(.plain)
+            .opacity(isOpen ? 1 : 0)
+            .allowsHitTesting(isOpen)
+
+            content()
+                // Opaque, or the red sits visible under a closed row.
+                .background(Color.traceCardBackground)
+                .offset(x: offset)
+                .gesture(
+                    DragGesture(minimumDistance: 20)
+                        .onChanged { value in
+                            guard abs(value.translation.width) > abs(value.translation.height)
+                            else { return }
+                            if openID != nil && !isOpen {
+                                openID = nil
+                            }
+                            drag = value.translation.width
+                        }
+                        .onEnded { value in
+                            let settled = (isOpen ? -revealWidth : 0) + value.translation.width
+                            withAnimation(.snappy(duration: 0.22)) {
+                                drag = 0
+                                openID = settled < -revealWidth / 2 ? id : nil
+                            }
+                        }
+                )
+        }
+        // Closing from elsewhere (a cancel, another row) must not leave a stale
+        // partial drag behind, or the row settles at the wrong offset.
+        .onChange(of: isOpen) { _, _ in drag = 0 }
+        .clipped()
     }
 }

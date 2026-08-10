@@ -80,6 +80,14 @@ private struct MentionProjectTarget: Identifiable {
     var title: String { id }
 }
 
+/// Its own type rather than borrowing `MentionProjectTarget`. They are the same
+/// one field and reusing it would have compiled — and left a sheet presenting an
+/// Endeavor from something called a project target, which is the kind of small
+/// lie that costs someone twenty minutes a year from now.
+private struct MentionEndeavorTarget: Identifiable {
+    let id: String
+}
+
 struct DayflowWikiSummaryView: View {
     let target: WikiLinkTarget
     /// AI-prefill source text — Session 28. Only `DayflowDailyNoteEditor.swift`
@@ -204,6 +212,8 @@ struct DayflowWikiSummaryView: View {
     // change what day the app lands on after everything's dismissed. Here,
     // closing the daily note just returns you to this card exactly as it was.
     @State private var mentionProjectTarget: MentionProjectTarget? = nil
+    /// Slug of an Endeavor a Mentioned In row points at.
+    @State private var mentionEndeavorID: String? = nil
     @State private var mentionDailyNoteDate = Date()
     @State private var showMentionDailyNote = false
 
@@ -254,6 +264,12 @@ struct DayflowWikiSummaryView: View {
         .sheet(item: $mentionProjectTarget) { target in
             NavigationStack {
                 DayflowProjectNoteView(title: target.title, onBack: { mentionProjectTarget = nil })
+            }
+        }
+        .sheet(item: Binding(get: { mentionEndeavorID.map { MentionEndeavorTarget(id: $0) } },
+                             set: { if $0 == nil { mentionEndeavorID = nil } })) { target in
+            NavigationStack {
+                DayflowEndeavorView(endeavorID: target.id)
             }
         }
         .fullScreenCover(isPresented: $showMentionDailyNote) {
@@ -424,6 +440,29 @@ struct DayflowWikiSummaryView: View {
             }
             .padding(.vertical, 4)
         }
+        // DIRECTIONS. Added 2026-07-31: David followed a place link from a Daily
+        // Note and found "no opportunity to see directions or check in like I can
+        // in the info portion of the card itself." Directions was genuinely
+        // absent; the check-in was present under another name (see below).
+        //
+        // Same `maps://?daddr=lat,lng` as `PlaceDetailView`'s action bar, and no
+        // hand-off through Trace — Maps opens directly from here, so this works
+        // whether or not Trace is installed or reachable.
+        //
+        // Hidden when the place has no coordinates. Trace's own version does not
+        // guard, and 0,0 is a real point in the Gulf of Guinea, so an unguarded
+        // button offers to drive you there.
+        if place.latitude != 0 || place.longitude != 0 {
+            Section {
+                Button {
+                    if let url = URL(string: "maps://?daddr=\(place.latitude),\(place.longitude)") {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    Label("Directions", systemImage: "arrow.triangle.turn.up.right.circle.fill")
+                }
+            }
+        }
         Section {
             Button {
                 // AI-prefill, Session 28 — resolve source text + ask Claude for a
@@ -451,14 +490,23 @@ struct DayflowWikiSummaryView: View {
                     if let url = comps.url { openURL(url) }
                 }
             } label: {
+                // "Check In", not "Log a Visit" — this button opens Trace's Check
+                // In flow, and Trace's own place card calls it Check In. Two names
+                // for one flow across two apps is why David reported the check-in
+                // as missing when it was the row directly below Directions. His
+                // words were "check in"; so is Trace's label.
+                //
+                // "…in Trace" is kept: it is the established pattern for every
+                // hand-off in this view, and the arrow icon earns its place by
+                // warning that the app is about to change.
                 if isResolvingVisitPrefill {
                     HStack {
-                        Label("Log a Visit in Trace", systemImage: "arrow.up.forward.app")
+                        Label("Check In in Trace", systemImage: "arrow.up.forward.app")
                         Spacer()
                         ProgressView().scaleEffect(0.8)
                     }
                 } else {
-                    Label("Log a Visit in Trace", systemImage: "arrow.up.forward.app")
+                    Label("Check In in Trace", systemImage: "arrow.up.forward.app")
                 }
             }
             .disabled(isResolvingVisitPrefill)
@@ -628,9 +676,10 @@ struct DayflowWikiSummaryView: View {
             guard personDetail == nil else { return }
             do {
                 personDetail = try await NotionService.shared.fetchPersonDetail(id: person.id)
-                agendaItems = (personDetail?.agenda ?? "")
-                    .split(separator: "\n", omittingEmptySubsequences: true)
-                    .map(String.init)
+                // Displayed text, not the stored line — an agenda line can carry
+                // a leading `yyyy-MM-dd` since 2026-08-01, and Dayflow shows these
+                // read-only, so the date stamp would just be noise here.
+                agendaItems = AgendaLine.items(from: personDetail?.agenda).map(\.text)
                 isLoadingInteractions = true
                 interactions = (try? await NotionService.shared.fetchInteractions(personID: person.id)) ?? []
                 isLoadingInteractions = false
@@ -1004,14 +1053,7 @@ struct DayflowWikiSummaryView: View {
     }
 
     private func interactionIcon(_ type: String) -> String {
-        switch type.lowercased() {
-        case "call":    return "phone"
-        case "email":   return "envelope"
-        case "meeting": return "person.2"
-        case "coffee":  return "cup.and.saucer"
-        case "social":  return "figure.socialdance"
-        default:        return "bubble.left"
-        }
+        InteractionStyle.icon(for: type)
     }
 
     // MARK: - Tag grid (shared editable-chip UI, person + place)
@@ -1118,8 +1160,21 @@ struct DayflowWikiSummaryView: View {
     /// Whether a Mentioned In row has anywhere to go. Mirrors
     /// DayflowBacklinksView.isOpenable — Notes/Horizons/ has no Dayflow
     /// destination (no chevron shown, tap is a silent no-op below).
+    /// **Answers by asking the dispatch, not by listing exclusions.** The old
+    /// version excluded `Notes/Horizons/` and assumed everything else was
+    /// reachable, which drew a chevron on Endeavor rows that went nowhere. A
+    /// predicate that enumerates what IS handled cannot drift from the switch that
+    /// handles it — it is the same list.
     private func isMentionOpenable(_ mention: NoteMention) -> Bool {
-        !mention.relativePath.hasPrefix("Notes/Horizons/")
+        let path = mention.relativePath
+        if path.hasPrefix("Notes/Projects/") { return true }
+        if path.hasPrefix("Calendar/")       { return true }
+        if path.hasPrefix("Notes/Places/")   { return true }
+        if path.hasPrefix("Notes/People/")   { return true }
+        if path.hasPrefix("Notes/Endeavors/") {
+            return EndeavorStore.shared.endeavors.contains { $0.name == mention.title }
+        }
+        return false
     }
 
     /// Generalized version of DayflowBacklinksView.openMention's dispatch,
@@ -1154,6 +1209,22 @@ struct DayflowWikiSummaryView: View {
         } else if path.hasPrefix("Notes/People/") {
             if let person = NotionService.shared.people.first(where: { $0.name == mention.title }) {
                 wikiLinkTarget = .person(person)
+            }
+        } else if path.hasPrefix("Notes/Endeavors/") {
+            // ADDED 2026-08-01. David tapped Karla from the Lunch with Bronwyn
+            // Endeavor note, landed on her card, and found the row naming that
+            // Endeavor did nothing.
+            //
+            // **The chevron was already promising it.** `isMentionOpenable`
+            // excluded only `Notes/Horizons/`, so an Endeavor row drew the arrow
+            // and this dispatch had no case for it — the tap fell through to the
+            // silent no-op below. The two were written at different times and
+            // nothing made them agree.
+            //
+            // Endeavors are keyed by SLUG, not by title, so the store is asked
+            // rather than the filename trusted.
+            if let match = EndeavorStore.shared.endeavors.first(where: { $0.name == mention.title }) {
+                mentionEndeavorID = match.id
             }
         }
         // Notes/Horizons/ and anything else: no Dayflow destination, silent no-op.

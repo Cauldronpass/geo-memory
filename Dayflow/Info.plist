@@ -15,6 +15,18 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Camera + photo library usage strings, added 2026-07-30.
+	     Dayflow declared NEITHER, in this file or in its build settings, while
+	     Trace and Satchel declare both. iOS terminates an app the moment it
+	     asks for camera access without NSCameraUsageDescription, which is why
+	     "Take Photo" crashed on first use and "Photo Library" did not: PHPicker
+	     runs out of process and needs no permission at all. Camera Scan would
+	     have crashed identically. Nothing had reached the camera from Dayflow
+	     before, because the only door to it was the keyboard toolbar. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Dayflow uses the camera to take photos and scan documents into your notes.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Dayflow attaches photos you choose from your library to your notes.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

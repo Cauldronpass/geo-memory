@@ -108,6 +108,11 @@ struct DayflowDailyNoteEditor: View {
     /// 2026-07-25) never fires while David is actively typing here — see
     /// that modifier's own comment for the full bug this fixes.
     @State private var isFocused = false
+    /// Which attachment picker the visible Attach button asked for. Cleared by
+    /// `MarkdownEditorView` once it has fired. Added 2026-07-30: the paperclip
+    /// used to live only on the keyboard accessory bar, so attaching required
+    /// already typing.
+    @State private var attachRequest: MarkdownAttachKind? = nil
 
     /// Set when a Related Notes row (or an inline `[[yyyy-MM-dd]]` wikilink,
     /// same as Project Note) points at a Daily Note — peeked via
@@ -206,9 +211,32 @@ struct DayflowDailyNoteEditor: View {
                             // argument order has to match MarkdownEditorView's
                             // declaration order (onCaptureTap is declared after
                             // checklistSendEnabled/onPinSucceeded/onPinFailed).
-                            onCaptureTap: { id in tappedCaptureID = id }
+                            onCaptureTap: { id in tappedCaptureID = id },
+                            attachTrigger: $attachRequest
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        // E-CHIP, 2026-07-28. Scope §7a: notes are one shared
+                        // pool, so the chip reader belongs to whichever app
+                        // DISPLAYS a note, not to whichever app wrote it. A
+                        // document filed to a day note used to record the link
+                        // correctly, show it in Satchel, and render nothing
+                        // here.
+                        //
+                        // Chips render unconditionally because they draw nothing
+                        // when there are no documents. The Add Document bar
+                        // follows `showInlineLinkAffordance` — full page yes,
+                        // home card no — for exactly the reason recorded in this
+                        // file's header: David flagged an always-visible row
+                        // under a short note as eating real estate the card
+                        // cannot spare, and a second one would repeat the
+                        // mistake.
+                        DayflowNoteTagBar(text: $content, onCommit: { save($0) }, attach: $attachRequest)
+                        SatchelDocumentChips(notePath: relativePath)
+                        if showInlineLinkAffordance {
+                            SatchelAddDocumentButton(notePath: relativePath, style: .bar)
+                        }
+
                         DayflowRelatedNotesSection(
                             relatedNotes: relatedNotes,
                             expanded: $relatedNotesExpanded,
@@ -265,6 +293,35 @@ struct DayflowDailyNoteEditor: View {
         // a real collaborative-merge problem, out of scope for this fix.
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreCalendarDidChange)) { note in
             guard !isFocused, (note.object as? String) == relativePath else { return }
+
+            // IGNORE OUR OWN WRITE. Added 2026-07-31.
+            //
+            // `writeFile` posts this notification for every write including this
+            // editor's own, so 0.8s after any edit (the `scheduleSave` debounce)
+            // the save bounced straight back here as a reload. `persistFullNote`
+            // trims trailing whitespace before writing, so what came back was
+            // never byte-identical to what the text view held — which meant
+            // `updateUIView` took its full replace-the-whole-storage path on
+            // every single save, throwing away and rebuilding the text view's
+            // layout and every overlay hanging off it.
+            //
+            // **This was unreachable until 2026-07-30.** The guard above skips
+            // the reload while the editor has focus, and until the Attach button
+            // existed, every insert happened with the keyboard up. The button is
+            // the first path that writes to this note with the keyboard down,
+            // which is why David saw a photo render correctly and then vanish
+            // about a second later, leaving its 200pt line and a working tap
+            // target behind.
+            //
+            // Compare content rather than tracking who wrote it: the question is
+            // not "was that me" but "is there anything new", and a suppression
+            // flag would swallow a real outside edit that raced our own.
+            let raw = (try? NoteStore.shared.readDailyNote(date: date)) ?? ""
+            let (diskProse, _) = DayflowRelatedNotesEngine.split(Self.stripDateHeader(raw))
+            guard diskProse.trimmingCharacters(in: .whitespacesAndNewlines)
+                    != content.trimmingCharacters(in: .whitespacesAndNewlines)
+            else { return }
+
             Task { await load() }
         }
         .sheet(item: $wikiLinkTarget) { target in

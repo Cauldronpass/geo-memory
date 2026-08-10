@@ -9,5 +9,13 @@
 	</dict>
 	<key>NSWidgetWantsLocation</key>
 	<true/>
+	<!-- Added Session 63 (2026-08-02) alongside the requestLocation() rewrite.
+	     The widget never prompts (only Dayflow can), but a widget extension that
+	     calls requestLocation() is repeatedly reported as needing a purpose string
+	     on its own target, not just the containing app's. Costs nothing if it turns
+	     out to be unnecessary; costs a silent kCLErrorDenied if it is required and
+	     missing. Text matches the Dayflow app target's. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Used to show today's high and low temperature on the Dayflow widget.</string>
 </dict>
 </plist>

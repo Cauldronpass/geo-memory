@@ -50,6 +50,7 @@ import Combine
 
 struct HomeView: View {
     @Environment(NotionService.self) private var notion
+    @Environment(\.openURL) private var openURL
     @Environment(LocationManager.self) private var locationManager
 
     private enum HomeSegment: String, CaseIterable { case recent = "Recent", comingUp = "Coming Up" }
@@ -126,19 +127,100 @@ struct HomeView: View {
         .sorted { $0.nextOccurrence < $1.nextOccurrence }
     }
 
-    private var agendaPeople: [Person] {
-        notion.people
-            .filter { !($0.agenda ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .sorted { $0.name < $1.name }
+    /// Every DATED agenda item across everyone, inside the horizon, overdue
+    /// included. Undated items are absent on purpose — see `AgendaLine`.
+    private var agendaEntries: [(person: Person, item: AgendaItem)] {
+        notion.people.flatMap { person in
+            AgendaLine.comingUp(from: person.agenda).map { (person: person, item: $0) }
+        }
     }
 
-    /// First non-empty line of a person's agenda field, as a row preview.
-    /// `Person.agenda` is newline-delimited (see Models.swift).
-    private func agendaPreview(_ person: Person) -> String {
-        (person.agenda ?? "")
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .first
-            .map(String.init) ?? "Something queued"
+    /// Birthdays and agenda items in ONE date-sorted list.
+    ///
+    /// They used to be two blocks, birthdays above everyone-with-anything-queued.
+    /// That made the card impossible to read as a sequence: a birthday twenty-nine
+    /// days out sat above something due tomorrow. Both carry a real date now, so
+    /// there is no reason to keep them apart.
+    private enum ComingUpEntry: Identifiable {
+        case birthday(UpcomingBirthday)
+        case agenda(person: Person, item: AgendaItem)
+        case document(TraceMacDocument)
+
+        var id: String {
+            switch self {
+            case .birthday(let b):      return "b-\(b.id)"
+            case .agenda(let p, let i): return "a-\(p.id)-\(i.raw)"
+            case .document(let d):      return "d-\(d.relativePath)"
+            }
+        }
+        var date: Date {
+            switch self {
+            case .birthday(let b):   return b.nextOccurrence
+            case .agenda(_, let i):  return i.due ?? .distantFuture
+            case .document(let d):   return d.remindOn ?? .distantFuture
+            }
+        }
+    }
+
+    /// Satchel documents with a `remind:` date. David, 2026-08-01, on wanting one
+    /// place to look: Trace already compiles the document store, so this costs a
+    /// read of something already loaded rather than a new dependency.
+    ///
+    /// **No horizon on the far side.** A birthday eleven months out is noise; a
+    /// document dated eleven months out is a passport expiring, and dropping it
+    /// off the list is how you find out too late.
+    private var documentEntries: [TraceMacDocument] {
+        // Observation reaches through: `TraceSatchelChipStore` is @Observable but
+        // holds its store in a `let`, so IT never notifies — the tracking comes
+        // from `iOSDocumentStore.documents`, which is @Observable and mutated by
+        // `reload()`. Reading it from a body registers on that inner object, so
+        // Home refreshes when the sweep finishes. Worth stating, because a `let`
+        // on an @Observable class looks like it would break this and does not.
+        TraceSatchelChipStore.shared.dated
+    }
+
+    private var allEntries: [ComingUpEntry] {
+        (upcomingBirthdays.map { ComingUpEntry.birthday($0) }
+         + agendaEntries.map { ComingUpEntry.agenda(person: $0.person, item: $0.item) }
+         + documentEntries.map { ComingUpEntry.document($0) })
+            .sorted { $0.date < $1.date }
+    }
+
+    /// SPLIT, NOT JUST SORTED. David: *"wouldnt having past due also be a view?"*
+    ///
+    /// Overdue at the top of one list is a sort; a heading is a state. With three
+    /// sources feeding this card the difference stops being cosmetic — "two things
+    /// are late" is a different sentence from "here is your month, and the first
+    /// two happen to be behind you".
+    private var pastDueEntries: [ComingUpEntry] {
+        allEntries.filter { cal.startOfDay(for: $0.date) < cal.startOfDay(for: Date()) }
+    }
+    private var upcomingEntries: [ComingUpEntry] {
+        allEntries.filter { cal.startOfDay(for: $0.date) >= cal.startOfDay(for: Date()) }
+    }
+    private var comingUpEntries: [ComingUpEntry] { allEntries }
+
+    /// "Overdue by 4 days" / "Today" / "In 13 days · 14 Aug".
+    private func whenLabel(_ days: Int, on date: Date) -> String {
+        let stamp = date.formatted(.dateTime.month(.abbreviated).day())
+        if days < 0 { return "Overdue by \(-days) day\(days == -1 ? "" : "s") · \(stamp)" }
+        if days == 0 { return "Today · \(stamp)" }
+        return "In \(days) day\(days == 1 ? "" : "s") · \(stamp)"
+    }
+
+    /// Ticking an item deletes its line and saves. There is no done state: the
+    /// record of having spoken to someone is the interaction log, not a checked
+    /// box on a prompt to speak to them.
+    private func completeAgendaItem(_ person: Person, _ item: AgendaItem) {
+        let remaining = AgendaLine.items(from: person.agenda).filter { $0.raw != item.raw }
+        // Kept, not dropped. See `NoteStore.logCompletedAgendaItem` — the live
+        // queue is a Notion field with a size limit; the history is his note.
+        NoteStore.shared.logCompletedAgendaItem(person: person.name, text: item.text)
+        Task {
+            try? await notion.updatePersonAgenda(id: person.id,
+                                                 agenda: AgendaLine.joined(remaining))
+            await ReminderService.complete(key: "\(person.id)|\(item.raw)")
+        }
     }
 
     // MARK: - This Week stats
@@ -212,6 +294,10 @@ struct HomeView: View {
             }
         }
         .task {
+            // Home reads Satchel's sidecars for the Due entries. Shared,
+            // load-once store — this is a no-op after the first screen that
+            // asked for it, and iCloud may not have resolved before now.
+            await TraceSatchelChipStore.shared.loadIfNeeded()
             await notion.fetchVisits()
             await notion.fetchRecentInteractions()
             await notion.fetchWorkouts()
@@ -235,7 +321,10 @@ struct HomeView: View {
                 .environment(NotionService.shared)
         }
         .sheet(item: $selectedInteraction) { interaction in
+            // Explicit injection, matching this file's own habit two lines
+            // above. The sheet reads NotionService now that it can edit.
             InteractionDetailSheet(interaction: interaction)
+                .environment(NotionService.shared)
         }
         // "See All" destinations for the two Recent columns — both presented
         // as sheets rather than pushes, matching how VisitsView is already
@@ -310,7 +399,19 @@ struct HomeView: View {
                 icon: "person.crop.circle.fill",
                 iconColor: .purple,
                 items: Array(recentInteractionsList.prefix(5)),
-                rowTitle: { person(for: $0)?.name ?? $0.summary },
+                // WHAT it was, not WHO it was with.
+                //
+                // This titled each row with the person's name, so two different
+                // interactions with the same person rendered as two identical
+                // rows — David, 2026-07-31: "you see that Bronwyn is shown twice
+                // for interactions." They were not duplicates; the column simply
+                // was not saying which was which.
+                //
+                // It also stopped matching the tap: since Session 48 these rows
+                // open the interaction rather than the person's card, so the
+                // title should describe the thing that opens. The People tab's
+                // own list has always titled by summary and reads correctly.
+                rowTitle: { $0.summary.isEmpty ? (person(for: $0)?.name ?? "Interaction") : $0.summary },
                 rowDate: { $0.date },
                 // Session 48 follow-up — opens the interaction itself now,
                 // not the person's whole card (see selectedInteraction above).
@@ -403,45 +504,109 @@ struct HomeView: View {
 
     @ViewBuilder
     private var comingUpCard: some View {
-        if upcomingBirthdays.isEmpty && agendaPeople.isEmpty {
+        if comingUpEntries.isEmpty {
             emptyRow("Nothing queued in the next 30 days")
         } else {
             VStack(spacing: 0) {
-                ForEach(Array(upcomingBirthdays.enumerated()), id: \.element.id) { idx, bday in
-                    Button { openPersonToAgenda = false; selectedPerson = bday.person } label: {
-                        activityRow(
-                            icon: "birthday.cake.fill", iconColor: .pink,
-                            title: "\(bday.person.name)'s birthday",
-                            subtitle: "In \(bday.daysAway) day\(bday.daysAway == 1 ? "" : "s") · "
-                                + bday.nextOccurrence.formatted(.dateTime.month(.abbreviated).day()),
-                            trailing: nil
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    if idx < upcomingBirthdays.count - 1 || !agendaPeople.isEmpty {
-                        Divider().padding(.leading, 54)
+                if !pastDueEntries.isEmpty {
+                    groupHeader("Past due", count: pastDueEntries.count, tint: .orange)
+                    ForEach(Array(pastDueEntries.enumerated()), id: \.element.id) { idx, entry in
+                        entryRow(entry)
+                        if idx < pastDueEntries.count - 1 || !upcomingEntries.isEmpty {
+                            Divider().padding(.leading, 54)
+                        }
                     }
                 }
-                // Session 48 follow-up — each queued person is now its own
-                // row (was previously one summary row that only ever opened
-                // agendaPeople.first, a real bug David caught: tapping it
-                // never reached anyone but the first person regardless of
-                // how many were actually queued).
-                ForEach(Array(agendaPeople.enumerated()), id: \.element.id) { idx, person in
-                    Button { openPersonToAgenda = true; selectedPerson = person } label: {
-                        activityRow(
-                            icon: "bubble.left.and.bubble.right.fill", iconColor: .blue,
-                            title: person.name,
-                            subtitle: agendaPreview(person),
-                            trailing: nil
-                        )
+                if !upcomingEntries.isEmpty {
+                    // Only headed when there is something above it to be told
+                    // apart from. On its own the card title already says it.
+                    if !pastDueEntries.isEmpty {
+                        groupHeader("Coming up", count: upcomingEntries.count, tint: .secondary)
                     }
-                    .buttonStyle(.plain)
-                    if idx < agendaPeople.count - 1 {
-                        Divider().padding(.leading, 54)
+                    ForEach(Array(upcomingEntries.enumerated()), id: \.element.id) { idx, entry in
+                        entryRow(entry)
+                        if idx < upcomingEntries.count - 1 {
+                            Divider().padding(.leading, 54)
+                        }
                     }
                 }
             }
+        }
+    }
+
+    private func groupHeader(_ title: String, count: Int, tint: Color) -> some View {
+        HStack(spacing: 6) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .bold))
+                .kerning(0.5)
+                .foregroundStyle(tint)
+            Text("\(count)")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
+    }
+
+    @ViewBuilder
+    private func entryRow(_ entry: ComingUpEntry) -> some View {
+        switch entry {
+        case .birthday(let bday):
+            Button { openPersonToAgenda = false; selectedPerson = bday.person } label: {
+                activityRow(icon: "birthday.cake.fill", iconColor: .pink,
+                            title: "\(bday.person.name)'s birthday",
+                            subtitle: whenLabel(bday.daysAway, on: bday.nextOccurrence),
+                            trailing: nil)
+            }
+            .buttonStyle(.plain)
+
+        case .agenda(let person, let item):
+            HStack(spacing: 0) {
+                Button { openPersonToAgenda = true; selectedPerson = person } label: {
+                    activityRow(
+                        icon: item.isOverdue ? "exclamationmark.circle.fill"
+                                             : "bubble.left.and.bubble.right.fill",
+                        iconColor: item.isOverdue ? .orange : .blue,
+                        title: item.text,
+                        subtitle: "\(person.name) · \(whenLabel(item.daysAway ?? 0, on: item.due ?? Date()))",
+                        trailing: nil)
+                }
+                .buttonStyle(.plain)
+                Button { completeAgendaItem(person, item) } label: {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 17))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 6)
+                        .padding(.trailing, 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Done: \(item.text)")
+            }
+
+        case .document(let doc):
+            // OPENS SATCHEL, not something in Trace. Documents are Satchel's and
+            // the row says so by going there — a Trace-side viewer would be a
+            // second place that renders the same file and drifts from it.
+            Button {
+                let path = doc.relativePath
+                    .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? doc.relativePath
+                if let url = URL(string: "satchel://document?path=\(path)") { openURL(url) }
+            } label: {
+                activityRow(
+                    icon: "doc.text.fill",
+                    iconColor: (doc.remindOn.map { cal.startOfDay(for: $0) < cal.startOfDay(for: Date()) } ?? false)
+                        ? .orange : .indigo,
+                    title: doc.title,
+                    subtitle: "Satchel · " + whenLabel(
+                        cal.dateComponents([.day], from: cal.startOfDay(for: Date()),
+                                           to: cal.startOfDay(for: doc.remindOn ?? Date())).day ?? 0,
+                        on: doc.remindOn ?? Date()),
+                    trailing: nil)
+            }
+            .buttonStyle(.plain)
         }
     }
 

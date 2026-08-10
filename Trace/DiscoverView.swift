@@ -621,10 +621,6 @@ private struct POISaveSheet: View {
 
 // MARK: - DiscoverResultRow
 
-private let discoverCategories = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
-                                   "Attraction", "Venue", "House", "Fitness",
-                                   "Office", "Airport", "Medical", "Park", "Grocery"]
-
 struct DiscoverResultRow: View {
     let place: GooglePlace
     let notion: NotionService
@@ -638,7 +634,13 @@ struct DiscoverResultRow: View {
     @State private var showingExistingPlace = false
     @State private var matchedPlaceID: String? = nil
     @State private var customName: String = ""
+    /// Seeded from Google's `primaryType` when the card first expands, not
+    /// hardcoded. See `PlaceCategory.suggest(from:)`. "Restaurant" survives only
+    /// as the last resort for a place Google described in a way we do not map.
     @State private var category = "Restaurant"
+    @State private var categorySeeded = false
+    @State private var categoryTouched = false
+    @State private var showingCategoryPicker = false
     @State private var status = "Visited"
     @State private var visitDate = Date()
     @State private var pinPlace = false
@@ -844,12 +846,62 @@ struct DiscoverResultRow: View {
                     HStack {
                         Text("Category").font(.subheadline).foregroundStyle(.secondary)
                         Spacer()
-                        Picker("Category", selection: $category) {
-                            ForEach(discoverCategories, id: \.self) { Text($0).tag($0) }
+                        // A SHEET, NOT A MENU PICKER.
+                        //
+                        // David: "the pull down for changing it is not right. As
+                        // I scroll the list auto goes back to the top which makes
+                        // it very hard to choose."
+                        //
+                        // A `.menu` picker with fourteen options has to scroll,
+                        // and this card lives inside a view that redraws while
+                        // you are looking at it — the map and location updates
+                        // behind it. Every redraw rebuilds the open menu, which
+                        // is the jump back to the top. Fourteen options was
+                        // always past what a menu is for; a presented list is
+                        // insulated from whatever the screen underneath is doing.
+                        Button {
+                            showingCategoryPicker = true
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(category).font(.subheadline)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption2)
+                            }
                         }
-                        .pickerStyle(.menu)
+                        .onAppear {
+                            // Seeded ONCE, when the fields first appear. After
+                            // that the value is the user's, and a later redraw
+                            // must not overwrite a choice they have made.
+                            guard !categorySeeded else { return }
+                            categorySeeded = true
+                            if let guess = PlaceCategory.suggest(from: place.primaryType) {
+                                category = guess
+                                return
+                            }
+                            // Google gave nothing usable. Ask the model, in the
+                            // background, and only apply the answer if the user
+                            // has not picked something in the meantime. No
+                            // spinner: the next thing they do here is tap Save.
+                            Task {
+                                let guessed = await PlaceCategoryAI.suggest(
+                                    name: customName.isEmpty ? place.name : customName,
+                                    address: place.addressWithRegion
+                                )
+                                if let guessed, !categoryTouched { category = guessed }
+                            }
+                        }
+                        .sheet(isPresented: $showingCategoryPicker) {
+                            PlaceCategoryPicker(selection: $category)
+                        }
+                        // A late answer must never overwrite a deliberate choice.
+                        .onChange(of: category) { _, _ in
+                            if categorySeeded { categoryTouched = true }
+                        }
                     }
 
+                    // Seeded once, on appear. After that the value is the
+                    // user's, and a later redraw must not overwrite a choice
+                    // they have made.
                     Picker("Status", selection: $status) {
                         Text("Visited").tag("Visited")
                         Text("Want to Visit").tag("Want to Visit")
@@ -1002,7 +1054,7 @@ struct DiscoverResultRow: View {
         do {
             let placeID = try await notion.addPlace(
                 name: name,
-                address: place.streetAddress,
+                address: place.addressWithRegion,
                 city: place.city,
                 category: category,
                 latitude: place.latitude,

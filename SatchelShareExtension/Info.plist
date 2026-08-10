@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The name shown in the iOS share sheet. Without this it falls back to
+	     CFBundleName, i.e. PRODUCT_NAME, i.e. "SatchelShareExtension".
+
+	     The icon is no longer a caveat. iOS gives an app extension the icon of
+	     the app it ships inside and offers no override, so while this lived in
+	     Trace the sheet read "Satchel" under Trace's icon. Now that it ships
+	     inside Satchel, it is Satchel's icon. That was one of the two reasons
+	     for the move (scope §7 phase 4); the other was that Satchel would have
+	     silently lost share-sheet input if Trace were ever uninstalled. -->
+	<key>CFBundleDisplayName</key>
+	<string>Satchel</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<!-- Copied verbatim from the Trace extension, NOT rewritten from
+			     memory. Xcode's generated default was TRUEPREDICATE, which
+			     offers Satchel for every share including plain text selections.
+			     This one offers it only when something file-like is attached. -->
+			<key>NSExtensionActivationRule</key>
+			<string>SUBQUERY(extensionItems, $item, SUBQUERY($item.attachments, $attach, ANY $attach.registeredTypeIdentifiers UTI-CONFORMS-TO &quot;public.data&quot;).@count &gt; 0).@count &gt; 0</string>
+		</dict>
+		<!-- NO NSExtensionMainStoryboard. Xcode's template had one and it was
+		     deleted along with the storyboard: this extension builds its UI in
+		     code, and a storyboard entry here would load an empty scene instead
+		     of ShareViewController. -->
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.share-services</string>
+		<!-- $(PRODUCT_MODULE_NAME) resolves to SatchelShareExtension in this
+		     target, so this needs no edit despite naming a different module
+		     than it did in Trace. -->
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
+	</dict>
+</dict>
+</plist>

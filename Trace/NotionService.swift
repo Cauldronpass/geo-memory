@@ -197,6 +197,24 @@ class NotionService {
         ]
         let data = try await post("\(baseURL)/pages", body: body)
         let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        // A place exists in Notion; its note lives in the container. Create the
+        // stub now so the place is immediately offerable in Satchel's note
+        // picker — David added Panera in Trace, went to file a receipt to it,
+        // and it was not in the list.
+        //
+        // **Identical to this morning's `addPerson` fix, and `NoteStore` has had
+        // `createPlaceNoteIfNeeded` all along** — its only caller was
+        // `appendToPlaceNote`, so a place got a note the first time something was
+        // written into it and never at creation.
+        //
+        // Skipped for temporary pins: those are throwaway markers, and a note per
+        // dropped pin would fill `Notes/Places/` with things nobody named.
+        //
+        // `try?`: the place is already saved in Notion by this point, and a
+        // failed stub must not take it down with it.
+        if !temporary {
+            _ = try? NoteStore.shared.createPlaceNoteIfNeeded(for: name)
+        }
         return result["id"] as? String ?? ""
     }
 
@@ -753,6 +771,14 @@ class NotionService {
         let person = Person(id: id, name: name, agenda: nil)
         people.append(person)
         people.sort { $0.name < $1.name }
+        // A person exists in Notion; their note lives in the container. Create it
+        // now so they are immediately offerable in Satchel's note picker — see
+        // `NoteStore.ensurePersonNote`. `try?`: a failed stub must never take the
+        // person down with it, since the person is already saved by this point.
+        // `_ =` because `try?` on a Void-returning throw produces `Void?`, and
+        // Xcode warns on the unused result. The intent is genuinely fire and
+        // forget: the person is already saved by this point.
+        _ = try? NoteStore.shared.ensurePersonNote(name: name)
         return person
     }
 
@@ -926,6 +952,10 @@ class NotionService {
                       phone: String? = nil,
                       email: String? = nil,
                       address: String? = nil,
+                      /// `.some(nil)` clears the date; `nil` leaves it alone.
+                      /// Every other parameter here uses `nil` for "unchanged", so
+                      /// a plain `Date?` could not have said "remove this".
+                      birthday: Date?? = nil,
                       photoURL: String? = nil) async throws {
         var props: [String: Any] = [:]
         if let n = name, !n.isEmpty {
@@ -955,6 +985,26 @@ class NotionService {
         if let ad = address {
             props["Address"] = ["rich_text": ad.isEmpty ? [] : [["text": ["content": ad]]]]
         }
+        if let birthday {
+            // TRACE COULD READ THIS AND NEVER WRITE IT. `Birthday` has been parsed
+            // since the field existed, shows on the card, and since 2026-08-01
+            // drives a reminder — with no way to set one anywhere in the app.
+            // David hit it on Gayle: no birthday on the record, so no row, so no
+            // Remind me, and the only fix was opening Notion.
+            //
+            // Date only, no time. `Person.birthday`'s own comment says the year is
+            // whatever Notion has on file and only month/day are meaningful, so a
+            // timestamp would imply a precision that is not there.
+            if let date = birthday {
+                let fmt = DateFormatter()
+                fmt.locale = Locale(identifier: "en_US_POSIX")
+                fmt.timeZone = TimeZone.current
+                fmt.dateFormat = "yyyy-MM-dd"
+                props["Birthday"] = ["date": ["start": fmt.string(from: date)]]
+            } else {
+                props["Birthday"] = ["date": NSNull()]
+            }
+        }
         props["Tags"] = ["multi_select": tags.map { ["name": $0] }]
         if let url = photoURL {
             props["Photo"] = ["files": [["type": "external", "name": "photo.jpg", "external": ["url": url]]]]
@@ -962,6 +1012,24 @@ class NotionService {
         guard !props.isEmpty else { return }
         _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
         personDetailCache.removeValue(forKey: id)
+
+        // PATCH THE CACHED LIST TOO, not just the detail cache.
+        //
+        // Third time this exact omission has been found — `updatePersonAgenda` and
+        // `updateInteraction` both had it, and both read the same way: the edit
+        // saves correctly and the screen that shows it keeps the old value until
+        // the next full fetch, which is indistinguishable from the edit not
+        // working.
+        //
+        // It bites hardest on birthday, added 2026-08-01: `Person.birthday` is
+        // what Home's Coming Up reads, so setting one and returning to Home would
+        // have shown nothing at all.
+        if let index = people.firstIndex(where: { $0.id == id }) {
+            if let n = name, !n.isEmpty { people[index].name = n }
+            if let r = relationship { people[index].relationship = r.isEmpty ? nil : r }
+            if let rs = relationshipStrength, !rs.isEmpty { people[index].relationshipStrength = rs }
+            if let birthday { people[index].birthday = birthday }
+        }
     }
 
     /// Links (or unlinks) a person to a Place via the "Home Place" relation property.
@@ -1075,6 +1143,20 @@ class NotionService {
             : ["properties": ["Agenda": ["rich_text": [["text": ["content": String(agenda.prefix(2000))]]]]]]
         _ = try await patch("\(baseURL)/pages/\(id)", body: body)
         personDetailCache.removeValue(forKey: id)
+        // PATCH THE CACHED LIST TOO, not just the detail cache.
+        //
+        // `people` is fetched at launch and at a handful of specific moments;
+        // nothing refetched it after an agenda write. Home's "Coming Up" filters
+        // that array on a non-empty agenda, so every agenda item David added was
+        // invisible there until the next launch — he reported exactly this on
+        // 2026-07-31: Gayle showed (her agenda predated the launch) and Bronwyn,
+        // queued minutes earlier, did not.
+        //
+        // `deletePerson` immediately below has always patched `people`. This one
+        // updated only the detail cache, and the two live four lines apart.
+        if let index = people.firstIndex(where: { $0.id == id }) {
+            people[index].agenda = agenda.isEmpty ? nil : agenda
+        }
     }
 
     func deletePerson(id: String) async throws {
@@ -1083,6 +1165,12 @@ class NotionService {
         personDetailCache.removeValue(forKey: id)
     }
 
+    /// Patches `recentInteractions` on success as well as writing to Notion.
+    ///
+    /// Same omission as `updatePersonAgenda` had until earlier today: Home reads
+    /// `recentInteractions` directly, so without this an edit saved correctly and
+    /// Home kept showing the old text until the next fetch — which reads exactly
+    /// like the edit not having worked.
     func updateInteraction(id: String, summary: String, type: String, date: Date, notes: String) async throws {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withFullDate]
@@ -1096,6 +1184,13 @@ class NotionService {
             ? ["rich_text": []]
             : ["rich_text": [["text": ["content": String(trimmedNotes.prefix(2000))]]]]
         _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
+        // Keep the cached list in step. See this method's own note above.
+        if let index = recentInteractions.firstIndex(where: { $0.id == id }) {
+            recentInteractions[index].summary = summary.isEmpty ? type.capitalized : summary
+            recentInteractions[index].type = type
+            recentInteractions[index].date = date
+            recentInteractions[index].notes = trimmedNotes.isEmpty ? nil : trimmedNotes
+        }
     }
 
     func deleteInteraction(id: String) async throws {
@@ -1154,7 +1249,13 @@ class NotionService {
         guard !toArchive.isEmpty else { return }
         for note in toArchive {
             let props: [String: Any] = ["Status": ["select": ["name": "Archived"]]]
-            try? await patch("\(baseURL)/pages/\(note.id)", body: ["properties": props])
+            // `_ =` for the same reason as `ensurePersonNote` above: `patch`
+            // returns `Data`, `try?` makes that `Data?`, and an unused result
+            // is a warning — one of the three the Session 64 starter lists as
+            // becoming errors under Swift 6. The fire-and-forget intent is
+            // real: a day note that fails to auto-archive is not worth failing
+            // the sweep over, and the next sweep retries it.
+            _ = try? await patch("\(baseURL)/pages/\(note.id)", body: ["properties": props])
         }
         dayNotes.removeAll { note in toArchive.contains(where: { $0.id == note.id }) }
     }
@@ -1361,6 +1462,25 @@ class NotionService {
     }
 
     /// Fetches all interactions for a given person, newest first.
+    /// Interactions attached to a visit, asked of Notion directly.
+    ///
+    /// **Added 2026-07-31 to replace deriving them from the visit's attendees**,
+    /// which was wrong in a way David found immediately: he linked an interaction
+    /// to a visit that did not list that person as an attendee, so the loader
+    /// looped over an empty list and the link he had just made was invisible.
+    /// The relation is the truth; the attendee list is a different fact that
+    /// usually agrees and is not required to.
+    func fetchInteractions(visitID: String) async throws -> [Interaction] {
+        let body: [String: Any] = [
+            "filter": ["property": "Related Visit", "relation": ["contains": visitID]],
+            "sorts": [["property": "Date", "direction": "descending"]],
+            "page_size": 100
+        ]
+        let data = try await post("\(baseURL)/databases/\(interactionsDBID)/query", body: body)
+        let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        return (result["results"] as? [[String: Any]] ?? []).compactMap { parseInteraction($0) }
+    }
+
     func fetchInteractions(personID: String) async throws -> [Interaction] {
         var all: [Interaction] = []
         var cursor: String? = nil
@@ -1382,15 +1502,41 @@ class NotionService {
 
     /// Creates a new interaction record linked to the given person.
     @discardableResult
-    func createInteraction(personID: String, summary: String, date: Date, type: String, notes: String) async throws -> Interaction {
+    /// `visitID` added 2026-07-31. **The relation has always existed** — Notion
+    /// has the property and `parseInteraction` has always read it — but nothing
+    /// in the app ever wrote it, so every interaction came back with a nil visit.
+    /// A wire run at both ends and connected at neither.
+    ///
+    /// Set at creation when an interaction is logged FROM a visit, where the
+    /// date, the place and the people are already known.
+    /// `personIDs`, plural, since 2026-07-31. The Notion property is a
+    /// relation and `Interaction.personIDs` has always been an array; only the
+    /// creator insisted on exactly one. David, logging an interaction from a
+    /// visit with two attendees: *"is it possible to add the two people to the
+    /// interaction that were available as a choice?"* It always was, everywhere
+    /// except here.
+    ///
+    /// The single-person overload below keeps every existing caller unchanged.
+    func createInteraction(personIDs: [String], summary: String, date: Date, type: String,
+                           notes: String, visitID: String? = nil) async throws -> Interaction {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withFullDate]
         var props: [String: Any] = [
             "Summary": ["title": [["text": ["content": summary.isEmpty ? "\(type.capitalized)" : summary]]]] ,
             "Date":    ["date": ["start": iso.string(from: date)]],
             "Type":    ["select": ["name": type]],
-            "Person":  ["relation": [["id": personID]]]
+            "Person":  ["relation": personIDs.map { ["id": $0] }]
         ]
+        // "Related Visit", NOT "Visit". The Interactions database names it
+        // differently from Workouts and Billiards Sessions, which both use
+        // "Visit" — I copied the key from the wrong parser and Notion answered
+        // with `validation_error: Visit is not a property that exists`.
+        //
+        // The right name was in `parseInteraction` twenty lines below, and in
+        // `Interaction.visitID`'s own comment in Models.swift, which reads
+        // "Related Visit relation (optional)". **When a reader already exists,
+        // take the key from the reader.**
+        if let visitID { props["Related Visit"] = ["relation": [["id": visitID]]] }
         if !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             props["Notes"] = ["rich_text": [["text": ["content": String(notes.prefix(2000))]]]]
         }
@@ -1400,8 +1546,35 @@ class NotionService {
         return parseInteraction(result) ?? Interaction(
             id: result["id"] as? String ?? UUID().uuidString,
             summary: summary, date: date, type: type, notes: notes.isEmpty ? nil : notes,
-            photoURLs: [], personIDs: [personID], visitID: nil
+            photoURLs: [], personIDs: personIDs, visitID: visitID
         )
+    }
+
+    /// Single-person convenience. Every pre-existing call site uses this.
+    ///
+    /// `@discardableResult` because several callers create an interaction and do
+    /// not want the value back. The warning predates the plural overload; the
+    /// signature in it simply changed name when this became a wrapper.
+    @discardableResult
+    func createInteraction(personID: String, summary: String, date: Date, type: String,
+                           notes: String, visitID: String? = nil) async throws -> Interaction {
+        try await createInteraction(personIDs: [personID], summary: summary, date: date,
+                                    type: type, notes: notes, visitID: visitID)
+    }
+
+    /// Attaches an interaction that already exists to a visit.
+    ///
+    /// Mirrors `linkBilliardsSessionToVisit` exactly, including patching the
+    /// cached array — that method got this right and is the reason this one is
+    /// four lines rather than a design problem.
+    func linkInteractionToVisit(interactionID: String, visitID: String?) async throws {
+        // An empty relation array is how Notion clears one, so this unlinks too.
+        let relation: [[String: Any]] = visitID.map { [["id": $0]] } ?? []
+        _ = try await patch("\(baseURL)/pages/\(interactionID)",
+                            body: ["properties": ["Related Visit": ["relation": relation]]])
+        if let index = recentInteractions.firstIndex(where: { $0.id == interactionID }) {
+            recentInteractions[index].visitID = visitID
+        }
     }
 
     private func parseInteraction(_ page: [String: Any]) -> Interaction? {

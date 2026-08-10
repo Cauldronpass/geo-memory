@@ -121,37 +121,35 @@ struct TraceMacBilliardsView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "circle.grid.3x3")
-                .font(.system(size: 40, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text("No sessions yet")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            Text("Log your first session with the + button above.")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-        }
+        MacEmptyState.list("circle.grid.3x3", "No sessions yet",
+                           detail: "Log your first session with the + button above.")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
     }
 
     private var placeholderDetail: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "circle.grid.3x3")
-                .font(.system(size: 48, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text("Select a session")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-        }
+        MacEmptyState.placeholder("circle.grid.3x3", "Select a session")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // Wins / Losses / Matches + per-format breakdown — matches iOS BilliardsView.statsHeader.
     private var statsHeader: some View {
         VStack(spacing: 10) {
+            // Session 63 (2026-08-02). `BilliardsRackIcon` used to mark the
+            // Billiards row in the sidebar. That row is now a Billiards *tab*
+            // inside Activity, and a segmented control is text-only, so the icon
+            // lost its home and I deleted it. David: *"removing billiards is not
+            // great"*.
+            //
+            // This is a better home than the one it lost: the stats header had
+            // no title, so the screen never said what it was.
+            HStack(spacing: 7) {
+                BilliardsRackIcon(color: MacPalette.rackBlue)
+                Text("Billiards")
+                    .font(MacType.heading)
+                Spacer()
+            }
+
             HStack(spacing: 0) {
                 statPill(value: "\(wins)", label: "Wins", color: .green)
                 Spacer()

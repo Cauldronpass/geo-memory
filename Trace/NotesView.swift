@@ -42,7 +42,6 @@ struct NotesView: View {
     @State private var noteStore = NoteStore.shared
     @State private var selectedTab: NoteTab = .day
     @State private var showingSearch = false
-    @State private var showingDocs = false
     @State private var showingFABDailyPicker = false
     @State private var fabDailyDate: Date = Date()
 
@@ -68,11 +67,10 @@ struct NotesView: View {
             .navigationTitle(selectedTab.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showingDocs = true } label: {
-                        Image(systemName: "doc.richtext")
-                    }
-                }
+                // The Docs button was here until 2026-07-29. Trace's own
+                // document browser is retired (scope §7) — Satchel is the
+                // browser now, and documents filed to a Place or Person note
+                // already appear as chips on that note.
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showingSearch = true } label: {
                         Image(systemName: "magnifyingglass")
@@ -81,9 +79,6 @@ struct NotesView: View {
             }
             .sheet(isPresented: $showingSearch) {
                 GlobalSearchView()
-            }
-            .sheet(isPresented: $showingDocs) {
-                NavigationStack { iOSDocumentsView() }
             }
             .sheet(isPresented: $showingFABDailyPicker) {
                 FABDailyPickerSheet(selectedDate: $fabDailyDate) { date in

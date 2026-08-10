@@ -8,5 +8,9 @@ import SwiftUI
 struct DayflowWidgetBundle: WidgetBundle {
     var body: some Widget {
         DayflowWidget()
+        // Session 68. A second widget in the same bundle rather than a fifth app
+        // — see the header of `DayflowLauncherWidget.swift` for why a wrapper app
+        // could not have worked.
+        DayflowLauncherWidget()
     }
 }

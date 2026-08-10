@@ -3,6 +3,15 @@ import CoreLocation
 
 struct PlaceDetailView: View {
     let place: Place
+
+    /// Replaces the synthesised memberwise init so `trace://note` can land on
+    /// the Notes tab (index 3) rather than Overview. `PlaceDetailView(place:)`
+    /// keeps working unchanged — every existing call site uses exactly that.
+    init(place: Place, openToNotes: Bool = false) {
+        self.place = place
+        _selectedTab = State(initialValue: openToNotes ? 3 : 0)
+    }
+
     @Environment(NotionService.self) private var notionService
     @Environment(LocationManager.self) private var locationManager
     @Environment(\.dismiss) private var dismiss
@@ -37,6 +46,17 @@ struct PlaceDetailView: View {
     }
     private var livePlace: Place {
         notionService.places.first { $0.id == place.id } ?? place
+    }
+    /// The one place this place's note path is spelled out. It was written
+    /// inline in three separate spots, which is two chances for the Satchel
+    /// hand-off below to send a path that does not match what Trace actually
+    /// reads and writes.
+    ///
+    /// Built from `place.name`, not `livePlace.name`, matching what the three
+    /// original call sites did. A rename in Notion must not silently repoint
+    /// this view at a different file mid-session.
+    private var placeNotePath: String {
+        "Notes/Places/\(NoteStore.shared.placeNoteFilename(for: place.name)).md"
     }
 
     var body: some View {
@@ -422,12 +442,24 @@ struct PlaceDetailView: View {
     // MARK: - Notes
 
     private var notesTab: some View {
+        VStack(spacing: 0) {
+            // Scope §7b — capture a document already filed to this note.
+            SatchelAddDocumentButton(notePath: placeNotePath, style: .bar)
+            // Scope §7a — the documents already filed to it. Render-time query
+            // over sidecars; nothing about them is stored in this note.
+            SatchelDocumentChips(notePath: placeNotePath)
+            placeNoteEditor
+        }
+    }
+
+    /// Split out from `notesTab` only so the hand-off bar above can sit in a
+    /// plain VStack without re-indenting this entire modifier chain.
+    private var placeNoteEditor: some View {
         MarkdownEditorView(
             text: $placeNoteContent,
             onSave: { newText in
-                let path = "Notes/Places/\(NoteStore.shared.placeNoteFilename(for: place.name)).md"
                 if !newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    try? NoteStore.shared.writeFile(path, content: newText)
+                    try? NoteStore.shared.writeFile(placeNotePath, content: newText)
                     NotificationCenter.default.post(name: .noteStorePlaceNoteDidChange, object: place.name)
                 }
             },
@@ -483,15 +515,13 @@ struct PlaceDetailView: View {
         .onAppear {
             guard !placeNoteLoaded else { return }
             placeNoteLoaded = true
-            let path = "Notes/Places/\(NoteStore.shared.placeNoteFilename(for: place.name)).md"
-            placeNoteContent = (try? NoteStore.shared.readFile(path)) ?? ""
+            placeNoteContent = (try? NoteStore.shared.readFile(placeNotePath)) ?? ""
         }
         .onReceive(NotificationCenter.default.publisher(for: .noteStorePlaceNoteDidChange)) { notification in
             // Reload if another route (e.g. capture triage) just wrote this place's note
             guard let updatedPlace = notification.object as? String,
                   updatedPlace == place.name else { return }
-            let path = "Notes/Places/\(NoteStore.shared.placeNoteFilename(for: place.name)).md"
-            let fresh = (try? NoteStore.shared.readFile(path)) ?? ""
+            let fresh = (try? NoteStore.shared.readFile(placeNotePath)) ?? ""
             if fresh != placeNoteContent { placeNoteContent = fresh }
         }
     }
@@ -638,8 +668,10 @@ struct PlaceDetailView: View {
     private var actionBar: some View {
         HStack(spacing: 10) {
             Button {
-                let url = URL(string: "maps://?daddr=\(place.latitude),\(place.longitude)")!
-                UIApplication.shared.open(url)
+                // Was a force-unwrapped `URL(string:)` built inline. Now the
+                // one shared implementation in `PlaceHelpers`, so the Mac's new
+                // Directions button and this one cannot drift apart.
+                openMapsDirections(to: livePlace)
             } label: {
                 Label("Directions", systemImage: "arrow.triangle.turn.up.right.circle.fill")
                     .font(.subheadline.weight(.medium))

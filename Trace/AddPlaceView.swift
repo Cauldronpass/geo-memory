@@ -37,9 +37,47 @@ enum TempDuration: String, CaseIterable {
     }
 }
 
-private let placeCategories = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
-                                "Attraction", "Venue", "House", "Fitness",
-                                "Office", "Airport", "Medical", "Park", "Grocery"]
+// MARK: - Category picker
+
+/// Choose a place category from a presented list.
+///
+/// Replaces a `.pickerStyle(.menu)` with fourteen options in it. A menu that
+/// long has to scroll, and any redraw of the screen underneath rebuilds it and
+/// throws the scroll back to the top — which is precisely what David hit while
+/// trying to pick one. A presented list does not care what the screen behind it
+/// is doing.
+struct PlaceCategoryPicker: View {
+    @Binding var selection: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List(PlaceCategory.all, id: \.self) { category in
+                Button {
+                    selection = category
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text(category).foregroundStyle(Color.primary)
+                        Spacer()
+                        if selection == category {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Category")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
 
 // MARK: - Mode Card
 
@@ -138,6 +176,12 @@ struct AddPlaceView: View {
     // Personal
     @State private var personalName = ""
     @State private var personalCategory = "House"
+    @State private var showingCategoryPicker = false
+    /// True once the user has chosen a category themselves. A late model answer
+    /// must never overwrite a deliberate choice.
+    @State private var categoryTouched = false
+    @State private var categoryAsked = false
+
     @State private var personalStatus = "Visited"
     @State private var geocodedAddress = ""
     @State private var geocodedCity = ""
@@ -275,6 +319,17 @@ struct AddPlaceView: View {
 
     // MARK: Personal Form
 
+    /// Asks once, when there is a name to ask about. See the Name field.
+    private func suggestCategoryIfNeeded() {
+        let name = personalName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !categoryAsked, !categoryTouched, name.count >= 3 else { return }
+        categoryAsked = true
+        Task {
+            let guessed = await PlaceCategoryAI.suggest(name: name, address: geocodedAddress)
+            if let guessed, !categoryTouched { personalCategory = guessed }
+        }
+    }
+
     var personalForm: some View {
         VStack(spacing: 14) {
             // Location section
@@ -325,16 +380,35 @@ struct AddPlaceView: View {
                     .textFieldStyle(.roundedBorder)
             }
 
+            // THE MODEL IS THE ONLY SIGNAL HERE. A place typed in by hand has
+            // no Google record behind it, so there is no `primaryType` to map —
+            // just a name. "Arlington Lanes" is a venue and no lookup table
+            // anyone would maintain knows that.
+            //
+            // Fires when the name stops changing, once, in the background. If it
+            // is slow, fails, or the key is missing, the plain default stands and
+            // nothing on screen ever mentioned it.
             TextField("Name (e.g. Mom's House)", text: $personalName)
+                .onSubmit { suggestCategoryIfNeeded() }
+                .onChange(of: personalCategory) { _, _ in
+                    if categoryAsked { categoryTouched = true }
+                }
                 .textFieldStyle(.roundedBorder)
 
             HStack {
                 Text("Category").font(.subheadline).foregroundStyle(.secondary)
                 Spacer()
-                Picker("Category", selection: $personalCategory) {
-                    ForEach(placeCategories, id: \.self) { Text($0).tag($0) }
+                Button {
+                    showingCategoryPicker = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(personalCategory).font(.subheadline)
+                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                    }
                 }
-                .pickerStyle(.menu)
+                .sheet(isPresented: $showingCategoryPicker) {
+                    PlaceCategoryPicker(selection: $personalCategory)
+                }
             }
 
             Picker("Status", selection: $personalStatus) {

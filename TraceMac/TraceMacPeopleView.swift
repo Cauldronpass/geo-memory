@@ -35,6 +35,14 @@ private func resolvePersonPhoto(name: String, fallbackURL: String?) -> String? {
 
 struct TraceMacPeopleView: View {
 
+    /// Set by `TraceMacContentView` when something elsewhere asks to open a
+    /// person — a wikilink tap, a Home row, a `navigateToRecord` post. Consumed
+    /// in `.task(id:)` below and cleared, so it lands whether this view was
+    /// already on screen or is mounting for the first time. Replaces three
+    /// delayed notification posts; see the deep link note in
+    /// `TraceMacContentView`.
+    var deepLinkPersonID: Binding<String?>? = nil
+
     @Environment(NotionService.self) private var notionService
 
     @State private var selectedID: String? = nil
@@ -170,10 +178,11 @@ struct TraceMacPeopleView: View {
             if notionService.visits.isEmpty { await notionService.fetchVisits() }
             if notionService.places.isEmpty { await notionService.fetchPlaces() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .selectPerson)) { note in
-            if let id = note.userInfo?["id"] as? String {
-                selectedID = id
-            }
+        .task(id: deepLinkPersonID?.wrappedValue) {
+            guard let id = deepLinkPersonID?.wrappedValue else { return }
+            sidebarMode = .people
+            selectedID = id
+            deepLinkPersonID?.wrappedValue = nil
         }
         .onChange(of: selectedID) { _, newID in
             guard let id = newID else { detail = nil; interactions = []; return }
@@ -384,13 +393,7 @@ struct TraceMacPeopleView: View {
                 Text("This will archive the person in Notion.")
             }
         } else {
-            VStack(spacing: 12) {
-                Image(systemName: "person.crop.circle")
-                    .font(.system(size: 52, weight: .ultraLight))
-                    .foregroundStyle(.tertiary)
-                Text("Select a person")
-                    .font(.title3).foregroundStyle(.secondary)
-            }
+            MacEmptyState.placeholder("person.crop.circle", "Select a person")
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -447,7 +450,7 @@ struct TraceMacPeopleView: View {
             // Name + meta
             VStack(alignment: .leading, spacing: 3) {
                 Text(d.name)
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(MacType.title)
                 HStack(spacing: 6) {
                     if let rel = d.relationship {
                         Text(rel.capitalized).font(.subheadline).foregroundStyle(.secondary)
@@ -495,7 +498,7 @@ struct TraceMacPeopleView: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(MacGlyph.control)
                     .foregroundStyle(.white)
                     .frame(width: 30, height: 30)
                     .background(color)
@@ -520,20 +523,13 @@ struct TraceMacPeopleView: View {
         }
     }
 
+    /// Kept as a name because three call sites read `initialsCircle(d.name,
+    /// size: 72)` and that reads better in place than the enum does. The
+    /// drawing moved to `MacAvatar`; this is the last free-diameter caller and
+    /// every one of its three call sites passes 72.
     @ViewBuilder
     private func initialsCircle(_ name: String, size: CGFloat) -> some View {
-        let parts = name.split(separator: " ")
-        let initials = parts.count >= 2
-            ? String(parts[0].prefix(1)) + String(parts[1].prefix(1))
-            : String(name.prefix(2)).uppercased()
-        Circle()
-            .fill(Color.purple.opacity(0.15))
-            .frame(width: size, height: size)
-            .overlay(
-                Text(initials)
-                    .font(.system(size: size * 0.33, weight: .medium))
-                    .foregroundStyle(.purple)
-            )
+        MacAvatar(name: name, size: .hero, tint: .purple)
     }
 
     // MARK: - Photo helpers
@@ -712,7 +708,7 @@ struct MacInfoTab: View {
                         }
                     } label: {
                         Image(systemName: isArchived ? "archivebox.fill" : "archivebox")
-                            .font(.system(size: 13))
+                            .font(MacGlyph.control)
                             .foregroundStyle(isArchived ? Color.accentColor : Color.secondary.opacity(0.4))
                     }
                     .buttonStyle(.plain)
@@ -724,7 +720,7 @@ struct MacInfoTab: View {
 
                     Button(role: .destructive, action: onDeletePerson) {
                         Image(systemName: "trash")
-                            .font(.system(size: 13))
+                            .font(MacGlyph.control)
                             .foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.plain)
@@ -746,12 +742,9 @@ struct MacInfoTab: View {
                placeID.replacingOccurrences(of: "-", with: "").lowercased()
            }) {
             HStack(spacing: 12) {
-                Image(systemName: placeIcon(for: place.category))
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-                    .background(placeColor(for: place.category))
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                MacIconBadge(icon: placeIcon(for: place.category),
+                             tint: placeColor(for: place.category),
+                             size: .compact)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(place.name).font(.callout)
                     if !place.city.isEmpty {
@@ -833,7 +826,7 @@ struct MacInfoTab: View {
             if !text.wrappedValue.isEmpty {
                 Button(action: action) {
                     Image(systemName: label == "Phone" ? "phone" : label == "Email" ? "envelope" : "map")
-                        .font(.system(size: 11))
+                        .font(MacGlyph.control)
                         .foregroundStyle(Color.accentColor)
                 }
                 .buttonStyle(.plain)
@@ -1084,13 +1077,13 @@ struct MacLogTab: View {
                         Text("Notes").font(.caption).foregroundStyle(.secondary)
                         ZStack(alignment: .topLeading) {
                             TextEditor(text: $notes)
-                                .font(.system(size: 13))
+                                .font(MacType.body)
                                 .frame(minHeight: 100)
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
                             if notes.isEmpty {
                                 Text("What did you talk about?")
                                     .foregroundStyle(Color.secondary.opacity(0.5))
-                                    .font(.system(size: 13))
+                                    .font(MacType.body)
                                     .padding(.top, 8).padding(.leading, 5)
                                     .allowsHitTesting(false)
                             }
@@ -1314,10 +1307,31 @@ struct PersonDocumentsTab: View {
 
     @State private var docStore: TraceMacDocumentStore? = nil
 
+    /// A document reaches a person two different ways, and this used to look at
+    /// only one of them.
+    ///
+    /// `people:` is written by the Mac's own metadata panel, which has a people
+    /// picker. `linked_note:` is what Satchel writes — its capture form files a
+    /// document to a note, and the sidecar owns that link. Filtering on
+    /// `people` alone meant every document captured on the phone was invisible
+    /// here.
+    ///
+    /// David, 2026-08-02, on opening Bronwyn Kelly: *"i dont see the nicks on
+    /// the lake document"*. Its sidecar reads
+    /// `linked_note: Notes/People/Bronwyn Kelly.md` and carries no `people:`
+    /// field at all.
+    ///
+    /// The path is built the same way `NoteStore.ensurePersonNote` and
+    /// `PersonDetailView` build it — raw name, not sanitised — because a
+    /// mismatched path here is a silently empty list rather than an error.
     private var linkedDocs: [TraceMacDocument] {
         guard let docStore else { return [] }
+        let notePath = "Notes/People/\(personName).md"
         return docStore.documents
-            .filter { $0.people.contains(personName) }
+            .filter { doc in
+                doc.people.contains(personName)
+                    || (doc.linkedNote?.localizedCaseInsensitiveCompare(notePath) == .orderedSame)
+            }
             .sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
     }
 
@@ -1326,13 +1340,7 @@ struct PersonDocumentsTab: View {
             if docStore?.isLoading == true {
                 ProgressView("Loading…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if linkedDocs.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "doc.richtext")
-                        .font(.system(size: 36, weight: .ultraLight))
-                        .foregroundStyle(.tertiary)
-                    Text("No documents linked to \(personName)")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
+                MacEmptyState.list("doc.richtext", "No documents linked to \(personName)")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -1647,7 +1655,7 @@ struct EditInteractionSheet: View {
                             HStack(spacing: 4) {
                                 Text(type.capitalized).foregroundStyle(.primary)
                                 Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                                    .font(MacGlyph.small).foregroundStyle(.secondary)
                             }
                             .padding(.horizontal, 8).padding(.vertical, 5)
                             .background(Color(nsColor: .controlBackgroundColor),
@@ -1677,7 +1685,7 @@ struct EditInteractionSheet: View {
                 }
                 Section("Notes") {
                     TextEditor(text: $notes)
-                        .font(.system(size: 13))
+                        .font(MacType.body)
                         .frame(minHeight: 160)
                 }
                 Section("Photos") {
@@ -1718,7 +1726,7 @@ struct EditInteractionSheet: View {
                                             Image(systemName: "xmark.circle.fill")
                                                 .symbolRenderingMode(.palette)
                                                 .foregroundStyle(Color.white, Color.black.opacity(0.45))
-                                                .font(.system(size: 15))
+                                                .font(MacGlyph.control)
                                         }
                                         .buttonStyle(.plain).padding(3)
                                     }
@@ -1838,15 +1846,7 @@ struct SidebarAgendaRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            // Initials circle
-            let parts = person.name.split(separator: " ")
-            let initials = parts.count >= 2
-                ? String(parts[0].prefix(1)) + String(parts[1].prefix(1))
-                : String(person.name.prefix(2)).uppercased()
-            Circle()
-                .fill(Color.orange.opacity(0.15))
-                .frame(width: 30, height: 30)
-                .overlay(Text(initials).font(.system(size: 11, weight: .medium)).foregroundStyle(.orange))
+            MacAvatar(name: person.name, size: .row, tint: .orange)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(person.name)

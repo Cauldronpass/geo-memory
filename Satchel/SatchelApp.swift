@@ -41,6 +41,30 @@ struct SatchelApp: App {
         WindowGroup {
             SatchelLibraryView(router: router)
                 .onOpenURL { router.handle($0) }
+                // SATCHEL IS A LIGHT-ONLY APP AND MUST SAY SO.
+                //
+                // Every surface colour is hardcoded from `satchel-mockup-v4.html`
+                // — white cards on a near-white canvas — but anything using a
+                // SYSTEM colour still flips in dark mode. On David's phone that
+                // rendered the Title and Description fields as white text on a
+                // white card: the values were there and perfectly saved, just
+                // invisible. Tags read fine because their colour is hardcoded.
+                //
+                // It cost most of an evening. The symptom is "the AI returned no
+                // title" — a data bug that is not a data bug — and it sent me
+                // chasing the scan prompt, the sidecar parser and the store.
+                //
+                // Pinning the appearance is the honest fix for an app whose
+                // palette was only ever designed in light. A real dark mode is a
+                // design pass over the whole token set, not a colour-scheme
+                // switch, and the Dayflow Design Plan already records dark mode
+                // as deliberately out of scope for that skin work.
+                //
+                // DO NOT "fix" this by adding `.foregroundStyle` to the two text
+                // fields. The same bug exists anywhere a system colour meets a
+                // hardcoded background — the navigation title in that screenshot
+                // was white too.
+                .preferredColorScheme(.light)
         }
     }
 }

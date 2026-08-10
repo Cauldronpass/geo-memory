@@ -87,6 +87,11 @@ struct DayflowProjectNoteView: View {
     /// asked for this as a separate, additional level, not a replacement.
     @State private var relatedNotesHidden = false
     @State private var isLoading = true
+    /// Which attachment picker the visible Attach button asked for. Cleared by
+    /// `MarkdownEditorView` once it has fired. Added 2026-07-30: the paperclip
+    /// used to live only on the keyboard accessory bar, so attaching required
+    /// already typing.
+    @State private var attachRequest: MarkdownAttachKind? = nil
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
     /// Session 45 addendum 6 — set by MarkdownEditorView's onCaptureTap when a
     /// `[label](capture://open?id=ID)` marker is tapped. Same isPresented-Binding
@@ -148,9 +153,22 @@ struct DayflowProjectNoteView: View {
                                 // argument order has to match MarkdownEditorView's
                                 // declaration order (onCaptureTap is declared after
                                 // checklistSendEnabled/onPinSucceeded/onPinFailed).
-                                onCaptureTap: { id in tappedCaptureID = id }
+                                onCaptureTap: { id in tappedCaptureID = id },
+                                attachTrigger: $attachRequest
                             )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                            // E-CHIP, 2026-07-28. Same render-time sidecar query
+                            // as the day note and as Trace's Place and Person
+                            // notes. The bar shows unconditionally here: this is
+                            // a full screen, not a card competing for room.
+                            // Tags above the document chips: tags say what the
+                            // note is about, documents are things attached to it,
+                            // and the first is closer to the note itself.
+                            DayflowNoteTagBar(text: $content, onCommit: { save($0) }, attach: $attachRequest)
+                            SatchelDocumentChips(notePath: relativePath)
+                            SatchelAddDocumentButton(notePath: relativePath, style: .bar)
+
                             DayflowRelatedNotesSection(
                                 relatedNotes: relatedNotes,
                                 expanded: $relatedNotesExpanded,

@@ -81,7 +81,12 @@ enum OTScanService {
     /// Sends `imageData` to Claude and returns extracted OT stats.
     /// Accepts any format Anthropic supports (JPEG, PNG, GIF, WebP) — format is auto-detected.
     static func scan(imageData: Data) async throws -> OTScanResult {
-        let base64 = imageData.base64EncodedString()
+        // DOWNSCALED FIRST. Sending the picker's bytes straight through meant a
+        // multi-megabyte POST, which is what "The network connection was lost"
+        // was. Media type is sniffed from the RESULT, not the input, because a
+        // resized image comes back as JPEG whatever went in.
+        let prepared = ScanImage.downscaled(imageData)
+        let base64 = prepared.base64EncodedString()
 
         let body: [String: Any] = [
             "model": model,
@@ -94,7 +99,7 @@ enum OTScanService {
                             "type": "image",
                             "source": [
                                 "type": "base64",
-                                "media_type": mediaType(for: imageData),
+                                "media_type": mediaType(for: prepared),
                                 "data": base64
                             ]
                         ],

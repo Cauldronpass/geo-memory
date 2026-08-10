@@ -27,13 +27,55 @@ struct SatchelLibraryView: View {
     @State private var store = iOSDocumentStore()
     @State private var endeavorStore = SatchelEndeavorStore()
 
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var query: String = ""
-    @State private var captureSource: SatchelCaptureSource?
-    /// Only ever set by a `satchel://…?note=` hand-off, and cleared the moment
-    /// the capture sheet closes. Held here rather than read off the router at
-    /// sheet-build time because the router's copy is consumed immediately, and a
-    /// sheet builds its content later than the observer that presented it.
-    @State private var captureNoteLink: String?
+    /// Which Browse chip is showing its full name. One at a time.
+    @State private var revealedChip: String? = nil
+    /// Where a tapped Browse chip goes.
+    ///
+    /// The chips were `NavigationLink`s until 2026-08-01. They had to stop being
+    /// links: a `NavigationLink` owns its own tap, so the only way to add a long
+    /// press was `.simultaneousGesture`, and *simultaneous* is exactly what it
+    /// says — the push fired on release as well. David: *"the long press shows the
+    /// full name but when i release I am brought to that filter… The way it is now
+    /// defeats the purpose."*
+    ///
+    /// Driving the push from state instead means `.onTapGesture` and
+    /// `.onLongPressGesture` can arbitrate properly: one or the other, never both.
+    @State private var chipRoute: ChipRoute? = nil
+
+    /// Kept local rather than added to `SatchelDeepLink`. That enum is the URL
+    /// router's vocabulary; these are four screens reachable only by thumb.
+    enum ChipRoute: Hashable, Identifiable {
+        case endeavor(String)
+        case type(DocumentIcon)
+        case allTrips
+        case allTypes
+        var id: Self { self }
+    }
+    /// THE WHOLE CAPTURE REQUEST, IN ONE VALUE.
+    ///
+    /// This was three separate `@State` properties: the source (which presented
+    /// the sheet) plus a note link and a staged incoming file that the sheet
+    /// read as it built. The comments on them recorded the ordering rule that
+    /// was supposed to make it safe — assign the payload first, the source
+    /// second, because assigning the source is what presents.
+    ///
+    /// **It was not safe.** `.sheet(item:)` builds its content from a snapshot
+    /// of the view, and a sibling `@State` written in the same tick is not
+    /// guaranteed to be in that snapshot. On 2026-07-31 David shared a PDF from
+    /// Mail, the extension staged it correctly and reported success, and Satchel
+    /// opened the Files picker over a spinner — which is exactly what
+    /// `SatchelCaptureView` does when `incoming` arrives **nil**: it falls past
+    /// the incoming branch and calls `launchSource()`. The bytes were gone by
+    /// then, because `AppGroup.consumeIncoming()` deletes as it reads.
+    ///
+    /// A payload carried BY the item cannot be missing when the item is present.
+    /// The ordering rule stops being something to remember, which is the only
+    /// kind of fix worth making to a bug whose comments already described the
+    /// hazard correctly.
+    @State private var captureRequest: SatchelCaptureRequest?
 
     private var kit: KitMembership.Layout {
         KitMembership.assemble(
@@ -49,14 +91,7 @@ struct SatchelLibraryView: View {
     private var searchResults: [TraceMacDocument] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return [] }
-        return store.documents.filter { doc in
-            if doc.title.lowercased().contains(q) { return true }
-            if doc.description.lowercased().contains(q) { return true }
-            if doc.category.lowercased().contains(q) { return true }
-            if doc.tags.contains(where: { $0.lowercased().contains(q) }) { return true }
-            if let name = doc.endeavorName, name.lowercased().contains(q) { return true }
-            return false
-        }
+        return store.documents.filter { SatchelDocumentSearch.matches($0, q) }
     }
 
     var body: some View {
@@ -86,9 +121,41 @@ struct SatchelLibraryView: View {
 #endif
                 await endeavorStore.reload()
                 await store.reload()
+                // Deep-link destinations drain HERE, after the store is loaded,
+                // not on appear: `satchel://document?path=…` resolves against
+                // `store.documents`, and on a cold launch that is still empty
+                // when the view first appears. Draining early would dead-end the
+                // §7 chip hand-off on "missing document".
+                drainRouter()
             }
-            .sheet(item: $captureSource, onDismiss: { captureNoteLink = nil }) { source in
-                SatchelCaptureView(source: source, store: store, prefilledNote: captureNoteLink)
+            // Cold-launch drain for capture and search. `onChange` alone is NOT
+            // enough — see `drainRouter()`. The brief sleep is the same lesson
+            // `SatchelCaptureView` already learned: a sheet presented while the
+            // window is still coming up gets swallowed silently.
+            .task {
+                try? await Task.sleep(for: .milliseconds(50))
+                drainRouter(includingDestination: false)
+                consumeSharedFile()
+            }
+            .sheet(item: $captureRequest) { request in
+                SatchelCaptureView(source: request.source, store: store,
+                                   prefilledNote: request.noteLink,
+                                   incoming: request.incoming)
+            }
+            .navigationDestination(item: $chipRoute) { route in
+                switch route {
+                case .endeavor(let id):
+                    SatchelAllDocumentsView(documents: store.documents,
+                                            store: store, endeavorID: id)
+                case .type(let type):
+                    SatchelAllDocumentsView(documents: store.documents,
+                                            store: store, type: type)
+                case .allTrips:
+                    SatchelEndeavorIndexView(documents: store.documents,
+                                             store: store, endeavorStore: endeavorStore)
+                case .allTypes:
+                    SatchelTypeIndexView(documents: store.documents, store: store)
+                }
             }
             .navigationDestination(for: SatchelDeepLink.self) { link in
                 switch link {
@@ -106,25 +173,81 @@ struct SatchelLibraryView: View {
                     }
                 }
             }
-            .onChange(of: router.pendingCapture) { _, source in
-                guard let source else { return }
-                // Link first, source second: assigning `captureSource` is what
-                // presents the sheet, and the sheet reads the link.
-                captureNoteLink = router.pendingNoteLink
-                captureSource = source
-                router.pendingNoteLink = nil
-                router.pendingCapture = nil
+            // Warm-app path: Satchel is already running when the URL arrives,
+            // so there is a real transition for `onChange` to see.
+            // Reload on returning to the foreground. Satchel had the same bug
+            // its own chip reader did in Trace and Dayflow: the library loaded
+            // once per session and never noticed a change made elsewhere. Edit a
+            // document through Trace's own browser, come back, and Satchel still
+            // showed the old title — which reads as the edit having failed.
+            // Found in device testing 2026-07-28, test 10. Third instance of
+            // this family in one day; if a fourth surfaces, the reload belongs
+            // in the store rather than at each call site.
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { await store.reload() }
+                // The share extension stages a file and dismisses without
+                // opening anything, so the hand-off is picked up whenever
+                // Satchel next comes forward — which is usually the user
+                // switching to it deliberately, right after sharing.
+                consumeSharedFile()
             }
-            .onChange(of: router.pendingSearch) { _, text in
-                guard let text else { return }
-                query = text
-                router.pendingSearch = nil
-            }
-            .onChange(of: router.pendingDestination) { _, destination in
-                guard let destination else { return }
-                path.append(destination)
-                router.pendingDestination = nil
-            }
+            .onChange(of: router.pendingCapture) { _, _ in drainRouter() }
+            .onChange(of: router.pendingSearch) { _, _ in drainRouter() }
+            .onChange(of: router.pendingDestination) { _, _ in drainRouter() }
+        }
+    }
+
+    /// Picks up a file shared in from another app via the iOS share sheet.
+    ///
+    /// `TraceShareExtension` writes the bytes plus a `pending.json` into the
+    /// shared app group and dismisses — it opens no app and names none, so
+    /// whichever app calls `consumeIncoming()` first gets it. **Trace stopped
+    /// calling it on 2026-07-29**, so there is no race: the file waits in the
+    /// container until Satchel is opened.
+    ///
+    /// This is what settles scope §10's open question. Satchel does not need its
+    /// own share extension — the existing one is app-agnostic, and only the
+    /// consumer had to move.
+    private func consumeSharedFile() {
+        guard captureRequest == nil,
+              let doc = AppGroup.consumeIncoming() else { return }
+        captureRequest = SatchelCaptureRequest(source: .file, incoming: doc)
+    }
+
+    /// Consumes whatever the router is holding, and is safe to call when it is
+    /// holding nothing.
+    ///
+    /// WHY THIS IS NOT JUST `onChange`. Found in device testing on 2026-07-28,
+    /// the first real run of the Trace-side "Add document" button. On a COLD
+    /// launch, `onOpenURL` delivers before this view establishes its `onChange`
+    /// baseline, so `router.pendingCapture` is ALREADY set the first time the
+    /// body runs and there is never a *change* to observe. Nothing fires.
+    ///
+    /// The symptom is quiet and thoroughly misleading: Satchel opens on the
+    /// Library instead of the scanner, so the user starts a capture by hand,
+    /// the note the other app handed across is gone, and the document saves
+    /// unlinked. Every part of that looks like the hand-off simply not being
+    /// implemented, which is why it survived a code read — the write path, the
+    /// picker and the sidecar were all correct.
+    ///
+    /// It applied to all four capture routes, to `satchel://search` and to
+    /// `satchel://document?path=…`. That last one matters most: the §7 chip is
+    /// a hand-off from another app, so it is a cold launch nearly every time.
+    private func drainRouter(includingDestination: Bool = true) {
+        if let source = router.pendingCapture {
+            captureRequest = SatchelCaptureRequest(source: source,
+                                                   noteLink: router.pendingNoteLink)
+            router.pendingNoteLink = nil
+            router.pendingCapture = nil
+        }
+        if let text = router.pendingSearch {
+            query = text
+            router.pendingSearch = nil
+        }
+        if includingDestination, let destination = router.pendingDestination {
+            path.append(destination)
+            router.pendingDestination = nil
         }
     }
 
@@ -219,6 +342,7 @@ struct SatchelLibraryView: View {
             VStack(alignment: .leading, spacing: 0) {
                 kitSection
                 browseSection
+                dueSection
                 recentSection
             }
         }
@@ -272,12 +396,17 @@ struct SatchelLibraryView: View {
         if !kit.all.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 SatchelSectionTitle(title: "Kit") {
-                    if kit.showsSeeAll {
+                    // `showsKitDoor`, not `showsSeeAll` — with four or fewer
+                    // items there was no way onto the Kit screen, and that screen
+                    // holds the trip-slots stepper, so the setting was
+                    // unreachable exactly when Kit was small. See the note on
+                    // `KitMembership.Layout.showsKitDoor`.
+                    if kit.showsKitDoor {
                         NavigationLink {
                             SatchelKitView(result: kit, store: store)
                         } label: {
                             HStack(spacing: 2) {
-                                Text("Show all")
+                                Text(kit.kitDoorLabel)
                                 Image(systemName: "chevron.right")
                                     .font(.system(size: 10, weight: .semibold))
                             }
@@ -378,6 +507,8 @@ struct SatchelLibraryView: View {
     // what IS it, versus what does it BELONG to.
 
     private static let browseChipLimit = 6
+    /// Trips shown as chips before the rest go behind `All trips`.
+    private static let endeavorChipLimit = 2
 
     @ViewBuilder
     private var browseSection: some View {
@@ -389,35 +520,49 @@ struct SatchelLibraryView: View {
                     alignment: .leading,
                     spacing: 8
                 ) {
-                    ForEach(endeavorCounts.prefix(2), id: \.0) { id, name, count in
-                        NavigationLink {
-                            SatchelAllDocumentsView(documents: store.documents,
-                                                    store: store, endeavorID: id)
-                        } label: {
-                            SatchelBrowseChip(label: name, count: count, endeavor: true)
-                        }
-                        .buttonStyle(.plain)
+                    ForEach(shownEndeavors, id: \.0) { id, name, count in
+                        SatchelBrowseChip(label: name, count: count, endeavor: true)
+                            .chipGestures(id: id, name: name, count: count,
+                                          revealed: $revealedChip) {
+                                chipRoute = .endeavor(id)
+                            }
+                    }
+
+                    // THE DOOR TO THE REST. Two chips have always been the cap,
+                    // and until now the third trip onwards was reachable only by
+                    // searching for a name you had to already remember. `All
+                    // types` has had this door since the row was built; trips
+                    // never got one. David, 2026-08-01: *"being able to see files
+                    // for endeavors would be nice (a filter or a way to look at
+                    // past trips and the documents that are associated)."*
+                    if endeavorCounts.count > Self.endeavorChipLimit {
+                        SatchelBrowseChip(label: "All trips",
+                                          count: endeavorCounts.count,
+                                          showsChevron: true)
+                            .chipGestures(id: "all-trips", name: "All trips",
+                                          count: endeavorCounts.count,
+                                          revealed: $revealedChip) {
+                                chipRoute = .allTrips
+                            }
                     }
 
                     ForEach(shownTypes, id: \.0) { type, count in
-                        NavigationLink {
-                            SatchelAllDocumentsView(documents: store.documents,
-                                                    store: store, type: type)
-                        } label: {
-                            SatchelBrowseChip(type: type, count: count)
-                        }
-                        .buttonStyle(.plain)
+                        SatchelBrowseChip(type: type, count: count)
+                            .chipGestures(id: type.label, name: type.label, count: count,
+                                          revealed: $revealedChip) {
+                                chipRoute = .type(type)
+                            }
                     }
 
                     if typeCounts.count > shownTypes.count {
-                        NavigationLink {
-                            SatchelTypeIndexView(documents: store.documents, store: store)
-                        } label: {
-                            SatchelBrowseChip(label: "All types",
-                                              count: typeCounts.count,
-                                              showsChevron: true)
-                        }
-                        .buttonStyle(.plain)
+                        SatchelBrowseChip(label: "All types",
+                                          count: typeCounts.count,
+                                          showsChevron: true)
+                            .chipGestures(id: "all-types", name: "All types",
+                                          count: typeCounts.count,
+                                          revealed: $revealedChip) {
+                                chipRoute = .allTypes
+                            }
                     }
                 }
                 .padding(.horizontal, 6)
@@ -431,11 +576,36 @@ struct SatchelLibraryView: View {
     /// hold still between captures.
     private var shownTypes: [(DocumentIcon, Int)] {
         let slots = max(0, Self.browseChipLimit
-                        - min(endeavorCounts.count, 2)
+                        - min(endeavorCounts.count, Self.endeavorChipLimit)
+                        - (endeavorCounts.count > Self.endeavorChipLimit ? 1 : 0)
                         - (typeCounts.count > Self.browseChipLimit ? 1 : 0))
         return typeCounts
             .prefix(slots)
             .sorted { $0.0.label < $1.0.label }
+    }
+
+    /// The two trips that get chips.
+    ///
+    /// **Chosen by recency, rendered alphabetically** — the same split the type
+    /// chips use, and for the same reason. Which two you see should track what you
+    /// are actually near; where they sit should not move under your thumb.
+    ///
+    /// `endeavorCounts` alone was sorted by NAME, so which two trips got chips was
+    /// decided by the alphabet. A trip from last spring could hold a slot while
+    /// the one you were on did not.
+    private var shownEndeavors: [(String, String, Int)] {
+        endeavorCounts
+            .sorted { endeavorRecency($0.0) > endeavorRecency($1.0) }
+            .prefix(Self.endeavorChipLimit)
+            .sorted { $0.1.localizedCaseInsensitiveCompare($1.1) == .orderedAscending }
+    }
+
+    /// How recent a trip is, for ordering. An Endeavor whose note has been
+    /// deleted still has documents pointing at it and no date to sort by; those
+    /// sort last rather than disappearing, because the documents are still real.
+    private func endeavorRecency(_ id: String) -> Date {
+        guard let trip = endeavorStore.endeavor(id: id) else { return .distantPast }
+        return trip.end ?? trip.start ?? .distantPast
     }
 
     /// Types that actually have documents, commonest first. An empty drawer is
@@ -460,6 +630,87 @@ struct SatchelLibraryView: View {
         return counts
             .map { ($0.key, $0.value.0, $0.value.1) }
             .sorted { $0.1 < $1.1 }
+    }
+
+    // MARK: Due
+    //
+    // David, 2026-08-01: *"I would want to see items with dates somehow."*
+    //
+    // Above Recent, because a date is a claim on your attention and a capture time
+    // is not. Overdue first and never dropped — the same rule Trace's Coming Up
+    // follows, and for the same reason: a document you meant to deal with last
+    // week is still waiting, and ageing it off screen would be the app deciding
+    // that for you.
+    //
+    // Hidden entirely when nothing has a date, rather than sitting there empty.
+
+    private var dueDocuments: [TraceMacDocument] {
+        store.documents
+            .filter { $0.remindOn != nil }
+            .sorted { ($0.remindOn ?? .distantFuture) < ($1.remindOn ?? .distantFuture) }
+    }
+
+    @ViewBuilder
+    private var dueSection: some View {
+        if !dueDocuments.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                SatchelSectionTitle("Due")
+                VStack(spacing: 0) {
+                    ForEach(Array(dueDocuments.enumerated()), id: \.element.id) { idx, doc in
+                        Button {
+                            path.append(SatchelDeepLink.document(doc.relativePath))
+                        } label: {
+                            HStack(spacing: 11) {
+                                SatchelDocumentMark(icon: doc.resolvedIcon,
+                                                    tint: doc.resolvedTint,
+                                                    size: 34, cornerRadius: 10, glyphSize: 16)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(doc.title)
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(Color.satchelInk)
+                                        .lineLimit(1)
+                                    Text(dueCaption(doc.remindOn))
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(isOverdue(doc.remindOn)
+                                                         ? Color.satchelPin : Color.satchelSecondary)
+                                }
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Color.satchelTertiary)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if idx < dueDocuments.count - 1 {
+                            Divider().overlay(Color.satchelHairline).padding(.leading, 59)
+                        }
+                    }
+                }
+                .satchelCard()
+            }
+            .padding(.horizontal, 15)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private func isOverdue(_ date: Date?) -> Bool {
+        guard let date else { return false }
+        return Calendar.current.startOfDay(for: date) < Calendar.current.startOfDay(for: Date())
+    }
+
+    private func dueCaption(_ date: Date?) -> String {
+        guard let date else { return "" }
+        let cal = Calendar.current
+        let days = cal.dateComponents([.day],
+                                      from: cal.startOfDay(for: Date()),
+                                      to: cal.startOfDay(for: date)).day ?? 0
+        let stamp = date.formatted(.dateTime.month(.abbreviated).day())
+        if days < 0  { return "Overdue by \(-days) day\(days == -1 ? "" : "s") · \(stamp)" }
+        if days == 0 { return "Today · \(stamp)" }
+        return "In \(days) day\(days == 1 ? "" : "s") · \(stamp)"
     }
 
     // MARK: Recent
@@ -497,7 +748,7 @@ struct SatchelLibraryView: View {
     private var scanButton: some View {
         VStack(spacing: 4) {
             Button {
-                captureSource = .scan
+                captureRequest = SatchelCaptureRequest(source: .scan)
             } label: {
                 Image(systemName: "doc.viewfinder")
                     .font(.system(size: 25, weight: .regular))
@@ -518,17 +769,17 @@ struct SatchelLibraryView: View {
             // other three sources behind a hold, so nothing becomes a menu.
             .contextMenu {
                 Button {
-                    captureSource = .photo
+                    captureRequest = SatchelCaptureRequest(source: .photo)
                 } label: {
                     Label("Take Photo", systemImage: "camera")
                 }
                 Button {
-                    captureSource = .library
+                    captureRequest = SatchelCaptureRequest(source: .library)
                 } label: {
                     Label("Choose from Library", systemImage: "photo.on.rectangle")
                 }
                 Button {
-                    captureSource = .file
+                    captureRequest = SatchelCaptureRequest(source: .file)
                 } label: {
                     Label("Import File", systemImage: "folder")
                 }
@@ -548,6 +799,51 @@ struct SatchelLibraryView: View {
 
 /// A white card of document rows with hairline separators. Used by Recent,
 /// search results and the browse screen, so the three cannot drift apart.
+/// What "search" means for a document, in one place.
+///
+/// **Added 2026-07-30 because two things were wrong.** The Library and the All
+/// Documents screen had *separate* predicates that had already drifted — the
+/// Library matched the Endeavor name, All Documents did not — so a search could
+/// find something on one screen and miss it on the other.
+///
+/// And both missed the fields most likely to be typed. David has a business card
+/// filed against `Notes/People/Mitch Weiss.md`; searching "mitch" found nothing,
+/// because the linked note and the `people` field were never searched. The person
+/// is often the ONLY thing you remember about a document.
+///
+/// The linked note is matched on its display name, not its path: nobody types
+/// "Notes/People/", and matching the raw path would let "notes" match every
+/// document in the library.
+enum SatchelDocumentSearch {
+
+    /// `q` must already be lowercased and trimmed — both callers do it once,
+    /// before filtering, rather than per document.
+    ///
+    /// Written as `_ lowercasedQuery q: String` at first, which is not valid
+    /// Swift: that is two argument labels for one parameter. The intent belongs in
+    /// the doc comment, not smuggled into the signature.
+    static func matches(_ doc: TraceMacDocument, _ q: String) -> Bool {
+        if q.isEmpty { return false }
+        if doc.title.lowercased().contains(q) { return true }
+        if doc.description.lowercased().contains(q) { return true }
+        if doc.tags.contains(where: { $0.lowercased().contains(q) }) { return true }
+        if let name = doc.endeavorName, name.lowercased().contains(q) { return true }
+        if doc.people.contains(where: { $0.lowercased().contains(q) }) { return true }
+        if let note = doc.linkedNote, noteDisplayNameForSearch(note).lowercased().contains(q) {
+            return true
+        }
+        // The type's own label — "receipt", "card", "statement". It is a visible
+        // chip on every row, so it is a reasonable thing to type.
+        if doc.resolvedIcon.label.lowercased().contains(q) { return true }
+        return false
+    }
+
+    /// `Notes/People/Mitch Weiss.md` → `Mitch Weiss`.
+    private static func noteDisplayNameForSearch(_ path: String) -> String {
+        ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+    }
+}
+
 struct DocumentCard: View {
     let documents: [TraceMacDocument]
     let store: iOSDocumentStore
@@ -756,6 +1052,68 @@ struct SatchelBrowseChip: View {
     }
 }
 
+// MARK: - Chip tap and long-press
+//
+// David, 2026-08-01: *"Could we long press on any pill and the full name is
+// revealed? Is that an approach while pressing without long press still works?"*
+//
+// First attempt hung a `.simultaneousGesture` off the `NavigationLink`. It read
+// correctly and behaved wrongly, which he caught immediately: *"the long press
+// shows the full name but when i release I am brought to that filter… The way it
+// is now defeats the purpose since i could just go the filter anyway."*
+//
+// **`simultaneousGesture` means simultaneous.** Both recognizers fire. It is the
+// right tool for adding a gesture that should coexist with a button's tap, and
+// the wrong one when the new gesture must *replace* the tap for that press.
+//
+// A `NavigationLink` owns its tap and will not give it up, so the chips are no
+// longer links. The push is driven from `chipRoute` and a
+// `.navigationDestination(item:)`, which frees the chip to be a plain view
+// carrying `.onTapGesture` and `.onLongPressGesture`. Those two DO arbitrate:
+// hold past the threshold and the tap is cancelled, release early and the long
+// press never fires. One or the other, which is what was asked for.
+//
+// A popover rather than a tooltip: it points at the chip you pressed, so there is
+// no doubt which name you are reading, and it dismisses by tapping anywhere.
+// `presentationCompactAdaptation(.popover)` is load-bearing — without it iPhone
+// serves a popover as a half-height sheet, which for four words would be absurd.
+//
+// On every chip, not only the long ones. Types truncate too (`Doc…`, `Rece…`),
+// and a gesture that works on some chips is worse than one that works on none:
+// the ones it fails on read as broken rather than as short.
+
+private extension View {
+    func chipGestures(id: String, name: String, count: Int,
+                      revealed: Binding<String?>,
+                      onTap: @escaping () -> Void) -> some View {
+        // The chip's own background does not cover the grid cell's full width,
+        // and a gap that does not respond reads as a dead chip.
+        contentShape(Rectangle())
+            .onTapGesture(perform: onTap)
+            .onLongPressGesture(minimumDuration: 0.45) {
+                revealed.wrappedValue = id
+            }
+            .popover(isPresented: Binding(
+                get: { revealed.wrappedValue == id },
+                set: { if !$0 { revealed.wrappedValue = nil } }
+            )) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(name)
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .foregroundStyle(Color.satchelInk)
+                    Text(count == 1 ? "1 document" : "\(count) documents")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.satchelSecondary)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 240, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .presentationCompactAdaptation(.popover)
+            }
+    }
+}
+
 // MARK: - Note picker
 //
 // Files a document against a note by writing `linked_note` into the sidecar.
@@ -778,20 +1136,71 @@ struct SatchelNotePickerView: View {
     @State private var noteStore = NoteStore.shared
     @State private var query = ""
 
-    /// The note folders worth filing a document against. `Notes/Inbox` is
-    /// deliberately absent — it is a staging area, and filing a permanent
-    /// document to a place things are meant to leave is a trap.
-    private static let folders = ["Projects", "Places", "People", "Horizons"]
+    /// The note folders worth filing a document against, as (section title,
+    /// container-relative folder).
+    ///
+    /// `Notes/Inbox` is deliberately absent — it is a staging area, and filing a
+    /// permanent document to a place things are meant to leave is a trap.
+    ///
+    /// **`Calendar` is not under `Notes/`.** Dayflow writes day notes to
+    /// `Calendar/<date>.md` at the container root, not `Notes/Journal/`, which
+    /// is why this is a list of paths rather than a list of names. The
+    /// `Trace-Backlog.md` E-CHIP entry had the wrong path for a while; this is
+    /// the real one.
+    private static let folders: [(title: String, path: String)] = [
+        ("Day notes", "Calendar"),
+        // Added 2026-07-29 with the Endeavor first pass. Filing a document to a
+        // trip is the motivating case for Endeavors existing at all — the
+        // boarding pass and the hotel confirmation are the whole reason Kit
+        // folds a trip's documents in while it is running (scope §5). Listed
+        // second, under day notes, because those are the two that get filed to
+        // most often.
+        ("Endeavors", "Notes/Endeavors"),
+        ("Projects",  "Notes/Projects"),
+        ("Places",    "Notes/Places"),
+        ("People",    "Notes/People"),
+        ("Horizons",  "Notes/Horizons"),
+    ]
+
+    /// Un-searched, day notes are capped at the most recent handful. There is one
+    /// per day forever, so the honest flat list is hundreds of rows of dates —
+    /// which is why this section was left out entirely until now, and why the
+    /// answer is a cap plus search rather than a longer list. Type any part of a
+    /// date ("2026-03", "03-14") and the cap lifts for the matches.
+    private static let dayNoteLimit = 8
 
     private var groups: [(String, [String])] {
-        Self.folders.compactMap { folder in
-            let names = ((try? noteStore.listFiles(in: "Notes/\(folder)")) ?? [])
+        Self.folders.compactMap { section in
+            var names = ((try? noteStore.listFiles(in: section.path)) ?? [])
                 .filter { $0.hasSuffix(".md") }
                 .map { ($0 as NSString).deletingPathExtension }
                 .filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
-                .sorted()
-            return names.isEmpty ? nil : (folder, names)
+
+            if section.path == "Calendar" {
+                // Newest first — a document being filed to a day note is nearly
+                // always today's or yesterday's.
+                names.sort(by: >)
+                if query.isEmpty { names = Array(names.prefix(Self.dayNoteLimit)) }
+            } else {
+                names.sort()
+            }
+
+            return names.isEmpty ? nil : (section.path, names)
         }
+    }
+
+    /// Section heading for a folder path. Kept separate from the path so the
+    /// heading can read "Day notes" while the rows build `Calendar/…`.
+    private func sectionTitle(for path: String) -> String {
+        Self.folders.first { $0.path == path }?.title ?? path
+    }
+
+    /// Day notes are named by their date, so the raw filename reads as a stray
+    /// timestamp in a list. `noteDisplayName` already solves this everywhere else
+    /// — reused here rather than re-derived, so the picker row, the Filed-to row
+    /// and the capture form cannot disagree about what a note is called.
+    private func rowLabel(folder: String, name: String) -> String {
+        noteDisplayName("\(folder)/\(name).md") ?? name
     }
 
     var body: some View {
@@ -802,7 +1211,7 @@ struct SatchelNotePickerView: View {
 
                     ForEach(groups, id: \.0) { folder, names in
                         VStack(alignment: .leading, spacing: 0) {
-                            SatchelSectionTitle(folder)
+                            SatchelSectionTitle(sectionTitle(for: folder))
                             VStack(spacing: 0) {
                                 ForEach(Array(names.indices), id: \.self) { index in
                                     noteRow(folder: folder, name: names[index],
@@ -865,18 +1274,23 @@ struct SatchelNotePickerView: View {
     }
 
     private func noteRow(folder: String, name: String, isLast: Bool) -> some View {
-        let path = "Notes/\(folder)/\(name).md"
+        // `folder` is already container-relative — "Calendar" or "Notes/Places" —
+        // so it is NOT prefixed with "Notes/" here. Getting this wrong writes a
+        // `linked_note` that renders fine inside Satchel and matches nothing on
+        // the reverse lookup, so the chip never appears and nothing explains why.
+        let path = "\(folder)/\(name).md"
+        let isDay = folder == "Calendar"
         return VStack(spacing: 0) {
             Button {
                 linkedNote = path
                 dismiss()
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "note.text")
+                    Image(systemName: isDay ? "calendar" : "note.text")
                         .font(.system(size: 13))
                         .foregroundStyle(Color.satchelBlue)
                         .frame(width: 24)
-                    Text(name)
+                    Text(rowLabel(folder: folder, name: name))
                         .font(.system(size: 14))
                         .foregroundStyle(Color.satchelInk)
                         .lineLimit(1)
@@ -925,6 +1339,78 @@ func noteDisplayName(_ path: String?) -> String? {
         return "Journal · \(pretty.string(from: date))"
     }
     return base
+}
+
+/// Which app owns a note, and the URL that opens it there — the return leg of
+/// the cross-app model.
+///
+/// Trace and Dayflow can already reach into Satchel (`satchel://document?path=`),
+/// and Satchel records which note every document belongs to, but until now there
+/// was no way back: tapping the linked note opened the picker to CHANGE it, and
+/// getting to the person meant leaving the app and finding them by hand.
+///
+/// **Satchel does not display notes and must not start.** It hands the path to
+/// whichever app owns that part of the tree, exactly as Trace hands documents the
+/// other way. Ownership is by path prefix, matching who writes each folder:
+/// Trace authors Place and Person notes, Dayflow authors day and project notes.
+///
+/// Returns nil for anything that cannot be opened, so no dead button is drawn.
+///
+/// **Dayflow's half arrived 2026-07-29 (backlog E35).** Day notes, Endeavors and
+/// project notes now offer "Open in Dayflow"; before that they returned nil,
+/// deliberately, rather than offering a button that opens the app and lands
+/// nowhere.
+///
+/// `Notes/Horizons/` still returns nil: weekly and monthly notes have no deep
+/// link on the Dayflow side, and half a hand-off is worse than none. Recorded in
+/// E35 rather than guessed at here.
+///
+/// THE PREFIX LIST IS THE CONTRACT. Adding a prefix here without adding the
+/// matching branch to `DayflowContentView.resolveNoteRoute()` draws a button that
+/// opens Dayflow and does nothing, which is precisely the failure this function
+/// was written to prevent.
+/// The jump to an Endeavor's own note, keyed by slug rather than path.
+///
+/// Separate from `noteOwnerAppURL` because it answers a different field: that one
+/// reads `linked_note`, this one reads `endeavor`. A document can have both — a
+/// business card linked to a person AND filed to a trip — and each deserves its
+/// own way back. Conflating them is what made "Open in Dayflow" appear missing
+/// when it was simply reading the other field.
+func endeavorAppURL(for endeavorID: String?) -> URL? {
+    guard let endeavorID, !endeavorID.isEmpty else { return nil }
+    var comps = URLComponents()
+    comps.scheme = "dayflow"
+    comps.host = "endeavor"
+    comps.queryItems = [URLQueryItem(name: "id", value: endeavorID)]
+    return comps.url
+}
+
+func noteOwnerAppURL(for path: String?) -> (label: String, url: URL)? {
+    guard let path, !path.isEmpty else { return nil }
+
+    let scheme: String
+    let label: String
+
+    if path.hasPrefix("Notes/People/") || path.hasPrefix("Notes/Places/") {
+        scheme = "trace"
+        label = "Open in Trace"
+    } else if path.hasPrefix("Calendar/")
+                || path.hasPrefix("Notes/Endeavors/")
+                || path.hasPrefix("Notes/Projects/") {
+        scheme = "dayflow"
+        label = "Open in Dayflow"
+    } else {
+        return nil
+    }
+
+    var comps = URLComponents()
+    comps.scheme = scheme
+    comps.host = "note"
+    // `URLComponents`, not interpolation — "Gayle & Harvey Weiss.md" carries both
+    // a space and an ampersand, and an unescaped one truncates the path.
+    comps.queryItems = [URLQueryItem(name: "path", value: path)]
+    guard let url = comps.url else { return nil }
+    return (label, url)
 }
 
 // MARK: - Type index
@@ -988,11 +1474,139 @@ struct SatchelTypeIndexView: View {
     }
 }
 
+// MARK: - Endeavor index
+//
+// The door behind `All trips`. Every Endeavor that has documents, newest trip
+// first, with its dates and a count.
+//
+// **Newest first, not alphabetical — unlike the type index next to it.** That one
+// is scanned by name, because you arrive already knowing you want "Receipts".
+// This one is read as a history: you come here to find the trip, and trips are
+// remembered by when they were, not by their initial. It is the answer to
+// David's *"a way to look at past trips and the documents that are associated"*.
+//
+// Endeavors with NO documents are absent, the same rule the type chips follow —
+// an empty drawer only teaches you the list is unreliable. So this is a list of
+// trips that have paperwork, not a list of trips.
+//
+// A document can also outlive its Endeavor note. Those rows keep the name the
+// sidecar recorded and sort last, because the documents are still real and still
+// need a way back to each other.
+
+struct SatchelEndeavorIndexView: View {
+    let documents: [TraceMacDocument]
+    let store: iOSDocumentStore
+    let endeavorStore: SatchelEndeavorStore
+
+    private struct Row: Identifiable {
+        let id: String
+        let name: String
+        let count: Int
+        let trip: Endeavor?
+        /// `nil` when the Endeavor note is gone. Sorts last.
+        var sortDate: Date? { trip?.end ?? trip?.start }
+    }
+
+    private var rows: [Row] {
+        var counts: [String: (String, Int)] = [:]
+        for doc in documents {
+            guard let id = doc.endeavor else { continue }
+            counts[id] = (doc.endeavorName ?? counts[id]?.0 ?? "Endeavor",
+                          (counts[id]?.1 ?? 0) + 1)
+        }
+        return counts
+            .map { Row(id: $0.key, name: $0.value.0, count: $0.value.1,
+                       trip: endeavorStore.endeavor(id: $0.key)) }
+            .sorted { a, b in
+                switch (a.sortDate, b.sortDate) {
+                case let (l?, r?): return l > r
+                case (nil, _?):    return false
+                case (_?, nil):    return true
+                case (nil, nil):
+                    return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+                }
+            }
+    }
+
+    /// "31 Jul 2026", or "4 – 13 Oct 2026" when the trip spans days. Absolute,
+    /// never relative: `kitTimingPhrase` says "ended yesterday", which is the
+    /// right thing on a shelf of documents you are holding and the wrong thing in
+    /// a list of trips from the last two years.
+    private func dateCaption(_ trip: Endeavor?) -> String? {
+        guard let trip, let start = trip.start ?? trip.end else { return nil }
+        let end = trip.end ?? start
+        let cal = Calendar.current
+        let day = DateFormatter()
+        day.dateFormat = "d MMM yyyy"
+        if cal.isDate(start, inSameDayAs: end) { return day.string(from: start) }
+        let short = DateFormatter()
+        short.dateFormat = cal.isDate(start, equalTo: end, toGranularity: .month)
+            ? "d" : "d MMM"
+        return "\(short.string(from: start)) – \(day.string(from: end))"
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    NavigationLink {
+                        SatchelAllDocumentsView(documents: documents, store: store,
+                                                endeavorID: row.id)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "briefcase.fill")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Color.satchelAuto)
+                                .frame(width: 34, height: 34)
+                                .background(DocumentTint.indigo.background,
+                                            in: RoundedRectangle(cornerRadius: 10))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.name)
+                                    .font(.system(size: 14.5, weight: .semibold))
+                                    .foregroundStyle(Color.satchelInk)
+                                    .lineLimit(1)
+                                if let caption = dateCaption(row.trip) {
+                                    Text(caption)
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(Color.satchelSecondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 8)
+                            Text("\(row.count)")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.satchelSecondary)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.satchelTertiary)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if index < rows.count - 1 {
+                        Divider().overlay(Color.satchelHairline).padding(.leading, 62)
+                    }
+                }
+            }
+            .satchelCard()
+            .padding(.horizontal, 15)
+            .padding(.top, 10)
+            .padding(.bottom, 30)
+        }
+        .satchelBackground()
+        .navigationTitle("All trips")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 // MARK: - Full Kit
 //
 // Build step 7. Frame 2 of the mockup: two labelled groups, rows rather than
 // tiles, Edit for reorder and unpin, and a note on the trip group stating it
-// clears when the trip ends and the documents stay in the Endeavor.
+// clears a day after the trip ends and the documents stay in the Endeavor.
 //
 // Reorder applies to the PINNED group only, and that is not an omission. Trip
 // membership is computed from the Endeavor's date range at render time (scope
@@ -1147,7 +1761,10 @@ struct SatchelKitView: View {
         if tripSlots == 0 {
             text += "Currently none do, so all four go to your pins. "
         }
-        text += "Clears on its own when \(name) ends; the documents stay in the Endeavor."
+        // "when \(name) ends" was true until Kit gained a one-day tail. It now
+        // clears the day AFTER, which is the whole point of the tail — the return
+        // leg is flown and the last receipts collected on the final day.
+        text += "Clears on its own a day after \(name) ends; the documents stay in the Endeavor."
         return text
     }
 
@@ -1245,6 +1862,7 @@ struct SatchelDocumentDetailView: View {
     var store: iOSDocumentStore? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var noteStore = NoteStore.shared
     @State private var endeavorStore = SatchelEndeavorStore()
 
@@ -1300,9 +1918,15 @@ struct SatchelDocumentDetailView: View {
                         .onChange(of: descriptionText) { _, _ in dirty = true }
                 }
                 tagField
+                // "Filed to" sits ABOVE the typed note and Summary as of
+                // 2026-07-28. It used to be second from the bottom, next to
+                // Delete, which meant anyone looking for "how do I link this to
+                // a person" hit `noteField` first, found a free-text box, and
+                // concluded there was no link control. Cost David a real test
+                // session on device.
+                filedToField
                 noteField
                 summaryField
-                filedToField
                 fileFacts
                 deleteButton
             }
@@ -1533,12 +2157,30 @@ struct SatchelDocumentDetailView: View {
         field("Filed to") {
             VStack(spacing: 0) {
                 Menu {
+                    // Computed ONCE. Called per-use it would run the scan three
+                    // times a body pass and, worse, could straddle midnight
+                    // between calls and disagree with itself about which list a
+                    // trip belongs in.
+                    let filing = endeavorStore.filingChoices()
                     Button("None") { endeavorID = nil; endeavorName = nil; dirty = true }
-                    ForEach(endeavorStore.endeavors) { endeavor in
+                    ForEach(filing.current) { endeavor in
                         Button(endeavor.name) {
                             endeavorID = endeavor.id
                             endeavorName = endeavor.name
                             dirty = true
+                        }
+                    }
+                    // Demoted, not removed — see SatchelCaptureView's copy of this
+                    // menu and `filingTailDays` for why.
+                    if !filing.past.isEmpty {
+                        Menu("Past") {
+                            ForEach(filing.past) { endeavor in
+                                Button(endeavor.name) {
+                                    endeavorID = endeavor.id
+                                    endeavorName = endeavor.name
+                                    dirty = true
+                                }
+                            }
                         }
                     }
                 } label: {
@@ -1559,13 +2201,53 @@ struct SatchelDocumentDetailView: View {
                     .contentShape(Rectangle())
                 }
 
+                // The way to the Endeavor's own note. Added 2026-07-29 after
+                // David filed a document to Japan and saw no "Open in Dayflow" —
+                // correctly, because `noteOwnerAppURL` reads `linked_note`, and
+                // that document's linked note was a PERSON. **Filing to an
+                // Endeavor and linking a note are two different fields**, and
+                // only the second had a way back. An Endeavor is a note too, and
+                // "boarding pass → the Japan note" was the motivating case for
+                // Endeavors existing at all.
+                //
+                // Routed BY ID, not by path: `dayflow://endeavor?id=japan-2026`.
+                // The sidecar already holds the id, Dayflow already looks up by
+                // id, and renaming the note cannot break the link. A path-based
+                // route would also have needed a sixth field on Satchel's
+                // `Endeavor` to carry `relativePath` — which is the trigger
+                // condition in backlog E34 for consolidating the two models, and
+                // not a cost worth paying for a jump button.
+                if let jump = endeavorAppURL(for: endeavorID) {
+                    Divider().overlay(Color.satchelHairline).padding(.leading, 14)
+
+                    Button {
+                        openURL(jump)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("Open in Dayflow")
+                                .font(.system(size: 14, weight: .medium))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(Color.satchelAuto)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 Divider().overlay(Color.satchelHairline).padding(.leading, 14)
 
                 Button {
                     showNotePicker = true
                 } label: {
                     HStack {
-                        Text("Note")
+                        // "Linked note", not "Note" — `noteField` below is a
+                        // free-text box also called Note, and two rows with one
+                        // name on one screen is how the link control got missed.
+                        Text("Linked note")
                             .font(.system(size: 14))
                             .foregroundStyle(Color.satchelInk)
                         Spacer(minLength: 10)
@@ -1581,6 +2263,32 @@ struct SatchelDocumentDetailView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+
+                // The way back. Only drawn when the note belongs to an app that
+                // can actually open it — see `noteOwnerAppURL`. Deliberately a
+                // separate row rather than a second tap target on the one above:
+                // that row's job is to CHANGE the link, and one row doing both
+                // would make every tap a guess.
+                if let jump = noteOwnerAppURL(for: linkedNote) {
+                    Divider().overlay(Color.satchelHairline).padding(.leading, 14)
+
+                    Button {
+                        openURL(jump.url)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text(jump.label)
+                                .font(.system(size: 14, weight: .medium))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(Color.satchelBlue)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
 
                 Divider().overlay(Color.satchelHairline).padding(.leading, 14)
 
@@ -1601,14 +2309,17 @@ struct SatchelDocumentDetailView: View {
     // MARK: File facts
 
     /// Everything here is about the bytes, not about how the document is filed.
-    /// Folder lives here on purpose — see this file's header.
+    /// The folder lives here on purpose — see this file's header. As of
+    /// 2026-07-28 it is always a year, so the row is labelled "Year" rather than
+    /// "Folder": calling it a folder invited the question "can I change it?",
+    /// and the answer is no, because it is not a filing decision any more.
     private var fileFacts: some View {
         field("File") {
             VStack(spacing: 0) {
                 factRow("Kind", kindLabel(for: current))
                 factRow("Size", fileSize)
                 factRow("Added", relativeDateLabel(current.created))
-                factRow("Folder", current.category)
+                factRow("Year", current.category)
                 factRow("Name", current.filename, isLast: true)
             }
             .satchelCard()
@@ -1793,6 +2504,40 @@ struct SatchelDocumentDetailView: View {
         let doc = current
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // MERELY OPENING THIS SCREEN USED TO REWRITE THE FILE.
+        //
+        // `loadFromDocument()` assigns every field, which trips the
+        // `.onChange(of:)` handlers on `linkedNote`, `icon` and `tint`, which
+        // set `dirty = true`. `.onDisappear` then saved. So viewing a document
+        // and backing out wrote its sidecar, with whatever this screen happened
+        // to be holding.
+        //
+        // Harmless while Satchel is the only writer. Actively destructive once
+        // it is not: David edited a title in Trace, opened the document in
+        // Satchel to check, and backing out wrote Satchel's copy of the title
+        // straight back over the edit. The file was rewritten twice, both times
+        // with the old title, which looked like Trace failing to save.
+        // Found in device testing 2026-07-28, test 10.
+        //
+        // Guarding here rather than fixing `dirty` at its eleven assignment
+        // sites: `dirty` is set from `onChange`, which fires a render pass after
+        // the load, so any flag-based suppression is a race. Comparing against
+        // what is actually on the document is not.
+        let unchanged = trimmed == doc.title
+            && descriptionText.trimmingCharacters(in: .whitespacesAndNewlines) == doc.description
+            && tags == doc.tags
+            && icon == doc.resolvedIcon
+            && tint == doc.resolvedTint
+            && endeavorID == doc.endeavor
+            && endeavorName == doc.endeavorName
+            && pinned == doc.pinned
+            && linkedNote == doc.linkedNote
+            && note == doc.note
+        if unchanged {
+            dirty = false
+            return
+        }
+
         try? store.saveSidecar(
             for: doc,
             title: trimmed.isEmpty ? doc.title : trimmed,
@@ -1842,14 +2587,13 @@ struct SatchelAllDocumentsView: View {
     let store: iOSDocumentStore
 
     enum Sort: String, CaseIterable, Identifiable {
-        case newest, oldest, title, folder
+        case newest, oldest, title
         var id: String { rawValue }
         var label: String {
             switch self {
             case .newest: return "Newest first"
             case .oldest: return "Oldest first"
             case .title:  return "Title A–Z"
-            case .folder: return "Folder"
             }
         }
         var symbol: String {
@@ -1857,7 +2601,6 @@ struct SatchelAllDocumentsView: View {
             case .newest: return "arrow.down"
             case .oldest: return "arrow.up"
             case .title:  return "textformat.abc"
-            case .folder: return "folder"
             }
         }
     }
@@ -1878,7 +2621,6 @@ struct SatchelAllDocumentsView: View {
     @State private var kind: Kind = .all
     @State private var type: DocumentIcon? = nil
     @State private var endeavorID: String? = nil
-    @State private var folder: String? = nil
     @State private var tag: String? = nil
     @State private var kitOnly = false
     @State private var query = ""
@@ -1904,10 +2646,6 @@ struct SatchelAllDocumentsView: View {
             .sorted { $0.label < $1.label }
     }
 
-    private var folders: [String] {
-        Array(Set(documents.map { $0.category })).sorted()
-    }
-
     private var tags: [String] {
         Array(Set(documents.flatMap { $0.tags })).sorted()
     }
@@ -1917,7 +2655,6 @@ struct SatchelAllDocumentsView: View {
 
         if let type { out = out.filter { $0.resolvedIcon == type } }
         if let endeavorID { out = out.filter { $0.endeavor == endeavorID } }
-        if let folder { out = out.filter { $0.category == folder } }
         if let tag { out = out.filter { $0.tags.contains(tag) } }
         if kitOnly { out = out.filter { $0.pinned } }
         switch kind {
@@ -1928,11 +2665,10 @@ struct SatchelAllDocumentsView: View {
 
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if !q.isEmpty {
-            out = out.filter {
-                $0.title.lowercased().contains(q)
-                || $0.description.lowercased().contains(q)
-                || $0.tags.contains { $0.lowercased().contains(q) }
-            }
+            // Shared predicate. These two searches had drifted apart already —
+            // the Library's matched the Endeavor name and this one did not — which
+            // is how "it finds it on one screen but not the other" happens.
+            out = out.filter { SatchelDocumentSearch.matches($0, q) }
         }
 
         switch sort {
@@ -1942,18 +2678,86 @@ struct SatchelAllDocumentsView: View {
             out.sort { ($0.created ?? .distantPast) < ($1.created ?? .distantPast) }
         case .title:
             out.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        case .folder:
-            out.sort {
-                $0.category == $1.category
-                    ? ($0.created ?? .distantPast) > ($1.created ?? .distantPast)
-                    : $0.category.localizedCaseInsensitiveCompare($1.category) == .orderedAscending
-            }
         }
         return out
     }
 
+    struct MonthGroup: Identifiable {
+        /// `2026-07`, so it sorts as a string and cannot collide across years.
+        let key: String
+        let label: String
+        let documents: [TraceMacDocument]
+        var id: String { key }
+    }
+
+    /// `filtered` split into month sections, order preserved.
+    ///
+    /// Built by walking the already-sorted array rather than with `Dictionary
+    /// (grouping:)` — a dictionary would lose the sort order and force a re-sort
+    /// of the keys, and `.oldest` would then need the opposite comparison. Walking
+    /// it means whatever `sort` decided is simply kept.
+    ///
+    /// Undated documents get a "No date" section wherever the sort puts them —
+    /// last under Newest first, first under Oldest first, since `created` falls
+    /// back to `.distantPast`. Verified rather than assumed; they do exist,
+    /// because `created` is optional and a hand-written sidecar may omit it.
+    private var monthGroups: [MonthGroup] {
+        var groups: [MonthGroup] = []
+        var currentKey: String?
+        var bucket: [TraceMacDocument] = []
+
+        func flush() {
+            guard let currentKey, !bucket.isEmpty else { return }
+            groups.append(MonthGroup(key: currentKey,
+                                     label: Self.monthLabel(for: bucket.first?.created),
+                                     documents: bucket))
+            bucket = []
+        }
+
+        for doc in filtered {
+            let key = Self.monthKey(for: doc.created)
+            if key != currentKey {
+                flush()
+                currentKey = key
+            }
+            bucket.append(doc)
+        }
+        flush()
+        return groups
+    }
+
+    private static let monthKeyFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")   // grouping key, never shown
+        f.dateFormat = "yyyy-MM"
+        return f
+    }()
+
+    private static let monthLabelFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMMM yyyy"                     // shown, so device locale
+        return f
+    }()
+
+    private static func monthKey(for date: Date?) -> String {
+        guard let date else { return "0000-00" }
+        return monthKeyFormatter.string(from: date)
+    }
+
+    private static func monthLabel(for date: Date?) -> String {
+        guard let date else { return "No date" }
+        let cal = Calendar.current
+        let now = Date()
+        if cal.isDate(date, equalTo: now, toGranularity: .month) { return "This month" }
+        if let lastMonth = cal.date(byAdding: .month, value: -1, to: now),
+           cal.isDate(date, equalTo: lastMonth, toGranularity: .month) {
+            return "Last month"
+        }
+        return monthLabelFormatter.string(from: date)
+    }
+
     private var isFiltered: Bool {
-        type != nil || endeavorID != nil || folder != nil || tag != nil || kitOnly || kind != .all
+        type != nil || endeavorID != nil || tag != nil || kitOnly || kind != .all
     }
 
     private var endeavorLabel: String? {
@@ -1980,9 +2784,28 @@ struct SatchelAllDocumentsView: View {
                         .foregroundStyle(Color.satchelSecondary)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 60)
-                } else {
+                } else if sort == .title {
+                    // A–Z is an alphabetical question, so month headers would be
+                    // noise: consecutive rows would each get their own header.
                     DocumentCard(documents: filtered, store: store)
                         .padding(.horizontal, 15)
+                } else {
+                    // Grouped by month. A flat list of two hundred rows cannot be
+                    // scanned however good the filters are, and because the Browse
+                    // chips land in THIS screen pre-filtered, sectioning here also
+                    // turns "Receipts" from a wall into something with landmarks.
+                    ForEach(monthGroups, id: \.key) { group in
+                        // `SatchelSectionTitle(_:)`, the EmptyView convenience
+                        // init — the memberwise `init(title:trailing:)` cannot
+                        // infer `Trailing` without a closure, so the labelled form
+                        // does not compile here. It carries its own bottom padding,
+                        // so none is added.
+                        SatchelSectionTitle(group.label)
+                            .padding(.horizontal, 15)
+                            .padding(.top, group.key == monthGroups.first?.key ? 0 : 16)
+                        DocumentCard(documents: group.documents, store: store)
+                            .padding(.horizontal, 15)
+                    }
                 }
             }
             .padding(.top, 10)
@@ -2017,21 +2840,6 @@ struct SatchelAllDocumentsView: View {
                                     Label(candidate.label, systemImage: "checkmark")
                                 } else {
                                     Text(candidate.label)
-                                }
-                            }
-                        }
-                    }
-
-                    Menu("Folder") {
-                        Button("Any folder") { folder = nil }
-                        ForEach(folders, id: \.self) { name in
-                            Button {
-                                folder = (folder == name) ? nil : name
-                            } label: {
-                                if folder == name {
-                                    Label(name, systemImage: "checkmark")
-                                } else {
-                                    Text(name)
                                 }
                             }
                         }
@@ -2079,7 +2887,6 @@ struct SatchelAllDocumentsView: View {
             HStack(spacing: 7) {
                 if let type { filterChip(type.label, systemImage: type.sfSymbol) { self.type = nil } }
                 if let endeavorLabel { filterChip(endeavorLabel, systemImage: "briefcase") { self.endeavorID = nil } }
-                if let folder { filterChip(folder, systemImage: "folder") { self.folder = nil } }
                 if let tag { filterChip(tag, systemImage: "tag") { self.tag = nil } }
                 if kitOnly { filterChip("In Kit", systemImage: "pin.fill") { kitOnly = false } }
                 if kind != .all { filterChip(kind.label, systemImage: "doc") { kind = .all } }
@@ -2108,7 +2915,7 @@ struct SatchelAllDocumentsView: View {
     }
 
     private func clearFilters() {
-        type = nil; endeavorID = nil; folder = nil; tag = nil; kitOnly = false; kind = .all
+        type = nil; endeavorID = nil; tag = nil; kitOnly = false; kind = .all
     }
 }
 
@@ -2118,6 +2925,20 @@ struct SatchelAllDocumentsView: View {
 // three sit behind a long press (scope §5). `SatchelCaptureView` reads this to
 // decide which picker to open. The step-9 placeholder sheet that used to live
 // here is gone, replaced by the real flow.
+
+/// A capture the library has decided to start, with everything the sheet needs
+/// to start it. See `captureRequest` for why the payload travels with the item
+/// rather than beside it.
+struct SatchelCaptureRequest: Identifiable {
+    let source: SatchelCaptureSource
+    var incoming: IncomingDocument? = nil
+    var noteLink: String? = nil
+
+    /// One capture sheet is presentable at a time, so the source identifies the
+    /// request. Including the payload here would re-present the sheet whenever
+    /// it changed, which is the opposite of what is wanted.
+    var id: String { source.rawValue }
+}
 
 enum SatchelCaptureSource: String, Identifiable {
     case scan, photo, library, file

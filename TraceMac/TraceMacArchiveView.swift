@@ -1,5 +1,5 @@
 // TraceMacArchiveView.swift
-// Tabbed view showing archived People, Documents, and Notes (Projects / Places / Horizons).
+// Tabbed view showing archived People and Notes (Projects / Places / Horizons).
 // Mac-only — do not add to iOS, Widget, or Share Extension targets.
 
 import SwiftUI
@@ -9,36 +9,43 @@ struct TraceMacArchiveView: View {
     @Environment(NoteStore.self)     private var noteStore
     @Environment(NotionService.self) private var notionService
 
+    /// Session 63 (2026-08-01): the Documents tab is gone.
+    ///
+    /// David: *"I don't use it. It's a relic."*
+    ///
+    /// It predated Endeavors and Kit. Documents are filed by `endeavor`,
+    /// `linked_note`, `tags` and `pinned` now, and iOS has no archive concept
+    /// for documents at all — an old one simply falls down the list. The tab
+    /// read `Documents/Archive/`, a folder that does not exist in the container
+    /// and that only TraceMac could ever have created, through a "Move to
+    /// Archive" menu item removed in the same change.
+    ///
+    /// People and Notes archiving stay, and are unrelated: person archiving is
+    /// a Notion `isArchived` flag with a live toggle in the People view, and
+    /// note archiving is the `Notes/Projects/Archive` subfolder built for
+    /// Dayflow.
     enum ArchiveTab: String, CaseIterable {
-        case people    = "People"
-        case documents = "Documents"
-        case notes     = "Notes"
+        case people = "People"
+        case notes  = "Notes"
     }
 
     @State private var selectedTab: ArchiveTab = .people
-    @State private var docStore: TraceMacDocumentStore? = nil
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Archive section", selection: $selectedTab) {
-                ForEach(ArchiveTab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
+            // Was h20 / v10 with the picker's "Archive section" label left
+            // visible, against h16 / v8 and `.labelsHidden()` on every other
+            // section — the top-left of this screen sat four points right and
+            // two points down from the one before it, with a stray label in it.
+            MacSectionHeader("Archive") {
+                MacTabStrip(options: ArchiveTab.allCases,
+                            selection: $selectedTab) { $0.rawValue }
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
-
-            Divider()
 
             Group {
                 switch selectedTab {
                 case .people:
                     ArchivedPeopleView()
-                        .environment(notionService)
-                case .documents:
-                    ArchivedDocumentsView(store: docStore)
-                        .environment(noteStore)
                         .environment(notionService)
                 case .notes:
                     ArchivedNotesView()
@@ -47,10 +54,14 @@ struct TraceMacArchiveView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle("Archive")
+        // No `.navigationTitle`. This was the only section that set one, so the
+        // window renamed itself from "TraceMac" to "Archive" on this screen and
+        // nowhere else — the section name belongs in the header row now, where
+        // every section puts it.
         .task {
-            if docStore == nil { docStore = TraceMacDocumentStore(noteStore: noteStore) }
-            await docStore?.reload()
+            // The TraceMacDocumentStore that used to be built here went with the
+            // Documents tab. Neither remaining tab reads documents, so this
+            // screen no longer scans the container on appear.
             if notionService.people.isEmpty { await notionService.fetchPeople() }
         }
     }
@@ -201,22 +212,10 @@ private struct ArchivedPeopleView: View {
     // Lightweight header — no photo upload, just display
     private func archivePersonHeader(_ d: PersonDetail) -> some View {
         HStack(spacing: 16) {
-            // Initials circle
-            let parts = d.name.split(separator: " ")
-            let initials = parts.count >= 2
-                ? String(parts[0].prefix(1)) + String(parts[1].prefix(1))
-                : String(d.name.prefix(2)).uppercased()
-            Circle()
-                .fill(Color.purple.opacity(0.15))
-                .frame(width: 52, height: 52)
-                .overlay(
-                    Text(initials)
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(.purple)
-                )
+            MacAvatar(name: d.name, size: .header, tint: .purple)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(d.name).font(.system(size: 18, weight: .semibold))
+                Text(d.name).font(MacType.title)
                 if let rel = d.relationship {
                     Text(rel.capitalized).font(.subheadline).foregroundStyle(.secondary)
                 }
@@ -228,123 +227,6 @@ private struct ArchivedPeopleView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-    }
-}
-
-// MARK: - Archived Documents
-
-private struct ArchivedDocumentsView: View {
-
-    let store: TraceMacDocumentStore?
-
-    @Environment(NoteStore.self)     private var noteStore
-    @Environment(NotionService.self) private var notion
-
-    @State private var selectedDoc: TraceMacDocument? = nil
-    @State private var searchText = ""
-
-    private var archivedDocs: [TraceMacDocument] {
-        (store?.documents ?? [])
-            .filter { $0.category == "Archive" }
-            .filter { searchText.isEmpty || $0.title.localizedCaseInsensitiveContains(searchText) }
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            // List
-            VStack(spacing: 0) {
-                TextField("Search", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(10)
-                Divider()
-                if archivedDocs.isEmpty {
-                    Spacer()
-                    Text("No archived documents.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Spacer()
-                } else {
-                    List(archivedDocs, selection: $selectedDoc) { doc in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(doc.title).font(.system(.body, weight: .medium)).lineLimit(2)
-                            Text(doc.fileExtension.uppercased())
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 3)
-                        .tag(doc)
-                    }
-                    .listStyle(.sidebar)
-                    .scrollContentBackground(.hidden)
-                }
-            }
-            .frame(width: 220)
-
-            Divider()
-
-            // Preview + metadata panel
-            if let doc = selectedDoc, let s = store {
-                VStack(spacing: 0) {
-                    DocPreviewView(doc: doc)
-                        .environment(noteStore)
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: 260)
-
-                    Divider()
-
-                    ScrollView {
-                        DocMetadataPanel(doc: doc, store: s) { movedDoc in
-                            Task {
-                                await s.reload()
-                                selectedDoc = movedDoc.category != "Archive"
-                                    ? nil
-                                    : s.documents.first { $0.filename == movedDoc.filename }
-                            }
-                        }
-                        .environment(noteStore)
-                        .environment(notion)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                Text("Select a document")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-    }
-}
-
-// MARK: - Document preview helper (mirrors docViewer in TraceMacDocumentsView)
-
-struct DocPreviewView: View {
-    let doc: TraceMacDocument
-    @Environment(NoteStore.self) private var noteStore
-
-    var body: some View {
-        if doc.isPDF, let url = noteStore.resolvedURL(for: doc.relativePath) {
-            PDFViewRepresentable(url: url)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if doc.isImage,
-                  let url = noteStore.resolvedURL(for: doc.relativePath),
-                  let nsImage = NSImage(contentsOf: url) {
-            ScrollView([.horizontal, .vertical]) {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .scaledToFit()
-                    .padding()
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let url = noteStore.resolvedURL(for: doc.relativePath) {
-            VStack(spacing: 12) {
-                Image(systemName: "doc")
-                    .font(.system(size: 40, weight: .thin))
-                    .foregroundStyle(.tertiary)
-                Text(doc.filename).font(.callout)
-                Button("Open in Default App") { NSWorkspace.shared.open(url) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
     }
 }
 

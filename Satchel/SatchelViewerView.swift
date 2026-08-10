@@ -26,8 +26,12 @@ struct SatchelViewerView: View {
     let document: TraceMacDocument
     let store: iOSDocumentStore
 
+    @Environment(\.openURL) private var openURL
     @State private var noteStore = NoteStore.shared
     @State private var endeavorStore = SatchelEndeavorStore()
+    @State private var showRemindSheet = false
+    @State private var remindDue = Date()
+    @State private var remindState: ReminderButtonState = .idle
     @State private var pageCount: Int = 0
     @State private var isWorking = false
 
@@ -70,6 +74,7 @@ struct SatchelViewerView: View {
                 }
             }
         }
+        .sheet(isPresented: $showRemindSheet) { remindSheet }
         .task {
             await endeavorStore.reload()
             guard document.isPDF, let fileURL else { return }
@@ -151,6 +156,9 @@ struct SatchelViewerView: View {
                 Spacer(minLength: 0)
             }
 
+            filedToStrip
+                .padding(.top, 11)
+
             if !current.tags.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(current.tags, id: \.self) { tag in
@@ -158,11 +166,110 @@ struct SatchelViewerView: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.top, 11)
+                .padding(.top, 9)
             }
         }
         .padding(.horizontal, 18)
         .padding(.top, 14)
+    }
+
+    // MARK: Filed to
+    //
+    // WHAT THIS FIXES. David, 2026-07-30: *"I dont even have a way to know what
+    // the document is linked to without going to the edit info tab which isnt
+    // great."* He was right, and it was the root of two complaints rather than
+    // one: with no filing visible here, "Edit info" was doing double duty as the
+    // only way to READ filing as well as change it, and the Kit button had to
+    // carry an explanation of a state nothing else showed.
+    //
+    // So: state is shown here, changing it stays in Edit info, and the Kit button
+    // went back to saying only what it does.
+    //
+    // Navigation split, David's call: the Endeavor and the linked note navigate
+    // (they are the round trip Endeavors exist for), Kit status is informational
+    // because the button beside it already acts on Kit. A chip that both tells
+    // you something and commits you to something is how a row ends up doing two
+    // jobs — the mistake already recorded against the linked-note picker.
+
+    @ViewBuilder
+    private var filedToStrip: some View {
+        let noteName = current.linkedNote.map(Self.noteDisplayName)
+        let hasFiling = current.endeavorName?.isEmpty == false
+            || noteName != nil
+            || !current.tags.isEmpty
+
+        HStack(spacing: 6) {
+            if let endeavor = current.endeavorName, !endeavor.isEmpty {
+                if let url = endeavorAppURL(for: current.endeavor) {
+                    Button { openURL(url) } label: {
+                        chip(endeavor, symbol: "suitcase", tint: Color.satchelAuto, navigates: true)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    chip(endeavor, symbol: "suitcase", tint: Color.satchelAuto, navigates: false)
+                }
+            }
+
+            if let noteName {
+                if let jump = noteOwnerAppURL(for: current.linkedNote) {
+                    Button { openURL(jump.url) } label: {
+                        chip(noteName, symbol: "note.text", tint: Color.satchelBlue, navigates: true)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    // A note in a folder no app claims — Horizons today. Shown, not
+                    // tappable: knowing what it is filed against still has value
+                    // when nothing can open it.
+                    chip(noteName, symbol: "note.text", tint: Color.satchelBlue, navigates: false)
+                }
+            }
+
+            if current.pinned {
+                chip("In Kit", symbol: "pin.fill", tint: Color.satchelPin, navigates: false)
+            } else if let trip = kitTrip {
+                chip("In Kit · \(trip.name)", symbol: "airplane",
+                     tint: Color.satchelAuto, navigates: false)
+            }
+
+            if !hasFiling {
+                // Straight out of the scanner a document has none of the above.
+                // A chip that leads somewhere beats a blank space: David lost a
+                // document once precisely because an unfiled one appears under no
+                // Browse chip at all.
+                NavigationLink {
+                    SatchelDocumentDetailView(document: current, store: store)
+                } label: {
+                    chip("Unfiled", symbol: "tray", tint: Color.satchelSecondary, navigates: true)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func chip(_ text: String, symbol: String, tint: Color, navigates: Bool) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol)
+                .font(.system(size: 9.5, weight: .semibold))
+            Text(text)
+                .font(.system(size: 11.5, weight: .semibold))
+                .lineLimit(1)
+            if navigates {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .opacity(0.55)
+            }
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.11), in: Capsule())
+    }
+
+    /// `Notes/People/Mitch Weiss.md` → `Mitch Weiss`.
+    private static func noteDisplayName(_ path: String) -> String {
+        ((path as NSString).lastPathComponent as NSString).deletingPathExtension
     }
 
     private var subtitle: String {
@@ -174,7 +281,11 @@ struct SatchelViewerView: View {
         }
         let when = relativeDateLabel(current.created)
         if !when.isEmpty { parts.append(when) }
-        if let name = current.endeavorName, !name.isEmpty { parts.append(name) }
+        // The Endeavor name USED to be appended here. Removed 2026-07-30 when the
+        // filed-to strip below started showing it as a chip — a chip that also
+        // opens the Endeavor, which plain text in a subtitle cannot. Same mistake
+        // as the Endeavor screen showing its own name three times: the fix is to
+        // delete the weaker copy, not to reword both.
         return parts.joined(separator: " · ")
     }
 
@@ -206,6 +317,33 @@ struct SatchelViewerView: View {
                 .disabled(isWorking)
             }
 
+            // REMIND ME. David, 2026-08-01: *"documents in Satchel that might need
+            // a reminder"* — his tuxedo receipt says pickup on 19 September and
+            // nothing in the system knows that.
+            //
+            // **No `remind:` sidecar key, and that is deliberate.** Trace owns the
+            // date for an agenda item because Coming Up has to show it and clear
+            // it. Satchel has no screen that lists documents by date, so a stored
+            // date would be a field with no reader — the exact shape that has
+            // produced a bug roughly ten times this week. The reminder IS the
+            // record here, until there is a surface that would read one.
+            //
+            // The reminder carries `satchel://document?path=…` in its notes, so it
+            // opens the document rather than merely naming it.
+            Button {
+                remindDue = current.remindOn
+                    ?? Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
+                remindState = .idle
+                showRemindSheet = true
+            } label: {
+                actionLabel(current.remindOn == nil ? "Remind me" : "Due " +
+                            current.remindOn!.formatted(.dateTime.month(.abbreviated).day()),
+                            symbol: "bell",
+                            tint: current.remindOn == nil ? .satchelBlue : .satchelPin)
+            }
+            .buttonStyle(.plain)
+            .disabled(isWorking)
+
             if let kitTrip {
                 Text(tripCaption(for: kitTrip))
                     .font(.system(size: 10.5))
@@ -221,11 +359,19 @@ struct SatchelViewerView: View {
     // Three states, because Kit has two kinds of member and "not in Kit" is a
     // third thing entirely.
     //   pinned          → the way out
-    //   in Kit via trip → the way to make it permanent, not "Add"
+    //   in Kit via trip → the way to make it OUTLAST the trip
     //   neither         → add
+    //
+    // "Keep in Kit" was the middle one until 2026-07-30. David: *"'keep in kit'
+    // is misleading. It really means move to Kit."* It was literally accurate —
+    // the document was already in Kit via the trip, and pinning keeps it there
+    // afterwards — but it was answering a question nothing on screen had asked,
+    // because the trip membership was invisible. **The strip above now shows that
+    // state, so the button only has to say what it does.** "Keep after trip"
+    // names the thing pinning actually adds.
     private var kitButtonTitle: String {
         if current.pinned { return "Remove from Kit" }
-        return kitTrip != nil ? "Keep in Kit" : "Add to Kit"
+        return kitTrip != nil ? "Keep after trip" : "Add to Kit"
     }
 
     private var kitButtonSymbol: String? {
@@ -237,14 +383,113 @@ struct SatchelViewerView: View {
         current.pinned ? Color.satchelPin : Color.satchelBlue
     }
 
-    private func tripCaption(for trip: Endeavor) -> String {
-        var phrase = "In Kit while \(trip.name) is running"
-        if let end = trip.end {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "MMM d"
-            phrase += ", through \(fmt.string(from: end))"
+    /// Was "In Kit while Japan is running, through Jul 31." — which was wrong the
+    /// moment Kit gained a three-day lead-in, since the commonest case for
+    /// reading this caption is the days BEFORE a trip, when it is not running.
+    /// `kitTimingPhrase` is shared with the Library footnote and the Kit screen
+    /// so all three say the same thing.
+    @ViewBuilder
+    private var remindSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    DatePicker("Remind me on", selection: $remindDue,
+                               displayedComponents: .date)
+                } header: {
+                    Text(current.title)
+                } footer: {
+                    Text("Saved on the document, and added to Apple's Reminders app so it opens this document when it fires.")
+                }
+                if current.remindOn != nil {
+                    Section {
+                        Button(role: .destructive) { clearReminder() } label: {
+                            Text("Clear the date")
+                        }
+                    }
+                }
+                if case .failed(let why) = remindState {
+                    Text(why).font(.caption).foregroundStyle(Color.satchelPin)
+                }
+            }
+            .navigationTitle("Remind me")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showRemindSheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") { addReminder() }
+                        .fontWeight(.semibold)
+                        .disabled(remindState == .working)
+                }
+            }
         }
-        return phrase + ". Keep it to hold its place afterwards."
+    }
+
+    /// Writes the date to the sidecar AND raises the reminder.
+    ///
+    /// David, 2026-08-01: *"if there is no copy of the date how is it saved? I
+    /// would want to see items with dates somehow."* The first version stored
+    /// nothing, on the reasoning that a field no screen reads is a field that
+    /// rots. He asked for the screen, so the date has a home now — the Library's
+    /// Due section — and the sidecar is where it belongs.
+    ///
+    /// **The sidecar write comes first and stands alone.** If Reminders is denied
+    /// the date is still saved and still shows in Due; only the notification is
+    /// lost. The reverse order would let a permissions refusal throw away a date
+    /// he had just chosen.
+    private func addReminder() {
+        remindState = .working
+        let path = current.relativePath
+        let link = "satchel://document?path=" +
+            (path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path)
+        Task {
+            do {
+                _ = try store.setReminder(on: remindDue, for: current)
+                await store.reload()
+            } catch {
+                remindState = .failed("Could not save the date.")
+                return
+            }
+            let key = "document|\(path)"
+            do {
+                // MOVE an existing reminder, or CREATE one — never both. The first
+                // version did the reschedule and then fell through to the add,
+                // which would have left the old reminder rescheduled AND a
+                // duplicate beside it every time a date was changed.
+                if ReminderService.isLinked(key) {
+                    await ReminderService.reschedule(key: key, to: remindDue)
+                } else {
+                    let id = try await ReminderService.add(title: current.title,
+                                                           due: remindDue,
+                                                           notes: "Satchel\n\(link)")
+                    ReminderService.link(id, to: key)
+                }
+                remindState = .idle
+                showRemindSheet = false
+            } catch ReminderService.Failure.denied {
+                remindState = .failed("Date saved. Satchel does not have access to Reminders, so no notification was set. Settings › Privacy › Reminders.")
+            } catch {
+                remindState = .failed("Date saved, but the reminder could not be added.")
+            }
+        }
+    }
+
+    private func clearReminder() {
+        let key = "document|\(current.relativePath)"
+        Task {
+            _ = try? store.setReminder(on: nil, for: current)
+            await store.reload()
+            // Clearing the date here has to close the reminder there, or the
+            // notification outlives the thing that asked for it.
+            await ReminderService.complete(key: key)
+            showRemindSheet = false
+        }
+    }
+
+    private func tripCaption(for trip: Endeavor) -> String {
+        "In Kit · \(trip.name) \(trip.kitTimingPhrase()). "
+            + "Keep it to hold its place afterwards."
     }
 
     private func actionLabel(_ text: String, symbol: String? = nil, tint: Color = .satchelBlue) -> some View {
@@ -290,7 +535,7 @@ struct SatchelPDFView: UIViewRepresentable {
         // rather than one long scroll.
         view.pageShadowsEnabled = true
         view.pageBreakMargins = UIEdgeInsets(top: 0, left: 0, bottom: 12, right: 0)
-        view.document = PDFDocument(url: url)
+        Self.load(url, into: view)
         return view
     }
 
@@ -298,7 +543,55 @@ struct SatchelPDFView: UIViewRepresentable {
         // Only rebuild when the file actually changed — reassigning `document`
         // on every SwiftUI update resets scroll position mid-read.
         if uiView.document?.documentURL != url {
-            uiView.document = PDFDocument(url: url)
+            Self.load(url, into: uiView)
+        }
+    }
+
+    /// Loads the PDF, waiting for iCloud if the bytes are not here yet.
+    ///
+    /// THE BLANK-PAGE BUG. `PDFDocument(url:)` on a file iCloud has not
+    /// downloaded returns nil, and `PDFView` with a nil document draws nothing
+    /// — no error, no spinner, just an empty stage. Going back and opening the
+    /// document again works, because the download completed in between, which
+    /// makes it look like a random glitch. David hit it twice, once in Trace's
+    /// browser and once here.
+    ///
+    /// The image path in this same file already handled this; the PDF path
+    /// never did. `SatchelCaptureView.readImportedFile` uses the same pattern
+    /// for imported files — ask for the download, then read under a file
+    /// coordinator, which waits for it.
+    ///
+    /// Off the main thread, because a coordinated read on a file that has not
+    /// arrived blocks until it does.
+    @MainActor
+    private static func load(_ url: URL, into view: PDFView) {
+        if let doc = PDFDocument(url: url) {
+            view.document = doc
+            return
+        }
+
+        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+
+        // The `PDFView` stays on the MainActor throughout — only the URL goes
+        // into the detached read, and only `Data` comes back. Handing a UIKit
+        // object to a detached task is the kind of thing that compiles today
+        // and becomes an error under stricter concurrency later.
+        Task { @MainActor in
+            let data: Data? = await Task.detached(priority: .userInitiated) {
+                var bytes: Data?
+                var coordinatorError: NSError?
+                NSFileCoordinator().coordinate(
+                    readingItemAt: url, options: [], error: &coordinatorError
+                ) { readURL in
+                    bytes = try? Data(contentsOf: readURL)
+                }
+                return bytes
+            }.value
+
+            // The view may have been handed a document while this was in
+            // flight — do not stamp a stale one over it.
+            guard view.document == nil else { return }
+            view.document = data.flatMap { PDFDocument(data: $0) }
         }
     }
 }

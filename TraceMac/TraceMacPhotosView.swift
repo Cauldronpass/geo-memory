@@ -98,13 +98,8 @@ struct TraceMacPhotosView: View {
                 Spacer()
             } else if filteredSections.isEmpty {
                 Spacer()
-                VStack(spacing: 10) {
-                    Image(systemName: "photo.stack")
-                        .font(.system(size: 44, weight: .ultraLight))
-                        .foregroundStyle(.tertiary)
-                    Text(sections.isEmpty ? "No photos yet." : "No matches.")
-                        .foregroundStyle(.secondary)
-                }
+                MacEmptyState.list("photo.stack",
+                                   sections.isEmpty ? "No photos yet." : "No matches.")
                 Spacer()
             } else {
                 List {

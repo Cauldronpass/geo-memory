@@ -60,7 +60,12 @@ import CoreLocation
 @main
 struct DayflowApp: App {
     @State private var notionService = NotionService.shared
-    @AppStorage("dayflow_appearance") private var appearanceRaw: String = "system"
+    /// Defaults to **light**, not system. The Dayflow skin is a hardcoded warm
+    /// cream palette; in dark mode its adaptive cards render black on cream and
+    /// the whole screen is unreadable. With a "system" default, a phone set to
+    /// dark showed that on first launch without anyone choosing it.
+    /// Changed 2026-07-28 after David hit it. See `dayflowCard`.
+    @AppStorage("dayflow_appearance") private var appearanceRaw: String = "light"
 
     private var preferredScheme: ColorScheme? {
         switch appearanceRaw {

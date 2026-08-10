@@ -45,6 +45,14 @@ struct SatchelCaptureView: View {
     /// the middle of a view reorders its memberwise initialiser and breaks every
     /// call site, which has already cost this project two build cycles.
     var prefilledNote: String? = nil
+    /// A file handed over by the iOS share sheet, via `TraceShareExtension` and
+    /// the shared app group. The bytes are already in hand, so there is no
+    /// picker to launch — this goes straight to the save form.
+    ///
+    /// Declared LAST, for the same memberwise-initialiser reason as
+    /// `prefilledNote` above. Adding a property in the middle of this struct
+    /// reorders the init and breaks every call site.
+    var incoming: IncomingDocument? = nil
 
     @Environment(\.dismiss) private var dismiss
 
@@ -71,6 +79,11 @@ struct SatchelCaptureView: View {
     @State private var aiFilled: Set<String> = []
     @State private var isSaving = false
     @State private var errorText: String?
+    /// Why the last AI pass produced nothing. Added 2026-07-28 after David
+    /// scanned a hand-drafted page and got no title, no tags and no explanation.
+    /// A failed call and a model that genuinely had nothing to say looked
+    /// identical, and both looked like the feature being broken.
+    @State private var scanNote: String?
 
     // Form
     @State private var title = ""
@@ -118,8 +131,39 @@ struct SatchelCaptureView: View {
                 if linkedNote == nil { linkedNote = prefilledNote }
 
                 await endeavorStore.reload()
+
+                // STAMPING. A capture made during a trip is almost always part
+                // of it, so the field arrives filled rather than empty. Only
+                // when nothing is set already — a hand-off that named an
+                // endeavor, or a draft being resumed, must win over a guess.
+                //
+                // It is a DEFAULT, not a rule: the Endeavor row below is
+                // unchanged and one tap clears it, which is the whole reason
+                // this is safe to do automatically. Scan a work document while
+                // away and you can still say so.
+                if endeavorID == nil, let target = endeavorStore.stampTarget() {
+                    endeavorID = target.id
+                    endeavorName = target.name
+                }
+
                 guard !hasLaunchedSource else { return }
                 hasLaunchedSource = true
+
+                // Shared in from another app: the bytes arrived with the
+                // hand-off, so there is nothing to pick and no controller to
+                // present. Straight to the form. Name and extension come from
+                // the ORIGINAL filename, not the staged one — the staged name is
+                // already timestamped, and `finishWrite` timestamps it again.
+                if let incoming {
+                    let ext = (incoming.originalName as NSString).pathExtension.lowercased()
+                    let base = (incoming.originalName as NSString).deletingPathExtension
+                    isWriting = true
+                    finishWrite(data: incoming.data,
+                                ext: ext.isEmpty ? "pdf" : ext,
+                                baseName: base.isEmpty ? "shared" : base)
+                    return
+                }
+
                 // The document picker and the camera are UIKit controllers, and
                 // presenting one while this sheet is still animating in gets
                 // swallowed silently — the picker simply never appears. Let the
@@ -303,7 +347,16 @@ struct SatchelCaptureView: View {
             .buttonStyle(.plain)
             .disabled(isScanning)
             .padding(.horizontal, 15)
-            .padding(.bottom, 14)
+            .padding(.bottom, scanNote == nil ? 14 : 5)
+
+            if let scanNote, !isScanning {
+                Text(scanNote)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.satchelSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 19)
+                    .padding(.bottom, 14)
+            }
         }
     }
 
@@ -421,10 +474,25 @@ struct SatchelCaptureView: View {
             VStack(spacing: 0) {
                 Menu {
                     Button("None") { endeavorID = nil; endeavorName = nil }
-                    ForEach(endeavorStore.endeavors) { endeavor in
+                    ForEach(filing.current) { endeavor in
                         Button(endeavor.name) {
                             endeavorID = endeavor.id
                             endeavorName = endeavor.name
+                        }
+                    }
+                    // PAST TRIPS ARE DEMOTED, NOT REMOVED. A receipt can turn
+                    // up months late and it still belongs where it belongs; the
+                    // complaint was that stale trips were sitting in the way, not
+                    // that they should become unfileable. One tap away costs
+                    // nothing and losing the ability would cost a lot.
+                    if !filing.past.isEmpty {
+                        Menu("Past") {
+                            ForEach(filing.past) { endeavor in
+                                Button(endeavor.name) {
+                                    endeavorID = endeavor.id
+                                    endeavorName = endeavor.name
+                                }
+                            }
                         }
                     }
                 } label: {
@@ -436,7 +504,11 @@ struct SatchelCaptureView: View {
                 Button {
                     showNotePicker = true
                 } label: {
-                    pickerRow("Note", value: noteDisplayName(linkedNote) ?? "None",
+                    // "Linked note" everywhere, matching the detail screen. One
+                    // name for one concept — this is the row a `?note=` hand-off
+                    // from Trace pre-fills, so it is also the row David is told
+                    // to check when a hand-off is being tested.
+                    pickerRow("Linked note", value: noteDisplayName(linkedNote) ?? "None",
                               highlight: linkedNote != nil)
                 }
                 .buttonStyle(.plain)
@@ -454,13 +526,25 @@ struct SatchelCaptureView: View {
             .satchelCard()
 
             Text(endeavorStore.endeavors.isEmpty
-                 ? "The Endeavor picker is present but empty until the Notion database exists. Group trips by tag in the meantime."
-                 : "Filed documents fold into Kit automatically while the trip is running.")
+                 // Was "…empty until the Notion database exists." Endeavors became
+                 // notes on 2026-07-29 and this list is now a real folder scan, so
+                 // empty means empty: there are no Endeavor notes yet.
+                 ? "No Endeavors yet. Create one in Dayflow and trips will appear here."
+                 // "while the trip is running" understated it once Kit gained a
+                 // three-day lead-in — the documents are there before departure,
+                 // which is when a boarding pass is actually wanted.
+                 : "Filed documents fold into Kit automatically from a few days before the trip until just after.")
                 .font(.system(size: 10.5))
                 .foregroundStyle(Color.satchelSecondary)
                 .padding(.horizontal, 6)
                 .padding(.top, 7)
         }
+    }
+
+    /// Read once per body pass rather than at each use, so the menu and the
+    /// footnote below it can never disagree about what is on offer.
+    private var filing: (current: [Endeavor], past: [Endeavor]) {
+        endeavorStore.filingChoices()
     }
 
     private func pickerRow(_ label: String, value: String, highlight: Bool) -> some View {
@@ -615,20 +699,36 @@ struct SatchelCaptureView: View {
             return
         }
 
+        let now = Date()
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "yyyy-MM-dd-HHmmss"
         let slug = baseName
             .components(separatedBy: .whitespacesAndNewlines).joined(separator: "-")
             .replacingOccurrences(of: "/", with: "-")
-        let filename = "\(fmt.string(from: Date()))-\(slug).\(ext)"
+        let filename = "\(fmt.string(from: now))-\(slug).\(ext)"
+
+        // THE FOLDER IS THE YEAR, and that is the whole filing system.
+        //
+        // Folders were retired as an organising axis on 2026-07-28 because they
+        // mixed three unrelated concepts — types (Receipts), Endeavors (Trip,
+        // Project) and workflow states (Inbox, Archive) — and answered a
+        // question type, tags, Endeavor and linked note all answer better. But
+        // the file still has to live somewhere, and "Inbox" as a permanent home
+        // is a lie: it promises a queue somebody empties.
+        //
+        // A year costs no decision at capture time, keeps directory sizes sane
+        // for as long as this app exists, and matches what the container already
+        // does with `Photos/2026/`. Nothing in Satchel browses by it. It appears
+        // once, under FILE on the detail screen, as a fact about the bytes.
+        let year = String(Calendar.current.component(.year, from: now))
 
         do {
-            let relativePath = try noteStore.writeDocument(data, category: "Inbox", filename: filename)
+            let relativePath = try noteStore.writeDocument(data, category: year, filename: filename)
             let document = TraceMacDocument(
                 relativePath: relativePath,
                 filename: filename,
-                category: "Inbox",
+                category: year,
                 fileExtension: ext,
                 title: slug.replacingOccurrences(of: "-", with: " "),
                 tags: [],
@@ -655,15 +755,28 @@ struct SatchelCaptureView: View {
         isScanning = true
         defer { isScanning = false }
 
+        scanNote = nil
+
         let existing = Array(Set(store.documents.flatMap { $0.tags })).sorted()
-        guard let result = try? await iOSDocumentScanService.scan(
-            doc: document,
-            noteStore: noteStore,
-            existingTags: existing,
-            // Every Satchel capture invents its own filename, so the model must
-            // never be asked to judge whether "scan" is descriptive. It is not.
-            filenameIsGenerated: true
-        ) else { return }
+        let result: DocumentScanResult
+        do {
+            result = try await iOSDocumentScanService.scan(
+                doc: document,
+                noteStore: noteStore,
+                existingTags: existing,
+                // Every Satchel capture invents its own filename, so the model must
+                // never be asked to judge whether "scan" is descriptive. It is not.
+                filenameIsGenerated: true
+            )
+        } catch {
+            // Was `try?` with a bare `return`. That silence is what made a
+            // hand-drafted page, a dead API key and a dropped connection all
+            // look like the same nothing.
+            scanNote = "AI could not read this one. \(error.localizedDescription)"
+            return
+        }
+
+        var filledAnything = false
 
         // The automatic pass never clobbers something already typed — it can take
         // several seconds and the form is live throughout. An explicit re-run does.
@@ -671,21 +784,43 @@ struct SatchelCaptureView: View {
            overwrite || title.trimmingCharacters(in: .whitespacesAndNewlines) == document.title {
             title = suggested
             aiFilled.insert("title")
+            filledAnything = true
         }
         if !result.description.isEmpty, overwrite || descriptionText.isEmpty {
             descriptionText = result.description
             aiFilled.insert("description")
+            filledAnything = true
         }
         if !result.tags.isEmpty, overwrite || tags.isEmpty {
             tags = result.tags
             aiFilled.insert("tags")
+            filledAnything = true
         }
         if let suggestedIcon = result.icon {
             icon = suggestedIcon
             tint = result.tint ?? suggestedIcon.defaultTint
             aiFilled.insert("icon")
+            filledAnything = true
         } else if let suggestedTint = result.tint {
             tint = suggestedTint
+            filledAnything = true
+        }
+
+        // The other half of the silence: the call succeeded and the model simply
+        // had nothing useful, which on handwriting is a perfectly ordinary
+        // outcome and should say so rather than look like a failure.
+        if !filledAnything {
+            scanNote = "AI read this but had nothing to suggest. Handwriting and photos of objects often come back empty — fill the title in by hand."
+        } else if result.title == nil || result.description.isEmpty {
+            // A PARTIAL answer is its own outcome and used to look like a total
+            // failure: the icon and tags would fill in, the title and
+            // description would sit there blank, and nothing said which of those
+            // was the AI's doing. Naming the gap is also what identified the
+            // prompt's contradictory title instruction (see `buildPrompt`).
+            var missing: [String] = []
+            if result.title == nil { missing.append("title") }
+            if result.description.isEmpty { missing.append("description") }
+            scanNote = "AI filled what it could but returned no \(missing.joined(separator: " or ")). Try Ask AI again, or type it in."
         }
     }
 

@@ -117,11 +117,20 @@ struct DayflowNotesView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Binding var selectedDate: Date
+    /// Set by `dayflow://note?path=Notes/Projects/…` so the screen opens straight
+    /// into a project instead of its browse list (E35, 2026-07-29). Defaulted, so
+    /// every existing `DayflowNotesView(selectedDate:)` call still compiles.
+    var initialProjectTitle: String? = nil
     @State private var showDailyNote = false
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
 
     private enum Scope: String, CaseIterable, Identifiable {
         case all = "All", daily = "Daily", projects = "Projects", places = "Places", people = "People"
+        /// Added 2026-07-29. Endeavors are notes in the shared pool like any
+        /// other, but they carry frontmatter and are browsed by imminence
+        /// rather than searched by name — so this scope renders its own list
+        /// (`DayflowEndeavorListSection`) instead of search results.
+        case endeavors = "Endeavors"
         var id: String { rawValue }
 
         /// Daily/Project folders scanned by file content — unchanged mechanism,
@@ -130,10 +139,18 @@ struct DayflowNotesView: View {
         /// file's Session 25 header addendum for why.
         var noteFolders: [(label: String, path: String)] {
             switch self {
-            case .all:      return [("Daily", "Calendar"), ("Projects", "Notes/Projects")]
+            // Endeavors added to `.all` on 2026-07-30. David: *"on the all
+            // screen i only see the project notes even though i have a japan
+            // endeavor note."* Correct — the scope was written before Endeavors
+            // existed and never revisited, so "All" quietly meant "days and
+            // projects". A scope called All that omits a whole note type is worse
+            // than no All at all, because it answers "not there" convincingly.
+            case .all:      return [("Daily", "Calendar"),
+                                    ("Projects", "Notes/Projects"),
+                                    ("Endeavors", "Notes/Endeavors")]
             case .daily:    return [("Daily", "Calendar")]
             case .projects: return [("Projects", "Notes/Projects")]
-            case .places, .people: return []
+            case .places, .people, .endeavors: return []
             }
         }
         var includesPlaces: Bool { self == .all || self == .places }
@@ -201,6 +218,29 @@ struct DayflowNotesView: View {
     /// (`listFiles` returns alphabetical), so turning this on doesn't silently
     /// reorder anyone's list on first launch.
     @State private var projectSortOrder: DayflowNoteSortOrder = .name
+    /// Projects moved to `Notes/Projects/Archive/`.
+    @State private var archivedProjectNames: [String] = []
+    /// Starts closed. It is history, not a second list.
+    @State private var showArchivedProjects = false
+    /// One-shot. Without it, `onAppear` re-firing after the project view's
+    /// `onBack` set `selectedProjectTitle = nil` would bounce straight back in,
+    /// and the Back button would appear broken.
+    /// Which routed title has already been applied.
+    ///
+    /// **Was a `Bool` one-shot, and that was the bug.** `DayflowNotesView` keeps
+    /// its identity across presentations of the cover, so the flag stayed `true`
+    /// after the first routed open and every later
+    /// `dayflow://note?path=Notes/Projects/…` was ignored — the screen appeared,
+    /// on the all-notes list, which is exactly what David saw twice.
+    ///
+    /// Keyed on the value instead: a *different* title is a different route and
+    /// gets consumed, the same title twice does not re-apply. Same class as the
+    /// 2026-07-30 regression noted in `ContentView.onOpenNotes` — a one-shot
+    /// route has to be consumed, and "consumed" means "this one", not "any".
+    @State private var consumedInitialProject: String? = nil
+    /// Tags found on the notes in the current scope, most-used first. Rebuilt when
+    /// the scope changes and when the screen appears; see `loadTagCounts`.
+    @State private var tagCounts: [(tag: String, count: Int)] = []
 
     private var sortedResults: [SearchResult] {
         switch sortOrder {
@@ -229,8 +269,44 @@ struct DayflowNotesView: View {
             Button("Create") { createProject() }
         }
         .onChange(of: searchText) { _, _ in runSearch() }
-        .onChange(of: scope) { _, _ in runSearch() }
-        .onAppear { loadProjectNames() }
+        .onChange(of: scope) { _, _ in
+            runSearch()
+            loadTagCounts()
+        }
+        // Recount when ANY note is written, wherever from.
+        //
+        // `onAppear` alone was not enough: an Endeavor opens as a sheet ON TOP of
+        // this screen, and dismissing a sheet does not re-fire the parent's
+        // `onAppear`. So a tag removed there left its chip sitting in this row
+        // until the whole screen was rebuilt — which is what David saw, and why
+        // leaving Dayflow's notes screen entirely and coming back "fixed" it.
+        //
+        // Cheap enough to do on every write: ~40 small files today, and the editor
+        // debounces its saves, so this is not per-keystroke.
+        .onReceive(NotificationCenter.default.publisher(for: .noteStoreFileDidChange)) { _ in
+            loadTagCounts()
+        }
+        .onAppear {
+            loadProjectNames()
+            // Also on every appearance, not only on scope change: a tag added on
+            // the note screen and then backed out of would otherwise not show up
+            // until the scope was toggled.
+            loadTagCounts()
+            applyRoutedProject()
+        }
+        // **`.onAppear` alone was the whole bug, and the screenshot named it.**
+        //
+        // The Endeavor screen is reached *through* this one, so when a note
+        // wikilink there routes to `dayflow://note?path=Notes/Projects/…`, this
+        // view is **already presented**. `showNotes = true` is then a no-op, no
+        // appearance happens, and `initialProjectTitle` changes with nothing
+        // watching it. The Endeavor cover drops away and reveals the notes list
+        // that was underneath all along — which reads exactly like "it brought me
+        // to the all notes page" and is why two fixes aimed at *navigation* both
+        // missed. Nothing navigated. Nothing needed to.
+        //
+        // The value is the event. Watch the value.
+        .onChange(of: initialProjectTitle) { _, _ in applyRoutedProject() }
         .fullScreenCover(isPresented: $showDailyNote) {
             DayflowNoteFullPageView(selectedDate: $selectedDate)
         }
@@ -257,6 +333,7 @@ struct DayflowNotesView: View {
             searchBar
             scopeRow
             scopeActionRow
+            tagFilterRow
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -348,8 +425,24 @@ struct DayflowNotesView: View {
         .padding(.bottom, 10)
     }
 
+    /// Applies a routed project title, at most once per distinct title.
+    ///
+    /// Called from both `.onAppear` and `.onChange(of: initialProjectTitle)`:
+    /// a route can arrive either before this screen exists or while it is already
+    /// on screen, and only one of those produces an appearance.
+    private func applyRoutedProject() {
+        guard let initialProjectTitle, initialProjectTitle != consumedInitialProject else { return }
+        consumedInitialProject = initialProjectTitle
+        selectedProjectTitle = initialProjectTitle
+    }
+
     private var scopeRow: some View {
-        HStack(spacing: 6) {
+        // Horizontal scroller since 2026-07-29. Five pills fitted a phone
+        // width; Endeavors made six and the labels started truncating
+        // mid-word. `.scrollClipDisabled` so the active pill's shadow is not
+        // sheared off at the edges.
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
             ForEach(Scope.allCases) { s in
                 Button { scope = s } label: {
                     Text(s.rawValue)
@@ -368,9 +461,11 @@ struct DayflowNotesView: View {
                 }
                 .buttonStyle(.plain)
             }
-            Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
         }
-        .padding(.horizontal, 16)
+        .scrollClipDisabled()
         .padding(.bottom, 12)
     }
 
@@ -401,6 +496,9 @@ struct DayflowNotesView: View {
         // create there).
         case .all:      newProjectRow
         case .daily:    EmptyView()
+        // The Endeavors list carries its own New button, inside the section, so
+        // it does not need one out here as well.
+        case .endeavors: EmptyView()
         }
     }
 
@@ -620,19 +718,151 @@ struct DayflowNotesView: View {
             ForEach(sortedProjectNames, id: \.self) { name in
                 projectRow(name)
             }
+            archivedProjectsSection
         } else {
             Text("No project notes yet — tap \"New project note\" above to start one.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .padding(.top, 24)
+            // Also here: archiving the LAST project would otherwise take the only
+            // route to the archive away with it.
+            archivedProjectsSection
         }
     }
 
+    // MARK: Tag filter
+    //
+    // David's choice over showing tags on every row: *"yes lets filter tags
+    // only."* The reasoning behind that choice is worth keeping — a tag column on
+    // every row repeats itself (every trip note tagged `#travel`) so it costs
+    // attention on every row while telling you nothing. A chip row answers "what
+    // is in here" once, at the top.
+    //
+    // **Tapping a chip runs the search that already exists.** `runSearch` has
+    // understood `#tag` tokens since Session 25, so this sets `searchText` rather
+    // than adding a second filtering path — one list, one predicate, no chance of
+    // the chip row and the search box disagreeing.
+    //
+    // Asymmetry worth knowing, in the generous direction: **chips come from the
+    // canonical tag line** (the same tags the pills show), while **tapping matches
+    // `#tag` anywhere in a note**. So a tag typed mid-prose can appear in results
+    // without ever producing a chip. Deliberate — the chips reflect what you
+    // assigned on purpose; the search finds everything that mentions it.
+    //
+    // Shown during search as well as browse, so the active chip is the way back
+    // out. Hidden entirely when the scope has no tags, rather than sitting there
+    // as an empty band.
+
+    @ViewBuilder
+    private var tagFilterRow: some View {
+        if !tagCounts.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(tagCounts, id: \.tag) { entry in
+                        let active = searchText.trimmingCharacters(in: .whitespaces)
+                            .caseInsensitiveCompare("#\(entry.tag)") == .orderedSame
+                        Button {
+                            // Tapping the active chip clears it. Without this the
+                            // only way out of a tag filter would be to empty the
+                            // search box, which is not where the eye is.
+                            searchText = active ? "" : "#\(entry.tag)"
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("#\(entry.tag)")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text("\(entry.count)")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .opacity(0.65)
+                            }
+                            .foregroundStyle(active ? .white : Color(uiColor: .systemPurple))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(active ? Color(uiColor: .systemPurple)
+                                               : Color(uiColor: .systemPurple).opacity(0.12),
+                                        in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+            // So the active chip's fill is not sheared at the edge of the scroll
+            // view — same fix the six scope pills needed on 2026-07-29.
+            .scrollClipDisabled()
+        }
+    }
+
+    /// Counts the canonical tags across the scope's folders.
+    ///
+    /// A full read of every file in scope, deliberately: 31 day notes, 4 projects
+    /// and 1 Endeavor is 164KB today, and an index cached on anything other than a
+    /// fresh read is how four stale-read bugs happened in two days. Revisit if the
+    /// vault ever grows enough for this to be felt — the honest trigger is a
+    /// visible pause on opening this screen, not a guess now.
+    ///
+    /// **Project notes need their Related Notes table stripped first.** The table
+    /// is appended after the prose when the file is composed, so the last line of
+    /// the FILE is a table row rather than the tag line, and parsing the raw file
+    /// would find no tags at all on exactly the notes most likely to have them.
+    /// Endeavor notes need their frontmatter stripped for the mirror-image reason.
+    private func loadTagCounts() {
+        var counts: [String: Int] = [:]
+
+        for (_, path) in scope.noteFolders {
+            for filename in (try? noteStore.listFiles(in: path)) ?? [] {
+                guard filename.hasSuffix(".md"),
+                      let raw = try? noteStore.readFile("\(path)/\(filename)")
+                else { continue }
+
+                let prose: String
+                switch path {
+                case "Notes/Endeavors":
+                    prose = EndeavorStore.splitFrontmatter(raw).1
+                case "Notes/Projects":
+                    prose = DayflowRelatedNotesEngine.split(raw).prose
+                default:
+                    prose = raw
+                }
+
+                for tag in NoteTagLine.parse(prose) {
+                    counts[tag.lowercased(), default: 0] += 1
+                }
+            }
+        }
+
+        tagCounts = counts
+            .map { (tag: $0.key, count: $0.value) }
+            .sorted { $0.count == $1.count ? $0.tag < $1.tag : $0.count > $1.count }
+    }
+
+    // `@ViewBuilder` below is REQUIRED: this body is a `switch` whose cases produce
+    // different view types, and several produce more than one view. Without it the
+    // compiler says "no return statements in its body from which to infer an
+    // underlying type", then a cascade of "expression of type 'some View' is
+    // unused" — which is exactly what happened on 2026-07-30, when inserting a new
+    // property above this one stranded the attribute on the wrong declaration and
+    // gave it two result builders at once.
+    //
+    // The comment sits ABOVE the attribute on purpose. Comments between an
+    // attribute and its declaration compile fine, but they look like the mistake
+    // this comment exists to prevent.
     @ViewBuilder
     private var browseContent: some View {
         switch scope {
         case .all:
             pinnedDaysSection
+            // Same omission as `noteFolders` above: browsing All showed days and
+            // projects only. Endeavors go ABOVE projects because they are sorted
+            // by imminence — what is running or about to — where the project list
+            // is alphabetical and answers a different question.
+            Text("ENDEAVORS")
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.4)
+                .foregroundStyle(.secondary)
+                .padding(.top, pinnedDays.isEmpty ? 4 : 14)
+                .padding(.bottom, 6)
+            DayflowEndeavorListSection()
             projectNotesSection
         case .projects:
             projectNotesSection
@@ -652,6 +882,8 @@ struct DayflowNotesView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .padding(.top, 24)
+        case .endeavors:
+            DayflowEndeavorListSection()
         }
     }
 
@@ -684,7 +916,68 @@ struct DayflowNotesView: View {
             Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(.tertiary)
         }
         .padding(.vertical, 9)
+        // LONG PRESS, NOT SWIPE. This list is a VStack inside a ScrollView, not a
+        // `List`, so `.swipeActions` does not apply — the same situation that made
+        // Trace's people list need a hand-rolled gesture. That one is justified
+        // there: deleting a person from a long list is frequent and sweeping.
+        // Archiving a project is rare and deliberate, and `.contextMenu` is native,
+        // needs no gesture arbitration, and cannot swallow the row's own tap.
+        .contextMenu {
+            Button {
+                if noteStore.archiveProject(name: name) { loadProjectNames() }
+            } label: {
+                Label("Archive Project", systemImage: "archivebox")
+            }
+        }
         Divider()
+    }
+
+    // MARK: Archived projects
+    //
+    // In the app on David's explicit call — *"yes id like to be able to reach it in
+    // the app"* — rather than only as a folder in Obsidian. Collapsed by default,
+    // under the live list, with a count so it is honest about being non-empty
+    // without spending space on what is in it.
+
+    @ViewBuilder
+    private var archivedProjectsSection: some View {
+        if !archivedProjectNames.isEmpty {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { showArchivedProjects.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: showArchivedProjects ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Archived").font(.system(size: 11, weight: .medium))
+                    Text("\(archivedProjectNames.count)")
+                        .font(.system(size: 11)).foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                .foregroundStyle(.secondary)
+                .padding(.top, 14)
+                .padding(.bottom, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showArchivedProjects {
+                ForEach(archivedProjectNames, id: \.self) { name in
+                    HStack(spacing: 8) {
+                        Text(name).font(.system(size: 13.5)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            if noteStore.unarchiveProject(name: name) { loadProjectNames() }
+                        } label: {
+                            Text("Restore").font(.system(size: 11, weight: .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                    }
+                    .padding(.vertical, 9)
+                    Divider()
+                }
+            }
+        }
     }
 
     // MARK: Results header (count + sort — Session 22, search result metadata + sorting)
@@ -839,6 +1132,7 @@ struct DayflowNotesView: View {
     private func loadProjectNames() {
         let files = (try? noteStore.listFiles(in: "Notes/Projects")) ?? []
         projectNames = files.map { $0.replacingOccurrences(of: ".md", with: "") }
+        archivedProjectNames = noteStore.listArchivedProjects()
     }
 
     private func createProject() {
@@ -877,11 +1171,21 @@ struct DayflowNotesView: View {
                 guard tagsMatch && plainMatch else { continue }
 
                 let relativePath = "\(path)/\(filename)"
+                // MATCH on the whole file, SNIPPET from the body only.
+                //
+                // Endeavor notes carry frontmatter, so a snippet taken from the
+                // raw file reads "id: japan-2026 name: Japan type: Travel" — true,
+                // and useless as a search result. Matching still uses the whole
+                // file on purpose: `destination: Kyoto` and `type: Travel` are
+                // genuinely worth finding.
+                let body = path == "Notes/Endeavors"
+                    ? EndeavorStore.splitFrontmatter(content).1
+                    : content
                 found.append(SearchResult(
                     subfolder: path,
                     displayName: filename.replacingOccurrences(of: ".md", with: ""),
                     scopeLabel: label,
-                    snippet: snippet(from: content, tokens: plainTokens + tagTokens.map { "#\($0)" }),
+                    snippet: snippet(from: body, tokens: plainTokens + tagTokens.map { "#\($0)" }),
                     relativePath: relativePath,
                     modified: noteStore.fileModifiedDate(relativePath),
                     wikiTarget: nil

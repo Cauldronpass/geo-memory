@@ -79,6 +79,10 @@ struct DayflowAgendaSection: View {
     @State private var tomorrowEvents: [NextCalendarEvent] = []
     @State private var editingItem: DayflowAgendaItem? = nil
     @State private var selectedEvent: NextCalendarEvent? = nil
+    @State private var openEndeavorID: String? = nil
+    /// Observed so the endeavor rows can retry once iCloud is actually reachable
+    /// — see the second `.task` on the body.
+    @State private var noteStore = NoteStore.shared
     /// Drives the header refresh button's spin + disables it mid-fetch.
     /// **Added 2026-07-20** alongside the Browse views' pull-to-refresh — this
     /// card's two columns are only ~150pt tall and don't render a ScrollView
@@ -122,14 +126,27 @@ struct DayflowAgendaSection: View {
         let events = dayEvents.filter(\.isAllDay).map { ev in
             DayflowAgendaItem(id: "event-\(ev.id)", kind: .event, title: ev.title,
                               isAllDay: true, timeLabel: nil, metaLabel: "Calendar · All day",
-                              taskID: nil, taskDate: nil, taskNotes: nil, event: ev)
+                              taskID: nil, taskDate: nil, taskNotes: nil,
+                              endeavorID: nil, event: ev)
         }
         let tasks = tasksForDay.map { t in
             DayflowAgendaItem(id: "task-\(t.id)", kind: .task, title: t.title,
                               isAllDay: true, timeLabel: nil, metaLabel: t.list,
-                              taskID: t.id, taskDate: t.date, taskNotes: t.notes, event: nil)
+                              taskID: t.id, taskDate: t.date, taskNotes: t.notes,
+                              endeavorID: nil, event: nil)
         }
-        return events + tasks
+        // Endeavors FIRST. They are the day's context rather than something in
+        // it, so they read as a heading for what follows rather than as one more
+        // item competing with it. See `EndeavorStore.agendaEntries(on:)` for when
+        // a row appears at all.
+        let endeavors = EndeavorStore.shared.agendaEntries(on: date).map { entry in
+            DayflowAgendaItem(id: "endeavor-\(entry.endeavor.id)", kind: .endeavor,
+                              title: entry.endeavor.name,
+                              isAllDay: true, timeLabel: nil, metaLabel: entry.meta,
+                              taskID: nil, taskDate: nil, taskNotes: nil,
+                              endeavorID: entry.endeavor.id, event: nil)
+        }
+        return endeavors + events + tasks
     }
 
     /// Reuses `rawTodayTimedEvents` (see the Timed-column section below) so
@@ -168,6 +185,19 @@ struct DayflowAgendaSection: View {
         // + quaternary-stroke border; see DayflowSkin.swift's `dayflowCard()`.
         .dayflowCard()
         .task(id: date) { await loadDayData() }
+        // ENDEAVOR ROWS, SECOND ATTEMPT.
+        //
+        // `EndeavorStore.reload()` opens with `guard noteStore.hasAccess`, and on
+        // a cold launch the iCloud container has usually not resolved by the time
+        // `loadDayData()` runs. It returns silently, the agenda draws with no
+        // endeavor row, and nothing ever asks again — which is exactly what David
+        // saw: "the suitcase only worked when i went to the endeavor then back
+        // again." The Endeavor screen reloads on its own and repairs it.
+        //
+        // Keyed on `hasAccess` rather than fired once, so this runs again the
+        // moment access flips. `DayflowEndeavorListSection` already keys its own
+        // `.task` the same way; this screen simply never learned the lesson.
+        .task(id: noteStore.hasAccess) { EndeavorStore.shared.reload() }
         .sheet(item: $editingItem) { item in
             if let taskID = item.taskID {
                 DayflowTaskEditSheet(taskID: taskID, initialTitle: item.title,
@@ -180,6 +210,16 @@ struct DayflowAgendaSection: View {
         .sheet(item: $selectedEvent) { event in
             NavigationStack {
                 DayflowEventDetailView(event: event)
+            }
+        }
+        // Same binding shim as `DayflowEndeavorListSection` — a bare `String?`
+        // cannot drive `.sheet(item:)` because `String` is not `Identifiable`.
+        .sheet(item: Binding(
+            get: { openEndeavorID.map(AgendaEndeavorRef.init) },
+            set: { openEndeavorID = $0?.id }
+        )) { ref in
+            NavigationStack {
+                DayflowEndeavorView(endeavorID: ref.id)
             }
         }
     }
@@ -417,7 +457,8 @@ struct DayflowAgendaSection: View {
     private func timedAgendaItem(for ev: NextCalendarEvent) -> DayflowAgendaItem {
         DayflowAgendaItem(id: "event-\(ev.id)", kind: .event, title: ev.title,
                           isAllDay: false, timeLabel: ev.startTimeString, metaLabel: nil,
-                          taskID: nil, taskDate: nil, taskNotes: nil, event: ev)
+                          taskID: nil, taskDate: nil, taskNotes: nil,
+                          endeavorID: nil, event: ev)
     }
 
     /// Builds the Timed column's row list for a given "now" — see this
@@ -590,6 +631,12 @@ struct DayflowAgendaSection: View {
                     editingItem = item
                 } else if item.kind == .event, let event = item.event {
                     selectedEvent = event
+                } else if item.kind == .endeavor, let id = item.endeavorID {
+                    // Straight to the Endeavor. Directions, Check In and the
+                    // documents live there, not on this row: an agenda row taps
+                    // through to one place, and a row carrying its own action bar
+                    // is how a list stops being a list.
+                    openEndeavorID = id
                 }
             }
         }
@@ -614,6 +661,16 @@ struct DayflowAgendaSection: View {
             .buttonStyle(.plain)
             .padding(.top, 1)
             .accessibilityLabel("Complete \(item.title)")
+        } else if item.kind == .endeavor {
+            // Not the event marker. An endeavor is the day's context rather than
+            // an appointment in it, and the checkbox/square pair already carries
+            // the meaning "you can complete this" versus "you cannot" — a third
+            // thing needs a third glyph rather than borrowing one.
+            Image(systemName: "suitcase.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
+                .padding(.top, 1)
         } else {
             RoundedRectangle(cornerRadius: 5)
                 .fill(Color.blue.opacity(0.16))
@@ -625,7 +682,11 @@ struct DayflowAgendaSection: View {
 
     // MARK: Data
 
+    /// Endeavor rows come from a store that nothing on this screen was loading.
+    /// Cheap: it reads a handful of small local files, and `agendaEntries(on:)`
+    /// is pure computation over what it finds.
     private func loadDayData() async {
+        EndeavorStore.shared.reload()
         async let events = CalendarService.shared.fetchDayEvents(for: date)
         // Run the Things fetch concurrently with the calendar fetch above —
         // both hit the network (EventKit access + the Mac Mini bridge), no
@@ -649,4 +710,13 @@ struct DayflowAgendaSection: View {
             await taskFetch
         }
     }
+}
+
+
+/// Identifiable wrapper so an endeavor slug can drive `.sheet(item:)`.
+/// `DayflowEndeavorViews` has its own private copy of this; duplicated rather
+/// than shared because making that one internal would export a name whose whole
+/// purpose is to be invisible.
+private struct AgendaEndeavorRef: Identifiable, Hashable {
+    let id: String
 }

@@ -5,12 +5,22 @@ enum VisitDetailSheet: Identifiable {
     case place(Place)
     case person(Person)
     case spots(Visit)
+    /// Pick an existing interaction to attach to this visit.
+    case linkInteraction
+    /// Read an interaction already attached.
+    case interaction(Interaction)
+    /// One just created from this visit — opens straight into editing so the
+    /// notes can be written while the thing is still in mind.
+    case newInteraction(Interaction)
 
     var id: String {
         switch self {
         case .place(let p): return "place-\(p.id)"
         case .person(let p): return "person-\(p.id)"
         case .spots(let v): return "spots-\(v.id)"
+        case .linkInteraction: return "link-interaction"
+        case .interaction(let i): return "interaction-\(i.id)"
+        case .newInteraction(let i): return "new-interaction-\(i.id)"
         }
     }
 }
@@ -34,6 +44,11 @@ struct VisitDetailView: View {
     @State private var isSummarizing = false
     @State private var showingWorkoutWizard = false
     @State private var selectedWorkoutForDetail: Workout?
+    /// Interactions already attached to this visit. Fetched per attendee rather
+    /// than filtered out of `recentInteractions`, which is bounded and would
+    /// quietly miss the links on an older visit.
+    @State private var linkedInteractions: [Interaction] = []
+    @State private var isLinking = false
     @State private var isSummarizingWorkout = false
 
     init(visit: Visit) {
@@ -294,6 +309,8 @@ struct VisitDetailView: View {
                     activeSheet = .person(person)
                 })
 
+                interactionsSection
+
                 Section("Notes") {
                     TextEditor(text: $notes)
                         .frame(minHeight: 120)
@@ -386,12 +403,156 @@ struct VisitDetailView: View {
                 case .spots(let v):
                     SpotsMapView(source: .visit(v))
                         .environment(NotionService.shared)
+                case .linkInteraction:
+                    VisitInteractionLinkerSheet(visit: visit, attendees: attendees) { linked in
+                        linkedInteractions.append(linked)
+                    }
+                    .environment(NotionService.shared)
+                case .interaction(let i):
+                    InteractionDetailSheet(interaction: i) {
+                        Task { await loadLinkedInteractions() }
+                    }
+                    .environment(NotionService.shared)
+                case .newInteraction(let i):
+                    InteractionDetailSheet(interaction: i, onSaved: {
+                        Task { await loadLinkedInteractions() }
+                    }, startInEditing: true)
+                    .environment(NotionService.shared)
                 }
             }
         }
     }
 
+    // MARK: Interactions
+    //
+    // A visit and an interaction can describe the same lunch from two sides:
+    // where you were, and who you were with. The relation between them has
+    // existed in Notion all along and was never written or shown.
+    //
+    // **Deliberately two buttons and nothing automatic.** Attaching every visit
+    // that has a person on it to a new interaction would double-record
+    // everything you do with anyone, and a wrong guess is harder to find and
+    // undo than a missing link is to add. David's call, and the right one.
+
+    @ViewBuilder
+    private var interactionsSection: some View {
+        Section("Interactions") {
+            ForEach(linkedInteractions) { interaction in
+                Button {
+                    activeSheet = .interaction(interaction)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(interaction.summary.isEmpty
+                                 ? interaction.type.capitalized : interaction.summary)
+                                .foregroundStyle(Color.primary)
+                            Text(peopleNames(for: interaction))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+
+            // Create. One tap per attendee, because the visit already knows the
+            // date, the place and who was there — every field the interaction
+            // needs is on screen, and retyping them is the waste worth removing.
+            if attendees.isEmpty {
+                Text("Add someone to this visit to log an interaction.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Menu {
+                    ForEach(attendees) { person in
+                        Button(person.name) { logInteraction(with: [person]) }
+                    }
+                    // One interaction naming everyone, rather than one each.
+                    // A dinner with two people is one dinner; logging it twice
+                    // makes their two cards disagree about what happened.
+                    if attendees.count > 1 {
+                        Divider()
+                        Button("Everyone (\(attendees.count))") {
+                            logInteraction(with: attendees)
+                        }
+                    }
+                } label: {
+                    Label(isLinking ? "Logging…" : "Log an interaction",
+                          systemImage: "bubble.left.and.bubble.right")
+                }
+                .disabled(isLinking)
+            }
+
+            // Link. For the case you logged both separately, which is most of
+            // what already exists.
+            Button {
+                activeSheet = .linkInteraction
+            } label: {
+                Label("Link an existing interaction", systemImage: "link")
+            }
+            .disabled(isLinking)
+        }
+    }
+
+    private var attendees: [Person] {
+        personIDs.compactMap { id in notion.people.first { $0.id == id } }
+    }
+
+    private func peopleNames(for interaction: Interaction) -> String {
+        let names = interaction.personIDs.compactMap { id in
+            notion.people.first { $0.id == id }?.name
+        }
+        return names.isEmpty ? interaction.date.formatted(.dateTime.month(.abbreviated).day())
+                             : names.joined(separator: ", ")
+    }
+
+    /// Creates an interaction already attached to this visit, taking its date,
+    /// its summary and its person from what the visit already knows.
+    private func logInteraction(with people: [Person]) {
+        guard !people.isEmpty else { return }
+        isLinking = true
+        Task {
+            defer { isLinking = false }
+            do {
+                let created = try await notion.createInteraction(
+                    personIDs: people.map(\.id),
+                    // "Visit to Inspired", not a bare "Inspired". David's
+                    // choice of the two options mocked up on 2026-07-31: a bare
+                    // place name reads as a different species of record sitting
+                    // among lunches and calls. Overwritable — the edit sheet
+                    // opens straight after this.
+                    summary: "Visit to \(visit.placeName)",
+                    date: date,
+                    type: "visit",
+                    notes: "",
+                    visitID: visit.id
+                )
+                linkedInteractions.append(created)
+                // Straight into editing. The record now exists and is linked;
+                // what it is still missing is the only part a human writes.
+                activeSheet = .newInteraction(created)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Asks Notion which interactions name this visit.
+    ///
+    /// **Was: fetch per attendee and filter.** That derived the answer from the
+    /// visit's people, and the two are not the same fact — link an interaction
+    /// to a visit whose attendee list does not include that person and it
+    /// vanished. One query against the relation, which is the thing that is
+    /// actually true.
+    private func loadLinkedInteractions() async {
+        linkedInteractions = (try? await notion.fetchInteractions(visitID: visit.id)) ?? []
+    }
+
     private func refreshFromNotion() async {
+        await loadLinkedInteractions()
         await notion.fetchVisits()
         if notion.people.isEmpty { await notion.fetchPeople() }
         if notion.places.isEmpty { await notion.fetchPlaces() }   // ensures isBilliardsPlace / isFitnessPlace evaluate correctly
@@ -548,6 +709,115 @@ struct VisitDetailView: View {
             } catch {
                 errorMessage = error.localizedDescription
                 isSaving = false
+            }
+        }
+    }
+}
+
+// MARK: - Link an existing interaction to a visit
+
+/// Pick an interaction already logged and attach it to this visit.
+///
+/// Modelled on `BilliardsVisitLinkerSheet`, which solves the same problem from
+/// the other direction and got the shape right: show a short, relevant list
+/// rather than everything, and link on tap with no confirmation, because the
+/// action is trivially reversible.
+///
+/// **Candidates are the attendees' own interactions, unlinked, within a week of
+/// the visit.** Not every interaction ever logged: the useful answer is almost
+/// always "the one from that day", and a list you have to search is a worse
+/// answer than a list of four.
+struct VisitInteractionLinkerSheet: View {
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+
+    let visit: Visit
+    let attendees: [Person]
+    var onLinked: (Interaction) -> Void
+
+    @State private var candidates: [Interaction] = []
+    @State private var isLoading = true
+    @State private var isLinking = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading {
+                    ProgressView()
+                } else if candidates.isEmpty {
+                    ContentUnavailableView(
+                        "Nothing to link",
+                        systemImage: "link",
+                        description: Text(attendees.isEmpty
+                            ? "Add someone to this visit first."
+                            : "No unlinked interactions for these people near this date.")
+                    )
+                } else {
+                    List(candidates) { interaction in
+                        Button {
+                            link(interaction)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(interaction.summary.isEmpty
+                                     ? interaction.type.capitalized : interaction.summary)
+                                    .foregroundStyle(Color.primary)
+                                Text(interaction.date.formatted(.dateTime.month(.abbreviated).day().year()))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .disabled(isLinking)
+                    }
+                }
+            }
+            .navigationTitle("Link an interaction")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .alert("Could not link", isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(errorMessage ?? "")
+            }
+            .task { await load() }
+        }
+    }
+
+    private func load() async {
+        defer { isLoading = false }
+        let window: TimeInterval = 7 * 24 * 60 * 60
+        var found: [Interaction] = []
+        for person in attendees {
+            let all = (try? await notion.fetchInteractions(personID: person.id)) ?? []
+            found.append(contentsOf: all.filter {
+                $0.visitID == nil && abs($0.date.timeIntervalSince(visit.date)) <= window
+            })
+        }
+        var seen = Set<String>()
+        candidates = found.filter { seen.insert($0.id).inserted }
+            .sorted { $0.date > $1.date }
+    }
+
+    private func link(_ interaction: Interaction) {
+        isLinking = true
+        Task {
+            defer { isLinking = false }
+            do {
+                try await notion.linkInteractionToVisit(interactionID: interaction.id,
+                                                        visitID: visit.id)
+                var linked = interaction
+                linked.visitID = visit.id
+                onLinked(linked)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
             }
         }
     }

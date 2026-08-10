@@ -115,10 +115,15 @@ struct PersonDetailView: View {
     /// that constructs this view (People list, Activity/Notes deep links,
     /// etc.) keeps calling the plain two-arg form, which still defaults to
     /// Info via this init's default parameter.
-    init(personID: String, personName: String, openToAgenda: Bool = false) {
+    /// `openToNotes` is the `trace://note?path=Notes/People/<name>.md` hand-off
+    /// from Satchel — landing on Info and making the user find the Notes tab
+    /// would defeat the point of jumping here from a document.
+    /// Both flags default false, so every existing call site is untouched.
+    init(personID: String, personName: String,
+         openToAgenda: Bool = false, openToNotes: Bool = false) {
         self.personID = personID
         self.personName = personName
-        _selectedTab = State(initialValue: openToAgenda ? .log : .info)
+        _selectedTab = State(initialValue: openToNotes ? .notes : (openToAgenda ? .log : .info))
     }
 
     // Info tab
@@ -135,11 +140,14 @@ struct PersonDetailView: View {
 
     // Log tab — agenda
     @State private var agendaItems: [String] = []
-    @State private var isAddingAgendaItem = false
-    @State private var newAgendaItem = ""
+    /// The item being edited in `AgendaItemSheet`, or a blank one when adding.
+    @State private var editingAgenda: AgendaItem? = nil
+    /// Read from the person's note each time the agenda changes, not cached —
+    /// the note is the record and he may edit it in Obsidian.
+    @State private var completedItems: [(date: String, text: String)] = []
+    @State private var showCompleted = false
+    @State private var birthdayReminderState: ReminderButtonState = .idle
     @State private var isSavingAgenda = false
-    @State private var editingAgendaItem: String? = nil   // the original text of the item being edited
-    @State private var editingAgendaText: String = ""
 
     // Log tab — interactions
     @State private var interactions: [Interaction] = []
@@ -154,6 +162,7 @@ struct PersonDetailView: View {
 
     // Edit sheet
     @State private var showingEdit = false
+    @State private var confirmingDelete = false
 
     private enum PersonTab: String, CaseIterable {
         case info = "Info"
@@ -203,6 +212,25 @@ struct PersonDetailView: View {
                                 Image(systemName: isArchived ? "archivebox.fill" : "archivebox")
                                     .foregroundStyle(isArchived ? Color.accentColor : .secondary)
                             }
+                            // DELETE, added 2026-07-31 on David's ask. Seventh
+                            // instance this week of a capability that exists
+                            // being unreachable on iOS: `deletePerson` has always
+                            // been in NotionService and **only TraceMac used it**,
+                            // exactly like `updateInteraction` earlier today.
+                            //
+                            // Behind a Menu and a confirmation rather than beside
+                            // Edit: archiving is the reversible neighbour and the
+                            // two should not sit a thumb's width apart.
+                            Menu {
+                                Button(role: .destructive) {
+                                    confirmingDelete = true
+                                } label: {
+                                    Label("Delete Person…", systemImage: "trash")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Button {
                             let cleanID = personID.replacingOccurrences(of: "-", with: "")
@@ -220,13 +248,44 @@ struct PersonDetailView: View {
                 await loadInteractions()
             }
             .sheet(item: $selectedInteraction) { interaction in
-                InteractionDetailSheet(interaction: interaction)
+                InteractionDetailSheet(interaction: interaction) {
+                    Task { await loadInteractions() }
+                }
+                .environment(notion)
             }
             .sheet(isPresented: $showingLogInteraction) {
                 LogInteractionSheet(personID: personID, personName: personName) {
                     Task { await loadInteractions() }
                 }
                 .environment(notion)
+            }
+            .sheet(item: $editingAgenda) { item in
+                AgendaItemSheet(item: item, personID: personID, personName: personName) { due, text in
+                    saveAgendaItem(original: item, due: due, text: text)
+                }
+            }
+            .confirmationDialog("Delete \(personName)?",
+                                isPresented: $confirmingDelete,
+                                titleVisibility: .visible) {
+                Button("Delete Person", role: .destructive) {
+                    Task {
+                        // Archives the Notion page and drops it from the cached
+                        // list, which is what `deletePerson` already does. Their
+                        // note file in the container is deliberately NOT touched:
+                        // it may hold years of writing, and removing a person from
+                        // a directory is not the same as burning what you wrote
+                        // about them. Delete it by hand if that is what you meant.
+                        try? await notion.deletePerson(id: personID)
+                        // Same rule as the swipe delete in PeopleView: a note
+                        // that was never written in goes too, or it keeps the
+                        // person alive in Satchel's file-scanning picker.
+                        NoteStore.shared.deletePersonNoteIfUntouched(name: personName)
+                        dismiss()
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This removes them from your people. Anything written in their note is kept.")
             }
             .sheet(isPresented: $showingEdit) {
                 if let d = detail {
@@ -318,6 +377,35 @@ struct PersonDetailView: View {
             if let city = d.city, !city.isEmpty { row("City", value: city) }
             if let bday = d.birthday {
                 row("Birthday", value: bday.formatted(.dateTime.month(.wide).day()))
+                // Coming Up already shows birthdays, but Coming Up does not speak
+                // up — it waits to be looked at. This is the one place a date the
+                // app already knows can become something that actually arrives.
+                // A MENU, NOT A FIXED WEEK. David: *"is there a way to add a
+                // reminder different than 7 days before a birthday? or again on
+                // the birthday itself?"* — the second half is the giveaway that
+                // one lead time was never going to be enough. A week out is when
+                // you buy something; the day itself is when you call.
+                //
+                // Each choice adds its own reminder rather than replacing the
+                // last, so "two weeks AND on the day" is two taps and not a
+                // setting to reconsider.
+                Menu {
+                    ForEach(BirthdayLead.allCases) { lead in
+                        Button(lead.label) { remindAboutBirthday(d, on: bday, lead: lead) }
+                    }
+                } label: {
+                    HStack {
+                        Label(birthdayReminderState == .added ? "Reminder added" : "Remind me",
+                              systemImage: birthdayReminderState == .added ? "checkmark" : "bell")
+                            .font(.subheadline)
+                        Spacer()
+                        if birthdayReminderState == .working { ProgressView() }
+                    }
+                }
+                .disabled(birthdayReminderState == .working)
+                if case .failed(let why) = birthdayReminderState {
+                    Text(why).font(.caption).foregroundStyle(.orange)
+                }
             }
             if let met = d.howWeMet, !met.isEmpty { row("How We Met", value: met) }
         }
@@ -465,46 +553,47 @@ struct PersonDetailView: View {
     private func logTab(_ d: PersonDetail) -> some View {
         // Agenda
         Section {
-            if agendaItems.isEmpty && !isAddingAgendaItem {
+            if agendaItems.isEmpty {
                 Text("Nothing queued")
                     .foregroundStyle(.secondary)
                     .font(.subheadline)
             } else {
-                ForEach(agendaItems, id: \.self) { item in
-                    Group {
-                        if editingAgendaItem == item {
-                            TextField("", text: $editingAgendaText)
+                ForEach(agendaItems, id: \.self) { raw in
+                    let item = AgendaLine.parse(raw)
+                    Button {
+                        editingAgenda = item
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.text)
                                 .font(.subheadline)
-                                .onSubmit { commitAgendaEdit(original: item) }
-                        } else {
-                            Text(item)
-                                .font(.subheadline)
-                                .onTapGesture(count: 2) {
-                                    editingAgendaItem = item
-                                    editingAgendaText = item
-                                }
+                                .foregroundStyle(.primary)
+                            if let days = item.daysAway, let due = item.due {
+                                Text(dueLabel(days, due))
+                                    .font(.caption)
+                                    .foregroundStyle(item.isOverdue ? .orange : .secondary)
+                            } else {
+                                // Said out loud, because it is the difference
+                                // between an item that will surface and one that
+                                // never will.
+                                Text("No date")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            agendaItems.removeAll { $0 == item }
-                            editingAgendaItem = nil
-                            persistAgenda()
+                            completeAgendaItem(raw)
                         } label: {
                             Label("Done", systemImage: "checkmark")
                         }
                     }
                 }
             }
-            if isAddingAgendaItem {
-                HStack {
-                    TextField("Add item…", text: $newAgendaItem)
-                        .onSubmit { commitAgendaItem() }
-                    Button("Add") { commitAgendaItem() }
-                        .disabled(newAgendaItem.trimmingCharacters(in: .whitespaces).isEmpty)
-                        .foregroundStyle(.blue)
-                }
-            }
+
         } header: {
             HStack {
                 Text("Agenda")
@@ -513,13 +602,56 @@ struct PersonDetailView: View {
                 }
                 Spacer()
                 Button {
-                    isAddingAgendaItem = true
+                    editingAgenda = AgendaItem(raw: "", due: nil, text: "")
                 } label: {
                     Image(systemName: "plus")
                         .font(.caption.weight(.semibold))
                 }
                 .buttonStyle(.plain)
-                .disabled(isAddingAgendaItem)
+            }
+        }
+
+        // DONE, WHERE THE QUEUE IS. David: *"how do i surface the done items?"*
+        // They are written to the person's note, which the Notes tab already
+        // shows — but making him change tabs to see what he just ticked is the
+        // same mistake as a capability with no door. Collapsed, so history never
+        // competes with the live queue. Same shape as Dayflow's archived projects.
+        if !completedItems.isEmpty {
+            Section {
+                if showCompleted {
+                    ForEach(Array(completedItems.enumerated()), id: \.offset) { _, entry in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "checkmark")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                            Text(entry.text)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            if !entry.date.isEmpty {
+                                Text(entry.date)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+            } header: {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { showCompleted.toggle() }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: showCompleted ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("Done")
+                        Text("\(completedItems.count)").foregroundStyle(.tertiary)
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } footer: {
+                Text("Kept in this person's note. Edit or clear them there.")
             }
         }
 
@@ -590,6 +722,12 @@ struct PersonDetailView: View {
 
     // MARK: - Notes Tab
 
+    /// The one place this person's note path is spelled out. It was written
+    /// inline in four separate spots, which is three chances for the Satchel
+    /// hand-off below to send a path that does not match what Trace actually
+    /// reads and writes.
+    private var personNotePath: String { "Notes/People/\(personName).md" }
+
     @ViewBuilder
     private func notesTab(_ d: PersonDetail) -> some View {
         if isLoadingNoteStore {
@@ -600,14 +738,24 @@ struct PersonDetailView: View {
             }
         } else {
             Section {
+                // Scope §7b — capture a document already filed to this note.
+                // Above the editor rather than below it: the editor is 420pt
+                // tall, so anything under it starts off the bottom of the screen.
+                SatchelAddDocumentButton(notePath: personNotePath)
+                // Scope §7a — the documents already filed to this note. Insets
+                // zeroed because the view supplies its own padding, and when
+                // there are no documents it renders nothing, so the row must
+                // collapse to invisible rather than leave a bare separator.
+                SatchelDocumentChips(notePath: personNotePath)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
                 MarkdownEditorView(
                     text: $noteStoreText,
                     onSave: { content in
-                        let path = "Notes/People/\(personName).md"
-                        try? NoteStore.shared.writeFile(path, content: content)
+                        try? NoteStore.shared.writeFile(personNotePath, content: content)
                     },
                     placeholder: "Notes about \(personName)…",
-                    relativePath: "Notes/People/\(personName).md"
+                    relativePath: personNotePath
                 )
                 .frame(minHeight: 420)
                 .listRowInsets(EdgeInsets())
@@ -755,35 +903,92 @@ struct PersonDetailView: View {
     }
 
     private func interactionIcon(_ type: String) -> String {
-        switch type.lowercased() {
-        case "call":    return "phone"
-        case "email":   return "envelope"
-        case "meeting": return "person.2"
-        case "coffee":  return "cup.and.saucer"
-        case "social":  return "figure.socialdance"
-        default:        return "bubble.left"
-        }
+        InteractionStyle.icon(for: type)
     }
 
     // MARK: - Agenda
 
-    private func commitAgendaEdit(original: String) {
-        let trimmed = editingAgendaText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, let idx = agendaItems.firstIndex(of: original) {
-            agendaItems[idx] = trimmed
-            persistAgenda()
+    /// Next occurrence of a birthday, a week ahead of it.
+    ///
+    /// The stored year is whatever Notion has on file and is not meaningful, so
+    /// this rolls to this year or next — the same rule Home's Coming Up uses. A
+    /// reminder set for the birth year would land decades in the past and never
+    /// fire, silently.
+    private func remindAboutBirthday(_ d: PersonDetail, on birthday: Date, lead: BirthdayLead) {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        var comps = cal.dateComponents([.month, .day], from: birthday)
+        comps.year = cal.component(.year, from: today)
+        guard var next = cal.date(from: comps) else { return }
+        if next < today {
+            comps.year = (comps.year ?? 0) + 1
+            guard let rolled = cal.date(from: comps) else { return }
+            next = rolled
         }
-        editingAgendaItem = nil
-        editingAgendaText = ""
+        let fireOn = cal.date(byAdding: .day, value: -lead.days, to: next) ?? next
+
+        birthdayReminderState = .working
+        Task {
+            do {
+                let id = try await ReminderService.add(
+                    title: lead.days == 0
+                        ? "\(d.name)'s birthday is today"
+                        : "\(d.name)'s birthday \(lead.phrase)",
+                    due: fireOn,
+                    notes: "Trace · \(next.formatted(.dateTime.month(.wide).day()))",
+                    // A birthday is annual. Set once, not once a year.
+                    repeatsYearly: true)
+                // Keyed by lead as well as person, so adding "two weeks" does not
+                // overwrite the link for "on the day". Two reminders, two links.
+                ReminderService.link(id, to: "birthday|\(personID)|\(lead.rawValue)")
+                birthdayReminderState = .added
+            } catch ReminderService.Failure.denied {
+                birthdayReminderState = .failed("Trace does not have access to Reminders. Settings › Privacy › Reminders.")
+            } catch {
+                birthdayReminderState = .failed("Could not add the reminder.")
+            }
+        }
     }
 
-    private func commitAgendaItem() {
-        let trimmed = newAgendaItem.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        agendaItems.append(trimmed)
-        newAgendaItem = ""
-        isAddingAgendaItem = false
+    private func dueLabel(_ days: Int, _ due: Date) -> String {
+        let stamp = due.formatted(.dateTime.month(.abbreviated).day())
+        if days < 0  { return "Overdue by \(-days) day\(days == -1 ? "" : "s") · \(stamp)" }
+        if days == 0 { return "Today · \(stamp)" }
+        return "In \(days) day\(days == 1 ? "" : "s") · \(stamp)"
+    }
+
+    /// Writes an edited or new item back. Matching on `original.raw` and not on
+    /// text: the date is part of the stored line, so changing only the date still
+    /// has to find the old line.
+    private func saveAgendaItem(original: AgendaItem, due: Date?, text: String) {
+        let composed = AgendaLine.compose(due: due, text: text)
+        guard !composed.isEmpty else { return }
+        if original.raw.isEmpty {
+            agendaItems.append(composed)
+        } else if let idx = agendaItems.firstIndex(of: original.raw) {
+            agendaItems[idx] = composed
+        } else {
+            agendaItems.append(composed)
+        }
+        // The reminder link is keyed by the stored line, so an edit has to carry
+        // it across or the reminder is orphaned and can never be ticked shut.
+        let newKey = "\(personID)|\(composed)"
+        ReminderService.relink(from: "\(personID)|\(original.raw)", to: newKey)
+        // The KEY moving is not enough — the reminder still carries the old day.
+        if due != original.due {
+            Task { await ReminderService.reschedule(key: newKey, to: due) }
+        }
         persistAgenda()
+    }
+
+    /// Ticking an item: keep a record, drop it from the queue, close the reminder.
+    private func completeAgendaItem(_ raw: String) {
+        let item = AgendaLine.parse(raw)
+        NoteStore.shared.logCompletedAgendaItem(person: personName, text: item.text)
+        agendaItems.removeAll { $0 == raw }
+        completedItems = NoteStore.shared.completedAgendaItems(person: personName)
+        persistAgenda()
+        Task { await ReminderService.complete(key: "\(personID)|\(raw)") }
     }
 
     private func persistAgenda() {
@@ -810,6 +1015,7 @@ struct PersonDetailView: View {
             agendaItems = (d.agenda ?? "")
                 .split(separator: "\n", omittingEmptySubsequences: true)
                 .map(String.init)
+            completedItems = NoteStore.shared.completedAgendaItems(person: d.name)
         } catch {
             loadError = error.localizedDescription
         }
@@ -826,8 +1032,7 @@ struct PersonDetailView: View {
         guard !isLoadingNoteStore else { return }
         isLoadingNoteStore = true
         Task {
-            let path = "Notes/People/\(personName).md"
-            noteStoreText = (try? NoteStore.shared.readFile(path)) ?? ""
+            noteStoreText = (try? NoteStore.shared.readFile(personNotePath)) ?? ""
             isLoadingNoteStore = false
         }
     }
@@ -887,6 +1092,8 @@ struct PersonEditSheet: View {
     @State private var city = ""
     @State private var howWeMet = ""
     @State private var address = ""
+    @State private var hasBirthday = false
+    @State private var birthday = Date()
     @State private var selectedTags: Set<String> = []
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -961,6 +1168,11 @@ struct PersonEditSheet: View {
                     TextField("Company / Context", text: $companyContext)
                     TextField("City", text: $city)
                     TextField("How We Met", text: $howWeMet)
+                    Toggle("Birthday", isOn: $hasBirthday.animation(.snappy(duration: 0.2)))
+                    if hasBirthday {
+                        DatePicker("Date", selection: $birthday,
+                                   displayedComponents: .date)
+                    }
                 }
 
                 Section("Contact") {
@@ -1075,6 +1287,12 @@ struct PersonEditSheet: View {
         city = detail.city ?? ""
         howWeMet = detail.howWeMet ?? ""
         address = detail.address ?? ""
+        hasBirthday = detail.birthday != nil
+        // Defaults to a plausible adult birth year rather than today, so the
+        // wheel does not open on 2026 and make him spin back sixty years.
+        birthday = detail.birthday
+            ?? Calendar.current.date(from: DateComponents(year: 1970, month: 1, day: 1))
+            ?? Date()
         selectedTags = Set(detail.tags)
     }
 
@@ -1102,7 +1320,8 @@ struct PersonEditSheet: View {
                 tags: Array(selectedTags),
                 phone: phone,
                 email: email,
-                address: address
+                address: address,
+                birthday: .some(hasBirthday ? birthday : nil)
                 // photoURL intentionally omitted — photo lives in NoteStore at
                 // Photos/People/<Name>.jpg and is resolved at load time, not stored in Notion.
             )
@@ -1169,20 +1388,153 @@ private struct InteractionPhotoTile: View {
 // card, per David's request — `private` restricted it to file scope.
 struct InteractionDetailSheet: View {
     let interaction: Interaction
+    /// Called after a successful save so the person's list can re-read. Optional
+    /// with a no-op default: the Dayflow hand-off and any other caller that does
+    /// not own a list can ignore it.
+    var onSaved: () -> Void = {}
+    /// Opens straight into editing rather than the read-only view.
+    ///
+    /// Used when the interaction was just created and has nothing in it yet.
+    /// David, after logging one from a visit: *"the interaction itself doesnt
+    /// have a note section which is the main point of the interaction."* Right —
+    /// creating an empty record and making him find his way back into it to
+    /// write the only part that matters is the wrong shape. Create, then land
+    /// in the notes field.
+    var startInEditing: Bool = false
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(NotionService.self) private var notion
+
+    // EDITING, added 2026-07-31. David: *"i see that lunch with Bronwyn is a
+    // recent interaction. I wanted to add more notes to this but i have no way
+    // of editing do i?"* He did not.
+    //
+    // `NotionService.updateInteraction` has existed all along and **TraceMac
+    // already uses it** through its own edit sheet, so the same interaction was
+    // editable on the Mac and read-only on the phone. Not a hidden door this
+    // time: a screen that was built once and never carried across. Sixth
+    // instance this week of a capability that exists being unreachable.
+    //
+    // Fields match the Mac sheet exactly (summary, type, date, notes) so the two
+    // cannot drift into editing different things. Photos are deliberately not
+    // editable here — the Mac sheet uploads them and that path has no iOS
+    // equivalent yet; adding one is its own piece of work, not a tail on this.
+    @State private var isEditing = false
+    @State private var summary = ""
+    @State private var type = "other"
+    @State private var date = Date()
+    @State private var notes = ""
+    @State private var isSaving = false
+    @State private var saveError: String?
+    @State private var openVisit: Visit? = nil
+    @State private var openPerson: Person? = nil
+
+    /// Everyone this interaction names.
+    ///
+    /// `personIDs` has always been an array on the model and was **rendered
+    /// nowhere on this card** — David, 2026-07-31: *"wouldnt it be good to have
+    /// the people listed in the Inspired interaction card?"* It matters more now
+    /// that an interaction can name several: log one from a visit with two
+    /// attendees and the card said nothing about either of them.
+    private var people: [Person] {
+        interaction.personIDs.compactMap { id in notion.people.first { $0.id == id } }
+    }
+
+    /// The visit this interaction is attached to, if any.
+    ///
+    /// `visitID` has been parsed off every interaction since the model was
+    /// written and displayed **nowhere**, so a link was invisible even once made.
+    /// Shown here, and tappable, because a stored relation nobody can see is the
+    /// same as no relation.
+    private var linkedVisit: Visit? {
+        guard let visitID = interaction.visitID else { return nil }
+        return notion.visits.first { $0.id == visitID }
+    }
+
+    private let typeOptions = [
+        "visit", "dinner", "lunch", "coffee", "call", "video call",
+        "text", "email", "meeting", "event", "workout", "other"
+    ]
 
     var body: some View {
         NavigationStack {
             List {
+                if isEditing {
+                    Section {
+                        TextField("Summary", text: $summary)
+                        Picker("Type", selection: $type) {
+                            ForEach(typeOptions, id: \.self) { Text($0.capitalized).tag($0) }
+                        }
+                        DatePicker("Date", selection: $date, displayedComponents: .date)
+                    }
+                    Section("Notes") {
+                        TextField("Notes", text: $notes, axis: .vertical)
+                            .lineLimit(4...12)
+                    }
+                    if let saveError {
+                        Section {
+                            Text(saveError)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                } else {
                 Section {
                     LabeledContent("Type", value: interaction.type.capitalized)
                     LabeledContent("Date", value: interaction.date.formatted(.dateTime.month(.wide).day().year()))
                 }
-                if let notes = interaction.notes, !notes.isEmpty {
-                    Section("Notes") {
+                if !people.isEmpty {
+                    // Plural header only when it is. A card headed "People" over
+                    // a single name reads like something is missing.
+                    Section(people.count == 1 ? "Person" : "People") {
+                        ForEach(people) { person in
+                            Button {
+                                openPerson = person
+                            } label: {
+                                HStack {
+                                    Label(person.name, systemImage: "person.crop.circle.fill")
+                                        .foregroundStyle(Color.primary)
+                                    Spacer(minLength: 8)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                    }
+                }
+                // Always drawn, even when empty. It used to be omitted when
+                // there were no notes, so an interaction with none showed a
+                // screen with a type and a date on it and nothing else — which
+                // reads as a broken record rather than an empty one, and gives
+                // no hint that notes are the point of the thing.
+                Section("Notes") {
+                    if let notes = interaction.notes, !notes.isEmpty {
                         Text(notes).font(.body)
+                    } else {
+                        Text("No notes yet. Tap Edit to add some.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let linkedVisit {
+                    Section("Visit") {
+                        Button {
+                            openVisit = linkedVisit
+                        } label: {
+                            HStack {
+                                Label(linkedVisit.placeName, systemImage: "mappin.circle.fill")
+                                    .foregroundStyle(Color.primary)
+                                Spacer(minLength: 8)
+                                Text(linkedVisit.date.formatted(.dateTime.month(.abbreviated).day()))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
                     }
                 }
                 if !interaction.photoURLs.isEmpty {
@@ -1208,13 +1560,77 @@ struct InteractionDetailSheet: View {
                             .foregroundStyle(.blue)
                     }
                 }
+                }
+            }
+            .onAppear { if startInEditing, !isEditing { startEditing() } }
+            .sheet(item: $openVisit) { visit in
+                VisitDetailView(visit: visit)
+                    .environment(notion)
+            }
+            .sheet(item: $openPerson) { person in
+                PersonDetailView(personID: person.id, personName: person.name)
+                    .environment(notion)
             }
             .navigationTitle(interaction.summary.isEmpty ? interaction.type.capitalized : interaction.summary)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .cancellationAction) {
+                    if isEditing {
+                        Button("Cancel") { isEditing = false; saveError = nil }
+                    }
                 }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isEditing {
+                        Button(isSaving ? "Saving…" : "Save") { save() }
+                            .fontWeight(.semibold)
+                            .disabled(isSaving)
+                    } else {
+                        Button("Edit") { startEditing() }
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    if !isEditing {
+                        Button("Done") { dismiss() }
+                    }
+                }
+            }
+        }
+    }
+
+    private func startEditing() {
+        summary = interaction.summary
+        type = typeOptions.contains(interaction.type) ? interaction.type : "other"
+        date = interaction.date
+        notes = interaction.notes ?? ""
+        saveError = nil
+        isEditing = true
+    }
+
+    /// Dismisses on success rather than dropping back to the read-only view.
+    /// The sheet renders from the `interaction` it was handed, which is a value
+    /// captured when the row was tapped — staying open would show the OLD text
+    /// straight after saving the new one, which reads exactly like a failed save.
+    /// `onSaved` re-reads the list behind it.
+    private func save() {
+        isSaving = true
+        saveError = nil
+        Task {
+            do {
+                try await notion.updateInteraction(
+                    id: interaction.id,
+                    summary: summary.trimmingCharacters(in: .whitespacesAndNewlines),
+                    type: type,
+                    date: date,
+                    notes: notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+                isSaving = false
+                onSaved()
+                dismiss()
+            } catch {
+                // Stay on the sheet. Dismissing on failure is what made the
+                // Endeavor details sheet indistinguishable from success.
+                isSaving = false
+                saveError = error.localizedDescription
             }
         }
     }
@@ -1387,6 +1803,163 @@ struct LogInteractionSheet: View {
             } catch {
                 errorMessage = error.localizedDescription
                 isSaving = false
+            }
+        }
+    }
+}
+
+/// How far ahead of a birthday to be told.
+///
+/// A fixed set rather than a date picker: the useful answers to "when do you want
+/// to know about a birthday" are few and all of them are relative to the day. A
+/// picker would make him do arithmetic against a date he cannot see.
+enum BirthdayLead: Int, CaseIterable, Identifiable {
+    case onTheDay = 0
+    case oneDay = 1
+    case threeDays = 3
+    case oneWeek = 7
+    case twoWeeks = 14
+
+    var id: Int { rawValue }
+    var days: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .onTheDay:  return "On the day"
+        case .oneDay:    return "1 day before"
+        case .threeDays: return "3 days before"
+        case .oneWeek:   return "1 week before"
+        case .twoWeeks:  return "2 weeks before"
+        }
+    }
+
+    /// Reads after a name: "Bronwyn's birthday is in a week".
+    var phrase: String {
+        switch self {
+        case .onTheDay:  return "is today"
+        case .oneDay:    return "is tomorrow"
+        case .threeDays: return "is in 3 days"
+        case .oneWeek:   return "is in a week"
+        case .twoWeeks:  return "is in 2 weeks"
+        }
+    }
+}
+
+// MARK: - Agenda item editor
+//
+// Replaced double-tap-to-edit-inline, 2026-08-01, when agenda items gained dates.
+// A date needs a picker and a reminder needs a button, and neither fits on a row
+// you edit in place. One sheet does add and edit both — an empty `AgendaItem` is
+// the "add" case, which is why `saveAgendaItem` keys off `original.raw` being
+// empty rather than a separate mode flag.
+
+struct AgendaItemSheet: View {
+    let item: AgendaItem
+    let personID: String
+    let personName: String
+    /// `(due, text)` — the caller composes and persists the line.
+    var onSave: (Date?, String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String
+    @State private var hasDate: Bool
+    @State private var due: Date
+    @State private var reminderState: ReminderButtonState = .idle
+
+
+    init(item: AgendaItem, personID: String, personName: String,
+         onSave: @escaping (Date?, String) -> Void) {
+        self.item = item
+        self.personID = personID
+        self.personName = personName
+        self.onSave = onSave
+        _text = State(initialValue: item.text)
+        _hasDate = State(initialValue: item.due != nil)
+        _due = State(initialValue: item.due ?? Date())
+    }
+
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("What do you want to raise?", text: $text, axis: .vertical)
+                        .lineLimit(1...4)
+                }
+
+                Section {
+                    Toggle("Give it a date", isOn: $hasDate.animation(.snappy(duration: 0.2)))
+                    if hasDate {
+                        DatePicker("Due", selection: $due, displayedComponents: .date)
+                    }
+                } footer: {
+                    // Stated plainly because it is the rule that keeps Coming Up
+                    // from becoming the pile it was.
+                    Text(hasDate
+                         ? "Shows in Coming Up, and stays there until you tick it off."
+                         : "No date means it stays here as a someday item and never appears in Coming Up.")
+                }
+
+                if hasDate {
+                    Section {
+                        Button {
+                            addReminder()
+                        } label: {
+                            HStack {
+                                Label("Remind me in Reminders", systemImage: "bell")
+                                Spacer()
+                                switch reminderState {
+                                case .working: ProgressView()
+                                case .added:   Image(systemName: "checkmark").foregroundStyle(.green)
+                                default:       EmptyView()
+                                }
+                            }
+                        }
+                        .disabled(trimmed.isEmpty || reminderState == .working)
+                        if case .failed(let why) = reminderState {
+                            Text(why).font(.caption).foregroundStyle(.orange)
+                        }
+                    } footer: {
+                        // Honest about what this does and does not do. Trace owns
+                        // the date; the reminder is a copy that nothing reads back.
+                        Text("Adds a separate reminder in Apple's Reminders app. Ticking it there will not clear this item.")
+                    }
+                }
+            }
+            .navigationTitle(item.raw.isEmpty ? "New item" : "Agenda item")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(hasDate ? due : nil, trimmed)
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(trimmed.isEmpty)
+                }
+            }
+        }
+    }
+
+    private func addReminder() {
+        reminderState = .working
+        Task {
+            do {
+                let id = try await ReminderService.add(title: trimmed,
+                                                       due: hasDate ? due : nil,
+                                                       notes: "Trace · \(personName)")
+                // Linked against the line this will BECOME, not the one it was —
+                // Save composes the same string, so ticking it later finds this.
+                ReminderService.link(id, to: "\(personID)|\(AgendaLine.compose(due: hasDate ? due : nil, text: trimmed))")
+                reminderState = .added
+            } catch ReminderService.Failure.denied {
+                reminderState = .failed("Trace does not have access to Reminders. Settings › Privacy › Reminders.")
+            } catch {
+                reminderState = .failed("Could not add the reminder.")
             }
         }
     }

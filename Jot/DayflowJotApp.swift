@@ -29,6 +29,13 @@ struct DayflowJotApp: App {
     var body: some Scene {
         WindowGroup {
             CaptureView()
+                // Light-only, matching Trace (`TraceApp.swift`) and Satchel.
+                // Every skin in this family is a hardcoded light palette, so a
+                // system colour meeting a hardcoded background in dark mode
+                // renders unreadably — white text on white cards in Satchel,
+                // black cards on a cream canvas in Dayflow. Added 2026-07-28
+                // after David hit both.
+                .preferredColorScheme(.light)
         }
     }
 }

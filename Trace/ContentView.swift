@@ -37,8 +37,13 @@ struct ContentView: View {
     @State private var pendingGeofencePlaceID: String? = nil
     @State private var showingWorkoutPrompt = false
     @State private var showingWorkoutFromURL = false
-    @State private var showingAddDocument = false
-    @State private var pendingIncomingDocument: IncomingDocument? = nil
+    /// `trace://visit?id=…` — the return leg of Dayflow's read-only visit card.
+    /// Dayflow shows a visit and cannot edit it (a Session 17 boundary); Trace's
+    /// `VisitDetailView` is where the notes field actually lives. Same
+    /// pending/retry shape as `pendingCheckInPlaceID` below, and for the same
+    /// reason: on a cold launch `notion.visits` is empty when the URL arrives.
+    @State private var pendingVisitID: String? = nil
+    @State private var visitFromURL: Visit? = nil
     @State private var isKeyboardVisible = false
     @State private var showingFABAddPerson = false
     @State private var showingFABLogInteraction = false
@@ -93,6 +98,17 @@ struct ContentView: View {
     /// `checkInPreselectedPlace = nil`, same as that var already is, so a stale
     /// prefill from a previous hand-off can never leak into an unrelated manual
     /// check-in.
+    /// `trace://note?path=…` — the return leg of the Satchel hand-off. Satchel
+    /// knows which note a document is filed to but cannot display notes, so it
+    /// hands the path back to whichever app owns it. Held rather than resolved
+    /// on the spot for the same reason as the two IDs above: `notion.people` and
+    /// `notion.places` load asynchronously, so a same-tick lookup finds nothing
+    /// on a cold launch — which is the common case, since the app is being
+    /// opened *by* the URL. Retried by the existing count watchers.
+    @State private var pendingNotePath: String? = nil
+    @State private var noteLinkPerson: Person? = nil
+    @State private var noteLinkPlace: Place? = nil
+
     @State private var checkInPrefillNotes: String? = nil
     @State private var loginteractionPrefillType: String? = nil
     @State private var loginteractionPrefillNotes: String? = nil
@@ -188,7 +204,11 @@ struct ContentView: View {
         Button("Add Place")    { showingAddPlace = true }
         Button("Add Note")     { showingAddCapture = true }
         Button("Add Photo")    { showingAddCapture = true }
-        Button("Add Document") { showingAddDocument = true }
+        // Hands off rather than opening Trace's own form, which is retired
+        // (scope §7). Repointed rather than removed on purpose: the action keeps
+        // its place in the menu, so the muscle memory still works and it lands
+        // where documents actually live now.
+        Button("Add Document") { openSatchelCapture() }
         Button("Cancel", role: .cancel) { }
     }
     @ViewBuilder private var fabDialogButtons: some View {
@@ -299,8 +319,6 @@ struct ContentView: View {
             .sheet(isPresented: $showingAddPhoto) {
                 AddPhotoView().environment(NotionService.shared).environment(LocationManager.shared)
             }
-            .sheet(isPresented: $showingAddDocument) { AddDocumentView(incomingDocument: nil) }
-            .sheet(item: $pendingIncomingDocument)  { AddDocumentView(incomingDocument: $0) }
             .sheet(isPresented: $showingQuickPin) {
                 QuickPinLabelSheet(coord: quickPinCoord)
                     .environment(NotionService.shared)
@@ -366,7 +384,6 @@ struct ContentView: View {
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 checkPendingShortcut()
-                checkIncomingDocument()
             }
         }
         // Home screen quick actions — foreground (app was suspended)
@@ -432,7 +449,6 @@ struct ContentView: View {
                     // now keep `notion.captures` current without a full relaunch.
                     await notion.fetchCaptures()
                 }
-                checkIncomingDocument()
             }
         }
         // Added 2026-07-25, alongside the scenePhase fix above — refetches the
@@ -454,6 +470,7 @@ struct ContentView: View {
             if count > 0 {
                 resolveGeofencePlace()
                 resolvePendingCheckIn()
+                resolvePendingNoteLink()
             }
         }
         // Session 27 — retries the Dayflow loginteraction hand-off once
@@ -461,7 +478,14 @@ struct ContentView: View {
         // No pre-existing watcher on notion.people.count to piggyback on, unlike
         // places above, so this is its own onChange.
         .onChange(of: notion.people.count) { _, count in
-            if count > 0 { resolvePendingLogInteraction() }
+            if count > 0 {
+                resolvePendingLogInteraction()
+                resolvePendingNoteLink()
+            }
+        }
+        // Retries the Dayflow visit hand-off once notion.visits has loaded.
+        .onChange(of: notion.visits.count) { _, count in
+            if count > 0 { resolvePendingVisit() }
         }
     }
 
@@ -554,9 +578,52 @@ struct ContentView: View {
                 // drawer, same "if not feasible, just open the drawer" fallback
                 // addendum 6 itself pre-approved for this exact case.
                 withAnimation(.easeInOut(duration: 0.3)) { showingDrawer = true }
+            case "note":
+                // trace://note?path=Notes/People/Mitch%20Weiss.md
+                // trace://note?path=Notes/Places/la-bella.md
+                //
+                // Opens that person or place on its Notes tab. Only People and
+                // Places are Trace's to display — day and project notes belong
+                // to Dayflow, and Satchel is expected not to send those here.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let path = comps.queryItems?.first(where: { $0.name == "path" })?.value {
+                    pendingNotePath = path
+                    resolvePendingNoteLink()
+                    // Still pending means the list it needs has not loaded. Fetch
+                    // that one list NOW rather than waiting for TraceApp's
+                    // sequential launch chain to reach it — see
+                    // `fetchListForNoteLink`. 2026-07-30.
+                    if pendingNotePath != nil {
+                        Task { await fetchListForNoteLink(path) }
+                    }
+                }
+            case "visit":
+                // trace://visit?id=<Notion visit page ID>, sent by Dayflow's
+                // DayflowVisitDetailView "Add Notes in Trace" button. Opens the
+                // real editor on that visit. An unresolvable id does NOTHING
+                // rather than falling back to a blank editor — the alternative
+                // to "the right visit" here is a NEW visit, and silently
+                // offering to create a duplicate is the worst outcome available.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let id = comps.queryItems?.first(where: { $0.name == "id" })?.value {
+                    pendingVisitID = id
+                    resolvePendingVisit()
+                    // Visits load late in TraceApp's sequential launch chain, so
+                    // fetch them now rather than waiting — same reasoning as
+                    // `fetchListForNoteLink`.
+                    if pendingVisitID != nil {
+                        Task { await notion.fetchVisits() }
+                    }
+                }
             case "workout":   showingWorkoutFromURL = true
             case "addphoto":    showingAddPhoto = true
-            case "adddocument": showingAddDocument = true
+            case "adddocument":
+                // FORWARDED, not deleted. Any Shortcut, Back Tap or Action
+                // Button already bound to `trace://adddocument` keeps working
+                // and now lands in Satchel. Deleting the case would have made
+                // those bindings silently do nothing, which is the worst of the
+                // available outcomes.
+                openSatchelCapture()
             case "addplace":    showingAddPlace = true
             case "addperson":   showingFABAddPerson = true
             case "addnote":   showingAddCapture = true
@@ -576,9 +643,27 @@ struct ContentView: View {
             default: break
             }
         }
+        .sheet(item: $visitFromURL) { visit in
+            NavigationStack {
+                VisitDetailView(visit: visit)
+                    .environment(notion)
+            }
+        }
         .sheet(isPresented: $showingWorkoutFromURL) {
             WorkoutWizardView()
                 .environment(NotionService.shared)
+        }
+        .sheet(item: $noteLinkPerson) { person in
+            PersonDetailView(personID: person.id, personName: person.name, openToNotes: true)
+                .environment(NotionService.shared)
+        }
+        .sheet(item: $noteLinkPlace) { place in
+            // Both environments passed explicitly, matching how `PlacesView`
+            // presents this same view. `LocationManager.shared`, not a
+            // `locationManager` property — ContentView has none.
+            PlaceDetailView(place: place, openToNotes: true)
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
         }
         // Left edge swipe → opens Settings drawer
         .overlay(alignment: .leading) {
@@ -599,10 +684,16 @@ struct ContentView: View {
 
     // MARK: - Incoming document (from Share Extension)
 
-    private func checkIncomingDocument() {
-        guard let incoming = AppGroup.consumeIncoming() else { return }
-        pendingIncomingDocument = incoming
-    }
+    // `checkIncomingDocument()` lived here until 2026-07-29. The iOS share
+    // sheet stages a file into the app group and Trace used to consume it and
+    // open its own Add Document form. **Satchel consumes it now**
+    // (`SatchelLibraryView.consumeSharedFile`), which is the last piece of
+    // scope §7's retirement.
+    //
+    // Both consumers cannot coexist: `AppGroup.consumeIncoming()` deletes the
+    // staged file as it reads it, so whichever app opened first would win and
+    // the other would find nothing. Removing this side is what makes Satchel's
+    // side deterministic.
 
     // MARK: - Shortcut handling
 
@@ -749,6 +840,101 @@ struct ContentView: View {
     // yet, or open a fallback sheet prematurely before we'd really given the real match
     // a chance.
 
+    /// Resolves `trace://note?path=…` to the record whose note that is.
+    ///
+    /// Matching is by NAME, because the path is all Satchel has — a sidecar
+    /// stores `linked_note`, never a Notion ID. For places that means comparing
+    /// against `placeNoteFilename(for:)` rather than the raw name, since that is
+    /// the transform Trace itself applies when writing the file (slashes and
+    /// colons become hyphens). Comparing against the raw name would silently
+    /// fail for exactly the places whose names need escaping.
+    ///
+    /// Unresolvable paths do nothing rather than opening something arbitrary.
+    /// The likeliest cause is a renamed person or place, and guessing wrong is
+    /// worse than a button that appears not to have worked.
+    /// Opens Satchel's scanner. The other half of `satchel://…?note=`, minus
+    /// the note — this is the general "add a document" entry, not one tied to a
+    /// specific note, so no `note=` parameter is sent.
+    private func openSatchelCapture() {
+        guard let url = URL(string: "satchel://scan") else { return }
+        UIApplication.shared.open(url)
+    }
+
+    /// Loads just the list this hand-off needs, straight away.
+    ///
+    /// **Why this exists.** `TraceApp`'s launch `.task` awaits `fetchPlaces()`,
+    /// then `fetchVisits()`, then `fetchCaptures()`, then `fetchPeople()` — four
+    /// Notion round trips, sequentially. A `trace://note` for a PERSON therefore
+    /// waits on three unrelated network calls before the list it needs even starts
+    /// loading. David hit this on 2026-07-30: "Open Mitch in Trace" left him on
+    /// the home screen. Nothing was broken; `people` was still three fetches away,
+    /// so there was nothing to match against and the retry watcher had not fired.
+    ///
+    /// Deliberately narrow: it fetches the ONE list needed and nothing else. The
+    /// broader fix — making the launch chain concurrent — changes how every screen
+    /// in Trace loads, and Trace is being retired (scope §7). Not the place to
+    /// take that risk.
+    ///
+    /// Safe to run alongside the launch chain: `fetchPeople()` assigns a fresh
+    /// list, so the worst case is the same data written twice.
+    private func fetchListForNoteLink(_ path: String) async {
+        if path.hasPrefix("Notes/People/"), notion.people.isEmpty {
+            await notion.fetchPeople()
+        } else if path.hasPrefix("Notes/Places/"), notion.places.isEmpty {
+            await notion.fetchPlaces()
+        }
+        resolvePendingNoteLink()
+    }
+
+    private func resolvePendingNoteLink() {
+        guard let path = pendingNotePath else { return }
+
+        let base = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+
+        if path.hasPrefix("Notes/People/") {
+            // Exact match first, then a forgiving one. A note filename is written
+            // from the person's name, so they normally agree — but a renamed
+            // person, or a stray trailing space typed into Notion, would otherwise
+            // fail with no symptom at all.
+            let match = notion.people.first(where: { $0.name == base })
+                ?? notion.people.first(where: {
+                    $0.name.trimmingCharacters(in: .whitespaces)
+                        .caseInsensitiveCompare(base.trimmingCharacters(in: .whitespaces)) == .orderedSame
+                })
+            if let match {
+                pendingNotePath = nil
+                noteLinkPerson = match
+                return
+            }
+            if !notion.people.isEmpty {
+                // People are loaded and this person is genuinely not among them.
+                // DO NOT fail silently: that is indistinguishable from the app
+                // ignoring the tap. Land on the People tab so the hand-off at
+                // least arrives in the right part of Trace.
+                pendingNotePath = nil
+                selectedTab = 3
+            }
+            return
+        }
+
+        if path.hasPrefix("Notes/Places/") {
+            if let place = notion.places.first(where: {
+                NoteStore.shared.placeNoteFilename(for: $0.name) == base
+            }) {
+                pendingNotePath = nil
+                noteLinkPlace = place
+            } else if !notion.places.isEmpty {
+                // Same reasoning as People above — the Places tab beats nothing.
+                pendingNotePath = nil
+                selectedTab = 1
+            }
+            return
+        }
+
+        // Not a note Trace displays. Drop it rather than holding it forever.
+        pendingNotePath = nil
+    }
+
     private func resolvePendingCheckIn() {
         guard let placeID = pendingCheckInPlaceID else { return }
         if let place = notion.places.first(where: { $0.id == placeID }) {
@@ -765,6 +951,24 @@ struct ContentView: View {
         }
         // else: places haven't loaded yet. Leave pendingCheckInPlaceID set — the
         // onChange(of: notion.places.count) watcher retries this once they do.
+    }
+
+    /// Same three-way shape as `resolvePendingCheckIn`, with one deliberate
+    /// difference: when visits HAVE loaded and the id is not among them, this
+    /// gives up quietly. Check In can fall back to its generic picker because
+    /// picking a place is harmless. The equivalent here would be opening an
+    /// editor on no visit, which invites creating a second one for something
+    /// already recorded.
+    private func resolvePendingVisit() {
+        guard let id = pendingVisitID else { return }
+        if let visit = notion.visits.first(where: { $0.id == id }) {
+            pendingVisitID = nil
+            visitFromURL = visit
+        } else if !notion.visits.isEmpty {
+            pendingVisitID = nil
+        }
+        // else: visits have not loaded. The onChange(of: notion.visits.count)
+        // watcher retries this once they do.
     }
 
     private func resolvePendingLogInteraction() {

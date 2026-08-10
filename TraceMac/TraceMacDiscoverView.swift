@@ -84,7 +84,8 @@ struct TraceMacDiscoverView: View {
     @State private var selectedPin: DiscoverPin?
     @State private var listCollapsed = false
 
-    @State private var showAddSheet = false
+    /// Drives the Add sheet. **Presentation and content are one piece of
+    /// state**, deliberately — see the note on the `.sheet` below.
     @State private var pendingResult: GooglePlace?
 
     @State private var fullRecordPlace: Place?
@@ -264,22 +265,40 @@ struct TraceMacDiscoverView: View {
                 scheduleSearch(searchText)
             }
         }
-        .sheet(isPresented: $showAddSheet) {
-            if let result = pendingResult {
-                AddDiscoveredPlaceSheet(result: result) {
-                    await notion.fetchPlaces()
-                }
-                .environment(notion)
+        // THE APP FREEZE, 2026-08-04. David, adding Lakemore Resort as a
+        // destination: clicked the place's pin, and the app stopped responding
+        // with a blank white rounded rectangle drawn over the map.
+        //
+        // **It was not a hang.** The paused main thread sat in
+        // `mach_msg2_trap` — idle, waiting for events — and the console showed
+        // `CAMetalLayer ignoring invalid setDrawableSize width=0 height=0`.
+        // A window with no content, modal, eating every event.
+        //
+        // Two causes, both here, and either alone is enough:
+        //
+        // **1. A sheet whose content could be empty.** This was
+        // `.sheet(isPresented: $showAddSheet) { if let result = pendingResult {…} }`
+        // with no `else`. If `showAddSheet` ever became true while
+        // `pendingResult` was nil — a stale flag, a re-render between the two
+        // assignments, a dismissal that cleared one and not the other — SwiftUI
+        // presented a sheet containing **nothing**: a zero-size modal window,
+        // exactly the white rectangle on screen.
+        //
+        // Fixed by deleting `showAddSheet` entirely and driving the sheet from
+        // `.sheet(item: $pendingResult)`. Presentation and content become one
+        // piece of state, so "presented but empty" is no longer expressible.
+        // **Two booleans that must agree is a bug waiting for a race; one
+        // optional cannot disagree with itself.**
+        //
+        // **2. Two `.sheet` modifiers on the same view.** This file had two
+        // pairs of them. That is D36: the later one wins and the earlier
+        // silently never presents, and when both are triggered the result is
+        // undefined. `fullRecordPlace`'s sheet moves onto the map below.
+        .sheet(item: $pendingResult) { result in
+            AddDiscoveredPlaceSheet(result: result) {
+                await notion.fetchPlaces()
             }
-        }
-        .sheet(item: $fullRecordPlace) { place in
-            // Presented as a dismissable sheet rather than navigating to the
-            // Places section — Discover's map/search/selection state stays
-            // exactly as it was underneath, so closing this returns you right
-            // back to where you were instead of losing your place.
-            PlaceDetailSheet(place: place)
-                .environment(notion)
-                .environment(noteStore)
+            .environment(notion)
         }
     }
 
@@ -318,6 +337,17 @@ struct TraceMacDiscoverView: View {
         .mapControls {
             MapCompass()
             MapZoomStepper()
+        }
+        // Hosted here, not beside the Add sheet on the container — two `.sheet`
+        // modifiers on one view is D36, and this file had two pairs of them.
+        //
+        // Presented as a dismissable sheet rather than navigating to the Places
+        // section: Discover's map, search and selection state stay exactly as
+        // they were underneath, so closing it returns you where you were.
+        .sheet(item: $fullRecordPlace) { place in
+            PlaceDetailSheet(place: place)
+                .environment(notion)
+                .environment(noteStore)
         }
     }
 
@@ -598,15 +628,7 @@ struct TraceMacDiscoverView: View {
     }
 
     private func emptyListState(_ message: String) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: "binoculars")
-                .font(.system(size: 36, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
+        MacEmptyState.list("binoculars", message)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
     }
@@ -658,8 +680,8 @@ struct TraceMacDiscoverView: View {
                 directionsOrigin: $directionsOriginPlace,
                 originChoices: sortedPlaces,
                 onAdd: {
+                    // Setting this presents the sheet — see the note on it.
                     pendingResult = result
-                    showAddSheet = true
                 },
                 onDismiss: { selectedPin = nil },
                 onAddToResearch: { addSelectedToResearch() }
@@ -766,6 +788,12 @@ struct TraceMacDiscoverView: View {
                     .font(.caption)
 
                 Button("Load Note…") { showLoadNoteSheet = true }
+                    .sheet(isPresented: $showLoadNoteSheet) {
+                        ResearchLoadNoteSheet { path, label in
+                            loadNote(path: path, label: label)
+                        }
+                        .environment(noteStore)
+                    }
                     .buttonStyle(.plain)
                     .font(.caption)
 
@@ -789,15 +817,12 @@ struct TraceMacDiscoverView: View {
         }
         .frame(width: 300)
         .background(.regularMaterial)
+        // The second stacked pair — see the note on the Add sheet. `Load Note…`
+        // moves onto the toolbar row that triggers it, so the two live on
+        // different views.
         .sheet(isPresented: $showProcessSheet) {
             ResearchProcessSheet { destination, projectName in
                 process(destination: destination, projectName: projectName)
-            }
-            .environment(noteStore)
-        }
-        .sheet(isPresented: $showLoadNoteSheet) {
-            ResearchLoadNoteSheet { path, label in
-                loadNote(path: path, label: label)
             }
             .environment(noteStore)
         }
@@ -1077,7 +1102,7 @@ private struct SearchResultPin: View {
                 .fill(isSaved ? Color.yellow : Color.blue)
                 .frame(width: 26, height: 26)
             Image(systemName: isSaved ? "star.fill" : "mappin")
-                .font(.system(size: 11))
+                .font(MacGlyph.control)
                 .foregroundStyle(.white)
         }
         .shadow(radius: 2)
@@ -1091,12 +1116,9 @@ private struct SavedPlaceRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                Circle().fill(placeColor(for: place.category).opacity(0.18)).frame(width: 30, height: 30)
-                Image(systemName: placeIcon(for: place.category))
-                    .font(.system(size: 13))
-                    .foregroundStyle(placeColor(for: place.category))
-            }
+            MacIconBadge(icon: placeIcon(for: place.category),
+                         tint: placeColor(for: place.category),
+                         size: .compact)
             VStack(alignment: .leading, spacing: 2) {
                 Text(place.name).font(.callout).fontWeight(.medium).lineLimit(1)
                 HStack(spacing: 4) {
@@ -1125,7 +1147,7 @@ private struct SearchResultRow: View {
             ZStack {
                 Circle().fill((isSaved ? Color.yellow : Color.blue).opacity(0.18)).frame(width: 30, height: 30)
                 Image(systemName: isSaved ? "star.fill" : "mappin")
-                    .font(.system(size: 13))
+                    .font(MacGlyph.control)
                     .foregroundStyle(isSaved ? .yellow : .blue)
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -1169,11 +1191,9 @@ private struct SavedPlaceInfoCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    Circle().fill(placeColor(for: place.category)).frame(width: 36, height: 36)
-                    Image(systemName: placeIcon(for: place.category))
-                        .font(.system(size: 15)).foregroundStyle(.white)
-                }
+                MacIconBadge(icon: placeIcon(for: place.category),
+                             tint: placeColor(for: place.category),
+                             size: .header)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(place.name).font(.headline)
                     Text([place.category, place.city].filter { !$0.isEmpty }.joined(separator: " · "))
@@ -1279,7 +1299,7 @@ private struct SearchResultInfoCard: View {
                 ZStack {
                     Circle().fill(isSaved ? Color.yellow : Color.blue).frame(width: 36, height: 36)
                     Image(systemName: isSaved ? "star.fill" : "mappin")
-                        .font(.system(size: 15)).foregroundStyle(.white)
+                        .font(MacGlyph.control).foregroundStyle(.white)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(result.name).font(.headline)
@@ -1418,7 +1438,10 @@ private struct AddDiscoveredPlaceSheet: View {
         do {
             _ = try await notion.addPlace(
                 name: result.name,
-                address: result.streetAddress,
+                // `addressWithRegion`, not `streetAddress` — the latter drops
+                // the state and postcode and stores them nowhere. See the note
+                // on it in `GooglePlacesService`.
+                address: result.addressWithRegion,
                 city: result.city,
                 category: category,
                 latitude: result.latitude,

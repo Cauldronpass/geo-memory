@@ -69,8 +69,40 @@ struct DayflowVisitDetailView: View {
                 }
             }
 
-            if let notes = visit.notes, !notes.isEmpty {
-                Section("Notes") { Text(notes) }
+            // ALWAYS DRAWN, EVEN WHEN EMPTY — 2026-08-01. David tapped through
+            // from an Endeavor note to this card and found nothing where notes
+            // should be. The visit genuinely has none (he rated Nick's on the
+            // Lake and left the field blank), but the section was omitted
+            // entirely when empty, so "you wrote nothing here" and "this screen
+            // failed to load" looked identical.
+            //
+            // The Photos section three rows below has always handled its own
+            // empty case — "No photos logged yet" plus a hand-off. Notes was the
+            // odd one out. Same shape now.
+            Section("Notes") {
+                if let notes = visit.notes, !notes.isEmpty {
+                    Text(notes)
+                } else {
+                    Text("No notes on this visit")
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                }
+                // The way OUT of the read-only boundary, 2026-08-01. Trace's
+                // VisitDetailView has had a notes editor all along; there was
+                // simply no route to it, so the only way to write a note on a
+                // visit you were already looking at was to open Trace and find
+                // it again by hand.
+                //
+                // Unlike the photo hand-off below, this one IS scoped to this
+                // visit — `trace://visit?id=` resolves the exact record. Shown
+                // whether or not there are notes already, because the second
+                // reason to come here is to add to what you wrote.
+                Button {
+                    if let url = URL(string: "trace://visit?id=\(visit.id)") { openURL(url) }
+                } label: {
+                    Label(visit.notes?.isEmpty == false ? "Edit in Trace" : "Add Notes in Trace",
+                          systemImage: "arrow.up.forward.app")
+                }
             }
 
             if !attendees.isEmpty {
@@ -153,14 +185,7 @@ struct DayflowInteractionDetailView: View {
     // one file (e.g. DayflowQuickAddSheet's stripListToken vs. applyHighlight's
     // identical scan), rather than threading a shared method across files for one line.
     private func icon(for type: String) -> String {
-        switch type.lowercased() {
-        case "call":    return "phone"
-        case "email":   return "envelope"
-        case "meeting": return "person.2"
-        case "coffee":  return "cup.and.saucer"
-        case "social":  return "figure.socialdance"
-        default:        return "bubble.left"
-        }
+        InteractionStyle.icon(for: type)
     }
 
     var body: some View {

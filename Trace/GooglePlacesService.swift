@@ -28,6 +28,29 @@ struct GooglePlace: Identifiable, Equatable {
         return parts.prefix(parts.count - 3).joined(separator: ", ")
     }
 
+    /// `"123 Main St, Chicago, IL 60601, USA"` → `"123 Main St, Chicago, IL 60601"`.
+    ///
+    /// Everything Google gave us except the country.
+    ///
+    /// **Why this exists.** `streetAddress` above drops the city, the state AND
+    /// the postcode, because `Place` stores city separately. City survives in
+    /// its own field; the state and postcode were simply thrown away and stored
+    /// nowhere. David, saving Lakemore Resort as a destination for a five-hour
+    /// drive: *"The address is not showing in the place record."* It was — just
+    /// the street line, with `MI 49696` gone.
+    ///
+    /// `Place.address` is only ever displayed or searched — no parser depends on
+    /// it being street-only — so the fuller string is safe to store there, and it
+    /// needs no Notion schema change, which a separate postcode field would.
+    ///
+    /// The country is dropped because every place in this vault is in one, and a
+    /// line ending "USA" is noise on a card you read at a glance.
+    var addressWithRegion: String {
+        let parts = formattedAddress.components(separatedBy: ", ")
+        guard parts.count >= 2 else { return formattedAddress }
+        return parts.dropLast().joined(separator: ", ")
+    }
+
     // "123 Main St, Chicago, IL 60601, USA" → "Chicago"
     var city: String {
         let parts = formattedAddress.components(separatedBy: ", ")
