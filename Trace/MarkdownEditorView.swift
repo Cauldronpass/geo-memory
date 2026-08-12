@@ -3652,7 +3652,9 @@ struct MarkdownEditorView: UIViewRepresentable {
             let filename = "\(formatter.string(from: Date()))-scan.pdf"
             Task {
                 do {
-                    let path = try NoteStore.shared.writeDocument(pdfData, category: "Scans", filename: filename)
+                    let path = try NoteStore.shared.writeDocument(pdfData,
+                                                                 category: NoteStore.documentFolder(),
+                                                                 filename: filename)
                     await MainActor.run {
                         self.insertAtCursor("📎 [Scan](\(path))\n")
                     }
@@ -3707,7 +3709,9 @@ struct MarkdownEditorView: UIViewRepresentable {
             let displayName = url.deletingPathExtension().lastPathComponent
             Task {
                 do {
-                    let path = try NoteStore.shared.writeDocument(data, category: "Other", filename: filename)
+                    let path = try NoteStore.shared.writeDocument(data,
+                                                                 category: NoteStore.documentFolder(),
+                                                                 filename: filename)
                     await MainActor.run {
                         self.insertAtCursor("📎 [\(displayName)](\(path))\n")
                     }

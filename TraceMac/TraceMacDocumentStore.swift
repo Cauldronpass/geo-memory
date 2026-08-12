@@ -135,7 +135,9 @@ class TraceMacDocumentStore {
                     tint: sidecar?.tint,
                     remindOn: sidecar?.remindOn,
                     note: body.note,
-                    summary: body.summary
+                    summary: body.summary,
+                    extractedText: body.text,
+                    textExtracted: body.hasTextSection
                 )
                 result.append(doc)
             }
@@ -203,22 +205,11 @@ class TraceMacDocumentStore {
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
     }
 
-    /// Moves a document (and its sidecar) to a different category subfolder.
-    func moveDocument(_ doc: TraceMacDocument, to newCategory: String) throws {
-        let newRelativePath = "Documents/\(newCategory)/\(doc.filename)"
-        let newSidecarPath: String = {
-            let base = newRelativePath.hasSuffix(".\(doc.fileExtension)")
-                ? String(newRelativePath.dropLast(doc.fileExtension.count + 1))
-                : newRelativePath
-            return "\(base).md"
-        }()
-        // Move the binary document file using the iCloud-safe mover
-        try noteStore.moveItem(from: doc.relativePath, to: newRelativePath)
-        // Move sidecar if it exists (text file — moveFile is fine)
-        if let sidecar = try? noteStore.readFile(doc.sidecarPath), !sidecar.isEmpty {
-            try? noteStore.moveFile(from: doc.sidecarPath, to: newSidecarPath)
-        }
-    }
+    // `moveDocument` removed Session 69. It wrote `Documents/<Category>/`,
+    // the axis `Documents-App-Scope.md` retired on 2026-07-28 — that doc
+    // states the move command "was never built, deliberately", and this was
+    // it, built anyway. Its two useful callers set `linked_note` on the way
+    // past; that association is now edited directly and nothing moves.
 
     // MARK: - Import
 
@@ -248,7 +239,9 @@ class TraceMacDocumentStore {
         let timestamp = fmt.string(from: Date())
         let filename = "\(timestamp)-\(sourceURL.lastPathComponent)"
         let data = try Data(contentsOf: sourceURL)
-        let relativePath = try noteStore.writeDocument(data, category: "Inbox", filename: filename)
+        let relativePath = try noteStore.writeDocument(data,
+                                                       category: NoteStore.documentFolder(),
+                                                       filename: filename)
         guard let endeavor else { return relativePath }
 
         // Same derivation `moveDocument` uses: drop the extension, add `.md`.
@@ -269,6 +262,136 @@ class TraceMacDocumentStore {
         data2.linkedNote   = endeavor.relativePath
         try noteStore.writeFile(sidecarPath, content: renderSidecar(data2))
         return relativePath
+    }
+
+    // MARK: - Auto-scan on arrival (Session 69)
+
+    /// Paths already attempted this session, so a document the model has nothing
+    /// to say about is not re-scanned on every reload.
+    ///
+    /// **Without this it is an unbounded loop, not a retry.** The "needs a scan"
+    /// test is "no tags and no description" — which is exactly the state a
+    /// scan that returned nothing leaves behind. Every reload would spend
+    /// another API call re-asking a question already answered with silence.
+    private var scanAttempted: Set<String> = []
+
+    /// Scans documents that have just arrived, when there are few enough of them.
+    ///
+    /// **The cap is a decision, not a safeguard.** David, on whether new files
+    /// should scan themselves: *"single or two files or even up to five seem ok
+    /// to me."* One screenshot dropped for filing is worth a call without being
+    /// asked; twenty files dragged in at once is a batch he is filing, not
+    /// reading, and twenty unrequested calls is a surprise. Over the limit the
+    /// documents still scan — on the first open, exactly as they always have.
+    ///
+    /// Fires after a reload triggered from outside the app, which is the only
+    /// time documents appear that nobody in this process just created.
+    func autoScanNewArrivals(limit: Int = 5) async {
+        let candidates = documents.filter { doc in
+            (doc.isPDF || doc.isImage)
+                && doc.tags.isEmpty
+                && doc.description.isEmpty
+                && !scanAttempted.contains(doc.relativePath)
+        }
+        guard !candidates.isEmpty, candidates.count <= limit else {
+            // Mark an over-limit batch as seen so it does not re-evaluate on
+            // every reload — they will scan on first open.
+            if candidates.count > limit {
+                candidates.forEach { scanAttempted.insert($0.relativePath) }
+            }
+            return
+        }
+
+        for doc in candidates {
+            scanAttempted.insert(doc.relativePath)
+            guard let result = try? await DocumentScanService.scan(
+                doc: doc,
+                noteStore: noteStore,
+                existingTags: [],
+                userContext: ""
+            ) else { continue }
+
+            // The title is the whole point of doing this unprompted. The model
+            // returns one only when the filename looks auto-generated, which a
+            // `CleanShot 2026-08-10 at 20.19.45.png` does — and `doc.title`
+            // falls back to that filename, so passing it through unchanged when
+            // the model declines is correct rather than lazy.
+            try? saveSidecar(
+                for: doc,
+                title: result.title ?? doc.title,
+                tags: result.tags,
+                linkedNote: doc.linkedNote,
+                people: doc.people,
+                description: result.description
+            )
+        }
+        await reload()
+    }
+
+    // MARK: - Text extraction
+
+    /// Reads the words out of every document that has not been read yet, and
+    /// writes them into the sidecar under `## Text`.
+    ///
+    /// **No limit, unlike `autoScanNewArrivals`.** That function caps at five
+    /// because each one is a network call to Claude that costs money and sends
+    /// the document out. This is Vision and PDFKit on this Mac: no key, no
+    /// network, no per-item cost. The only reason to cap it would be time, and
+    /// the whole container is eighteen files.
+    ///
+    /// So the first run after this ships is a backfill of everything already in
+    /// Satchel, and every run after that is however many arrived since.
+    ///
+    /// **The `private` tag is not consulted, deliberately.** §5b binds Ask,
+    /// which sends text to an API. Nothing here leaves the machine, and a
+    /// private document that cannot be found by local search is unfindable in
+    /// the one place it was safe to find.
+    func extractTextForNewArrivals() async {
+        let pending = documents.filter { doc in
+            (doc.isPDF || doc.isImage) && !doc.textExtracted
+        }
+        guard !pending.isEmpty else { return }
+
+        var wrote = false
+        for doc in pending {
+            guard let url = noteStore.resolvedURL(for: doc.relativePath) else { continue }
+            // Detached: Vision on a full page is tens of milliseconds, and a
+            // scanned PDF is that per page. Same rule `findWikilinkMentions` and
+            // the tag scan follow.
+            let text = await Task.detached { MacTextExtraction.extract(from: url) }.value
+            // `nil` means "not a kind this can read" and must not write a
+            // marker — a `.txt` arriving one day should not be recorded as
+            // having no text. An empty string DOES write one: the pass ran and
+            // this photograph has no writing in it, and without the marker it
+            // would be re-read on every launch forever.
+            guard let text else { continue }
+            do {
+                try writeExtractedText(text, for: doc)
+                wrote = true
+            } catch { continue }
+        }
+        if wrote { await reload() }
+    }
+
+    /// Writes only the `## Text` section, preserving everything else on disk.
+    ///
+    /// **When no sidecar exists yet it writes one with no title**, which looks
+    /// like an omission and is the opposite. `importDocument` deliberately
+    /// leaves the title empty so `DocumentScanService` still sees a question
+    /// worth answering; the Dropzone action learned the same lesson the hard way
+    /// (HANDOFF addendum 11) when a helpfully pre-filled title stopped the model
+    /// ever suggesting one. `renderSidecar` emits a bare `title:` line, and
+    /// `parseSidecar` reads that back as nil, so the derived title still wins
+    /// and the document is still a scan candidate.
+    private func writeExtractedText(_ text: String, for doc: TraceMacDocument) throws {
+        var body = readBody(at: doc.sidecarPath)
+        body.text = text
+        body.hasTextSection = true
+
+        var data = parseSidecar(at: doc.sidecarPath) ?? SidecarData()
+        if data.created == nil { data.created = doc.created ?? Date() }
+
+        try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
     }
 
     // MARK: - Helpers
@@ -332,15 +455,37 @@ class TraceMacDocumentStore {
     struct SidecarBody {
         var note: String = ""
         var summary: String = ""
+        /// On-device OCR / PDF text layer. Written once when the document
+        /// arrives, read by search forever after. Session 70, spec §8 step 2.
+        var text: String = ""
+        /// Whether a `## Text` heading is present on disk, **independently of
+        /// whether there is anything under it.**
+        ///
+        /// This is the marker that stops a photograph of a sunset being
+        /// re-OCR’d on every launch. "Needs extraction" is *no heading*, not
+        /// *no text* — because a pass that found nothing leaves behind exactly
+        /// what "no text" looks like. Same trap D90 named for the AI scan,
+        /// where a scan returning nothing left a document looking unscanned.
+        ///
+        /// **Deliberately not a frontmatter key.** A key would have to be added
+        /// to `SidecarData`, `parseSidecar` and `renderSidecar` here *and* in
+        /// `IOSDocumentStore`, or the phone would drop it on its next save.
+        /// Eight places for one flag. A body heading needs none of that: iOS
+        /// does not recognise `## Text`, so its parser files the whole section
+        /// under `extra` and re-emits it untouched, which is what `extra` is
+        /// for.
+        var hasTextSection: Bool = false
         var extra: String = ""
 
         var isEmpty: Bool {
             note.isEmpty && summary.isEmpty && extra.isEmpty
+                && text.isEmpty && !hasTextSection
         }
     }
 
     static let noteHeading = "## Note"
     static let summaryHeading = "## Summary"
+    static let textHeading = "## Text"
 
     func parseBody(_ raw: String) -> SidecarBody {
         var body = SidecarBody()
@@ -357,9 +502,10 @@ class TraceMacDocumentStore {
             index += 1
         }
 
-        enum Section { case none, note, summary }
+        enum Section { case none, note, summary, text }
         var section: Section = .none
         var note: [String] = [], summary: [String] = [], extra: [String] = []
+        var text: [String] = []
 
         while index < lines.count {
             let line = lines[index]
@@ -368,6 +514,9 @@ class TraceMacDocumentStore {
                 section = .note
             } else if trimmed == Self.summaryHeading {
                 section = .summary
+            } else if trimmed == Self.textHeading {
+                section = .text
+                body.hasTextSection = true
             } else if trimmed.hasPrefix("## ") {
                 // An unrecognised heading — hand it and everything under it to
                 // `extra` rather than swallowing it into the previous section.
@@ -377,6 +526,7 @@ class TraceMacDocumentStore {
                 switch section {
                 case .note:    note.append(line)
                 case .summary: summary.append(line)
+                case .text:    text.append(line)
                 case .none:    extra.append(line)
                 }
             }
@@ -388,7 +538,19 @@ class TraceMacDocumentStore {
         }
         body.note = tidy(note)
         body.summary = tidy(summary)
+        body.text = tidy(text)
         body.extra = tidy(extra)
+        // A round trip through the phone puts `## Text` and its contents into
+        // `extra`, because iOS does not recognise the heading. Recovered here
+        // so the Mac does not decide the document is unextracted and run Vision
+        // over it again every time a document is edited on the phone.
+        if !body.hasTextSection, let range = body.extra.range(of: Self.textHeading) {
+            body.hasTextSection = true
+            body.text = String(body.extra[range.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            body.extra = String(body.extra[..<range.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         return body
     }
 
@@ -400,6 +562,13 @@ class TraceMacDocumentStore {
         }
         if !body.summary.isEmpty {
             out += "\n\(Self.summaryHeading)\n\n\(body.summary)\n"
+        }
+        // The heading is written even when the text is empty. That is the whole
+        // marker: it says the pass ran and this file has nothing readable in it.
+        if body.hasTextSection {
+            out += body.text.isEmpty
+                ? "\n\(Self.textHeading)\n"
+                : "\n\(Self.textHeading)\n\n\(body.text)\n"
         }
         if !body.extra.isEmpty {
             out += "\n\(body.extra)\n"

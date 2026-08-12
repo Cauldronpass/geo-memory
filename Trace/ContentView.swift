@@ -448,6 +448,13 @@ struct ContentView: View {
                     // showingDrawer onChange below are the only two paths that
                     // now keep `notion.captures` current without a full relaunch.
                     await notion.fetchCaptures()
+                    // Send anything the widget staged while Trace was closed.
+                    // AFTER `fetchPlaces()`, not beside it: the drain resolves a
+                    // place id against `notion.places`, and on a cold launch that
+                    // array is empty. The ordering IS the retry mechanism — same
+                    // lesson `pendingCheckInPlaceID` records, where a same-tick
+                    // lookup found nothing and the hand-off was simply dropped.
+                    await drainStagedCheckIns()
                 }
             }
         }
@@ -699,6 +706,55 @@ struct ContentView: View {
 
     // Reads pending action from UserDefaults (written by AppDelegate), clears it, fires the action.
     // Called from both onAppear (cold launch) and onReceive (foreground).
+    // MARK: - Staged check-ins (widget hand-off, Session 69)
+    //
+    // The launcher widget's Check in tile writes a record into the App Group and
+    // launches nothing; this is the other half. See `CheckInBridge.swift` for
+    // why the widget does not write to Notion itself — briefly, that would put
+    // the API key and a two-second network call inside a memory-capped process
+    // with no screen on which to report failure.
+    //
+    // **Trace drains, and nothing else does.** Dayflow also carries
+    // `NotionService` and is opened more often, so it is the tempting second
+    // drainer — but two processes reading one queue and POSTing what they find
+    // is a duplicate Visit whenever they overlap, and `UserDefaults` offers no
+    // cross-process lock to prevent it. One drainer is correct by construction.
+    // The cost, stated: a check-in waits for Trace specifically. If that proves
+    // too slow in practice the fix is a claim protocol, not a second
+    // unsynchronised reader.
+
+    /// Sends every staged check-in, clearing only what actually succeeded.
+    private func drainStagedCheckIns() async {
+        let queue = CheckInQueue.pending()
+        guard !queue.isEmpty else { return }
+
+        var sent: Set<String> = []
+        for item in queue {
+            guard let place = notion.places.first(where: { $0.id == item.placeID }) else {
+                // The place is gone from the fetch — archived, or made
+                // temporary. Dropped rather than retried: `fetchPlaces` filters
+                // both out, so this record can never resolve, and a queue that
+                // only grows is a worse failure than one lost check-in at a
+                // place he has since archived.
+                sent.insert(item.id)
+                continue
+            }
+            do {
+                // `date:` is the tap's timestamp, carried from the widget. Using
+                // `Date()` here would file every delayed check-in under the
+                // morning he happened to open the app.
+                _ = try await notion.checkIn(place: place, date: item.date)
+                sent.insert(item.id)
+            } catch {
+                // Left queued deliberately. The next foreground retries it, and
+                // a retry is visible where a silent drop is not.
+            }
+        }
+
+        CheckInQueue.remove(ids: sent)
+        if !sent.isEmpty { await notion.fetchVisits() }
+    }
+
     private func checkPendingShortcut() {
         guard let action = UserDefaults.standard.string(forKey: "pendingShortcutAction") else { return }
         UserDefaults.standard.removeObject(forKey: "pendingShortcutAction")

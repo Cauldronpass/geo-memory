@@ -1810,14 +1810,47 @@ struct TraceMacProjectsView: View {
     @State private var selectedTags: Set<String> = []
     @State private var allTags: [String] = []
     @State private var fileContents: [String: String] = [:]
+    /// Row under the cursor, so an unpinned row can offer a pin to click.
+    @State private var hoveredFile: String? = nil
 
     private var filtered: [String] {
         let base = searchText.isEmpty ? files : files.filter { $0.localizedCaseInsensitiveContains(searchText) }
-        guard !selectedTags.isEmpty else { return base }
-        return base.filter { filename in
+        guard !selectedTags.isEmpty else { return pinnedFirst(base) }
+        return pinnedFirst(base.filter { filename in
             let content = fileContents[filename] ?? ""
             return selectedTags.allSatisfy { content.range(of: "#\($0)", options: .caseInsensitive) != nil }
-        }
+        })
+    }
+
+    // MARK: - Pinning (queue item 19)
+    //
+    // The pin is not a Mac-local idea. `DayflowFlagStore` keeps one JSON index
+    // in the shared iCloud container, keyed on the vault-relative note path, and
+    // Dayflow's project list has read it since 2026-07-22. The Mac joins that
+    // index rather than starting a second one — see D78, and the file's own
+    // header for why the flag is not in the note.
+    //
+    // **The key has to match exactly, and it does.** Dayflow builds
+    // `"Notes/Projects/\(name).md"` from a bare title; this list's `files` are
+    // already `<Title>.md`, so `subfolder + "/" + filename` is the same string.
+    // Two ways of spelling one key is how an index like this silently splits.
+
+    private func projectNotePath(_ filename: String) -> String { "\(subfolder)/\(filename)" }
+
+    private func isPinned(_ filename: String) -> Bool {
+        DayflowFlagStore.shared.isFlagged(projectNotePath(filename))
+    }
+
+    /// Pinned notes float to the top; each group keeps the alphabetical order
+    /// `loadFiles` already put `files` in.
+    ///
+    /// Dayflow layers the same "pinned first" rule over a three-way sort menu
+    /// (`sortedProjectNames`, Newest/Oldest/Name). This list has no sort control,
+    /// so the question that menu answers — how to order *within* each group —
+    /// does not arise here, and inventing a sort menu to match would be copying
+    /// the shape of the other screen instead of the behaviour David asked for.
+    private func pinnedFirst(_ names: [String]) -> [String] {
+        names.filter { isPinned($0) } + names.filter { !isPinned($0) }
     }
 
     var body: some View {
@@ -1837,15 +1870,75 @@ struct TraceMacProjectsView: View {
                         Spacer()
                     } else {
                         List(filtered, id: \.self, selection: $selectedFile) { filename in
-                            Label(
-                                filename.replacingOccurrences(of: ".md", with: ""),
-                                systemImage: "folder.fill"
-                            )
-                            .font(.system(.callout, weight: .medium))
-                            .lineLimit(1)
+                            HStack(spacing: 6) {
+                                Label(
+                                    filename.replacingOccurrences(of: ".md", with: ""),
+                                    systemImage: "folder.fill"
+                                )
+                                .font(.system(.callout, weight: .medium))
+                                .lineLimit(1)
+                                Spacer(minLength: 4)
+                                // A GLYPH THAT LOOKS LIKE A CONTROL IS A CONTROL.
+                                //
+                                // Session 69 shipped this as a pure indicator with
+                                // the toggle in the context menu, reasoning that a
+                                // dead-looking pin on every row was worse (D80).
+                                // David's first sentence on it: *"the pin is there
+                                // but i cant click it on and off."* Nothing about a
+                                // pushpin says right-click me, and the argument had
+                                // the discoverability backwards anyway — with the
+                                // glyph hidden until pinned, there was nothing to
+                                // click to pin in the first place. D82.
+                                //
+                                // Hover is what makes both true at once: a faint
+                                // outline pin appears on the row under the cursor,
+                                // a filled orange one stays on pinned rows. Same
+                                // idiom as Finder and Mail; it does not need the
+                                // permanent clutter the original note worried about.
+                                if isPinned(filename) || hoveredFile == filename {
+                                    Button {
+                                        DayflowFlagStore.shared.toggleFlag(projectNotePath(filename))
+                                    } label: {
+                                        Image(systemName: isPinned(filename) ? "pin.fill" : "pin")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(isPinned(filename)
+                                                             ? MacPalette.orange
+                                                             : Color.secondary)
+                                            // Without this the hit area is the glyph's
+                                            // drawn pixels, which for a pushpin is a
+                                            // thin diagonal and a dot.
+                                            .contentShape(Rectangle())
+                                    }
+                                    // `.plain` and nothing else. A bordered button in
+                                    // a sidebar row draws a chrome rectangle over the
+                                    // selection highlight, and a Button inside a List
+                                    // row consumes its own click, so pinning does not
+                                    // also change which note is open.
+                                    .buttonStyle(.plain)
+                                    .help(isPinned(filename) ? "Unpin" : "Pin")
+                                    .accessibilityLabel(isPinned(filename)
+                                                        ? "Unpin \(filename)"
+                                                        : "Pin \(filename)")
+                                }
+                            }
                             .padding(.vertical, 4)
+                            // The hover target has to be the whole row, not just the
+                            // text, or the pin flickers away as the cursor crosses
+                            // the gap between the label and the trailing edge.
+                            .contentShape(Rectangle())
+                            .onHover { inside in
+                                if inside { hoveredFile = filename }
+                                else if hoveredFile == filename { hoveredFile = nil }
+                            }
                             .tag(filename)
                             .contextMenu {
+                                Button {
+                                    DayflowFlagStore.shared.toggleFlag(projectNotePath(filename))
+                                } label: {
+                                    Label(isPinned(filename) ? "Unpin" : "Pin",
+                                          systemImage: isPinned(filename) ? "pin.slash" : "pin")
+                                }
+                                Divider()
                                 Button {
                                     renameCandidate = filename
                                     renameDraft = filename.replacingOccurrences(of: ".md", with: "")
@@ -1927,6 +2020,12 @@ struct TraceMacProjectsView: View {
             deepLinkFile?.wrappedValue = nil
         }
         .task {
+            // Re-read the shared flag index before the list draws. The store is
+            // a singleton that loads once, at first touch; a pin David sets on
+            // the phone after this Mac launched would otherwise not appear until
+            // the app is relaunched — which is the exact complaint item 19 is
+            // about, one layer down. See `DayflowFlagStore.reload()`.
+            DayflowFlagStore.shared.reload()
             await loadFiles()
             if docStore == nil {
                 docStore = TraceMacDocumentStore(noteStore: noteStore)
@@ -2028,6 +2127,11 @@ struct TraceMacProjectsView: View {
         let newFilename = newName + ".md"
         guard newFilename != old else { showRenameSheet = false; renameCandidate = nil; return }
         try? noteStore.moveFile(from: "\(subfolder)/\(old)", to: "\(subfolder)/\(newFilename)")
+        // The flag index is keyed on the path, so the rename has to carry it or
+        // the pin points at a file that no longer exists and the note comes back
+        // unpinned. Same reason `deleteNote` clears rather than leaves.
+        DayflowFlagStore.shared.moveFlag(from: projectNotePath(old),
+                                         to: projectNotePath(newFilename))
         if let idx = files.firstIndex(of: old) { files[idx] = newFilename; files.sort() }
         if selectedFile == old { selectedFile = newFilename }
         showRenameSheet = false; renameCandidate = nil
@@ -2035,6 +2139,7 @@ struct TraceMacProjectsView: View {
 
     private func deleteNote(_ filename: String) {
         try? noteStore.deleteFile("\(subfolder)/\(filename)")
+        DayflowFlagStore.shared.clearFlag(projectNotePath(filename))
         files.removeAll { $0 == filename }
         if selectedFile == filename { selectedFile = nil }
         deleteCandidate = nil

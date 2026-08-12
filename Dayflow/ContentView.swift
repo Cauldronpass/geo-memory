@@ -425,21 +425,42 @@ struct ContentView: View {
                 // Same shape as `openCalendar` below, which hands off to
                 // Fantastical, and the only route an extension has.
                 //
-                // `today` is deliberately a no-op: opening Dayflow IS the action,
-                // and the tile exists so the row reads as four equal choices
-                // rather than three buttons and a gap.
+                // **`today` is no longer a no-op.** Session 68 reasoned that
+                // opening Dayflow IS the action, and left the tile doing nothing
+                // beyond the launch. That is true only when Dayflow happens to
+                // already be showing today, and it usually is not: `selectedDate`
+                // survives backgrounding, and the screen can be sitting under a
+                // full-screen cover (Browse, the full-page note) or a sheet
+                // (Settings, Quick Add). So the tile labelled Today could land on
+                // Tomorrow, on a calendar grid, or on last Thursday's note.
+                //
+                // Same mistake as D82 in a different costume: the behaviour was
+                // reasoned about from what the code would do, not from what a
+                // person tapping a button called "Today" is asking for. A tile
+                // that names a destination has to arrive there.
+                //
+                // Covers are cleared before the date is set, so the reset is
+                // never applied to a screen the user cannot see.
                 let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                     .queryItems?.first(where: { $0.name == "target" })?.value
-                let scheme: String? = {
-                    switch target {
-                    case "capture": return "jot://"
-                    case "checkin": return "trace://checkin"
-                    case "file":    return "satchel://scan"
-                    default:        return nil          // "today", or anything unknown
+                if target == "today" {
+                    browseDestination = nil
+                    showNoteFullPage  = false
+                    showSettings      = false
+                    showQuickAdd      = false
+                    selectedDate      = DayflowRelativeDay.today.date()
+                } else {
+                    let scheme: String? = {
+                        switch target {
+                        case "capture": return "jot://"
+                        case "checkin": return "trace://checkin"
+                        case "file":    return "satchel://scan"
+                        default:        return nil          // anything unknown
+                        }
+                    }()
+                    if let scheme, let dest = URL(string: scheme) {
+                        UIApplication.shared.open(dest)
                     }
-                }()
-                if let scheme, let dest = URL(string: scheme) {
-                    UIApplication.shared.open(dest)
                 }
             } else if url.host == "openCalendar" {
                 if let fantasticalURL = URL(string: "fantastical2://") {

@@ -19,6 +19,10 @@ struct TraceMacDocumentsView: View {
     /// `TraceMacContentView`.
     var deepLinkPath: Binding<String?>? = nil
 
+    /// The search text that produced `deepLinkPath`, so the PDF viewer can
+    /// paint it on the page. Consumed and cleared alongside the path.
+    var deepLinkQuery: Binding<String?>? = nil
+
     @Environment(NoteStore.self) private var noteStore
 
     @State private var store: TraceMacDocumentStore? = nil
@@ -28,7 +32,6 @@ struct TraceMacDocumentsView: View {
     @State private var activeProject: String? = nil
     @State private var filterYear: Int? = nil
     @State private var filterMonth: Int? = nil
-    @State private var categoryFilter = "All"
     @State private var listCollapsed = false
     @State private var isDropTargeted = false
 
@@ -48,6 +51,10 @@ struct TraceMacDocumentsView: View {
     @State private var previewFraction: CGFloat = 0.58
     @GestureState private var previewDrag: CGFloat = 0
     @State private var zoom = PreviewZoomController()
+    /// Find-in-PDF for whatever is on screen. Owned here rather than by the
+    /// representable so the match chip can live outside the `PDFView` and
+    /// survive its rebuilds, exactly as `zoom` does.
+    @State private var find = MacPDFFind()
 
     /// Divider strip height. Thick enough to aim at without hunting.
     private let dividerThickness: CGFloat = 6
@@ -59,20 +66,23 @@ struct TraceMacDocumentsView: View {
     // a Mac user reaches first, and the list had no context menu at all.
     @State private var deleteCandidate: TraceMacDocument? = nil
 
-    // Standard tabs always shown; any non-standard subfolder (e.g. "Receipts",
-    // or a year folder written by Satchel) gets its own tab.
+    // The category tab row lived here until Session 69 (2026-08-10). It listed
+    // `["Inbox", "Project", "Place", "Trip"]` plus any other subfolder found on
+    // disk, and it was the last surviving piece of an axis `Documents-App-Scope.md`
+    // removed on 2026-07-28 — "the folder is now the year", with retrieval by
+    // type, `endeavor`, `linked_note`, tags and Kit. That doc also says the
+    // move-to-another-folder command "was never built, deliberately — it would
+    // have put back the axis being removed." TraceMac had it anyway, because
+    // only Satchel was migrated.
     //
-    // "Archive" left the exclusion set in Session 63 along with the tab and the
-    // move-menu item that created the folder. If a `Documents/Archive/` folder
-    // exists on someone's disk it now shows up as an ordinary category rather
-    // than being filtered out of every list — which is the honest rendering:
-    // the folder is just a folder, and hiding it was what made documents put
-    // there disappear with no way back.
-    private var categories: [String] {
-        let standard = ["Inbox", "Project", "Place", "Trip"]
-        let extras = Array(Set(store?.documents.map(\.category) ?? []).subtracting(Set(standard))).sorted()
-        return ["All"] + standard + extras
-    }
+    // David, arriving at it from the other end: *"i have to continually organize
+    // things to either places or trips... we decided on tags instead of folders
+    // so i am not sure why this is like this."* Those four words were these four
+    // tabs. Nothing decided it; the change simply never reached this file.
+    //
+    // Year is still filterable — `filterYear` below reads the sidecar's
+    // `created` date, which is a fact about the document rather than a folder
+    // somebody had to choose.
 
     private var filtered: [TraceMacDocument] {
         guard let store else { return [] }
@@ -83,8 +93,6 @@ struct TraceMacDocumentsView: View {
                 || doc.filename.localizedCaseInsensitiveContains(searchText)
                 || doc.tags.contains { $0.localizedCaseInsensitiveContains(searchText) }
             let matchesTag = activeTag == nil || doc.tags.contains(activeTag!)
-            let matchesCategory = categoryFilter == "All"
-                || doc.category.localizedCaseInsensitiveCompare(categoryFilter) == .orderedSame
             let matchesProject = activeProject == nil || doc.linkedNote == activeProject
             let matchesYear = filterYear == nil || {
                 guard let d = doc.created else { return false }
@@ -94,7 +102,7 @@ struct TraceMacDocumentsView: View {
                 guard let d = doc.created else { return false }
                 return cal.component(.month, from: d) == filterMonth!
             }()
-            return matchesSearch && matchesTag && matchesCategory && matchesProject
+            return matchesSearch && matchesTag && matchesProject
                 && matchesYear && matchesMonth
         }
     }
@@ -187,6 +195,26 @@ struct TraceMacDocumentsView: View {
             }
             await store?.reload()
         }
+        // A file arrived under `Documents/` from outside this process — the
+        // Dropzone action, Satchel on the phone, or the iPad. Session 69: until
+        // `NoteStore`'s metadata query learned to watch that folder there was no
+        // signal at all, and David had to leave the tab and come back to see a
+        // file he had just dropped.
+        //
+        // Debounced by a beat because a single drop lands as two events, the
+        // binary and then its sidecar, and reloading twice makes the list jump.
+        .onReceive(NotificationCenter.default.publisher(for: .noteStoreDocumentsDidChange)) { _ in
+            Task {
+                try? await Task.sleep(for: .milliseconds(400))
+                await store?.reload()
+                // Before the AI scan, not after. This is local and free, and
+                // running it first means a document dropped a second ago is
+                // searchable by its contents whether or not the scan that
+                // follows ever completes.
+                await store?.extractTextForNewArrivals()
+                await store?.autoScanNewArrivals()
+            }
+        }
         .task(id: deepLinkPath?.wrappedValue) {
             guard let path = deepLinkPath?.wrappedValue else { return }
             // The store may not have scanned yet on a cold jump into this
@@ -195,9 +223,45 @@ struct TraceMacDocumentsView: View {
             // was standing in for.
             if store == nil { store = TraceMacDocumentStore(noteStore: noteStore) }
             if store?.documents.isEmpty ?? true { await store?.reload() }
+            // Query before selection. Setting `selectedDoc` builds the
+            // viewer, and the viewer reads `find.query` as it loads; assigning
+            // it afterwards would mean the first load searched for nothing.
+            find.query = deepLinkQuery?.wrappedValue ?? ""
+            find.targetPath = path
+            deepLinkQuery?.wrappedValue = nil
             selectedDoc = store?.documents.first { $0.relativePath == path }
             deepLinkPath?.wrappedValue = nil
         }
+        // Picking a different document by hand is not a search result, so the
+        // highlight goes with the document that was searched for. Without this
+        // the chip would follow you around the list claiming hits from a query
+        // you had moved on from.
+        .onChange(of: selectedDoc) { old, new in
+            guard old?.relativePath != new?.relativePath else { return }
+            if new?.relativePath != find.targetPath { find.clear() }
+        }
+        // Escape clears the highlight. David: *"how do i remove the highlights
+        // with a keystroke easily other than exiting the document and
+        // returning"* — and clicking the chip's × was the only way.
+        //
+        // **`nil` when there is nothing to clear, and that is the whole point of
+        // writing it this way.** `onExitCommand` takes an optional action, so
+        // passing nil leaves Escape to whatever else wants it rather than
+        // silently swallowing every Escape in the Satchel section for a
+        // highlight that is not showing. A key that is consumed and does nothing
+        // is the same defect as a menu item that is.
+        //
+        // **Not a menu command with `.keyboardShortcut(.escape)`.** Menu key
+        // equivalents are matched before the responder chain, so an app-wide
+        // Escape item would outrank the Escape that dismisses a sheet or a
+        // confirmation dialog — including the delete confirmation attached a few
+        // lines above this. `onExitCommand` rides `cancelOperation:` up the
+        // responder chain instead, which is the chain those dialogs already own.
+        //
+        // Attached to the whole split rather than to the viewer, because focus
+        // may be on the document list rather than inside the `PDFView`, and both
+        // are below this.
+        .onExitCommand(perform: find.isShowing ? { find.clear() } : nil)
         .onReceive(NotificationCenter.default.publisher(for: .reloadDocuments)) { _ in
             Task { await store?.reload() }
         }
@@ -285,36 +349,6 @@ struct TraceMacDocumentsView: View {
                 .textFieldStyle(.roundedBorder)
                 .padding(10)
 
-            // Category filter — scrollable so labels never wrap
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
-                    ForEach(categories, id: \.self) { cat in
-                        Button(cat) { categoryFilter = cat; if cat != "Project" { activeProject = nil } }
-                            .buttonStyle(.plain)
-                            .font(.caption)
-                            .fixedSize()                          // never truncate or wrap
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(
-                                categoryFilter == cat
-                                    ? Color.accentColor.opacity(0.15)
-                                    : Color.clear
-                            )
-                            .foregroundStyle(
-                                categoryFilter == cat ? Color.accentColor : Color.secondary
-                            )
-                            .overlay(
-                                // Underline indicator for selected tab
-                                Rectangle()
-                                    .frame(height: 2)
-                                    .foregroundStyle(categoryFilter == cat ? Color.accentColor : Color.clear)
-                                    .padding(.horizontal, 6),
-                                alignment: .bottom
-                            )
-                    }
-                }
-                .padding(.horizontal, 8)
-            }
             .padding(.bottom, 2)
 
             Divider()
@@ -418,7 +452,6 @@ struct TraceMacDocumentsView: View {
                         try store?.importDocument(from: url)
                         Task { @MainActor in
                             await store?.reload()
-                            categoryFilter = "All"
                         }
                     } catch { }
                 }
@@ -465,8 +498,11 @@ struct TraceMacDocumentsView: View {
                     )
                 }
 
-                // Project filter pill — only when in Project category
-                if categoryFilter == "Project" {
+                // Project filter pill. Was gated on `categoryFilter == "Project"`
+                // — i.e. only reachable from inside a folder that no longer
+                // exists. Filing to a project is `linked_note`, so the filter
+                // belongs beside the tag filter, always available.
+                if true {
                     filterPill(
                         icon: "folder",
                         label: activeProject.flatMap { p in
@@ -731,11 +767,52 @@ struct TraceMacDocumentsView: View {
         var icon: String  { switch self { case .preview: "doc.fill"; case .note: "note.text" } }
     }
 
+    /// The match counter over the top-right of the page.
+    ///
+    /// It shows **zero as a number with a reason**, not as nothing. A PDF opened
+    /// from a search that clearly matched it, showing no highlight and no chip,
+    /// reads as a broken highlighter — and a phone-scanned page has no text
+    /// layer for `findString` to search, which is a fact about the file that the
+    /// user has no other way to learn. `MacPDFFind.emptyReason` supplies the
+    /// words.
+    @ViewBuilder
+    private var findChip: some View {
+        if find.isShowing {
+            HStack(spacing: 6) {
+                if find.count > 0 {
+                    Button { find.previous() } label: { Image(systemName: "chevron.up") }
+                        .buttonStyle(.plain)
+                    Text("\(find.current + 1) of \(find.count)")
+                        .font(MacType.meta)
+                        .monospacedDigit()
+                    Button { find.next() } label: { Image(systemName: "chevron.down") }
+                        .buttonStyle(.plain)
+                } else {
+                    Text("No highlight — \(find.emptyReason ?? "no match")")
+                        .font(MacType.meta)
+                        .foregroundStyle(.secondary)
+                }
+                Divider().frame(height: 12)
+                Button { find.clear() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+                    .help("Clear highlight (esc)")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Color(nsColor: .separatorColor)))
+            .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+            .padding(12)
+        }
+    }
+
     @ViewBuilder
     private func docViewer(for doc: TraceMacDocument) -> some View {
         if doc.isPDF, let url = noteStore.resolvedURL(for: doc.relativePath) {
-            PDFViewRepresentable(url: url, zoom: zoom)
+            PDFViewRepresentable(url: url, zoom: zoom, find: find)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topTrailing) { findChip }
                 .id(doc.relativePath)
         } else if doc.isImage, let url = noteStore.resolvedURL(for: doc.relativePath) {
             // Note the shape of this condition: it branches on `doc.isImage`
@@ -853,6 +930,14 @@ struct DocListRow: View {
         }
         .padding(.vertical, 2)
     }
+}
+
+/// A note path's display name. File-scope since Session 69: `DocNotePanel` had
+/// it privately and `DocMetadataPanel`'s new Filed-to row needs the same answer.
+/// Two copies of "how do we name a note" is how two screens start disagreeing
+/// about the same document.
+private func noteName(from path: String) -> String {
+    path.components(separatedBy: "/").last?.replacingOccurrences(of: ".md", with: "") ?? path
 }
 
 // MARK: - Note tab panel
@@ -978,10 +1063,6 @@ struct DocNotePanel: View {
         }
     }
 
-    private func noteName(from path: String) -> String {
-        path.components(separatedBy: "/").last?.replacingOccurrences(of: ".md", with: "") ?? path
-    }
-
     private func saveLinkedNote(_ path: String) {
         try? store.saveSidecar(
             for: doc,
@@ -1016,7 +1097,6 @@ struct DocMetadataPanel: View {
     @State private var docDate: Date = Date()
     @State private var showingDatePicker = false
     @State private var isSaving = false
-    @State private var isMoving = false
     @State private var isScanning = false
     @State private var scanError: String? = nil
     @State private var userContext: String = ""
@@ -1024,14 +1104,16 @@ struct DocMetadataPanel: View {
     @State private var showingTagPopover = false
     @State private var newTagText = ""
     @State private var showingPeoplePicker = false
-    @State private var showingProjectMover = false
-    @State private var showingPlaceMover = false
+    @State private var showingFilePicker = false
+    /// Raised when Run AI is pressed on a document tagged `private`.
+    @State private var showPrivatePrompt = false
     @State private var showingDeleteConfirm = false
 
     var body: some View {
         DisclosureGroup("Metadata", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
-                categoryRow
+                filedToRow
+                yearRow
                 titleRow
                 dateRow
                 tagsRow
@@ -1073,32 +1155,35 @@ struct DocMetadataPanel: View {
         }
     }
 
-    // MARK: - Category + Move
+    // MARK: - Filed to + Year
+    //
+    // **This replaced the Category chip and the "Move to…" menu, Session 69.**
+    // That menu offered Inbox / Project / Place / Trip / Other and each entry
+    // physically moved the file, because the Mac derives `category` from the
+    // folder name at scan time (`TraceMacDocumentStore.reload`). It was not
+    // metadata that looked like filing, it was filing.
+    //
+    // Two of its entries were doing something real underneath: "Move to
+    // Project…" and "Move to Place…" also set `linked_note`, and that was the
+    // ONLY way to link a document to a Place note anywhere on the Mac —
+    // `DocNotePanel` filters to `Notes/Projects`. So the menu could not just be
+    // deleted. The association it was carrying is now edited directly, in one
+    // picker over both folders, and no file moves.
+    //
+    // Year is shown, not chosen. Same treatment Satchel gives it: a fact about
+    // the bytes, under FILE, rather than a control.
 
-    private var categoryRow: some View {
-        HStack(spacing: 8) {
-            fieldLabel("Category")
-            Text(doc.category)
-                .font(.caption)
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Color.secondary.opacity(0.15))
-                .clipShape(Capsule())
-            Spacer()
-            Menu {
-                if doc.category != "Inbox"   { Button("Move to Inbox")      { move(to: "Inbox") } }
-                if doc.category != "Project" { Button("Move to Project…")   { showingProjectMover = true } }
-                if doc.category != "Place"   { Button("Move to Place…")     { showingPlaceMover  = true } }
-                if doc.category != "Trip"    { Button("Move to Trip")       { move(to: "Trip") } }
-                if doc.category != "Other"   { Button("Move to Other")      { move(to: "Other") } }
-                // "Archive" removed in Session 63 with the Archive tab that read
-                // it back. It was the only writer of `Documents/Archive/`, and
-                // with no reader it was a one-way door: the document vanished
-                // from every list on the Mac and stayed in the flat library on
-                // iOS, which knows nothing about the folder.
+    private var filedToRow: some View {
+        HStack {
+            fieldLabel("Filed to")
+            Button {
+                showingFilePicker = true
             } label: {
                 HStack(spacing: 4) {
-                    if isMoving { ProgressView().controlSize(.mini) }
-                    Text("Move to…").font(.caption)
+                    Image(systemName: linkedNote.isEmpty ? "tray" : "folder.fill")
+                        .font(.caption2)
+                    Text(linkedNote.isEmpty ? "Nothing" : noteName(from: linkedNote))
+                        .font(.caption)
                     Image(systemName: "chevron.down").font(.caption2)
                 }
                 .padding(.horizontal, 8).padding(.vertical, 3)
@@ -1107,21 +1192,37 @@ struct DocMetadataPanel: View {
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
-            .disabled(isMoving)
+            if !linkedNote.isEmpty {
+                Button {
+                    linkedNote = ""
+                    save()
+                } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Unfile")
+            }
+            Spacer()
         }
-        .sheet(isPresented: $showingProjectMover) {
-            LinkedNotePickerSheet(current: linkedNote, filterFolders: ["Notes/Projects"]) { picked in
+        .sheet(isPresented: $showingFilePicker) {
+            // Both folders in one list, because "is this a project or a place"
+            // is a question the picker can answer from the path and the person
+            // filing should not have to answer twice.
+            LinkedNotePickerSheet(current: linkedNote,
+                                  filterFolders: ["Notes/Projects", "Notes/Places"]) { picked in
                 linkedNote = picked
-                move(to: "Project")
+                save()
             }
             .environment(noteStore)
         }
-        .sheet(isPresented: $showingPlaceMover) {
-            LinkedNotePickerSheet(current: linkedNote, filterFolders: ["Notes/Places"]) { picked in
-                linkedNote = picked
-                move(to: "Place")
-            }
-            .environment(noteStore)
+    }
+
+    private var yearRow: some View {
+        HStack {
+            fieldLabel("Year")
+            Text(doc.category)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
         }
     }
 
@@ -1198,8 +1299,21 @@ struct DocMetadataPanel: View {
 
     private var descriptionRow: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Context hint field — user types optional context before hitting sparkle
-            HStack(alignment: .center, spacing: 0) {
+            // Context hint, with the button that uses it sitting beside it.
+            //
+            // **The trigger used to live somewhere else, and that was the whole
+            // problem.** It was an unlabelled `sparkles` glyph in the top-right
+            // corner of the About box, a row below — so the field that says
+            // "Optional hint for AI" had no control next to it, and the control
+            // that consumed the hint gave no sign of what it read. David, having
+            // typed a hint: *"i just added context to the wildflower document and
+            // i cant rerun AI."* He could not find it, and looking in the wrong
+            // place was the correct instinct.
+            //
+            // Same lesson as D82's pin: the affordance belongs where the person
+            // is already looking, and an icon alone does not say what it does.
+            // Words, next to the input.
+            HStack(alignment: .center, spacing: 6) {
                 fieldLabel("Context")
                 ZStack(alignment: .leading) {
                     TextField("", text: $userContext)
@@ -1209,6 +1323,9 @@ struct DocMetadataPanel: View {
                         .padding(.vertical, 4)
                         .background(Color.secondary.opacity(0.07))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
+                        // Typing a hint and pressing Return is the gesture the
+                        // field's own placeholder implies.
+                        .onSubmit { requestScan() }
                     if userContext.isEmpty {
                         Text("Optional hint for AI (who, what, when…)")
                             .font(.caption)
@@ -1216,6 +1333,45 @@ struct DocMetadataPanel: View {
                             .padding(.horizontal, 8)
                             .allowsHitTesting(false)
                     }
+                }
+                Button {
+                    requestScan()
+                } label: {
+                    HStack(spacing: 4) {
+                        if isScanning {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "sparkles").font(.caption2)
+                        }
+                        // Reads what it will do. A document that already has
+                        // tags and a description is being re-run, and saying so
+                        // is the difference between a button you trust and one
+                        // you wonder about.
+                        Text(hasScanResults ? "Re-run" : "Run AI")
+                            .font(.caption)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.12))
+                    .foregroundStyle(Color.accentColor)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isScanning)
+                .help(isPrivate
+                      ? "This document is private and has never been sent. Running the AI will send it."
+                      : hasScanResults
+                        ? "Run the AI again, using the context above"
+                        : "Fill in title, tags and description using AI")
+                .confirmationDialog("Send this private document to the AI?",
+                                    isPresented: $showPrivatePrompt,
+                                    titleVisibility: .visible) {
+                    Button("Send and remove private tag") { promoteFromPrivate() }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("It arrived through the private drop and has never left this Mac. "
+                         + "Running the AI sends its contents to Anthropic and makes it "
+                         + "readable by Ask.")
                 }
             }
 
@@ -1241,33 +1397,55 @@ struct DocMetadataPanel: View {
                             },
                             alignment: .topLeading
                         )
-                    // AI sparkle button — top-right corner of the text editor
-                    Button {
-                        runScan()
-                    } label: {
-                        Group {
-                            if isScanning {
-                                ProgressView().controlSize(.mini)
-                            } else {
-                                Image(systemName: "sparkles")
-                                    .font(.caption)
-                            }
-                        }
-                        .frame(width: 22, height: 22)
-                        .background(Color.accentColor.opacity(0.12))
-                        .clipShape(Circle())
-                        .foregroundStyle(Color.accentColor)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isScanning)
-                    .padding(4)
-                    .help("Auto-fill tags and description using AI")
+                    // The sparkle that used to sit here moved up to the Context
+                    // row. Two buttons doing one job is how they drift; one
+                    // button in the wrong place is how it goes unfound.
                 }
             }
         }
     }
 
+    /// Whether this document has already been through a scan. Drives the button
+    /// label, so "Re-run" only ever appears when there is something to re-run.
+    private var hasScanResults: Bool { !tags.isEmpty || !description.isEmpty }
+
+    /// Carries the `private` tag, meaning it arrived through Dropzone's private
+    /// action and has never been sent anywhere.
+    private var isPrivate: Bool {
+        tags.contains { $0.caseInsensitiveCompare("private") == .orderedSame }
+    }
+
+    /// The single entry point for every scan trigger.
+    ///
+    /// **`runScan` used to be wired straight to the button, and that was a hole.**
+    /// The `private` tag stops `autoScanNewArrivals`, because that tests for "no
+    /// tags and no description" — but nothing stopped the manual button. Worse,
+    /// `runScan` MERGES tags rather than replacing them, so a private document
+    /// could be sent to the API and **keep its private label**, which is the one
+    /// outcome worse than not having the label at all.
+    ///
+    /// David, asking the question that found it: *"if i take the private tag off
+    /// in the future of a document and hit AI re run will it then process
+    /// normally and be available to ask."*
+    private func requestScan() {
+        if isPrivate { showPrivatePrompt = true } else { runScan() }
+    }
+
+    /// Confirmed promotion: drop the tag, persist that, then scan.
+    ///
+    /// The tag is removed and **saved before the request goes out**, so the file
+    /// on disk can never claim to be private while its contents are in flight.
+    private func promoteFromPrivate() {
+        tags.removeAll { $0.caseInsensitiveCompare("private") == .orderedSame }
+        save()
+        runScan()
+    }
+
     private func runScan() {
+        // A hard gate, not a courtesy. `promoteFromPrivate` is the only way past
+        // it, and it clears the tag first — so no future caller can reintroduce
+        // the hole by wiring itself to `runScan` directly.
+        guard !isPrivate else { return }
         guard !isScanning else { return }
         isScanning = true
         scanError = nil
@@ -1322,56 +1500,24 @@ struct DocMetadataPanel: View {
         people = doc.people
         description = doc.description
         docDate = doc.created ?? Date()
+        // Cleared on every load, and it was not before Session 69. `userContext`
+        // is a hint typed for ONE document; leaving it behind meant the next
+        // document inherited it. David selected a Peloton screenshot and found
+        // *"I suggested this song to Megan for the father daughter dance"*
+        // sitting in its Context field, ready to be sent to the model as though
+        // it described a treadmill class.
+        //
+        // Every other field here is reassigned from `doc`, which is why they
+        // could not go stale. This one had no `doc` to read from, so it was
+        // simply forgotten — the failure mode of state that belongs to a
+        // selection but is not derived from it.
+        userContext = ""
 
         // Auto-scan if this looks like a freshly imported doc with no metadata yet
         let noMetadata = doc.tags.isEmpty && doc.description.isEmpty
         let scannable = doc.isPDF || doc.isImage
         if noMetadata && scannable && !isScanning {
             runScan()
-        }
-    }
-
-    private func move(to category: String) {
-        isMoving = true
-        Task {
-            do { try store.moveDocument(doc, to: category) }
-            catch {
-                await MainActor.run { isMoving = false }
-                return
-            }
-            // Build a synthetic doc at the new path so we can write the sidecar there
-            let newPath = "Documents/\(category)/\(doc.filename)"
-            let newSidecarBase = newPath.hasSuffix(".\(doc.fileExtension)")
-                ? String(newPath.dropLast(doc.fileExtension.count + 1))
-                : newPath
-            let movedDoc = TraceMacDocument(
-                relativePath: newPath,
-                filename: doc.filename,
-                category: category,
-                fileExtension: doc.fileExtension,
-                title: title.trimmingCharacters(in: .whitespaces),
-                tags: tags,
-                created: docDate,
-                linkedNote: linkedNote.isEmpty ? nil : linkedNote,
-                people: people,
-                description: description
-            )
-            try? store.saveSidecar(
-                for: movedDoc,
-                title: movedDoc.title,
-                tags: movedDoc.tags,
-                linkedNote: movedDoc.linkedNote,
-                people: movedDoc.people,
-                description: movedDoc.description,
-                date: docDate
-            )
-            // Delete old sidecar if it was at a different path
-            let oldSidecar = doc.sidecarPath
-            let newSidecar = "\(newSidecarBase).md"
-            if oldSidecar != newSidecar {
-                try? noteStore.deleteFile(oldSidecar)
-            }
-            await MainActor.run { isMoving = false; onSave(movedDoc) }
         }
     }
 
@@ -2175,6 +2321,7 @@ struct DocDateFilterPopover: View {
 struct PDFViewRepresentable: NSViewRepresentable {
     let url: URL
     var zoom: PreviewZoomController? = nil
+    var find: MacPDFFind? = nil
 
     func makeNSView(context: Context) -> PDFView {
         let view = PDFView()
@@ -2182,7 +2329,12 @@ struct PDFViewRepresentable: NSViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         Self.relaxSizing(view)
-        Self.load(url, into: view)
+        // Bound before the load, so the highlight lands whether the bytes were
+        // already here or arrive from iCloud a moment later. `bind` writes no
+        // observed property; the search itself is deferred a runloop turn for
+        // the same reason the zoom attach is.
+        find?.bind(view)
+        Self.load(url, into: view, find: find)
         if let zoom {
             // Registered on the next runloop turn: attaching writes observed
             // properties, and doing that inside `makeNSView` mutates state
@@ -2197,8 +2349,12 @@ struct PDFViewRepresentable: NSViewRepresentable {
         // Only rebuild when the file actually changed — reassigning `document`
         // on every SwiftUI update resets scroll position mid-read.
         if nsView.document?.documentURL != url {
-            Self.load(url, into: nsView)
+            Self.load(url, into: nsView, find: find)
         }
+        // Cheap: returns immediately unless the query changed since the last
+        // run. Deferred anyway, because `updateNSView` is an update pass and
+        // the search writes observed state.
+        DispatchQueue.main.async { find?.applyIfNeeded() }
     }
 
     /// Accept whatever height the split offers.
@@ -2246,9 +2402,12 @@ struct PDFViewRepresentable: NSViewRepresentable {
     /// Off the main thread, because a coordinated read on a file that has not
     /// arrived blocks until it does.
     @MainActor
-    private static func load(_ url: URL, into view: PDFView) {
+    private static func load(_ url: URL, into view: PDFView, find: MacPDFFind? = nil) {
         if let doc = PDFDocument(url: url) {
             view.document = doc
+            // Next runloop turn: this path runs inside `makeNSView`, and the
+            // search writes observed state.
+            DispatchQueue.main.async { find?.applyIfNeeded() }
             return
         }
 
@@ -2274,6 +2433,11 @@ struct PDFViewRepresentable: NSViewRepresentable {
             // flight — do not stamp a stale one over it.
             guard view.document == nil else { return }
             view.document = data.flatMap { PDFDocument(data: $0) }
+            // The other moment a document first exists. Without this a PDF that
+            // iCloud was still fetching when the search result opened it would
+            // render unpainted and never recover — the same shape as the
+            // blank-page bug this method was written for.
+            find?.applyIfNeeded()
         }
     }
 }

@@ -319,7 +319,7 @@ class iOSDocumentStore {
         let timestamp = fmt.string(from: Date())
         let filename = "\(timestamp)-\(sourceURL.lastPathComponent)"
         let data = try Data(contentsOf: sourceURL)
-        try noteStore.writeDocument(data, category: "Inbox", filename: filename)
+        try noteStore.writeDocument(data, category: NoteStore.documentFolder(), filename: filename)
     }
 
     // MARK: - Delete
@@ -330,21 +330,11 @@ class iOSDocumentStore {
         try? noteStore.deleteFile(doc.sidecarPath)
     }
 
-    // MARK: - Move
-
-    func moveDocument(_ doc: TraceMacDocument, to newCategory: String) throws {
-        let newRelativePath = "Documents/\(newCategory)/\(doc.filename)"
-        let newSidecarPath: String = {
-            let base = newRelativePath.hasSuffix(".\(doc.fileExtension)")
-                ? String(newRelativePath.dropLast(doc.fileExtension.count + 1))
-                : newRelativePath
-            return "\(base).md"
-        }()
-        try noteStore.moveItem(from: doc.relativePath, to: newRelativePath)
-        if let sidecar = try? noteStore.readFile(doc.sidecarPath), !sidecar.isEmpty {
-            try? noteStore.moveFile(from: doc.sidecarPath, to: newSidecarPath)
-        }
-    }
+    // `moveDocument` removed Session 69, with no callers. It wrote
+    // `Documents/<Category>/`, the axis `Documents-App-Scope.md` retired on
+    // 2026-07-28 — that doc states the move command "was never built,
+    // deliberately", and this was it, built anyway. Documents are filed by
+    // `linked_note` and `endeavor`; the folder is the year and nothing moves.
 
     // MARK: - Helpers
 

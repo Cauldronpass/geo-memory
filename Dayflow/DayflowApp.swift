@@ -66,6 +66,7 @@ struct DayflowApp: App {
     /// dark showed that on first launch without anyone choosing it.
     /// Changed 2026-07-28 after David hit it. See `dayflowCard`.
     @AppStorage("dayflow_appearance") private var appearanceRaw: String = "light"
+    @Environment(\.scenePhase) private var scenePhase
 
     private var preferredScheme: ColorScheme? {
         switch appearanceRaw {
@@ -89,6 +90,29 @@ struct DayflowApp: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .noteStoreInboxDidChange)) { _ in
                     Task { await DayflowInboxBadge.refresh() }
+                }
+                // Re-read the pin index whenever the app comes back to the
+                // foreground. Added 2026-08-10 (Session 69), after the Mac
+                // became a second writer of `Dayflow-Flags.json`.
+                //
+                // **This was not a bug until today, and that is the point.**
+                // `DayflowFlagStore` loads once in `init`. While Dayflow was the
+                // only app that wrote the file, memory and disk could not drift:
+                // every change came from `toggleFlag`, which updates both. The
+                // moment the Mac writes it too, a resident Dayflow is answering
+                // from a snapshot — David pinned on the Mac and the phone showed
+                // nothing, with the correct file sitting on disk the whole time.
+                //
+                // At the `WindowGroup` root so it covers every screen that reads
+                // flags: the project list, the pinned-days section, the day and
+                // project note pin buttons, the calendar browse grid. A hook per
+                // screen would be five places to keep in step with a sixth.
+                //
+                // `.active` only, and only from a real background return, so this
+                // cannot land mid-edit: a foreground toggle has already written
+                // through to disk before the app can be backgrounded.
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { DayflowFlagStore.shared.reload() }
                 }
         }
     }

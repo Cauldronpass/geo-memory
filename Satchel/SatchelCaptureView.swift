@@ -721,7 +721,11 @@ struct SatchelCaptureView: View {
         // for as long as this app exists, and matches what the container already
         // does with `Photos/2026/`. Nothing in Satchel browses by it. It appears
         // once, under FILE on the detail screen, as a fact about the bytes.
-        let year = String(Calendar.current.component(.year, from: now))
+        // Session 69: was an inline `String(Calendar.current.component(.year,
+        // from: now))`. Now the shared helper, because four other writers were
+        // found still filing into `Inbox`, `Scans` and `Other` — see
+        // `NoteStore.documentFolder`.
+        let year = NoteStore.documentFolder(for: now)
 
         do {
             let relativePath = try noteStore.writeDocument(data, category: year, filename: filename)

@@ -1,14 +1,116 @@
 import Foundation
 import Observation
 
+/// How a Notion collection's first fetch ended.
+///
+/// File scope rather than nested, so a view can switch over it without naming
+/// `NotionService` — and because `CheckInBridge`'s rule applies in spirit here
+/// too: the fewer types a shared file drags into a target, the fewer targets it
+/// can break.
+enum NotionLoadState: Sendable {
+    case idle
+    case loading
+    /// Finished, and `people` / `places` is the answer — empty included.
+    case loaded
+    /// Finished, and the answer is unknown. The caller must say so rather than
+    /// show an empty list.
+    case failed
+}
+
+/// A Notion collection this app caches in memory, and how long a cached copy
+/// stays trustworthy.
+///
+/// Added Session 70. David: *"i added a note to today and it pulled in the
+/// starbucks visit but not the forbici visit i just took."* Checked against
+/// Notion rather than guessed: both rows were there, Starbucks written at 08:38
+/// and Forbici at 16:55. The Mac had fetched in between and never looked again,
+/// because every `fetchVisits()` call site but one is guarded by
+/// `if visits.isEmpty` — a load-once cache, correct while one program was the
+/// only writer, wrong from the moment the phone became a second one. That is
+/// D83, D89 and D91's shape for the fourth time.
+///
+/// **Different windows per collection, because these change at different
+/// rates.** One number would have to be short enough for visits, which would
+/// then re-pull 200 people every couple of minutes for a list that changes a few
+/// times a month.
+enum NotionCollection: String, CaseIterable, Sendable {
+    case visits
+    case places
+    case people
+
+    /// How old a cached copy may be before a returning window refetches it.
+    var staleAfter: TimeInterval {
+        switch self {
+        // A geofence exit writes one every time he leaves anywhere. This is the
+        // collection the bug was actually about.
+        case .visits: return 2 * 60
+        // Adding a place is deliberate and occasional.
+        case .places: return 15 * 60
+        // A person is added a few times a month, and it is the largest query.
+        case .people: return 60 * 60
+        }
+    }
+}
+
 @Observable
 class NotionService {
     static let shared = NotionService()
 
     var places: [Place] = []
+    /// See `peopleLoad`. Same three states, same reason.
+    private(set) var placesLoad: NotionLoadState = .idle
+
+    /// When each collection last came back from Notion successfully.
+    ///
+    /// `@ObservationIgnored`: nothing draws from it, and a redraw on every fetch
+    /// would be noise. Not persisted either — a relaunch refetches anyway.
+    @ObservationIgnored private var fetchedAt: [NotionCollection: Date] = [:]
+
+    /// Seconds since `collection` last loaded, or `nil` if it never has.
+    func age(of collection: NotionCollection) -> TimeInterval? {
+        fetchedAt[collection].map { Date().timeIntervalSince($0) }
+    }
+
+    /// Refetch whatever has gone stale. Called when TraceMac comes to the front.
+    ///
+    /// **A collection that has never loaded is skipped, deliberately.** This is
+    /// a refresh, not a first load; the screens that need a collection already
+    /// fetch it on appear, and doing it here as well would pull People and
+    /// Visits on every activation for screens that may never be opened.
+    ///
+    /// Sequential rather than `async let`. These are three queries of at most a
+    /// few hundred rows, they only run when something is actually stale, and
+    /// nobody is waiting on them — the window is already on screen with the last
+    /// good answer in it.
+    func refreshStale() async {
+        for collection in NotionCollection.allCases {
+            guard let age = age(of: collection), age > collection.staleAfter else { continue }
+            switch collection {
+            case .visits: await fetchVisits()
+            case .places: await fetchPlaces()
+            case .people: await fetchPeople()
+            }
+        }
+    }
+
     var visits: [Visit] = []
     var captures: [Capture] = []
     var people: [Person] = []
+    /// Has the People fetch finished, and how did it end.
+    ///
+    /// Added Session 70 for global search, and it is not a nicety.
+    /// `people.isEmpty` cannot tell "not fetched yet" from "there are none",
+    /// so a search run in the seconds after launch found no one and **said so**
+    /// — a report of absence that is indistinguishable from the record not
+    /// existing. Same class as `resolveGeofencePlace`, `resolvePendingCheckIn`
+    /// and D83, and the global-search spec §6 names it by name.
+    ///
+    /// Three states rather than a `Bool`, because `false` would have to mean
+    /// both "still going" and "Notion did not answer", and those want different
+    /// words on screen. A failed fetch must never read as "still loading" — that
+    /// is a spinner that never stops.
+    private(set) var peopleLoad: NotionLoadState = .idle
+    
     var recentInteractions: [Interaction] = []
     var workouts: [Workout] = []
     var billiardsSessions: [BilliardsSession] = []
@@ -64,6 +166,7 @@ class NotionService {
 
     func fetchPlaces() async {
         isLoading = true
+        if placesLoad != .loaded { placesLoad = .loading }
         do {
             var allPlaces: [Place] = []
             var cursor: String? = nil
@@ -86,9 +189,33 @@ class NotionService {
                 cursor = result["has_more"] as? Bool == true ? result["next_cursor"] as? String : nil
             } while cursor != nil
             places = allPlaces
+            // Republish the widget's places feed on every fetch (Session 69).
+            //
+            // Here rather than at the call sites because this is the one function
+            // that owns `places`, and there are five call sites across four apps.
+            // A publish bolted onto the callers would be five things to remember
+            // and one of them would be forgotten — which is the shape of every
+            // drift bug in this project.
+            //
+            // Mapped to `PublishedPlace` deliberately: see `CheckInBridge.swift`
+            // for why that file must never reference `Place`. Places with no
+            // coordinate are dropped rather than published at (0, 0), an island
+            // in the Atlantic that would otherwise be "nearest" to nothing.
+            PlacesFeed.publish(allPlaces
+                .filter { $0.latitude != 0 || $0.longitude != 0 }
+                .map { PublishedPlace(id: $0.id, name: $0.name,
+                                      latitude: $0.latitude, longitude: $0.longitude) })
+            placesLoad = .loaded
+            fetchedAt[.places] = Date()
             isLoading = false
         } catch {
             self.error = error.localizedDescription
+            // Only a *first* failure is a failure. A refresh that fails while
+            // `places` still holds the last good answer leaves the state
+            // `.loaded`, because the search panel can honestly search what it
+            // has. Downgrading here would put a warning on results that are
+            // fine.
+            if placesLoad != .loaded { placesLoad = .failed }
             isLoading = false
         }
     }
@@ -111,6 +238,11 @@ class NotionService {
                 cursor = result["has_more"] as? Bool == true ? result["next_cursor"] as? String : nil
             } while cursor != nil
             visits = allVisits
+            // Stamped here, in the function that owns `visits`, and not at the
+            // eleven call sites that ask for it. Same rule as `PlacesFeed.publish`
+            // one function up: a bookkeeping step bolted onto callers is eleven
+            // things to remember and one of them gets forgotten.
+            fetchedAt[.visits] = Date()
             isLoading = false
         } catch {
             self.error = error.localizedDescription
@@ -420,10 +552,20 @@ class NotionService {
     }
 
     func fetchPeople() async {
+        if peopleLoad != .loaded { peopleLoad = .loading }
+        // Both early returns below were silent — the function simply stopped and
+        // `people` kept whatever it had, which for a cold launch is nothing.
+        // They are the same event as `fetchPlaces`' `catch`, and now say so.
         guard let data = try? await post("\(baseURL)/databases/\(peopleDBID)/query",
-                                         body: ["sorts": [["property": "Name", "direction": "ascending"]], "page_size": 200]) else { return }
+                                         body: ["sorts": [["property": "Name", "direction": "ascending"]], "page_size": 200]) else {
+            if peopleLoad != .loaded { peopleLoad = .failed }
+            return
+        }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let pages = json["results"] as? [[String: Any]] else { return }
+              let pages = json["results"] as? [[String: Any]] else {
+            if peopleLoad != .loaded { peopleLoad = .failed }
+            return
+        }
         people = pages.compactMap { page -> Person? in
             guard let id = page["id"] as? String,
                   let props = page["properties"] as? [String: Any],
@@ -437,6 +579,8 @@ class NotionService {
             let birthday = dateProp(props["Birthday"])
             return Person(id: id, name: name, relationship: relationship, relationshipStrength: relationshipStrength, agenda: agenda, birthday: birthday)
         }
+        peopleLoad = .loaded
+        fetchedAt[.people] = Date()
     }
 
     // MARK: - Workouts

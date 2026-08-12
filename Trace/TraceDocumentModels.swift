@@ -316,13 +316,44 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// rewrites only its own section. Distinct from `description`, which is the
     /// short capture-time line the list rows render.
     var summary: String = ""
+    /// Words read off the file itself — Vision OCR for an image, the PDF text
+    /// layer or an OCR pass for a PDF — under `## Text`. Session 70, spec §8
+    /// step 2. Written once at capture, never by hand, and never sent anywhere
+    /// to produce it.
+    ///
+    /// Empty is a real answer: a photograph with no writing in it.
+    var extractedText: String = ""
+    /// Whether the extraction pass has run at all, which is a different
+    /// question from whether it found anything. See
+    /// `TraceMacDocumentStore.SidecarBody.hasTextSection` for why this is not a
+    /// frontmatter key and why the distinction matters.
+    var textExtracted: Bool = false
 
     var isPDF: Bool   { fileExtension == "pdf" }
     var isImage: Bool { ["jpg","jpeg","png","heic","gif","webp"].contains(fileExtension) }
 
+    /// Where this document's sidecar lives: the same path with the extension
+    /// swapped for `.md`.
+    ///
+    /// **The comparison is case-insensitive, and it was not until Session 69.**
+    /// `fileExtension` is lowercased when the store builds it
+    /// (`TraceMacDocumentStore.reload`), but `hasSuffix` is not — so a file named
+    /// `IMG_2528.PNG` failed the test, kept its extension, and got a sidecar at
+    /// `IMG_2528.PNG.md` while `IMG_2528.png` would get `IMG_2528.md`. Two
+    /// conventions decided by the case of three letters nobody chose.
+    ///
+    /// Self-consistent inside the app, which is why it survived: the same wrong
+    /// name was written and read back. It surfaced the moment something else
+    /// wrote a sidecar — the Dropzone `private` action put its tag at
+    /// `IMG_2528.md`, the app looked at `IMG_2528.PNG.md`, found nothing, and
+    /// scanned a document that had explicitly asked not to be.
+    ///
+    /// **iPhone screenshots arrive as `.PNG`.** This was not an edge case, it was
+    /// every photo off the phone.
     var sidecarPath: String {
-        let base = relativePath.hasSuffix(".\(fileExtension)")
-            ? String(relativePath.dropLast(fileExtension.count + 1))
+        let suffix = ".\(fileExtension)"          // already lowercased by the store
+        let base = relativePath.lowercased().hasSuffix(suffix)
+            ? String(relativePath.dropLast(suffix.count))
             : relativePath
         return "\(base).md"
     }

@@ -3,6 +3,8 @@
 // Mac-only — do not add to iOS, Widget, or Share Extension targets.
 
 import SwiftUI
+import AppKit
+import Carbon.HIToolbox
 
 struct TraceMacSettingsView: View {
 
@@ -66,6 +68,11 @@ struct TraceMacSettingsView: View {
                     .buttonStyle(.borderless)
                 }
             }
+
+            Section("Global search") {
+                MacHotKeyRecorder()
+            }
+
         }
         .formStyle(.grouped)
         .frame(width: 420)
@@ -101,5 +108,97 @@ struct TraceMacSettingsView: View {
         UserDefaults.standard.set(googlePlacesKey.trimmingCharacters(in: .whitespaces), forKey: "google_places_key")
         saved = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saved = false }
+    }
+}
+
+// MARK: - Hot key recorder
+
+/// Click, press a combination, done.
+///
+/// A local `NSEvent` monitor, not a global one: it only listens while this
+/// control is recording and only inside this app, so it needs no permission at
+/// all. (The *global* half of the feature is Carbon — see `TraceMacHotKey.swift`
+/// for why neither half uses Accessibility.)
+///
+/// Three things it refuses, each with a reason on screen rather than a silent
+/// no-op:
+///
+///   * A bare key with no modifier. `S` registered system-wide would swallow the
+///     letter S in every app on the Mac.
+///   * Escape, which is how you cancel recording.
+///   * Anything `RegisterEventHotKey` rejects, which in practice means another
+///     app already owns it. The previous shortcut is put back and stays live.
+struct MacHotKeyRecorder: View {
+
+    @State private var center = MacHotKeyCenter.shared
+    @State private var recording = false
+    @State private var monitor: Any?
+    @State private var rejection: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Shortcut")
+                Spacer()
+                Button(recording ? "Press a combination…" : center.combo.label) {
+                    if recording { stop() } else { start() }
+                }
+                .buttonStyle(.bordered)
+                .tint(recording ? .orange : nil)
+                Button("Reset") {
+                    apply(.default)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+            }
+
+            if let message = rejection ?? center.lastError {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                Text("Works anywhere on the Mac, and inside Trace. Needs a modifier — fn cannot be used.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onDisappear { stop() }
+    }
+
+    private func start() {
+        rejection = nil
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            handle(event)
+            // Swallowed: a key pressed at the recorder must not also reach the
+            // Form behind it.
+            return nil
+        }
+    }
+
+    private func stop() {
+        recording = false
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    private func handle(_ event: NSEvent) {
+        if Int(event.keyCode) == kVK_Escape { stop(); return }
+
+        let modifiers = MacHotKeyCombo.carbonModifiers(from: event.modifierFlags)
+        guard modifiers != 0 else {
+            rejection = "Needs at least one of ⌃ ⌥ ⇧ ⌘."
+            return
+        }
+        stop()
+        apply(MacHotKeyCombo(keyCode: UInt32(event.keyCode),
+                             modifiers: modifiers,
+                             label: MacHotKeyCombo.label(flags: event.modifierFlags,
+                                                         keyCode: event.keyCode,
+                                                         characters: event.charactersIgnoringModifiers)))
+    }
+
+    private func apply(_ combo: MacHotKeyCombo) {
+        rejection = center.update(to: combo) ? nil : center.lastError
     }
 }

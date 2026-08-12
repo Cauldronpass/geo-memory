@@ -6,6 +6,11 @@ import SwiftUI
 
 struct TraceMacInboxView: View {
 
+    /// Bare filename, set by global search. Same shape as
+    /// `TraceMacNotesView.deepLinkFile`: this view owns its list, so it is
+    /// handed a name and resolves it itself, and it clears the binding when done.
+    var deepLinkFile: Binding<String?>? = nil
+
     @Environment(NoteStore.self) private var noteStore
 
     @State private var files: [InboxFile] = []
@@ -110,6 +115,18 @@ struct TraceMacInboxView: View {
             }
         }
         .task { await loadFiles() }
+        // Deliberately keyed on the pair. `loadFiles` is async, so a deep link
+        // arriving with the view can land before there is a list to select
+        // from; re-running when `files` fills catches that. Selecting a file
+        // that is not in the list would silently do nothing, which is the whole
+        // failure mode this pattern exists to avoid.
+        .task(id: MacDeepLinkKey(value: deepLinkFile?.wrappedValue, loaded: files.count)) {
+            guard let name = deepLinkFile?.wrappedValue else { return }
+            guard let match = files.first(where: { $0.filename == name }) else { return }
+            selectedFile = match
+            listCollapsed = false
+            deepLinkFile?.wrappedValue = nil
+        }
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreInboxDidChange)) { note in
             // Skip reload if the change is the file we're currently editing — we caused it
             if let changed = note.object as? String,

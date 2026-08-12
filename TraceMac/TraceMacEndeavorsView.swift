@@ -62,6 +62,16 @@ struct TraceMacEndeavorsView: View {
     /// consumed by `TraceMacNotesView`, which splits the folder off it to pick a
     /// tab.
     var deepLinkNotePath:    Binding<String?>? = nil
+    /// Endeavor slug — the frontmatter `id:`, which is what `selectedID` keys
+    /// on. Added Session 70 for global search.
+    ///
+    /// It sets the **filter** as well as the selection, and it has to: the rail
+    /// shows one of Active / Upcoming / Past at a time, and setting `selectedID`
+    /// to a past trip while the filter says Active selects a row that is not on
+    /// screen. `selected` falls back to `filtered.first`, so the panel would
+    /// have opened the wrong Endeavor rather than none — a silent wrong answer,
+    /// which is worse than a visible failure.
+    var deepLinkEndeavorID:  Binding<String?>? = nil
     var selectedSection:     Binding<MacSection?>? = nil
 
     @Environment(NoteStore.self)     private var noteStore
@@ -229,6 +239,16 @@ struct TraceMacEndeavorsView: View {
             await store?.reload()
             await docStore?.reload()
             if notionService.visits.isEmpty { await notionService.fetchVisits() }
+        }
+        // Search result → this rail. `reveal` already exists and already does
+        // the whole job — it sets the filter from the Endeavor's own status and
+        // then selects it — so this is a lookup and a call, not new behaviour.
+        .task(id: MacDeepLinkKey(value: deepLinkEndeavorID?.wrappedValue,
+                                 loaded: store?.endeavors.count ?? 0)) {
+            guard let id = deepLinkEndeavorID?.wrappedValue,
+                  let match = store?.endeavors.first(where: { $0.id == id }) else { return }
+            reveal(match)
+            deepLinkEndeavorID?.wrappedValue = nil
         }
         // The other half of the watcher added to `NoteStore` this session: an
         // Endeavor note edited on the phone now reaches a Mac sitting on this

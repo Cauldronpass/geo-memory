@@ -17,6 +17,7 @@
 // `MacVisitDetailView`.
 
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 // MARK: - Sidebar sections
@@ -82,6 +83,9 @@ struct TraceMacContentView: View {
     @Environment(NotionService.self) private var notionService
 
     @Binding var selectedSection: MacSection?
+    /// ⌘K, owned by `TraceMacApp` because the shortcut is declared in
+    /// `.commands`.
+    @Binding var showSearch: Bool
     @State private var pendingHorizonsFile: String? = nil
     @State private var isDropTargeted = false
 
@@ -106,11 +110,23 @@ struct TraceMacContentView: View {
     @State private var pendingPersonID: String? = nil
     @State private var pendingPlaceID: String? = nil
     @State private var pendingDocumentPath: String? = nil
+    /// The search text that produced `pendingDocumentPath`, so the PDF viewer
+    /// can highlight it on the page. Cleared by the viewer, like every other
+    /// pending value here.
+    @State private var pendingDocumentQuery: String? = nil
     /// A **container-relative path**, not a bare filename, unlike the three
     /// above. `TraceMacNotesView` reads the folder off the front to decide which
     /// tab to switch to, because "Speech.md" alone cannot say whether it is a
     /// project note or a day. See D64.
     @State private var pendingNotePath: String? = nil
+    /// Endeavor slug (frontmatter `id:`), added Session 70 for global search.
+    /// The Endeavors rail already keys its selection on that id; it just had no
+    /// way to be told one from outside.
+    @State private var pendingEndeavorID: String? = nil
+    /// Bare filename into the Inbox list, same shape as `pendingHorizonsFile`.
+    @State private var pendingInboxFile: String? = nil
+    /// Set by the system-wide hot key, consumed below.
+    @State private var searchTrigger = MacSearchTrigger.shared
 
     var body: some View {
         // Plain HStack instead of NavigationSplitView — eliminates NSSplitView resize
@@ -123,6 +139,13 @@ struct TraceMacContentView: View {
                     .frame(width: 1)
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if showSearch {
+                TraceMacSearchPanel(isPresented: $showSearch, onOpen: openSearchResult)
+                    .environment(noteStore)
+                    .environment(notionService)
+                    .transition(.opacity)
+                    .zIndex(2)
             }
             // Global drop target overlay — only visible when dragging a file
             if isDropTargeted {
@@ -184,12 +207,99 @@ struct TraceMacContentView: View {
             default: break
             }
         }
+        // Consume-and-clear, not a notification. The hot key can fire while
+        // this window is being restored, and a notification posted then lands
+        // before anything is listening. `.task(id:)` fires on appear as well as
+        // on change, so a request made a beat too early is still honoured.
+        .task(id: searchTrigger.pending) {
+            guard searchTrigger.pending else { return }
+            searchTrigger.pending = false
+            showSearch = true
+        }
+        // TraceMac came to the front. Refetch whatever another device may have
+        // written while this window was not looking.
+        //
+        // **`NSApplication.didBecomeActiveNotification`, not `scenePhase`.** On
+        // macOS `scenePhase` tracks the *window*, so it also fires for things
+        // that are not "the user came back" — and this app is single-window with
+        // a `MenuBarExtra` and a Settings scene beside it. The AppKit
+        // notification means exactly one thing.
+        //
+        // The staleness windows live on `NotionCollection`, so this call site
+        // does not decide what is worth refetching — it only says when to ask.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await notionService.refreshStale() }
+        }
         .task {
+            // App-wide and idempotent. Registered from here rather than from the
+            // `App`'s `init` only to keep the isolation plain; the registration
+            // itself is not tied to this view's lifetime, so closing the window
+            // leaves the shortcut that reopens it working.
+            MacHotKeyCenter.shared.start()
             async let p: ()  = notionService.fetchPlaces()
             async let pe: () = notionService.fetchPeople()
             async let b: ()  = notionService.fetchBilliardsSessions()
             async let w: ()  = notionService.fetchWorkouts()
             _ = await (p, pe, b, w)
+
+            // Text extraction (spec §8 step 2) at launch rather than only when
+            // the Satchel section is visited. Search reads every document
+            // whether or not that screen has ever been opened, so hanging the
+            // backfill off a section David might not visit for a week would
+            // mean search quietly missing the contents of files it lists.
+            //
+            // Its own store instance, and a short-lived one. Vision and PDFKit
+            // only, no network, and it writes nothing for a document it has
+            // already read.
+            let documentStore = TraceMacDocumentStore(noteStore: noteStore)
+            await documentStore.reload()
+            await documentStore.extractTextForNewArrivals()
+        }
+    }
+
+    // MARK: - Search routing
+
+    /// The one place a search result becomes a screen.
+    ///
+    /// It reuses the pending-link bindings rather than posting notifications,
+    /// which is the pattern that replaced four hand-tuned `asyncAfter` delays in
+    /// Session 63. Section first, then the value: the target view consumes it in
+    /// `.task(id:)`, so it does not matter whether the view is already mounted.
+    ///
+    /// **Every case lands somewhere that shows the thing.** `.preview` never
+    /// reaches here — the panel handles it in place, precisely so that this
+    /// function never has to have a branch that switches a section and then
+    /// shrugs.
+    private func openSearchResult(_ destination: MacSearchDestination, query: String) {
+        switch destination {
+        case .dailyOrProjectNote(let path):
+            selectedSection = .notes
+            pendingNotePath = path
+        case .weeklyNote(let filename):
+            selectedSection = .notes
+            pendingHorizonsFile = filename
+        case .inboxNote(let filename):
+            selectedSection = .inbox
+            pendingInboxFile = filename
+        case .person(let id):
+            selectedSection = .directory
+            pendingPersonID = id
+        case .place(let id):
+            selectedSection = .directory
+            pendingPlaceID = id
+        case .endeavor(let id):
+            selectedSection = .endeavors
+            pendingEndeavorID = id
+        case .document(let path):
+            selectedSection = .documents
+            // Query first. `TraceMacDocumentsView` consumes the path in a
+            // `.task(id:)`, so a value set after it would arrive to a consumer
+            // that has already run.
+            pendingDocumentQuery = query
+            pendingDocumentPath = path
+        case .preview:
+            break
         }
     }
 
@@ -313,6 +423,7 @@ struct TraceMacContentView: View {
                                   deepLinkDocumentPath: $pendingDocumentPath,
                                   deepLinkPlaceID: $pendingPlaceID,
                                   deepLinkNotePath: $pendingNotePath,
+                                  deepLinkEndeavorID: $pendingEndeavorID,
                                   selectedSection: $selectedSection)
                 .environment(noteStore)
                 .environment(notionService)
@@ -326,10 +437,11 @@ struct TraceMacContentView: View {
                 .environment(noteStore)
                 .environment(notionService)
         case .documents:
-            TraceMacDocumentsView(deepLinkPath: $pendingDocumentPath)
+            TraceMacDocumentsView(deepLinkPath: $pendingDocumentPath,
+                                  deepLinkQuery: $pendingDocumentQuery)
                 .environment(noteStore)
         case .inbox:
-            TraceMacInboxView()
+            TraceMacInboxView(deepLinkFile: $pendingInboxFile)
                 .environment(noteStore)
         case .archive:
             TraceMacArchiveView()

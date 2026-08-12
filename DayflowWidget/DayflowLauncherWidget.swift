@@ -23,6 +23,13 @@
 
 import WidgetKit
 import SwiftUI
+// `Button(intent:)` lives in SwiftUI but its initialiser is gated on the
+// `AppIntents` module being imported, so the symbol resolves and the
+// initialiser does not. Session 69: the error reads "Initializer
+// 'init(intent:label:)' is not available due to missing import of defining
+// module 'AppIntents'", which names the fix in full and is worth reading
+// literally rather than treating as a target-membership problem.
+import AppIntents
 
 // MARK: - Palette
 //
@@ -71,21 +78,57 @@ private enum LauncherPalette {
 // hands off to Fantastical.
 //
 // Cost, stated: every tile except Today bounces through Dayflow, so there is a
-// visible flash of it on the way. Unavoidable from a widget, and the reason the
-// interactive `AppIntent` version (which runs in place and launches nothing at
-// all) is the real destination for Capture and Check in.
+// visible flash of it on the way. Unavoidable from a widget.
+//
+// **Session 69 audit of the four routes, by reading each receiving end rather
+// than by trusting this file's own notes.**
+//
+// - `capture` → `jot://`. **Works, and needs no `onOpenURL`.** The queue said
+//   Jot having no URL handler was the first thing to fix. Jot is a one-screen
+//   app: `DayflowJotApp`'s `WindowGroup` is `CaptureView()` and nothing else, so
+//   launching it by any URL lands in the capture field by construction. A router
+//   would have been code that could only route to where the app already was.
+// - `checkin` → `trace://checkin`. Works. `Trace/ContentView.swift:520` handles
+//   it, with the pending/retry resolution Session 27 built.
+// - `file` → `satchel://scan`. Works. `SatchelRouter` handles it.
+// - `today` → **was a no-op and is now handled.** See the `launch` branch in
+//   `Dayflow/ContentView.swift`: the tile now resets `selectedDate` and clears
+//   any cover, because Dayflow holds its date across launches and "Today" that
+//   lands on Tomorrow is a broken button, not a free one.
+//
+// **What one-tap Check in would actually cost, measured 2026-08-10 rather than
+// assumed.** `Button(intent:)` is the easy half. The write is
+// `NotionService.checkIn(place:…)`, a Notion POST that needs the API key from
+// `Config.swift`, and it takes a `Place` — so the widget must also know *which*
+// place, which means the location leg this item lists third is a prerequisite,
+// not an independent piece. Today the extension's only shared file is
+// `CalendarService.swift`; pulling Notion's client into a memory-capped widget
+// process is the real decision, and the lighter alternative is staging the
+// check-in into the App Group (the shape `AppGroup.stageIncoming` already uses
+// for documents) and letting Trace drain it. Not built: it is David's call
+// whether a check-in that reaches Notion on next app launch is a check-in.
 
 private struct LauncherAction: Identifiable {
     let id: String
     let glyph: String
     let title: String
-    let url: URL
+    /// **nil is the interesting case: the tile that runs in place.** Check in no
+    /// longer has a URL because it no longer goes anywhere — it runs
+    /// `CheckInIntent` in this process. Modelled as an absent destination rather
+    /// than a `isInteractive` flag so the two states cannot both be set.
+    let url: URL?
+
+    /// Referenced by the small family too, so it is named rather than reached
+    /// for as `all[0]` — an index is a claim about array order that nothing
+    /// enforces.
+    static let capture = LauncherAction(
+        id: "capture", glyph: "square.and.pencil", title: "Capture",
+        url: URL(string: "dayflow://launch?target=capture")!)
 
     static let all: [LauncherAction] = [
-        .init(id: "capture",  glyph: "square.and.pencil",
-              title: "Capture",  url: URL(string: "dayflow://launch?target=capture")!),
+        capture,
         .init(id: "checkin",  glyph: "mappin.circle.fill",
-              title: "Check in", url: URL(string: "dayflow://launch?target=checkin")!),
+              title: "Check in", url: nil),
         .init(id: "today",    glyph: "checklist",
               title: "Today",    url: URL(string: "dayflow://launch?target=today")!),
         .init(id: "scan",     glyph: "doc.viewfinder",
@@ -100,6 +143,11 @@ struct LauncherEntry: TimelineEntry {
     /// The endeavor covering today, if any. Read from the same App Group feed
     /// `DayflowWidget` uses, so the two cannot disagree about what is running.
     let endeavor: (id: String, name: String)?
+    /// The last Check in tap, **only if it was today**. Older than that and the
+    /// tile goes back to reading "Check in": a tile still saying "Arlington
+    /// Lanes" on Tuesday from a Saturday tap is worse than one saying nothing,
+    /// because it looks like current state.
+    let checkIn: CheckInOutcome?
 }
 
 // MARK: - Provider
@@ -107,7 +155,9 @@ struct LauncherEntry: TimelineEntry {
 struct LauncherProvider: TimelineProvider {
 
     func placeholder(in context: Context) -> LauncherEntry {
-        LauncherEntry(date: .now, endeavor: ("megan-s-wedding-week-2026", "Megan's Wedding Week"))
+LauncherEntry(date: .now,
+                      endeavor: ("megan-s-wedding-week-2026", "Megan's Wedding Week"),
+                      checkIn: nil)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (LauncherEntry) -> Void) {
@@ -125,7 +175,13 @@ struct LauncherProvider: TimelineProvider {
     }
 
     private func entry() -> LauncherEntry {
-        LauncherEntry(date: .now, endeavor: ActiveEndeavorFeed.active())
+        let outcome = CheckInQueue.lastOutcome()
+        let todaysOutcome = outcome.flatMap {
+            Calendar.current.isDateInToday($0.date) ? $0 : nil
+        }
+        return LauncherEntry(date: .now,
+                             endeavor: ActiveEndeavorFeed.active(),
+                             checkIn: todaysOutcome)
     }
 }
 
@@ -164,25 +220,53 @@ private struct LauncherContext: View {
 
 private struct LauncherTile: View {
     let action: LauncherAction
+    /// Today's Check in result, passed to every tile and read by one. Cheaper
+    /// than a second tile type, and it keeps all four the same shape.
+    var checkIn: CheckInOutcome? = nil
+
+    /// What this tile says right now. Only Check in ever changes.
+    private var label: (glyph: String, title: String, tinted: Bool) {
+        guard action.url == nil, let checkIn else {
+            return (action.glyph, action.title, false)
+        }
+        guard let place = checkIn.placeName else {
+            // A tap that found nothing. Says so, and stays tappable — he may
+            // have been indoors, or early.
+            return ("mappin.slash", "No place", false)
+        }
+        return ("checkmark.circle.fill", place, true)
+    }
 
     var body: some View {
         // `Link`, not `widgetURL`. A medium widget can carry several tap targets
         // and `widgetURL` is one for the whole widget — which is the difference
         // between a launcher and a shortcut.
-        Link(destination: action.url) {
-            VStack(spacing: 4) {
-                Image(systemName: action.glyph)
-                    .font(.system(size: 16, weight: .medium))
-                Text(action.title)
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .foregroundStyle(LauncherPalette.ink)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 9)
-            .background(LauncherPalette.parchment, in: RoundedRectangle(cornerRadius: 11))
+        //
+        // Except for the tile with no destination, which is a `Button(intent:)`
+        // and never leaves the widget. One label view for both, because two
+        // copies of a tile's styling is how the four stop looking like a set.
+        if let url = action.url {
+            Link(destination: url) { face }
+        } else {
+            Button(intent: CheckInIntent()) { face }
+                .buttonStyle(.plain)
         }
+    }
+
+    private var face: some View {
+        let l = label
+        return VStack(spacing: 4) {
+            Image(systemName: l.glyph)
+                .font(.system(size: 16, weight: .medium))
+            Text(l.title)
+                .font(.system(size: 10.5, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .foregroundStyle(l.tinted ? LauncherPalette.indigo : LauncherPalette.ink)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 9)
+        .background(LauncherPalette.parchment, in: RoundedRectangle(cornerRadius: 11))
     }
 }
 
@@ -204,7 +288,7 @@ struct LauncherWidgetView: View {
         VStack(alignment: .leading, spacing: 0) {
             LauncherContext(date: entry.date, endeavor: entry.endeavor)
             Spacer(minLength: 6)
-            Link(destination: LauncherAction.all[0].url) {
+            Link(destination: LauncherAction.capture.url ?? URL(string: "dayflow://launch?target=capture")!) {
                 HStack(spacing: 6) {
                     Image(systemName: "square.and.pencil").font(.system(size: 13, weight: .semibold))
                     Text("Capture").font(.system(size: 13, weight: .semibold))
@@ -224,7 +308,7 @@ struct LauncherWidgetView: View {
             LauncherContext(date: entry.date, endeavor: entry.endeavor)
             Divider().overlay(LauncherPalette.hair).padding(.vertical, 9)
             HStack(spacing: 7) {
-                ForEach(LauncherAction.all) { LauncherTile(action: $0) }
+                ForEach(LauncherAction.all) { LauncherTile(action: $0, checkIn: entry.checkIn) }
             }
         }
     }

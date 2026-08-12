@@ -270,8 +270,23 @@ class NoteStore {
         let query = NSMetadataQuery()
         query.notificationBatchingInterval = 1.0
         query.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
-        // Watch all .md files in the container
-        query.predicate = NSPredicate(format: "%K LIKE '*.md'", NSMetadataItemFSNameKey)
+        // Every `.md` in the container, PLUS anything under `Documents/`.
+        //
+        // **The second clause is new in Session 69, and its absence was a real
+        // gap.** The query matched `*.md` only, so a PNG or PDF arriving in
+        // `Documents/<year>/` from another device — or from the Dropzone action
+        // that now feeds Satchel — was invisible until something happened to
+        // rebuild the view. David: *"i had to leave satchel tab then go back to
+        // see the file."* Every other folder that two devices share got a case
+        // here; the one holding binaries never did, because binaries are not
+        // `.md` and the predicate was written when only notes were shared.
+        //
+        // The doubled path is not a typo: the container's own folder is
+        // `Documents`, and Satchel's documents live in `Documents/` inside it.
+        let notes = NSPredicate(format: "%K LIKE '*.md'", NSMetadataItemFSNameKey)
+        let documents = NSPredicate(format: "%K CONTAINS[c] %@",
+                                    NSMetadataItemPathKey, "/Documents/Documents/")
+        query.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [notes, documents])
 
         metadataObserver = NotificationCenter.default.addObserver(
             forName: .NSMetadataQueryDidUpdate,
@@ -297,7 +312,15 @@ class NoteStore {
             guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String else { continue }
             let filename = (path as NSString).lastPathComponent
 
-            if path.contains("/Calendar/") {
+            // Checked first: a sidecar in `Documents/` is also a `.md`, and
+            // falling through to the note cases would announce it as something
+            // it is not.
+            if path.contains("/Documents/Documents/") {
+                NotificationCenter.default.post(
+                    name: .noteStoreDocumentsDidChange,
+                    object: path
+                )
+            } else if path.contains("/Calendar/") {
                 NotificationCenter.default.post(
                     name: .noteStoreCalendarDidChange,
                     object: "Calendar/\(filename)"
@@ -980,6 +1003,26 @@ class NoteStore {
     // MARK: - Documents
     // Stored at: iCloud Drive → Trace → Documents → <category> → <filename>
 
+    /// The folder a newly captured document belongs in: the year, as a string.
+    ///
+    /// **One function because it was five copies.** `Documents-App-Scope.md`
+    /// settled this on 2026-07-28: the old `Documents/<Category>/` folders mixed
+    /// types, Endeavors and workflow states in one list, every one of those is
+    /// answered better by `type`, `endeavor`, `linked_note`, tags or Kit, and so
+    /// the folder became the year. A year costs no decision at capture time,
+    /// keeps directory sizes sane, and matches `Photos/<year>/`.
+    ///
+    /// Only Satchel got the change. Session 69 found four writers still filing
+    /// by hand — `TraceMacDocumentStore.importDocument` and
+    /// `IOSDocumentStore.importDocument` both hardcoded `"Inbox"`, and
+    /// `MarkdownEditorView` wrote `"Scans"` and `"Other"` — which is why David
+    /// was still being asked to empty an Inbox that had been designed out weeks
+    /// earlier. Five callers meant five chances to disagree; this is the one
+    /// place that answers it now.
+    static func documentFolder(for date: Date = Date()) -> String {
+        String(Calendar.current.component(.year, from: date))
+    }
+
     /// Writes document data and returns the relative path within the store.
     @discardableResult
     func writeDocument(_ data: Data, category: String, filename: String) throws -> String {
@@ -1241,6 +1284,10 @@ extension Notification.Name {
     /// relative path. For consumers that derive something from notes across
     /// folders and therefore cannot use the three folder-specific signals above.
     static let noteStoreFileDidChange = Notification.Name("com.david.trace.noteStoreFileDidChange")
+
+    /// A file appeared or changed under `Documents/`, from another device or
+    /// another app on this one. Session 69, for the Dropzone hand-off.
+    static let noteStoreDocumentsDidChange = Notification.Name("com.david.trace.noteStoreDocumentsDidChange")
 }
 
 // MARK: - Error
