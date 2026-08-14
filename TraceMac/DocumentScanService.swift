@@ -48,7 +48,11 @@ enum DocumentScanService {
     private static let model    = "claude-haiku-4-5-20251001"   // fast + cheap for metadata extraction
 
     private static var apiKey: String {
-        UserDefaults(suiteName: "group.com.david.trace")?.string(forKey: "claude_api_key") ?? ""
+        // Was a direct `UserDefaults(suiteName:)` read. Routed through
+        // `ClaudeKeyStore` on 2026-08-11 so the macOS keychain applies here
+        // too — a bypass of the single accessor is a call site that keeps
+        // reading the plaintext copy after it has been emptied.
+        ClaudeKeyStore.key
     }
 
     // MARK: - Public entry point

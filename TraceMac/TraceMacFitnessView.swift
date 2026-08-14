@@ -33,6 +33,9 @@ struct TraceMacFitnessView: View {
     @State private var typeFilter:   String? = nil
     @State private var isLoading     = false
     @State private var listCollapsed = false
+    /// Remembered across launches, and shared with every other resizable
+    /// column through `MacColumnResizer`.
+    @AppStorage("tracemac.column.fitness") private var listWidth: Double = 260
 
     private let typeOrder = ["OrangeTheory", "Run", "Bike", "Hike", "Lift"]
 
@@ -126,7 +129,8 @@ struct TraceMacFitnessView: View {
                             .background(Color(nsColor: .windowBackgroundColor))
                         }
                     }
-                    .frame(width: 260)
+                    .frame(width: listWidth)
+                    MacColumnResizer(width: $listWidth)
                 }
 
                 CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)

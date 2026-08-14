@@ -175,6 +175,9 @@ struct TraceMacDailyView: View {
     @State private var dateFiles: [String] = []
     @State private var selectedDateFile: String? = nil
     @State private var sidebarCollapsed = false
+    /// Remembered across launches, and shared with every other resizable
+    /// column through `MacColumnResizer`.
+    @AppStorage("tracemac.column.daily") private var dailyWidth: Double = 248
     @State private var calendarCollapsed = false
     @State private var searchText = ""
     /// First meaningful line of each day note, keyed by filename. Built once
@@ -865,9 +868,12 @@ struct TraceMacDailyView: View {
                         .background(Color(nsColor: .windowBackgroundColor))
                     }
                 }
-                // 200pt fitted "Yesterday" over a bare date. Now that the second
-                // line carries where you actually were, it needs the room.
-                .frame(width: 248)
+                // 248 is the width this starts at, not the width it is stuck
+                // with: 200pt fitted "Yesterday" over a bare date, and the second
+                // line carrying where you actually were needed the room. Draggable
+                // since Session 70.
+                .frame(width: dailyWidth)
+                MacColumnResizer(width: $dailyWidth)
             }
 
             CollapseHandle(isCollapsed: $sidebarCollapsed, collapsesRight: false,
@@ -1536,6 +1542,9 @@ struct TraceMacNoteListView: View {
     @State private var showRenameSheet = false
     @State private var renameDraft = ""
     @State private var fileListCollapsed = false
+    /// Remembered across launches, and shared with every other resizable
+    /// column through `MacColumnResizer`.
+    @AppStorage("tracemac.column.weekly") private var weeklyWidth: Double = 200
     @State private var selectedTags: Set<String> = []
     @State private var allTags: [String] = []
     @State private var fileContents: [String: String] = [:]
@@ -1595,7 +1604,8 @@ struct TraceMacNoteListView: View {
                         .background(Color(nsColor: .windowBackgroundColor))
                     }
                 }
-                .frame(width: 200)
+                .frame(width: weeklyWidth)
+                MacColumnResizer(width: $weeklyWidth)
             }
 
             CollapseHandle(
@@ -1806,6 +1816,9 @@ struct TraceMacProjectsView: View {
     @State private var showRenameSheet = false
     @State private var renameDraft = ""
     @State private var fileListCollapsed = false
+    /// Remembered across launches, and shared with every other resizable
+    /// column through `MacColumnResizer`.
+    @AppStorage("tracemac.column.projects") private var projectsWidth: Double = 200
     @State private var docStore: TraceMacDocumentStore? = nil
     @State private var selectedTags: Set<String> = []
     @State private var allTags: [String] = []
@@ -1956,7 +1969,8 @@ struct TraceMacProjectsView: View {
                         .background(Color(nsColor: .windowBackgroundColor))
                     }
                 }
-                .frame(width: 200)
+                .frame(width: projectsWidth)
+                MacColumnResizer(width: $projectsWidth)
             }
 
             CollapseHandle(isCollapsed: $fileListCollapsed, collapsesRight: false,

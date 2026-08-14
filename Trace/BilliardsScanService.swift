@@ -44,8 +44,12 @@ enum BilliardsScanService {
     private static let model    = "claude-sonnet-5"
 
     private static var apiKey: String {
+        // Was a direct `UserDefaults(suiteName:)` read. Routed through
+        // `ClaudeKeyStore` on 2026-08-11 so the macOS keychain applies here
+        // too — a bypass of the single accessor is a call site that keeps
+        // reading the plaintext copy after it has been emptied.
         #if os(macOS)
-        return UserDefaults(suiteName: "group.com.david.trace")?.string(forKey: "claude_api_key") ?? ""
+        return ClaudeKeyStore.key
         #else
         return Config.claudeAPIKey
         #endif

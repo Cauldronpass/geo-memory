@@ -110,9 +110,41 @@ struct MacSectionHeader<Tabs: View>: View {
         self.tabs   = tabs()
     }
 
+    /// Back and forward, drawn once and therefore present in every section.
+    ///
+    /// **This component is the reason the feature is cheap.** Every section in
+    /// the app already draws this header, so the arrows needed one insertion
+    /// rather than seven — and a section added later gets them without knowing
+    /// they exist.
+    ///
+    /// The buttons ask rather than act: they set `MacNavigator.pendingReplay`,
+    /// which `TraceMacContentView` consumes. The header is drawn *inside* a
+    /// section and has no access to the pending-link state that performs a move.
+    @State private var navigator = MacNavigator.shared
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: MacChrome.headerGap) {
+                HStack(spacing: 2) {
+                    Button { navigator.goBack() } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .disabled(!navigator.canGoBack)
+                    .help("Back")
+
+                    Button { navigator.goForward() } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(!navigator.canGoForward)
+                    .help("Forward")
+                }
+                .buttonStyle(.plain)
+                .font(MacType.body)
+                // Dimmed rather than hidden when there is nowhere to go. A
+                // control that disappears makes the row jump and takes its own
+                // position with it; a greyed one says "not yet" in place.
+                .foregroundStyle(.secondary)
+
                 Text(title)
                     .font(MacType.heading)
                     .foregroundStyle(.primary)

@@ -128,6 +128,9 @@ struct TraceMacContentView: View {
     /// A destination chosen in the floating panel, which lives outside this
     /// view's hierarchy and so cannot write the pending-link state directly.
     @State private var searchRoute = MacSearchRoute.shared
+    /// Back/forward history. Sections report where they are; the header
+    /// arrows ask to move; this view performs the move.
+    @State private var navigator = MacNavigator.shared
 
     var body: some View {
         // Plain HStack instead of NavigationSplitView — eliminates NSSplitView resize
@@ -223,6 +226,24 @@ struct TraceMacContentView: View {
         // nothing and returns.
         .task(id: searchRoute.pending) { consumeSearchRoute() }
         .onChange(of: searchRoute.pending) { consumeSearchRoute() }
+        // The sidebar. A section clicked by hand is a place; a section arrived
+        // at by replay is not, and `MacNavigator.record` drops the second by
+        // equality rather than by a flag.
+        .onChange(of: selectedSection) { _, new in
+            navigator.record(.section(new ?? .notes))
+        }
+        // The header arrows, consumed here because this is the view that holds
+        // the pending-link state a move is made of.
+        .onChange(of: navigator.pendingReplay) { _, place in
+            guard let place else { return }
+            navigator.pendingReplay = nil
+            switch place {
+            case .section(let value):
+                selectedSection = value
+            case .record(let destination):
+                openSearchResult(destination, query: "")
+            }
+        }
         // TraceMac came to the front. Refetch whatever another device may have
         // written while this window was not looking.
         //
@@ -291,6 +312,12 @@ struct TraceMacContentView: View {
     }
 
     private func openSearchResult(_ destination: MacSearchDestination, query: String) {
+        // Recorded here because this is the single funnel every routed jump
+        // already passes through — wikilinks, backlink rows, document chips,
+        // search results and Ask citations all arrive at this function. One
+        // insertion covers them all, and `.preview` is excluded because it opens
+        // nothing to come back from.
+        if destination != .preview { navigator.record(.record(destination)) }
         switch destination {
         case .dailyOrProjectNote(let path):
             selectedSection = .notes

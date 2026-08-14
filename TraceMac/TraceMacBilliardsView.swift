@@ -15,6 +15,9 @@ struct TraceMacBilliardsView: View {
     @State private var searchText   = ""
     @State private var isLoading    = false
     @State private var listCollapsed = false
+    /// Remembered across launches, and shared with every other resizable
+    /// column through `MacColumnResizer`.
+    @AppStorage("tracemac.column.billiards") private var listWidth: Double = 260
 
     private var sessions: [BilliardsSession] {
         let sorted = notion.billiardsSessions.sorted { $0.date > $1.date }
@@ -68,7 +71,8 @@ struct TraceMacBilliardsView: View {
                             .background(Color(nsColor: .windowBackgroundColor))
                         }
                     }
-                    .frame(width: 260)
+                    .frame(width: listWidth)
+                    MacColumnResizer(width: $listWidth)
                 }
 
                 CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)

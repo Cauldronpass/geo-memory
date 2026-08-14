@@ -19,6 +19,10 @@ struct TraceMacInboxView: View {
     @State private var deleteCandidate: InboxFile? = nil
     @State private var showDeleteConfirm = false
     @State private var listCollapsed = false
+    /// Remembered across launches. The two inline copies of this strip in
+    /// People and Places used plain `@State`, so a widened column was narrow
+    /// again on the next launch.
+    @AppStorage("tracemac.column.inbox") private var listWidth: Double = 200
 
     private var filtered: [InboxFile] {
         guard !searchText.isEmpty else { return files }
@@ -78,7 +82,8 @@ struct TraceMacInboxView: View {
                         .background(Color(nsColor: .windowBackgroundColor))
                     }
                 }
-                .frame(width: 200)
+                .frame(width: listWidth)
+                MacColumnResizer(width: $listWidth)
             }
 
             CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)

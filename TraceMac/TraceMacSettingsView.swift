@@ -40,7 +40,13 @@ struct TraceMacSettingsView: View {
                         .textContentType(.password)
                 }
                 HStack {
-                    Text("Used for OT and Billiards scan features.")
+                    // States where the key actually is. "Stored more safely now"
+                    // is a claim the user should be able to see rather than take
+                    // on trust — and while it reads Keychain: no, something did
+                    // not migrate and this is the only place that would say so.
+                    Text(ClaudeKeyStore.isSecured
+                         ? "Stored in the macOS Keychain. Used for Ask, OT and Billiards scans."
+                         : "Not stored yet. Used for Ask, OT and Billiards scans.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -93,7 +99,11 @@ struct TraceMacSettingsView: View {
         .padding()
         .onAppear {
             token           = sharedDefaults.string(forKey: "notion_token")   ?? ""
-            claudeKey       = sharedDefaults.string(forKey: "claude_api_key") ?? ""
+            // `ClaudeKeyStore`, not `sharedDefaults`. On macOS the key now
+            // lives in the keychain, and reading it here also performs the
+            // one-time migration out of the App Group — so simply opening
+            // Settings moves an existing key across.
+            claudeKey       = ClaudeKeyStore.key
             // GooglePlacesService.swift reads this from plain UserDefaults.standard
             // (not the app-group suite) — matching that read exactly, not the
             // sharedDefaults pattern used above, so Discover search actually finds it.
@@ -117,7 +127,7 @@ struct TraceMacSettingsView: View {
 
     private func save() {
         sharedDefaults.set(token.trimmingCharacters(in: .whitespaces),     forKey: "notion_token")
-        sharedDefaults.set(claudeKey.trimmingCharacters(in: .whitespaces), forKey: "claude_api_key")
+        ClaudeKeyStore.set(claudeKey)
         // Plain .standard, not sharedDefaults — see the matching read in .onAppear.
         UserDefaults.standard.set(googlePlacesKey.trimmingCharacters(in: .whitespaces), forKey: "google_places_key")
         saved = true

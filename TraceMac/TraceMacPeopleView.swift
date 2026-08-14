@@ -56,8 +56,7 @@ struct TraceMacPeopleView: View {
     @State private var showDeletePerson = false
     @State private var showEditPerson = false
     @State private var listCollapsed = false
-    @State private var sidebarWidth: CGFloat = 200
-    @GestureState private var sidebarDrag: CGFloat = 0
+    @AppStorage("tracemac.column.people") private var sidebarWidth: Double = 200
     @State private var isUploadingPhoto = false
     @State private var avatarHovering = false
     @State private var showArchived = false
@@ -111,21 +110,12 @@ struct TraceMacPeopleView: View {
         HStack(spacing: 0) {
             if !listCollapsed {
                 peopleList
-                    .frame(width: max(160, sidebarWidth + sidebarDrag))
-                // Resize strip — must be non-clear to receive hit tests
-                Rectangle()
-                    .fill(Color.primary.opacity(0.001))
-                    .frame(width: 6)
-                    .gesture(
-                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                            .updating($sidebarDrag) { v, state, _ in
-                                state = v.translation.width
-                            }
-                            .onEnded { v in
-                                sidebarWidth = max(160, sidebarWidth + v.translation.width)
-                            }
-                    )
-                    .onHover { h in h ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
+                    .frame(width: sidebarWidth)
+                // Was fifteen inline lines here and fifteen more in the other
+                // of these two files. One component now — see
+                // `MacColumnResizer` — which also made the width persist and
+                // gained a maximum.
+                MacColumnResizer(width: $sidebarWidth)
             }
             CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
             detailArea.frame(maxWidth: .infinity)

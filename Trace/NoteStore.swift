@@ -1,5 +1,6 @@
 import Foundation
 import EventKit
+import Security
 import ImageIO
 import UniformTypeIdentifiers
 import SwiftUI
@@ -32,21 +33,140 @@ enum ClaudeKeyStore {
     static let suiteName = "group.com.david.trace"
     static let defaultsKey = "claude_api_key"
 
+    // ── Keychain, macOS only. Spec §8 step 4, 2026-08-11 ──────────────────
+    //
+    // `Config.swift` has been honest about this since the key stopped being a
+    // string literal on 2026-08-01: *"App Group storage is readable from a
+    // device backup, so this is better rather than airtight."* This is the next
+    // step up. The key moves into the login keychain — encrypted at rest, gated
+    // by the OS to an app whose signing identity matches — instead of sitting in
+    // a preferences plist any process running as David can open.
+    //
+    // **It is a real improvement and a modest one.** A secret on a client is
+    // still reachable by someone with the unlocked machine and the will to try;
+    // Keychain raises the cost from "read a file" to "attack the keychain", and
+    // nothing short of a server-side proxy removes it entirely. The failure mode
+    // is unchanged and worth repeating: **a bill, not a breach.** The key reaches
+    // the Anthropic spend and nothing else.
+    //
+    // **macOS only, deliberately.** App Group values are per-device already, so
+    // the Mac's key and the phone's are separate copies today and this creates
+    // no divergence that did not exist. A shared keychain access group would
+    // need the `keychain-access-groups` entitlement on five targets and fresh
+    // provisioning profiles, which is how TestFlight signing breaks — for a
+    // phone whose key was never the same object anyway.
+    //
+    // **Changed here rather than in a new Mac-only accessor**, because the
+    // actual problem was that this type is the documented single reader and four
+    // call sites went around it. A parallel store would have made that five.
+    // D93's rule: enforce at the narrowest point every path crosses, and if
+    // there is no such point, make one first.
+    //
+    // `import Security` is Foundation-level C API. The "Foundation-only"
+    // note above this type is about keeping SwiftUI out of it, and that holds.
+
+    private static let keychainService = "com.david.trace.claude"
+    private static let keychainAccount = "api-key"
+
     static var key: String {
+#if os(macOS)
+        if let stored = keychainRead(), !stored.isEmpty { return stored }
+        // Nothing in the keychain yet. Anything already in the App Group is the
+        // key David entered before this shipped, so it is moved rather than
+        // asked for again — and the plaintext copy is removed on the way, which
+        // is the entire point of the exercise.
+        let legacy = UserDefaults(suiteName: suiteName)?.string(forKey: defaultsKey) ?? ""
+        if !legacy.isEmpty {
+            _ = keychainWrite(legacy)
+            UserDefaults(suiteName: suiteName)?.removeObject(forKey: defaultsKey)
+        }
+        return legacy
+#else
         UserDefaults(suiteName: suiteName)?.string(forKey: defaultsKey) ?? ""
+#endif
     }
 
     static var hasKey: Bool { !key.isEmpty }
 
+    /// True when the value is in the keychain rather than in a preferences file.
+    /// Shown in Settings, because "it is stored more safely now" is a claim the
+    /// user should be able to see rather than take on trust.
+    static var isSecured: Bool {
+#if os(macOS)
+        !(keychainRead() ?? "").isEmpty
+#else
+        false
+#endif
+    }
+
     static func set(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+#if os(macOS)
+        if trimmed.isEmpty {
+            keychainDelete()
+        } else {
+            _ = keychainWrite(trimmed)
+        }
+        // Never leave a second copy behind. A key in two places is a key whose
+        // removal from one of them does nothing.
+        UserDefaults(suiteName: suiteName)?.removeObject(forKey: defaultsKey)
+#else
         guard let defaults = UserDefaults(suiteName: suiteName) else { return }
         if trimmed.isEmpty {
             defaults.removeObject(forKey: defaultsKey)
         } else {
             defaults.set(trimmed, forKey: defaultsKey)
         }
+#endif
     }
+
+#if os(macOS)
+
+    private static func baseQuery() -> [String: Any] {
+        [kSecClass as String:       kSecClassGenericPassword,
+         kSecAttrService as String: keychainService,
+         kSecAttrAccount as String: keychainAccount]
+    }
+
+    private static func keychainRead() -> String? {
+        var query = baseQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    private static func keychainWrite(_ value: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+
+        // Update first, add only if there is nothing to update. `SecItemAdd` on
+        // an existing item returns `errSecDuplicateItem` rather than replacing
+        // it, so an add-then-fall-back-to-update order silently keeps the old
+        // key on every change after the first.
+        let attributes: [String: Any] = [kSecValueData as String: data]
+        let status = SecItemUpdate(baseQuery() as CFDictionary, attributes as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
+
+        var insert = baseQuery()
+        insert[kSecValueData as String] = data
+        // `AfterFirstUnlock`, not `WhenUnlocked`: the document scanner and the
+        // check-in drain can run from a background task on a Mac whose screen is
+        // locked, and a key that is unreadable then is a scan that fails for a
+        // reason nobody can see.
+        insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
+    }
+
+    private static func keychainDelete() {
+        SecItemDelete(baseQuery() as CFDictionary)
+    }
+
+#endif
 
     /// Never show a key in full. Enough to confirm which one is loaded, not
     /// enough to be worth a screenshot.

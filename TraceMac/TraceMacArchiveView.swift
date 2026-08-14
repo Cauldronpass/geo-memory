@@ -81,6 +81,9 @@ private struct ArchivedPeopleView: View {
     }
 
     @State private var selectedID: String? = nil
+    /// Remembered across launches, and shared with every other resizable
+    /// column through `MacColumnResizer`.
+    @AppStorage("tracemac.column.archive.people") private var peopleWidth: Double = 200
     @State private var detail: PersonDetail? = nil
     @State private var interactions: [Interaction] = []
     @State private var isLoading = false
@@ -123,7 +126,8 @@ private struct ArchivedPeopleView: View {
                     .scrollContentBackground(.hidden)
                 }
             }
-            .frame(width: 200)
+            .frame(width: peopleWidth)
+            MacColumnResizer(width: $peopleWidth)
 
             Divider()
 
@@ -244,6 +248,9 @@ private struct ArchivedNotesView: View {
 
     @State private var subTab: NoteSubTab = .projects
     @State private var selectedFilename: String? = nil
+    /// Remembered across launches, and shared with every other resizable
+    /// column through `MacColumnResizer`.
+    @AppStorage("tracemac.column.archive.notes") private var notesWidth: Double = 220
     @State private var searchText = ""
     @State private var isMoveError = false
 
@@ -307,8 +314,9 @@ private struct ArchivedNotesView: View {
                         .scrollContentBackground(.hidden)
                     }
                 }
-                .frame(width: 220)
+                .frame(width: notesWidth)
                 .onChange(of: subTab) { _, _ in selectedFilename = nil; searchText = "" }
+                MacColumnResizer(width: $notesWidth)
 
                 Divider()
 

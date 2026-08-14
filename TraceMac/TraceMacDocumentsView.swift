@@ -55,6 +55,11 @@ struct TraceMacDocumentsView: View {
     /// representable so the match chip can live outside the `PDFView` and
     /// survive its rebuilds, exactly as `zoom` does.
     @State private var find = MacPDFFind()
+    @State private var navigator = MacNavigator.shared
+    /// Remembered across launches. The two inline copies of this strip in
+    /// People and Places used plain `@State`, so a widened column was narrow
+    /// again on the next launch.
+    @AppStorage("tracemac.column.satchel") private var listWidth: Double = 240
 
     /// Divider strip height. Thick enough to aim at without hunting.
     private let dividerThickness: CGFloat = 6
@@ -185,7 +190,10 @@ struct TraceMacDocumentsView: View {
     /// without re-indenting five hundred lines; nothing here changed.
     private var columns: some View {
         HStack(spacing: 0) {
-            if !listCollapsed { leftColumn }
+            if !listCollapsed {
+                leftColumn
+                MacColumnResizer(width: $listWidth)
+            }
             CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
             rightColumn.frame(maxWidth: .infinity)
         }
@@ -239,6 +247,9 @@ struct TraceMacDocumentsView: View {
         .onChange(of: selectedDoc) { old, new in
             guard old?.relativePath != new?.relativePath else { return }
             if new?.relativePath != find.targetPath { find.clear() }
+            // Which document, so back from here returns to it rather than to a
+            // Satchel list scrolled somewhere else.
+            if let path = new?.relativePath { navigator.record(.record(.document(path))) }
         }
         // Escape clears the highlight. David: *"how do i remove the highlights
         // with a keystroke easily other than exiting the document and
@@ -414,7 +425,7 @@ struct TraceMacDocumentsView: View {
                 handleDrop(providers: providers)
             }
         }
-        .frame(width: 240)
+        .frame(width: listWidth)
     }
 
     // MARK: - Drop handler

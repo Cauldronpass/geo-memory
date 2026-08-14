@@ -104,6 +104,11 @@ struct TraceMacEndeavorsView: View {
     /// a coin flip and the later one wins silently.
     @State private var addingPersonTo: Endeavor? = nil
     @State private var selectedID: String?
+    @State private var navigator = MacNavigator.shared
+    /// Remembered across launches. The two inline copies of this strip in
+    /// People and Places used plain `@State`, so a widened column was narrow
+    /// again on the next launch.
+    @AppStorage("tracemac.column.endeavors") private var listWidth: Double = 200
 
     // MARK: Derived
 
@@ -221,6 +226,7 @@ struct TraceMacEndeavorsView: View {
 
             HStack(spacing: 0) {
                 listColumn
+                MacColumnResizer(width: $listWidth)
                 Divider()
                 if let e = selected {
                     detail(e)
@@ -231,6 +237,16 @@ struct TraceMacEndeavorsView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+        }
+        // **Which endeavor, not just "Endeavors".** Without this, back from a
+        // document opened out of Megan's rail would return to the Endeavors
+        // section and land on whatever the filter selects first — near enough to
+        // look intended and wrong enough to be useless. `selected` is derived
+        // (it falls back to `filtered.first`), so the id it resolves to is the
+        // one on screen, which is the one worth returning to.
+        .onChange(of: selected?.id) { _, id in
+            guard let id else { return }
+            navigator.record(.record(.endeavor(id)))
         }
         .task {
             if store == nil { store = TraceMacEndeavorStore(noteStore: noteStore) }
@@ -327,7 +343,7 @@ struct TraceMacEndeavorsView: View {
                 .scrollContentBackground(.hidden)
             }
         }
-        .frame(width: 200)
+        .frame(width: listWidth)
         .confirmationDialog("Delete “\(deleteTarget?.name ?? "")”?",
                             isPresented: Binding(
                                 get: { deleteTarget != nil },
