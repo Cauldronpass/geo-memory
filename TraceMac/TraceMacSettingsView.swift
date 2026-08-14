@@ -14,6 +14,9 @@ struct TraceMacSettingsView: View {
     @State private var googlePlacesKey: String = ""
     @State private var showGooglePlacesKey = false
     @State private var saved = false
+    /// Shared with the search panel through `@AppStorage`, so the toggle and
+    /// the thing it governs read one key and neither owns it.
+    @AppStorage("tracemac.ask.includeNotion") private var includeNotionInAsk = false
 
     private var sharedDefaults: UserDefaults {
         UserDefaults(suiteName: "group.com.david.trace") ?? .standard
@@ -71,6 +74,17 @@ struct TraceMacSettingsView: View {
 
             Section("Global search") {
                 MacHotKeyRecorder()
+
+                Toggle("Let Ask read People and Places", isOn: $includeNotionInAsk)
+                // Off by default, and the reason is on screen rather than only
+                // in the spec. Spec §6: these records are other people's phone
+                // numbers, addresses and birthdays, and including them sends
+                // third-party data that those people did not choose. It also
+                // buys nothing — "what is Megan's number" is answered by the
+                // search box above, locally, with no API call at all.
+                Text("Off by default. Search always covers them locally; this only decides whether Ask may send them to Claude. Ask never sends the contents of anything tagged private.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
         }

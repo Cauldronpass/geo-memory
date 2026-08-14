@@ -83,9 +83,6 @@ struct TraceMacContentView: View {
     @Environment(NotionService.self) private var notionService
 
     @Binding var selectedSection: MacSection?
-    /// ⌘K, owned by `TraceMacApp` because the shortcut is declared in
-    /// `.commands`.
-    @Binding var showSearch: Bool
     @State private var pendingHorizonsFile: String? = nil
     @State private var isDropTargeted = false
 
@@ -125,8 +122,12 @@ struct TraceMacContentView: View {
     @State private var pendingEndeavorID: String? = nil
     /// Bare filename into the Inbox list, same shape as `pendingHorizonsFile`.
     @State private var pendingInboxFile: String? = nil
-    /// Set by the system-wide hot key, consumed below.
+    /// Set by the system-wide hot key on the one path that still needs the
+    /// window (see `MacHotKeyCenter.fire`), consumed below.
     @State private var searchTrigger = MacSearchTrigger.shared
+    /// A destination chosen in the floating panel, which lives outside this
+    /// view's hierarchy and so cannot write the pending-link state directly.
+    @State private var searchRoute = MacSearchRoute.shared
 
     var body: some View {
         // Plain HStack instead of NavigationSplitView — eliminates NSSplitView resize
@@ -139,13 +140,6 @@ struct TraceMacContentView: View {
                     .frame(width: 1)
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            if showSearch {
-                TraceMacSearchPanel(isPresented: $showSearch, onOpen: openSearchResult)
-                    .environment(noteStore)
-                    .environment(notionService)
-                    .transition(.opacity)
-                    .zIndex(2)
             }
             // Global drop target overlay — only visible when dragging a file
             if isDropTargeted {
@@ -214,8 +208,21 @@ struct TraceMacContentView: View {
         .task(id: searchTrigger.pending) {
             guard searchTrigger.pending else { return }
             searchTrigger.pending = false
-            showSearch = true
+            MacQuickPanelController.shared.show()
         }
+        // Same consume-and-clear, for results chosen in the floating panel. It
+        // fires on appear as well as on change, so a request made while this
+        // window was still being restored is still honoured.
+        // **Both hooks, on purpose.** `.task(id:)` covers the window that is
+        // being created right now — it fires on appear with whatever is already
+        // pending. `.onChange` covers the window that is already up and merely
+        // being brought forward. Either alone leaves one of those two cases
+        // depending on a body re-evaluation landing at the right moment, and
+        // "the app doesn't jump to the record" is what that looks like from
+        // outside. Consuming clears the value, so whichever fires second sees
+        // nothing and returns.
+        .task(id: searchRoute.pending) { consumeSearchRoute() }
+        .onChange(of: searchRoute.pending) { consumeSearchRoute() }
         // TraceMac came to the front. Refetch whatever another device may have
         // written while this window was not looking.
         //
@@ -237,6 +244,12 @@ struct TraceMacContentView: View {
             // itself is not tied to this view's lifetime, so closing the window
             // leaves the shortcut that reopens it working.
             MacHotKeyCenter.shared.start()
+            // The floating panel needs these two, and this is where they live —
+            // `TraceMacApp` builds its own `NotionService` rather than using the
+            // shared one, so a panel that reached for `NotionService.shared`
+            // would search a second, empty copy and report that nobody exists.
+            MacQuickPanelController.shared.configure(noteStore: noteStore,
+                                                     notionService: notionService)
             async let p: ()  = notionService.fetchPlaces()
             async let pe: () = notionService.fetchPeople()
             async let b: ()  = notionService.fetchBilliardsSessions()
@@ -271,6 +284,12 @@ struct TraceMacContentView: View {
     /// reaches here — the panel handles it in place, precisely so that this
     /// function never has to have a branch that switches a section and then
     /// shrugs.
+    private func consumeSearchRoute() {
+        guard let request = searchRoute.pending else { return }
+        searchRoute.pending = nil
+        openSearchResult(request.destination, query: request.query)
+    }
+
     private func openSearchResult(_ destination: MacSearchDestination, query: String) {
         switch destination {
         case .dailyOrProjectNote(let path):

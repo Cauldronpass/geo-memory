@@ -170,13 +170,21 @@ struct MacSearchCorpus: Sendable {
     /// under one of these is skipped — an allow list rather than a deny list,
     /// so a new folder appearing in the container cannot silently join the
     /// corpus.
-    static let roots = ["Calendar", "Notes"]
+    nonisolated static let roots = ["Calendar", "Notes"]
 
     /// Synchronous filesystem walk. **Call off the main thread** — same
     /// convention `findWikilinkMentions` and `TagIndex.seedFromNotes` use, and
     /// for the same reason: it opens and reads every markdown file in the
     /// container.
-    static func build(containerURL: URL) -> MacSearchCorpus {
+    ///
+    /// `nonisolated`, and it has to be. The project sets
+    /// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` on every target, so an
+    /// unannotated static method is main-actor isolated — which means the
+    /// `Task.detached` that calls this would be hopping straight back to the
+    /// main actor to do the very work it detached to keep off it. A warning in
+    /// Swift 5 and an error in 6, and in both cases the wrong thread. Same note
+    /// `NoteStore` carries above `findWikilinkMentions`.
+    nonisolated static func build(containerURL: URL) -> MacSearchCorpus {
         var out: [MacSearchNote] = []
         let rootPath = containerURL.path
 
@@ -234,7 +242,7 @@ struct MacSearchCorpus: Sendable {
     /// owns Endeavor parsing, and this is a search hint, not a second reader of
     /// the record. If it ever needs a list value, that is the moment to call the
     /// store instead of growing this.
-    private static func frontmatter(_ raw: String) -> [String: String] {
+    nonisolated private static func frontmatter(_ raw: String) -> [String: String] {
         guard raw.hasPrefix("---") else { return [:] }
         var out: [String: String] = [:]
         var started = false
@@ -647,7 +655,10 @@ enum MacSearchEngine {
         }
     }
 
-    private static func destination(for note: MacSearchNote) -> MacSearchDestination {
+    /// Internal rather than private: `MacAskService` resolves a citation to the
+    /// same screen a search result opens. Two routing tables for one set of
+    /// folders is the drift this project keeps paying for.
+    static func destination(for note: MacSearchNote) -> MacSearchDestination {
         switch note.folder {
         case "Calendar", NoteStore.projectsFolder:
             return .dailyOrProjectNote(note.relativePath)

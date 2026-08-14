@@ -86,6 +86,27 @@ enum DocumentScanService {
 
     // MARK: - PDF scanning
 
+    /// Scans a PDF, falling back to reading the first page as an image when the
+    /// file has no text layer.
+    ///
+    /// **This is a port of the fix iOS already had**, and the divergence is the
+    /// point. `IOSDocumentScanService.scanPDF` has carried the image fallback
+    /// for months, with a comment naming the symptom: *"every scanned document
+    /// silently got no AI at all, which is why scans stayed titled scan while
+    /// camera photos came back fully described."* The Mac's copy was never
+    /// touched and threw `.noContent` instead — so a scanned PDF dropped on the
+    /// Mac, through Dropzone or the window, got no title, no tags and no
+    /// description, and nothing on screen said why.
+    ///
+    /// Exactly the shape of the Satchel Inbox migration in Session 69: one
+    /// writer got the change and the other did not, for two weeks, with nobody
+    /// noticing because each app looked correct on its own.
+    ///
+    /// **Corrected on the way in.** The claim that opened this — that David's
+    /// two phone scans had no metadata — was wrong, and his own container said
+    /// so: both carry an accurate AI title and description, written by the phone
+    /// through this very fallback. The bug is real but its blast radius is
+    /// Mac-side capture only. Checking before asserting cost one `cat`.
     private static func scanPDF(at url: URL, filename: String, existingTags: [String], userContext: String) async throws -> DocumentScanResult {
         guard let pdf = PDFDocument(url: url) else {
             throw DocumentScanError.noContent
@@ -100,13 +121,48 @@ enum DocumentScanService {
             }
         }
 
+        // **Letters or digits, not "non-empty".** Deliberately the same test
+        // `MacTextExtraction.fromPDF` uses to decide whether to OCR. If the two
+        // disagreed about which PDFs have a text layer, one of them would fall
+        // back and the other would not, on the same file.
         let textPreview = String(extractedText.prefix(3000))   // cap at ~3k chars
-        guard !textPreview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw DocumentScanError.noContent
+        guard textPreview.contains(where: { $0.isLetter || $0.isNumber }) else {
+            // No text layer. Render page one and let the model read it.
+            //
+            // **The rendered image, not the sidecar's OCR.** Both were on the
+            // table and the image wins on evidence: the OCR of David's tuxedo
+            // receipt opens *"The Mer'a Wearhouee, Inc."*, while the description
+            // the phone produced from the same page image names the store, the
+            // total and the event date correctly. Vision is good enough to make
+            // a receipt findable and not good enough to summarise from. It also
+            // costs nothing extra — this runs once per document either way.
+            guard let page = pdf.page(at: 0), let rendered = renderPageImage(page) else {
+                throw DocumentScanError.noContent
+            }
+            let imagePrompt = buildPrompt(content: nil, existingTags: existingTags,
+                                          isText: false, filename: filename,
+                                          userContext: userContext)
+            return try await callClaude(imageData: rendered, textPrompt: imagePrompt)
         }
 
         let prompt = buildPrompt(content: textPreview, existingTags: existingTags, isText: true, filename: filename, userContext: userContext)
         return try await callClaude(textPrompt: prompt)
+    }
+
+    /// A PDF page as JPEG bytes, for the no-text-layer path above.
+    ///
+    /// Same numbers as `IOSDocumentScanService.renderPageImage` — 1600 on the
+    /// long edge, capped at 4× — because the two now feed the same model the
+    /// same kind of input and a difference here would be a difference nobody
+    /// chose. `NSImage.jpegData` is TraceMac's own, in `TraceMacColors.swift`;
+    /// it uses `CGImageDestination` rather than `NSBitmapImageRep`, which
+    /// silently emits PNG when the image has alpha.
+    private static func renderPageImage(_ page: PDFPage) -> Data? {
+        let bounds = page.bounds(for: .mediaBox)
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let scale = min(1600 / max(bounds.width, bounds.height), 4)
+        let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        return page.thumbnail(of: size, for: .mediaBox).jpegData(compressionQuality: 0.8)
     }
 
     // MARK: - Image scanning

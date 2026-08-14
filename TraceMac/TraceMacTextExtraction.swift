@@ -35,14 +35,14 @@ enum MacTextExtraction {
     /// **The cap is stated in the file when it bites** — see `truncationNotice`.
     /// Silent truncation reads as "that is all there was", which is the one
     /// thing a search index must never imply.
-    static let maxCharacters = 20_000
+    nonisolated static let maxCharacters = 20_000
 
     /// Only relevant to a scanned PDF, where each page costs an OCR pass. A PDF
     /// with a real text layer is read whole regardless of length, because that
     /// is one cheap call.
-    static let maxOCRPages = 25
+    nonisolated static let maxOCRPages = 25
 
-    static let truncationNotice = "…text truncated at 20,000 characters."
+    nonisolated static let truncationNotice = "…text truncated at 20,000 characters."
 
     // MARK: - Entry point
 
@@ -52,6 +52,12 @@ enum MacTextExtraction {
     ///
     /// **Synchronous, and must be called off the main thread.** Vision on a full
     /// page is tens of milliseconds and a scanned PDF is that per page.
+    ///
+    /// Everything in this file is `nonisolated`, including the constants. The
+    /// project sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so without it
+    /// the helpers below would be main-actor isolated and this method could not
+    /// call them — and the `Task.detached` at the call site would be detaching
+    /// only to hop back.
     nonisolated static func extract(from url: URL) -> String? {
         let ext = url.pathExtension.lowercased()
         if ext == "pdf" { return cap(fromPDF(url)) }
@@ -61,7 +67,7 @@ enum MacTextExtraction {
         return nil
     }
 
-    private static func cap(_ text: String) -> String {
+    nonisolated private static func cap(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > maxCharacters else { return trimmed }
         return String(trimmed.prefix(maxCharacters)) + "\n\n" + truncationNotice
@@ -81,7 +87,7 @@ enum MacTextExtraction {
     /// whitespace, which is a non-empty string that says nothing, and treating
     /// that as success is how a scanned bill ends up unsearchable while looking
     /// like it worked.
-    private static func fromPDF(_ url: URL) -> String {
+    nonisolated private static func fromPDF(_ url: URL) -> String {
         guard let pdf = PDFDocument(url: url) else { return "" }
 
         var layer = ""
@@ -116,7 +122,7 @@ enum MacTextExtraction {
     /// 2× the media box. Below that, 8-point receipt type falls under the size
     /// Vision reliably resolves; far above it, the OCR pass gets slower without
     /// reading anything new.
-    private static func render(_ page: PDFPage) -> CGImage? {
+    nonisolated private static func render(_ page: PDFPage) -> CGImage? {
         let box = page.bounds(for: .mediaBox)
         let scale: CGFloat = 2
         let width = Int(box.width * scale)
@@ -145,7 +151,7 @@ enum MacTextExtraction {
 
     // MARK: - Image
 
-    private static func fromImage(_ url: URL) -> String {
+    nonisolated private static func fromImage(_ url: URL) -> String {
         // ImageIO rather than `NSImage`: it has no actor isolation, which is what
         // lets this run inside a detached task, and it is the same route
         // `ScanImage.downscaled` takes for the same reason.
@@ -162,7 +168,7 @@ enum MacTextExtraction {
     /// be a shape I am confident about rather than certain of, in a file that
     /// cannot be compiled here. Worth revisiting when something else in this app
     /// is already being built against the new Vision API.
-    private static func ocr(_ image: CGImage) -> String {
+    nonisolated private static func ocr(_ image: CGImage) -> String {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         // On by default, stated because it is the setting that matters for

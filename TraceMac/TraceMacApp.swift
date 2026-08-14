@@ -9,17 +9,6 @@ struct TraceMacApp: App {
     @State private var noteStore = NoteStore.shared
     @State private var notionService = NotionService()
     @State private var selectedSection: MacSection? = .notes
-    /// ⌘K. Lives on the `App` for the same reason `selectedSection` does — the
-    /// shortcut is declared in `.commands`, which is scene-level, and the panel
-    /// it opens is a window-level overlay.
-    ///
-    /// **Still the in-window overlay, not a `MenuBarExtra` panel.** The
-    /// system-wide shortcut arrived (Session 70, `TraceMacHotKey.swift`) and it
-    /// brings the app forward and opens this, so one panel serves both cases —
-    /// which is what David asked for: *"Id want in app to be the same as out of
-    /// app."* A separate floating panel would be a second surface to keep in
-    /// step with the first, for a difference nobody asked for.
-    @State private var showSearch = false
     /// Held here only so the Go menu can print the current shortcut in its
     /// title. Registration happens in `TraceMacContentView`'s launch task; the
     /// Carbon hot key is app-wide and outlives the window, so closing the window
@@ -33,8 +22,7 @@ struct TraceMacApp: App {
 
     var body: some Scene {
         WindowGroup {
-            TraceMacContentView(selectedSection: $selectedSection,
-                                showSearch: $showSearch)
+            TraceMacContentView(selectedSection: $selectedSection)
                 .environment(noteStore)
                 .environment(notionService)
                 .frame(minWidth: 900, minHeight: 600)
@@ -80,7 +68,9 @@ struct TraceMacApp: App {
                 //
                 // The item stays so the feature is discoverable in a menu and
                 // the current shortcut is written where someone would look.
-                Button("Search…  \(hotKeys.combo.label)") { showSearch = true }
+                Button("Search…  \(hotKeys.combo.label)") {
+                    MacQuickPanelController.shared.show()
+                }
                 Divider()
                 Button("Notes")     { selectedSection = .notes }
                     .keyboardShortcut("1", modifiers: .command)

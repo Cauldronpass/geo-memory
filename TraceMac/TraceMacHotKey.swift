@@ -233,18 +233,28 @@ final class MacHotKeyCenter {
 
     // MARK: Fire
 
-    /// Bring TraceMac forward and ask for the search panel.
+    /// Show the floating search panel.
     ///
-    /// Two steps, and the second one is the one that is easy to get wrong. The
-    /// panel is drawn inside the main window, so if the window has been closed
-    /// there is nothing to draw in and activating alone would look like the
-    /// shortcut did nothing. `applicationShouldHandleReopen` is the same call
-    /// AppKit makes when the Dock icon is clicked, and SwiftUI's own delegate
-    /// implements it by restoring the `WindowGroup` window.
+    /// **This used to summon the main window**, because the panel was drawn
+    /// inside it. David, on first real use: *"When i was in another app and hit
+    /// the hotkey... the search was hidden by other apps"* and *"I wonder if the
+    /// hotkey could surface just the search window without having to load the
+    /// full app window."* Both were the same cause. A 1200×750 window is a heavy
+    /// answer to *"what is Megan's number"*, and an ordinary window obeys
+    /// ordinary window ordering, which is how it ended up behind something.
+    ///
+    /// The fallback still exists and is not dead code: `MacQuickPanelController`
+    /// needs the two stores, and it gets them from `TraceMacContentView`'s
+    /// launch task. Before the first window has ever appeared there is nothing
+    /// to draw with, so the shortcut opens the app — once — rather than doing
+    /// nothing.
     private func fire() {
+        if MacQuickPanelController.shared.isConfigured {
+            MacQuickPanelController.shared.toggle()
+            return
+        }
         NSApp.activate()
-        let hasWindow = NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
-        if !hasWindow {
+        if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) {
             _ = NSApp.delegate?.applicationShouldHandleReopen?(NSApp, hasVisibleWindows: false)
         }
         NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
