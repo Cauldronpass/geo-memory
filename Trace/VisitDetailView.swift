@@ -43,6 +43,8 @@ struct VisitDetailView: View {
     @State private var showingBilliardsWizard = false
     @State private var isSummarizing = false
     @State private var showingWorkoutWizard = false
+    /// Endeavor notes, read once when the sheet opens. Session 72.
+    @State private var endeavors: [Endeavor] = []
     @State private var selectedWorkoutForDetail: Workout?
     /// Interactions already attached to this visit. Fetched per attendee rather
     /// than filtered out of `recentInteractions`, which is bounded and would
@@ -57,6 +59,15 @@ struct VisitDetailView: View {
         _notes = State(initialValue: visit.notes ?? "")
         _date = State(initialValue: visit.date)
         _personIDs = State(initialValue: visit.peopleIDs)
+    }
+
+    /// The endeavor this visit was part of, if any.
+    ///
+    /// `claimsVisit` is the shared definition on the model — inside the dates
+    /// AND named in the endeavor's trip log — so this agrees with the Mac's
+    /// Visits rail by construction rather than by both being written carefully.
+    private var matchedEndeavor: Endeavor? {
+        endeavors.first { $0.claimsVisit(placeName: visit.placeName, on: visit.date) }
     }
 
     var livePlace: Place? {
@@ -105,6 +116,27 @@ struct VisitDetailView: View {
                         }
                     }
                     DatePicker("Date", selection: $date, displayedComponents: .date)
+
+                    // Endeavor
+                    //
+                    // David, Session 72: *"the affiliation is more about the
+                    // visit than the place or the person… if i click the visit
+                    // it would be helpful to see on the visit screen what
+                    // endeavor that was part of."*
+                    //
+                    // A label rather than a button, and only on this app.
+                    // **The Trace app has no Endeavors screen** — that is a
+                    // Dayflow surface — so there is nowhere for a tap to go.
+                    // Drawing it blue and having it do nothing is D114 exactly.
+                    if let endeavor = matchedEndeavor {
+                        HStack {
+                            Text("Endeavor")
+                            Spacer()
+                            Text(endeavor.name)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
                 }
 
                 if !livePhotoURLs.isEmpty {
@@ -363,6 +395,11 @@ struct VisitDetailView: View {
                 }
             }
             .task { await refreshFromNotion() }
+            .task {
+                // One folder walk per sheet open. Two dozen small files, and
+                // the sheet is not opened in a loop.
+                if endeavors.isEmpty { endeavors = EndeavorFile.loadAll(from: NoteStore.shared) }
+            }
             .confirmationDialog("Delete this visit?", isPresented: $showDeleteVisitConfirm, titleVisibility: .visible) {
                 Button("Delete", role: .destructive) {
                     isDeleting = true

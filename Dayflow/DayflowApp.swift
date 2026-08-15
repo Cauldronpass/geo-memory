@@ -85,6 +85,10 @@ struct DayflowApp: App {
                     await notionService.fetchPlaces()
                     await notionService.fetchPeople()
                     await notionService.fetchVisits()
+                    // Same sweep the Mac runs at launch. Idempotent, so
+                    // whichever app opens first does the work and the other
+                    // finds nothing left to do.
+                    await notionService.reconcileVisitedStatuses()
                     await DayflowInboxBadge.refresh()
                     DayflowLocationPrimer.primeIfNeeded()
                 }

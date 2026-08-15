@@ -2755,7 +2755,9 @@ struct SatchelDocumentDetailView: View {
                 description: result.description.isEmpty ? doc.description : result.description,
                 date: doc.created,
                 icon: result.icon,
-                tint: result.tint ?? result.icon?.defaultTint
+                // Session 72: colour is the document's type, not a function
+                // of its icon. No fallback.
+                tint: result.tint
             )
             await store.reload()
             loadFromDocument()

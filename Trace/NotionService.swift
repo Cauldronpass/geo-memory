@@ -400,6 +400,54 @@ class NotionService {
         }
     }
 
+    /// Flips places that have been visited but still say they have not.
+    ///
+    /// Session 72. David, looking at Nick's on the Lake: a Status of "Want to
+    /// Visit" sitting above a Visits tab holding a rated 31 July visit. He asked
+    /// for the app to notice this itself, and for the fix to be silent.
+    ///
+    /// **The trigger is the visit, not an endeavor.** He first proposed hanging
+    /// it off endeavors whose dates are three or more days past. A logged visit
+    /// proves the status wrong on its own, with no date window and no judgement,
+    /// and it also catches every place that was never part of an endeavor at
+    /// all — which is most of them.
+    ///
+    /// **`visitCount`, not the `visits` array.** The rollup arrives with
+    /// `fetchPlaces`, so this needs nothing else loaded and cannot be wrong
+    /// about an old place merely because visits have not been fetched in this
+    /// app yet. TraceMac, in particular, does not fetch visits at launch.
+    ///
+    /// **Patches Status alone**, rather than going through `updatePlace`, which
+    /// also rewrites Name and Category. An automatic background write should
+    /// touch exactly the field it is fixing: a place with an empty Category
+    /// would otherwise have this sweep either fail on it or write an empty
+    /// select, and it would fail silently because nobody asked for it.
+    ///
+    /// Idempotent. After a run the places it changed no longer match, so a
+    /// second app doing the same thing a moment later writes nothing. Returns
+    /// how many it changed, and prints them, because silent to David does not
+    /// mean invisible in the console when one of these turns out to be wrong.
+    @discardableResult
+    func reconcileVisitedStatuses() async -> Int {
+        let stale = places.filter { $0.visitCount > 0 && $0.status == "Want to Visit" }
+        guard !stale.isEmpty else { return 0 }
+        var changed = 0
+        for place in stale {
+            do {
+                _ = try await patch("\(baseURL)/pages/\(place.id)",
+                                    body: ["properties": ["Status": ["select": ["name": "Visited"]]]])
+                if let i = places.firstIndex(where: { $0.id == place.id }) {
+                    places[i].status = "Visited"
+                }
+                changed += 1
+                print("[NotionService] status → Visited: \(place.name) (\(place.visitCount) visits)")
+            } catch {
+                print("[NotionService] status sweep failed for \(place.name): \(error.localizedDescription)")
+            }
+        }
+        return changed
+    }
+
     /// Re-enriches a place record using fresh Google Places data.
     /// Updates name, address, city, coordinates, place ID, phone, website, hours, rating, and maps URL.
     func enrichPlace(_ place: Place, from googlePlace: GooglePlace) async throws {

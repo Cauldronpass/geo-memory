@@ -78,6 +78,9 @@ struct TraceMacEndeavorsView: View {
     @Environment(NotionService.self) private var notionService
 
     @State private var store: TraceMacEndeavorStore?
+    /// Rows with a write in flight, so a double click cannot log two visits.
+    @State private var resolving: Set<String> = []
+    @State private var resolveError: String? = nil
     @State private var showOtherVisits = false
     @State private var docStore: TraceMacDocumentStore?
     @State private var filter: Filter = .active
@@ -138,27 +141,73 @@ struct TraceMacEndeavorsView: View {
     /// an interval containing instants. `DateInterval.contains` is closed at
     /// both ends and Notion stores most visit dates at midnight, which is the
     /// pair of facts that put an eighth row in the This Week panel this morning.
+    ///
+    /// Session 72: the range test moved to `Endeavor.covers(_:)` so the visit
+    /// screen's new Endeavor row answers this from the same definition. Same
+    /// logic, same day granularity, one copy.
     private func visits(in e: Endeavor) -> [Visit] {
-        guard let starts = e.starts else { return [] }
-        let cal = Calendar.current
-        let from = cal.startOfDay(for: starts)
-        let to   = cal.startOfDay(for: e.ends ?? starts)
-        return notionService.visits
-            .filter { v in
-                let d = cal.startOfDay(for: v.date)
-                return d >= from && d <= to
-            }
+        notionService.visits
+            .filter { e.covers($0.date) }
             .sorted { $0.date < $1.date }
+    }
+
+    /// One attached destination on a past endeavor with nothing logged against
+    /// it. Session 72.
+    struct OpenDestination: Identifiable {
+        let endeavor: Endeavor
+        let placeName: String
+        var id: String { "\(endeavor.id)|\(placeName)" }
+    }
+
+    /// How long after an endeavor ends before its unvisited destinations become
+    /// a question. David's number: *"past by say 3 days"*. Long enough that a
+    /// trip you are still driving home from does not nag.
+    private static let settleDays = 3
+
+    /// Attached destinations on finished endeavors with no visit logged.
+    ///
+    /// David asked for the Endeavors screen to raise these itself: *"what do you
+    /// think about a way for the app to notify me if there are endeavors whos
+    /// date is past by say 3 days and the status of places that are in the
+    /// endeavor still say want to visit."* The status half of that became an
+    /// automatic sweep — a logged visit proves a status wrong with no judgement
+    /// needed, so it is fixed rather than asked about. **This is the half that
+    /// is genuinely a question**: nothing in the data can tell whether he
+    /// skipped the place or just never checked in.
+    ///
+    /// Guarded on visits being loaded. With an unfetched `visits` array every
+    /// destination looks unvisited, and a panel that asks about all of them
+    /// because it has not read anything yet is D116's shape exactly.
+    private var openDestinations: [OpenDestination] {
+        guard !notionService.visits.isEmpty, let store else { return [] }
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        return store.endeavors.flatMap { e -> [OpenDestination] in
+            guard e.status() == .past, !e.places.isEmpty else { return [] }
+            guard let last = e.ends ?? e.starts,
+                  let age = cal.dateComponents([.day], from: cal.startOfDay(for: last), to: today).day,
+                  age >= Self.settleDays else { return [] }
+            let visitedNames = Set(visits(in: e).map { shortPlaceName($0.placeName).lowercased() })
+            let skipped = Set(e.skippedPlaces.map { shortPlaceName($0).lowercased() })
+            return e.places.compactMap { name in
+                let key = shortPlaceName(name).lowercased()
+                guard !visitedNames.contains(key), !skipped.contains(key) else { return nil }
+                return OpenDestination(endeavor: e, placeName: name)
+            }
+        }
+        .sorted { ($0.endeavor.ends ?? .distantPast) > ($1.endeavor.ends ?? .distantPast) }
     }
 
     /// Whether the note's body already names this place.
     ///
     /// Matched against the body text rather than a stored list, because the
     /// trip log *is* the body — there is no separate record of what is in it.
+    ///
+    /// Session 72: moved to `Endeavor.logNames(placeName:)`. The reverse
+    /// direction on the visit screen has to agree with this rail, and two
+    /// copies of "what is in the endeavor" is how they would stop agreeing.
     private func logNames(_ visit: Visit, in e: Endeavor) -> Bool {
-        let name = shortPlaceName(visit.placeName)
-        guard !name.isEmpty else { return false }
-        return e.body.localizedCaseInsensitiveContains(name)
+        e.logNames(placeName: visit.placeName)
     }
 
     /// Documents filed against this Endeavor, by **either** association.
@@ -222,6 +271,26 @@ struct TraceMacEndeavorsView: View {
                                                      help: "New endeavor") { showingNew = true }) {
                 MacTabStrip(options: Filter.allCases,
                             selection: $filter) { $0.rawValue }
+            }
+
+            // Open questions band.
+            //
+            // David chose the surface himself: *"The endeavor active screen is
+            // the one place i think makes sense. its mainly blank because it
+            // defaults to the active tab and Im not in the middle of an active
+            // endeavor most times."*
+            //
+            // **Above the split, not inside the empty state**, so it is there
+            // whether or not an active endeavor happens to be selected. The
+            // empty-state placeholder only renders when nothing is selected,
+            // and a prompt that hides itself the moment he has one live trip is
+            // a prompt he would meet once a season.
+            //
+            // Active tab only. Past is where he goes to read what happened, and
+            // a nag bar over it would be answering a question he did not ask.
+            if filter == .active, !openDestinations.isEmpty {
+                openQuestionsBand
+                Divider()
             }
 
             HStack(spacing: 0) {
@@ -305,6 +374,131 @@ struct TraceMacEndeavorsView: View {
                                                    destination: destination)
                 if let made { reveal(made) }
             })
+        }
+    }
+
+    // MARK: Open questions
+
+    /// **Two buttons per row and no confirmation.** David: *"an easy way to
+    /// make the decisions that it is prompting me about (this is important, I
+    /// dont want to have to click a lot of times to resolve the question)."*
+    /// One click resolves one row and the row leaves. Both answers are
+    /// reversible by hand — a visit can be deleted from the visit sheet, and
+    /// `skipped:` is a line in the endeavor's frontmatter — which is what makes
+    /// no confirmation the right call rather than a risky one.
+    private var openQuestionsBand: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "questionmark.circle.fill")
+                    .foregroundStyle(.orange)
+                Text(openDestinations.count == 1
+                     ? "1 place from a finished endeavor has no visit logged"
+                     : "\(openDestinations.count) places from finished endeavors have no visit logged")
+                    .font(.system(.callout, weight: .medium))
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            // Four, then a count. The band sits above the whole screen, and one
+            // that can grow without limit pushes the endeavors it is sitting on
+            // off the bottom. Resolving four reveals the next four.
+            ForEach(openDestinations.prefix(4)) { item in
+                HStack(spacing: 10) {
+                    Image(systemName: "mappin.circle.fill")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(shortPlaceName(item.placeName))
+                            .font(MacType.row)
+                        Text("\(item.endeavor.name) · ended \(endedLine(item.endeavor))")
+                            .font(MacType.meta)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Went") { Task { await resolveWent(item) } }
+                        .disabled(resolving.contains(item.id) || placeRecord(for: item.placeName) == nil)
+                        .help(placeRecord(for: item.placeName) == nil
+                              ? "No Place record named \(item.placeName)"
+                              : "Log a visit on \(endedLine(item.endeavor))")
+                    Button("Didn't go") { Task { await resolveSkipped(item) } }
+                        .disabled(resolving.contains(item.id))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5)
+            }
+
+            if openDestinations.count > 4 {
+                Text("and \(openDestinations.count - 4) more")
+                    .font(MacType.meta)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 4)
+            }
+
+            if let resolveError {
+                Text(resolveError)
+                    .font(MacType.meta)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 4)
+            }
+        }
+        .padding(.bottom, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.10))
+    }
+
+    private func endedLine(_ e: Endeavor) -> String {
+        guard let d = e.ends ?? e.starts else { return "—" }
+        return d.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    /// The Place record an attached name refers to. Attached destinations are
+    /// full Notion names by design, so this is an exact match, with the
+    /// shortened form as a fallback for a name edited in Notion since.
+    private func placeRecord(for name: String) -> Place? {
+        notionService.places.first { $0.name == name }
+            ?? notionService.places.first {
+                shortPlaceName($0.name).caseInsensitiveCompare(shortPlaceName(name)) == .orderedSame
+            }
+    }
+
+    /// He went: log a visit, dated the endeavor's last day.
+    ///
+    /// **The date is a guess and is meant to be**, which is why it is the last
+    /// day rather than anything cleverer. A multi-day trip cannot know which
+    /// day he was at the restaurant, and asking would be the extra clicks he
+    /// specifically did not want. The visit sheet has a date picker.
+    private func resolveWent(_ item: OpenDestination) async {
+        guard let place = placeRecord(for: item.placeName) else { return }
+        resolving.insert(item.id)
+        defer { resolving.remove(item.id) }
+        let date = item.endeavor.ends ?? item.endeavor.starts ?? Date()
+        do {
+            _ = try await notionService.checkIn(place: place, date: date)
+            // Re-read rather than append: `checkIn` returns an id, not a Visit,
+            // and this list is derived from `visits`.
+            await notionService.fetchVisits()
+            resolveError = nil
+        } catch {
+            resolveError = "Could not log the visit: \(error.localizedDescription)"
+        }
+    }
+
+    /// He did not go: record it on the endeavor so the question stays answered.
+    private func resolveSkipped(_ item: OpenDestination) async {
+        guard let store else { return }
+        resolving.insert(item.id)
+        defer { resolving.remove(item.id) }
+        var updated = item.endeavor
+        guard !updated.skippedPlaces.contains(item.placeName) else { return }
+        updated.skippedPlaces.append(item.placeName)
+        do {
+            _ = try await store.update(updated)
+            resolveError = nil
+        } catch {
+            resolveError = "Could not save: \(error.localizedDescription)"
         }
     }
 
@@ -1065,9 +1259,27 @@ struct TraceMacEndeavorsView: View {
         }
     }
 
+    /// One attached destination.
+    ///
+    /// **Skipped destinations are shown, dimmed and struck, not hidden.**
+    /// Session 72 gave the Active tab's band a "Didn't go" button that writes
+    /// `skipped:` to the endeavor, and then nothing in the app rendered that
+    /// key — so the answer was unreversible from inside the app and the file
+    /// looked identical to one that had never been asked. David's own rule from
+    /// the same day, about a Place record with no visible bucket: **a derived
+    /// or recorded judgement has to be visible to be challenged.** Same
+    /// mistake, made twice in one session, caught the second time by having
+    /// been caught the first.
+    ///
+    /// The row keeps its normal target — a skipped place is still a place, and
+    /// clicking it should still open it — and gains "Went after all" in the
+    /// context menu beside Remove.
     private func destinationRow(_ name: String, in e: Endeavor) -> some View {
         let place = notionService.places.first {
             $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }
+        let isSkipped = e.skippedPlaces.contains {
+            shortPlaceName($0).caseInsensitiveCompare(shortPlaceName(name)) == .orderedSame
         }
         return Button {
             guard let place else { return }
@@ -1079,13 +1291,21 @@ struct TraceMacEndeavorsView: View {
                              tint: placeColor(for: place?.category ?? ""),
                              size: .compact)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(shortPlaceName(name)).font(MacType.row).lineLimit(1)
+                    Text(shortPlaceName(name))
+                        .font(MacType.row)
+                        .lineLimit(1)
+                        .strikethrough(isSkipped, color: .secondary)
+                        .foregroundStyle(isSkipped ? .secondary : .primary)
                     // A name that no longer resolves is SHOWN, not hidden.
                     // Renaming a Place in Notion orphans the attachment, and a
                     // row that quietly disappears is worse than one that says
                     // why it will not open.
                     if place == nil {
                         Text("not in your places")
+                            .font(MacType.meta).foregroundStyle(.tertiary)
+                    } else if isSkipped {
+                        // Says which answer was given, not merely that one was.
+                        Text("didn't go")
                             .font(MacType.meta).foregroundStyle(.tertiary)
                     }
                 }
@@ -1095,9 +1315,28 @@ struct TraceMacEndeavorsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .opacity(isSkipped ? 0.75 : 1)
         .contextMenu {
+            if isSkipped {
+                Button("Went after all") { Task { await unskip(name, in: e) } }
+            }
             Button("Remove", role: .destructive) { remove(name, from: e) }
         }
+    }
+
+    /// Clears a destination's skipped mark, putting it back in the Active tab's
+    /// band as an open question. **Not the same as logging a visit** — that is
+    /// what the band's own "Went" button is for, and doing both from one menu
+    /// item would guess a date he has not been asked about.
+    private func unskip(_ name: String, in e: Endeavor) async {
+        guard let store else { return }
+        var updated = e
+        let short = shortPlaceName(name).lowercased()
+        updated.skippedPlaces.removeAll {
+            shortPlaceName($0).lowercased() == short
+        }
+        guard updated.skippedPlaces.count != e.skippedPlaces.count else { return }
+        _ = try? await store.update(updated)
     }
 
     private func attach(_ name: String, to e: Endeavor) {
@@ -1170,7 +1409,51 @@ struct TraceMacEndeavorsView: View {
                 // itself, and a zone nobody knows about is not a feature.
                 railEmpty("Nothing filed yet. Drop a file here.")
             } else {
-                ForEach(docs, id: \.relativePath) { d in documentRow(d) }
+                // Grouped by `DocumentBucket`, Session 72, the same buckets the
+                // phone uses and derived from the same `resolvedIcon`.
+                //
+                // **No collapsing here, unlike iOS.** The phone collapses
+                // because the endeavor screen is one fixed vertical budget and
+                // the documents were eating the note. This rail is a scrolling
+                // 232pt column whose whole job is showing what is attached, so
+                // hiding it behind six disclosure triangles would be borrowing a
+                // solution to a problem this side does not have. Sub-headers
+                // instead, reading like the Destinations / Visits / People
+                // sections above.
+                //
+                // **Always headed, including for a single group.** The first
+                // version suppressed the header below two groups on the grounds
+                // that a rail reading "Satchel 1 / Receipts 1" says the same
+                // thing twice. David, looking at Lunch with Bronwyn: *"on the
+                // mac the one satchel item has no organization?"*
+                //
+                // He is right, and it is not a cosmetic point. That document is
+                // the Nick's on the Lake reservation, and it carries `icon:
+                // card`, so it files under **Receipts** — wrong for what it
+                // actually is. The whole scheme rests on a wrong bucket being
+                // obvious and one tap to fix in Satchel's icon picker, and a
+                // suppressed header hides exactly the case that needs fixing.
+                // **Tidiness was bought with the thing that makes it
+                // correctable.**
+                let groups = DocumentBucket.group(docs)
+                Group {
+                    ForEach(groups, id: \.bucket) { group in
+                        HStack(spacing: 5) {
+                            Image(systemName: group.bucket.sfSymbol)
+                                .font(MacGlyph.smallBold)
+                                .foregroundStyle(.tertiary)
+                            Text(group.bucket.shortLabel).macLabel().foregroundStyle(.tertiary)
+                            Spacer()
+                            Text("\(group.documents.count)")
+                                .font(MacType.metaEmphasis)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.top, 6)
+                        .padding(.bottom, 2)
+                        ForEach(group.documents, id: \.relativePath) { d in documentRow(d) }
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

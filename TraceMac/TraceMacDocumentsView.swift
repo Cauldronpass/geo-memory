@@ -918,9 +918,24 @@ struct DocListRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: doc.isPDF ? "doc.fill" : doc.isImage ? "photo" : "doc.text")
-                    .foregroundStyle(doc.isPDF ? .red : doc.isImage ? .blue : .secondary)
-                    .font(.caption)
+                // **The document's own icon and colour, not its file kind.**
+                //
+                // This row drew a red `doc.fill` for every PDF and a blue
+                // `photo` for every image, which is renderer drift of the exact
+                // kind [[feedback_trace_renderer_drift]] records: Satchel's list
+                // on the phone has drawn `SatchelDocumentMark` — the real icon
+                // and tint — since it shipped, and the Mac never learned.
+                //
+                // It went unnoticed while the icon was decoration. Session 72
+                // made it the subject and gave colour a meaning, retyped the
+                // whole corpus, and David looked at this list and said *"i dont
+                // see any change in the icons for mac"* — correctly, because
+                // this row could not show one. A file kind is the least
+                // interesting true thing about a document, and it is already
+                // legible from the preview beside it.
+                MacIconBadge(icon: doc.resolvedIcon.sfSymbol,
+                             tint: MacPalette.documentTint(doc.resolvedTint),
+                             size: .compact)
                 Text(doc.title)
                     .font(.body)
                     .lineLimit(1)
@@ -1175,6 +1190,13 @@ struct DocMetadataPanel: View {
     /// The on-device pass is running. Separate from `isScanning`, which gates
     /// the network path and must stay gated for private documents.
     @State private var isThinkingLocally = false
+    /// The document's icon, as chosen here. `nil` means "let the app pick",
+    /// which is what `resolvedIcon` does from category, tags and extension.
+    /// Session 72.
+    @State private var docIcon: DocumentIcon? = nil
+    /// The document's type, as colour. `nil` is Unclassified, which renders
+    /// gray. Session 72.
+    @State private var docTint: DocumentTint? = nil
     @State private var endeavorID: String? = nil
     @State private var endeavorName: String? = nil
     /// Loaded lazily so a panel that never opens the menu never walks the
@@ -1220,6 +1242,8 @@ struct DocMetadataPanel: View {
             VStack(alignment: .leading, spacing: 10) {
                 filedToRow
                 endeavorRow
+                iconRow
+                typeRow
                 yearRow
                 titleRow
                 dateRow
@@ -1425,6 +1449,107 @@ struct DocMetadataPanel: View {
                 .foregroundStyle(Color.indigo)
                 .help("Open \(endeavorName ?? "this endeavor")")
             }
+            Spacer()
+        }
+    }
+
+    // MARK: - Icon
+
+    /// Which glyph the document wears, and — since Session 72 — which bucket it
+    /// files into on the endeavor screens.
+    ///
+    /// **There was no way to change this on the Mac at all.** Satchel has had
+    /// one since it shipped (tap the 52pt mark in `SatchelDocumentDetailView`'s
+    /// header, pencil badge and all) and TraceMac had nothing, which only
+    /// started to matter when `DocumentBucket` made the icon load-bearing.
+    /// David: *"where can i change the type of icon for documents? i dont see
+    /// that as an option in ios or mac… Nicks for example i want to change it
+    /// from the receipt to something else."*
+    ///
+    /// **Auto is a real choice and sits first.** `resolvedIcon` already types an
+    /// unset document from its category, tags and extension, and that answer is
+    /// often right — so "no icon" has to be reachable, not merely the state a
+    /// document starts in. A picker that can only ever add is a one-way door.
+    ///
+    /// A Menu rather than the grid Satchel uses: twenty-three items with their
+    /// own glyphs is exactly what a Mac menu is for, and the panel is a column
+    /// of labelled rows, not a canvas.
+    private var iconRow: some View {
+        HStack {
+            fieldLabel("Icon")
+            Menu {
+                Button {
+                    docIcon = nil
+                    save()
+                } label: {
+                    Label("Auto (\(doc.resolvedIcon.label))", systemImage: doc.resolvedIcon.sfSymbol)
+                }
+                Divider()
+                ForEach(DocumentIcon.allCases, id: \.self) { candidate in
+                    Button {
+                        docIcon = candidate
+                        save()
+                    } label: {
+                        Label(candidate.label, systemImage: candidate.sfSymbol)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: (docIcon ?? doc.resolvedIcon).sfSymbol)
+                        .foregroundStyle(Color.indigo)
+                    Text(docIcon?.label ?? "Auto (\(doc.resolvedIcon.label))")
+                        .font(.caption)
+                    // The bucket, said out loud next to the thing that decides
+                    // it. Naming the consequence is what makes a wrong icon
+                    // visible as a wrong FILE, which is the whole reason the
+                    // control exists.
+                    Text("· \(DocumentBucket.of(docIcon ?? doc.resolvedIcon).label)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            Spacer()
+        }
+    }
+
+    // MARK: - Type
+
+    /// The document's TYPE, carried as colour. Session 72.
+    ///
+    /// **The second of two axes, and the row exists because they are two.** The
+    /// icon above says what the document is about; this says what kind of thing
+    /// it is. David: *"i think the type is a secondary thing that yes i will
+    /// look for but only occasionally. What does color signify? can we use that
+    /// in the rule?"*
+    ///
+    /// Six choices, not eight. `amber` is out because orange with a lock means
+    /// private app-wide since Session 71, and `red` is held for "needs action" —
+    /// a colour that means two things is the problem this row was built to fix.
+    private var typeRow: some View {
+        HStack {
+            fieldLabel("Type")
+            Menu {
+                ForEach(DocumentTint.typeCases, id: \.self) { candidate in
+                    Button {
+                        docTint = candidate == .gray ? nil : candidate
+                        save()
+                    } label: {
+                        Text(candidate.typeMeaning ?? candidate.label)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(MacPalette.documentTint(docTint ?? .gray))
+                        .frame(width: 9, height: 9)
+                    Text((docTint ?? .gray).typeMeaning ?? "Unclassified")
+                        .font(.caption)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
             Spacer()
         }
     }
@@ -1948,6 +2073,8 @@ struct DocMetadataPanel: View {
         people = doc.people
         description = doc.description
         docDate = doc.created ?? Date()
+        docIcon = doc.icon
+        docTint = doc.tint
         links = MacTextExtraction.links(in: doc.extractedText)
         // Cleared on every load, and it was not before Session 69. `userContext`
         // is a hint typed for ONE document; leaving it behind meant the next
@@ -1989,7 +2116,13 @@ struct DocMetadataPanel: View {
             endeavor: {
                 guard let id = endeavorID, let name = endeavorName else { return .clear }
                 return .set(id: id, name: name)
-            }()
+            }(),
+            // Double-wrapped on purpose: `.some(docIcon)` says "this panel owns
+            // the value now", and `docIcon` being nil inside it means Auto
+            // rather than "leave it alone". Passing a bare `nil` would make
+            // clearing an icon impossible.
+            icon: .some(docIcon),
+            tint: .some(docTint)
         )
         isSaving = false
         onSave(doc)
@@ -2397,6 +2530,10 @@ struct MacProjectHubSidebar: View {
     @Environment(NotionService.self) private var notionService
 
     @State private var linkedDocs: [TraceMacDocument] = []
+    /// Every endeavor note, so the Endeavors section can ask which of them link
+    /// this one. Session 72. Re-read on the same `reloadToken` as everything
+    /// else here, because an endeavor edited elsewhere changes this answer.
+    @State private var allEndeavors: [Endeavor] = []
     /// `[[names]]` found in the note body, in the order they are written.
     @State private var mentioned: [String] = []
     @State private var linkableNotes: [LinkableNote] = []
@@ -2436,12 +2573,36 @@ struct MacProjectHubSidebar: View {
         .filter { $0.relativePath != notePath }   // a note does not link to itself
     }
 
+    /// This note's title, as a wikilink would write it.
+    private var noteTitle: String {
+        ((notePath as NSString).lastPathComponent as NSString).deletingPathExtension
+    }
+
+    /// The endeavors whose body links this note. Session 72.
+    private var endeavors: [Endeavor] {
+        allEndeavors.filter { $0.linksNote(titled: noteTitle) }
+    }
+
     var body: some View {
         // Stacked sections, not tabs. David: *"right now it lists them but not
         // the same way as endeavors."* The Endeavor rail shows everything at
         // once; three tabs meant hunting for a list that was usually empty.
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
+                // FIRST, and only when there is one.
+                //
+                // Every other section here answers "what does this note
+                // mention". This one answers "what is this note part of", which
+                // is the frame you read the rest inside — and unlike the others
+                // it is usually empty, so an empty-state line for it would be
+                // four words of furniture on most notes in the vault.
+                if !endeavors.isEmpty {
+                    hubSection("Endeavors", count: endeavors.count, empty: "") {
+                        ForEach(endeavors) { e in hubEndeavorRow(e) }
+                    }
+                    Divider().padding(.vertical, 6)
+                }
+
                 hubSection("Documents", count: linkedDocs.count,
                            empty: "Nothing filed yet.") {
                     ForEach(linkedDocs) { doc in hubDocRow(doc) }
@@ -2537,6 +2698,30 @@ struct MacProjectHubSidebar: View {
         .buttonStyle(.plain)
     }
 
+    /// Same shape as `hubNoteRow`, and the same routing funnel — the
+    /// notification `TraceMacContentView` now maps onto `openSearchResult`, so
+    /// this jump records into `navigator` and Back works from it (D121).
+    private func hubEndeavorRow(_ e: Endeavor) -> some View {
+        Button {
+            NotificationCenter.default.post(
+                name: .navigateToRecord, object: nil,
+                userInfo: ["type": "endeavor", "id": e.id]
+            )
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "suitcase.fill")
+                    .foregroundStyle(Color.indigo)
+                    .font(.callout).frame(width: 18)
+                Text(e.name).font(.callout).lineLimit(1).foregroundStyle(.primary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open \(e.name)")
+    }
+
     private func hubNoteRow(_ note: LinkableNote) -> some View {
         Button {
             NotificationCenter.default.post(
@@ -2604,6 +2789,10 @@ struct MacProjectHubSidebar: View {
         linkableNotes = noteStore.linkableNotes()
         let body = (try? noteStore.readFile(notePath)) ?? ""
         mentioned = NoteStore.wikilinkTargets(in: body)
+        // Read here rather than held by the owner: this is the only consumer,
+        // and `reloadToken` already brings us back after every save — including
+        // a save made in the endeavor whose body decides the answer.
+        allEndeavors = EndeavorFile.loadAll(from: noteStore)
     }
 }
 

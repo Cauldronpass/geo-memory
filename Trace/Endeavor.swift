@@ -203,6 +203,22 @@ struct Endeavor: Identifiable, Hashable {
     ///
     /// Names not ids, for the reasons spelled out on `places` above.
     var people: [String] = []
+    /// Attached destinations David has since said he did NOT get to.
+    ///
+    /// Session 72. A past endeavor carrying a destination with no visit logged
+    /// against it is an open question — he either went and forgot to check in,
+    /// or he skipped it — and the Endeavors screen now asks. "Went" writes a
+    /// visit, which answers it in the place the answer belongs. "Didn't go" had
+    /// nowhere to be recorded, and needed somewhere, or the prompt returns every
+    /// launch forever.
+    ///
+    /// **Not solved by removing it from `places:`.** That was the cheaper
+    /// option and it destroys the more interesting fact: you meant to go to
+    /// Cornerstone on the wedding week and did not. Planning is a record too.
+    ///
+    /// Names, matching `places:`, and a subset of it in practice — anything
+    /// here that is not in `places:` is inert rather than wrong.
+    var skippedPlaces: [String] = []
     /// Whether captures made while this endeavor is running are filed to it.
     ///
     /// **Stated positively on purpose.** The obvious spelling was "skip
@@ -372,6 +388,7 @@ enum EndeavorFile {
             placeID: fields["place"]?.endeavorNilIfEmpty,
             places: list(fields["places"]),
             people: list(fields["people"]),
+            skippedPlaces: list(fields["skipped"]),
             stampsCaptures: bool(fields["stamp_captures"])
                 ?? Endeavor.defaultStampsCaptures(starts: starts, ends: ends),
             relativePath: path,
@@ -544,6 +561,9 @@ enum EndeavorFile {
         }
         if !endeavor.people.isEmpty {
             out += "people: \(renderList(endeavor.people))\n"
+        }
+        if !endeavor.skippedPlaces.isEmpty {
+            out += "skipped: \(renderList(endeavor.skippedPlaces))\n"
         }
         // Always written, never conditional: this is what turns a derived
         // migration default into an explicit setting the moment anything saves.
@@ -794,5 +814,140 @@ private extension String {
     var endeavorNilIfEmpty: String? {
         let t = trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? nil : t
+    }
+}
+
+// MARK: - Visit membership
+//
+// Session 72. David, rejecting a proposed Endeavors row on the Place record:
+// *"the affiliation is more about the visit than the place or the person. If i
+// happen to go to Nicks on a different day outside the lunch with bronwyn date,
+// i dont need to see that it was with that endeavor… if i click the visit it
+// would be helpful to see on the visit screen what endeavor that was part of."*
+//
+// **A Place is permanent and a visit is one afternoon**, and an Endeavor is
+// also one dated thing, so the visit is the only end that can honestly hold the
+// association. A restaurant visited on four trips would otherwise wear four
+// Endeavor labels, none of which describe the restaurant.
+//
+// Lives here, on the model, rather than in either app: `TraceMacEndeavorsView`
+// already had both halves of this as private methods, and the reverse direction
+// needs the same answer or the two ends of one relationship can disagree. The
+// Mac's rail now calls these, so there is one definition of what "in the
+// endeavor" means. Deliberately takes a place NAME and a DATE rather than a
+// `Visit`, so this file gains no dependency on `Models.swift` — it compiles
+// into four targets and not all of them carry the same model files.
+extension Endeavor {
+
+    /// Whether `date` falls inside the endeavor's dates, both ends inclusive.
+    ///
+    /// **Day granularity, not instants.** Notion stores most visit dates at
+    /// midnight, and `DateInterval.contains` on raw instants put an eighth row
+    /// in the Mac's This Week panel once already. An endeavor with no start
+    /// date contains nothing; one with no end date is a single day.
+    func covers(_ date: Date, calendar: Calendar = .current) -> Bool {
+        guard let starts else { return false }
+        let day  = calendar.startOfDay(for: date)
+        let from = calendar.startOfDay(for: starts)
+        let to   = calendar.startOfDay(for: ends ?? starts)
+        return day >= from && day <= to
+    }
+
+    /// Whether the endeavor's body names this place.
+    ///
+    /// Matched against the body text rather than a stored list, because **the
+    /// trip log is the body** — there is no separate record of what is in it.
+    /// This is what the checkmarks in the Mac's Visits rail are reading, and
+    /// what "Also that day (N)" is hiding.
+    ///
+    /// Through `TripLog.shortPlaceName` on both sides: the Notion record reads
+    /// "Nick's on the Lake (formerly known as Popeye's)" and the log line reads
+    /// "Nick's on the Lake". Comparing the full name would match nothing and
+    /// say nothing about why.
+    func logNames(placeName: String) -> Bool {
+        let short = TripLog.shortPlaceName(placeName)
+        guard !short.isEmpty else { return false }
+        return body.localizedCaseInsensitiveContains(short)
+    }
+
+    /// Whether this endeavor claims a visit: inside its dates **and** named in
+    /// its log.
+    ///
+    /// Both halves, on purpose. Dates alone answer "who did you see that day",
+    /// which David rejected in Session 64 for exactly the case that recurs
+    /// here: *"seeing Bryan and Hannah when they did not go with us to Inspired
+    /// and Nics is not helpful."* The log is the part he curates by hand, and
+    /// it is the answer.
+    ///
+    /// The endeavor's `places:` frontmatter is deliberately NOT consulted. That
+    /// list is prospective — where you are going, attached before any visit
+    /// exists — so a destination attached but never checked off in the log is
+    /// one he did not claim, and this should not claim it for him.
+    func claimsVisit(placeName: String, on date: Date, calendar: Calendar = .current) -> Bool {
+        covers(date, calendar: calendar) && logNames(placeName: placeName)
+    }
+}
+
+// MARK: - Note membership, from the note's side
+//
+// Session 72. The last one-way case left after D120. An Endeavor's body
+// `[[wikilinks]]` a project note and the Endeavor screen lists it; the note
+// itself said nothing back. David: *"lts fix the notes membership."*
+//
+// **Notes are unlike Places and People here, which is why D120 excluded them
+// rather than settling them.** A visit is one dated event and belongs to a trip;
+// a Place is permanent and does not. A note is neither — it is a document, and
+// being written FOR an endeavor is a durable property of it. "Final Wedding
+// Speech" is about Megan's wedding for as long as it exists, so the backlink
+// says something true forever, which is the test D120 set.
+//
+// Derived, from the same `NoteStore.wikilinkTargets` parser the forward
+// direction already uses, so the two ends cannot disagree about what a link is.
+// Nothing stored, nothing to migrate, and a note renamed out from under an
+// endeavor stops matching in both directions at once rather than one.
+extension Endeavor {
+    /// Whether this endeavor's body links a note by that title.
+    ///
+    /// Title, not path: `[[Final Wedding Speech]]` is what the body carries and
+    /// what the forward lookup matches on. Case-insensitive for the same reason
+    /// it is there.
+    func linksNote(titled title: String) -> Bool {
+        let wanted = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wanted.isEmpty else { return false }
+        return NoteStore.wikilinkTargets(in: body).contains {
+            $0.localizedCaseInsensitiveCompare(wanted) == .orderedSame
+        }
+    }
+}
+
+// MARK: - Loading, for surfaces with no store of their own
+//
+// Session 72. Three targets already carry a store (`EndeavorStore`,
+// `TraceMacEndeavorStore`, `SatchelEndeavorStore`) and each of them opens with
+// the same six lines: list the folder, read each file, hand it to
+// `EndeavorFile.parse`. The Trace app has no store and needs exactly those six
+// lines for one read-only row, and a fourth store to render one label is the
+// duplication this file's own split was written to prevent.
+//
+// So the walk moves here, next to the parser it feeds. Deliberately NOT a
+// refactor of the three existing stores — they own writes, covers, deletion and
+// the widget feed, and changing four things to add one row is how a row becomes
+// a regression.
+extension EndeavorFile {
+    /// Every parsed endeavor note, unsorted.
+    ///
+    /// Returns empty when the container is unavailable rather than throwing:
+    /// every caller is a view deciding whether to draw a row, and the honest
+    /// answer to "is this visit in an endeavor" when the notes cannot be read
+    /// is the same shape as "no" for that purpose. Callers that need to tell
+    /// the two apart should ask `noteStore.hasAccess` themselves.
+    static func loadAll(from noteStore: NoteStore) -> [Endeavor] {
+        guard noteStore.hasAccess else { return [] }
+        let files = (try? noteStore.listFiles(in: folder)) ?? []
+        return files.filter { $0.hasSuffix(".md") }.compactMap { filename in
+            let path = "\(folder)/\(filename)"
+            guard let raw = try? noteStore.readFile(path) else { return nil }
+            return parse(raw: raw, path: path, filename: filename)
+        }
     }
 }

@@ -668,7 +668,7 @@ struct DayflowEndeavorView: View {
                 // directly below, and a second visual language two rows apart
                 // would be drift rather than variety.
                 attachedChips(e)
-                SatchelDocumentChips(notePath: e.relativePath, endeavorID: e.id)
+                SatchelDocumentChips(notePath: e.relativePath, endeavorID: e.id, grouped: true)
                 SatchelAddDocumentButton(notePath: e.relativePath, style: .bar)
             }
 
@@ -702,7 +702,24 @@ struct DayflowEndeavorView: View {
                 checklistSendEnabled: false,
                 attachTrigger: $attachRequest
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // **A floor under the preview, Session 72.** David: *"the various
+            // notes and documents are great but they start to crowd out the note
+            // at the bottom. Id like to be able to scroll to see more of the
+            // note and in addition click on it to open up the full note."*
+            //
+            // The tap-to-full-screen half already worked — see the overlay
+            // below, built for his earlier report about the 3/4-height editor.
+            // What had gone wrong is that on Megan's Wedding Week the preview
+            // was down to about one line, so there was nothing that read as
+            // tappable and nothing worth tapping. **The fix is height, not a
+            // scroll view:** `makeUIView`'s "Bug 4" note records what a
+            // `UITextView` inside a `ScrollView` did to this codebase, and the
+            // comment below already ruled that path out once.
+            //
+            // 180pt is about eight lines. Paired with the collapsed document
+            // buckets above, which is where the space actually went, the note is
+            // a readable preview again rather than a sliver.
+            .frame(maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
             // **The inline editor is a preview, not a typing surface.**
             //
             // David: *"When I am clicking the note in an Endeavor, the screen
@@ -1062,10 +1079,17 @@ struct DayflowEndeavorView: View {
         let people = unionedPeople(e)
         let notes  = linkedNotes(e)
         VStack(alignment: .leading, spacing: 6) {
+            // `dimmed:` carries the `skipped:` set. Session 72: the Mac's
+            // Active-tab band writes that key when David answers "Didn't go",
+            // and a phone that drew the destination exactly as before would be
+            // showing a question as though it were still open. Read-only here —
+            // the answer is given and taken back on the Mac, where the band that
+            // asks it lives.
             chipRow(title: "Destinations",
                     icon: "mappin.circle.fill",
                     names: e.places,
                     empty: "Nowhere attached yet.",
+                    dimmed: Set(e.skippedPlaces.map { TripLog.shortPlaceName($0).lowercased() }),
                     onTap: { resolveWikiLink($0) }) { attaching = .place }
             chipRow(title: "People",
                     icon: "person.circle.fill",
@@ -1125,6 +1149,10 @@ struct DayflowEndeavorView: View {
                          icon: String,
                          names: [String],
                          empty: String,
+                         /// Short names, lowercased, to draw struck through.
+                         /// Defaulted empty so the People and Notes rows are
+                         /// unchanged. Session 72.
+                         dimmed: Set<String> = [],
                          onTap: @escaping (String) -> Void,
                          onAdd: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1150,17 +1178,25 @@ struct DayflowEndeavorView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(names, id: \.self) { name in
+                            let isDimmed = dimmed.contains(TripLog.shortPlaceName(name).lowercased())
                             Button {
                                 onTap(name)
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: icon).font(.caption2)
-                                    Text(name).font(.caption).lineLimit(1)
+                                    Text(name)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                        .strikethrough(isDimmed)
                                 }
                                 .padding(.horizontal, 9)
                                 .padding(.vertical, 4)
                                 .background(Color.secondary.opacity(0.14))
                                 .clipShape(Capsule())
+                                // Still tappable, still opens the place. A
+                                // skipped destination is a place you did not go
+                                // to, not a place that stopped existing.
+                                .opacity(isDimmed ? 0.55 : 1)
                             }
                             .buttonStyle(.plain)
                         }

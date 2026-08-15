@@ -606,6 +606,9 @@ struct MacInfoTab: View {
     @State private var editPhone: String
     @State private var editEmail: String
     @State private var editAddress: String
+    /// Session 72, for the inline tag editor below.
+    @State private var isEditingTags = false
+    @State private var newTagText = ""
     @State private var isSavingContact = false
 
     init(detail: PersonDetail, notionService: NotionService, onDeletePerson: @escaping () -> Void) {
@@ -662,24 +665,77 @@ struct MacInfoTab: View {
                     placeSection
                 }
 
-                // Tags
-                if !detail.tags.isEmpty {
-                    sectionHeader("Tags")
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
+                // Tags — editable in place, Session 72.
+                //
+                // **The section header always shows now.** It was drawn only
+                // when there were tags, which is right for a display and wrong
+                // for an editor: a person with no tags is exactly the one you
+                // want to tag, and there was nowhere to click. Third finding of
+                // the read-only sweep, and the same shape as Place status and
+                // the place Description before it — a working write path
+                // (`enrichPerson` takes `tags:`, and `saveContactFields` right
+                // here already passes it), an editable sibling in the section
+                // directly above, and no way in.
+                //
+                // The control is the one the place Overview has had since
+                // Session 67, ported rather than reinvented, so the two records
+                // are tagged the same way.
+                sectionHeader("Tags")
+                VStack(alignment: .leading, spacing: 8) {
+                    if !detail.tags.isEmpty {
+                        FlowLayout(spacing: 6) {
                             ForEach(detail.tags, id: \.self) { tag in
-                                Text(tag)
-                                    .font(.caption)
-                                    .padding(.horizontal, 10).padding(.vertical, 5)
-                                    .background(Color.accentColor.opacity(0.12))
-                                    .foregroundStyle(Color.accentColor)
-                                    .clipShape(Capsule())
+                                HStack(spacing: 4) {
+                                    Text(tag).font(.caption)
+                                    Button {
+                                        Task { await setTags(detail.tags.filter { $0 != tag }) }
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.caption2.weight(.semibold))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 4)
+                                .background(Color.accentColor.opacity(0.12))
+                                .foregroundStyle(Color.accentColor)
+                                .clipShape(Capsule())
                             }
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
+                    }
+                    if isEditingTags {
+                        HStack(spacing: 8) {
+                            TextField("New tag", text: $newTagText)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 180)
+                                .onSubmit { Task { await addTypedTag() } }
+                            Button("Add") { Task { await addTypedTag() } }
+                                .disabled(newTagText.trimmingCharacters(in: .whitespaces).isEmpty)
+                            Button("Cancel") { isEditingTags = false; newTagText = "" }
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.subheadline)
+                    } else {
+                        // **No picker of tags already in use, unlike the place
+                        // editor this was ported from, and the reason is a data
+                        // shape rather than a choice.** `Place` carries `tags`,
+                        // so the place picker can offer the whole vocabulary
+                        // from the list already in memory. `Person` does not —
+                        // tags live on `PersonDetail`, which is fetched one
+                        // person at a time — so the same menu here would mean a
+                        // detail fetch per contact just to populate it. A plain
+                        // Add tag it is, until `fetchPeople` carries tags.
+                        Button {
+                            isEditingTags = true
+                        } label: {
+                            Label("Add tag", systemImage: "plus").font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
                     }
                 }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
 
                 Divider()
 
@@ -823,6 +879,36 @@ struct MacInfoTab: View {
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 8)
+    }
+
+    /// Writes a new tag set. Everything else is `nil`, which `enrichPerson`
+    /// reads as "leave alone" — the same call `saveContactFields` makes with the
+    /// arguments the other way round.
+    private func setTags(_ tags: [String]) async {
+        try? await notionService.enrichPerson(
+            id: detail.id,
+            relationship: nil,
+            relationshipStrength: nil,
+            companyContext: nil,
+            city: nil,
+            howWeMet: nil,
+            tags: tags,
+            phone: editPhone.isEmpty   ? nil : editPhone,
+            email: editEmail.isEmpty   ? nil : editEmail,
+            address: editAddress.isEmpty ? nil : editAddress
+        )
+    }
+
+    private func addTypedTag() async {
+        let tag = newTagText.trimmingCharacters(in: .whitespaces)
+        guard !tag.isEmpty, !detail.tags.contains(tag) else {
+            newTagText = ""
+            isEditingTags = false
+            return
+        }
+        await setTags(detail.tags + [tag])
+        newTagText = ""
+        isEditingTags = false
     }
 
     private func saveContactFields() {

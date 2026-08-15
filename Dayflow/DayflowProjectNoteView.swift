@@ -72,11 +72,22 @@ import SwiftUI
 // comment). `RelatedNoteRow`/`DayflowLinkKind` are now the shared types from
 // that file, no longer private to this one.
 
+/// One field, so `.sheet(item:)` has something Identifiable to hold. Fourth of
+/// these in the app; each screen keeps its own, as `DayflowAgendaSection` and
+/// `DayflowWikiSummaryView` already do.
+private struct ProjectNoteEndeavorRef: Identifiable {
+    let id: String
+}
+
 struct DayflowProjectNoteView: View {
     let title: String
     var onBack: () -> Void
 
     @State private var content: String = ""
+    /// Endeavors whose body links this note. Session 72, loaded in `load()`.
+    @State private var endeavors: [Endeavor] = []
+    /// Which one the chip row was asked to open.
+    @State private var openEndeavorID: String? = nil
     @State private var relatedNotes: [RelatedNoteRow] = []
     /// Collapsed by default — three rows visible, scrollable past that. See
     /// DayflowRelatedNotesSection for the expand/collapse sizing.
@@ -118,6 +129,55 @@ struct DayflowProjectNoteView: View {
     @State private var activeLinkFlow: DayflowLinkKind? = nil
 
     private var relativePath: String { "Notes/Projects/\(title).md" }
+
+    /// The chip row, and its own sheet host.
+    ///
+    /// **The sheet hangs off this row, not off the screen.** D36: two `.sheet`
+    /// modifiers on one view is a coin flip the later one wins in silence, and
+    /// this screen already carries others. Same one-field Identifiable wrapper
+    /// the agenda and wiki-summary screens use for the same jump.
+    @ViewBuilder
+    private var endeavorChips: some View {
+        if !endeavors.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("ENDEAVORS")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(endeavors, id: \.id) { e in
+                            Button { openEndeavorID = e.id } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: "suitcase.fill")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(Color.indigo)
+                                    Text(e.name)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                }
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 5)
+                                .background(Color(.secondarySystemBackground), in: Capsule())
+                                .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            .sheet(item: Binding(
+                get: { openEndeavorID.map(ProjectNoteEndeavorRef.init) },
+                set: { openEndeavorID = $0?.id }
+            )) { ref in
+                NavigationStack {
+                    DayflowEndeavorView(endeavorID: ref.id)
+                }
+            }
+        }
+    }
     private var isFlagged: Bool { DayflowFlagStore.shared.isFlagged(relativePath) }
 
     var body: some View {
@@ -166,6 +226,20 @@ struct DayflowProjectNoteView: View {
                             // note is about, documents are things attached to it,
                             // and the first is closer to the note itself.
                             DayflowNoteTagBar(text: $content, onCommit: { save($0) }, attach: $attachRequest)
+                            // ENDEAVORS, Session 72. The reverse of the Endeavor
+                            // screen's own Notes chip row: that one asks "which
+                            // notes does this endeavor link", this asks "which
+                            // endeavors link this note", off the same
+                            // `wikilinkTargets` parser so the two cannot
+                            // disagree.
+                            //
+                            // Above the documents, below the tags, for the reason
+                            // the comment beside the tag bar gives: tags say what
+                            // the note is about, this says what it is part of,
+                            // documents are things hanging off it. Nothing is
+                            // drawn when there are none — most notes belong to no
+                            // endeavor and a permanent empty row is furniture.
+                            endeavorChips
                             SatchelDocumentChips(notePath: relativePath)
                             SatchelAddDocumentButton(notePath: relativePath, style: .bar)
 
@@ -317,6 +391,10 @@ struct DayflowProjectNoteView: View {
         let (prose, notes) = DayflowRelatedNotesEngine.split(stripped)
         content = prose
         relatedNotes = notes
+        // Matched on the note's TITLE, which is what a `[[wikilink]]` in an
+        // endeavor body carries, and which this screen is keyed by anyway.
+        endeavors = EndeavorFile.loadAll(from: NoteStore.shared)
+            .filter { $0.linksNote(titled: title) }
         isLoading = false
     }
 

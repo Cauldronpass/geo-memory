@@ -186,7 +186,18 @@ class TraceMacDocumentStore {
         people: [String],
         description: String = "",
         date: Date? = nil,               // explicit override; falls back to doc.created or today
-        endeavor: EndeavorAssignment? = nil
+        endeavor: EndeavorAssignment? = nil,
+        /// Session 72. **Double optional, the same shape `enrichPerson`'s
+        /// `birthday: Date??` already uses here**, because this field has three
+        /// states and a single optional only carries two: `nil` leaves whatever
+        /// is on disk, `.some(nil)` clears it back to the automatic glyph, and
+        /// `.some(icon)` sets one. Added last so every existing labelled call
+        /// site reads unchanged.
+        icon: DocumentIcon?? = nil,
+        /// Same three-state shape as `icon`. Session 72 gave colour its own
+        /// meaning (the document's TYPE), so it needs its own control and its
+        /// own way to be cleared back to gray.
+        tint: DocumentTint?? = nil
     ) throws {
         // Preserve whatever Satchel wrote. Disk wins over the in-memory doc,
         // which may be a synthetic value built by a move (see
@@ -223,8 +234,11 @@ class TraceMacDocumentStore {
             data.endeavorName = name
         }
         data.pinned       = existing?.pinned       ?? doc.pinned
-        data.icon         = existing?.icon         ?? doc.icon
-        data.tint         = existing?.tint         ?? doc.tint
+        // An explicit choice wins; absent one, preserve whatever Satchel wrote.
+        if let icon { data.icon = icon }
+        else { data.icon = existing?.icon ?? doc.icon }
+        if let tint { data.tint = tint }
+        else { data.tint = existing?.tint ?? doc.tint }
         data.kitOrder     = existing?.kitOrder     ?? doc.kitOrder
         data.remindOn     = existing?.remindOn     ?? doc.remindOn
 

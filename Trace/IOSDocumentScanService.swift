@@ -339,10 +339,10 @@ enum iOSDocumentScanService {
         - tags: 2–5 short lowercase words or phrases. \(tagHint)
         - description: factual, concise, never empty. Include key amounts, dates, or parties if present.
         - title: \(titleRule(filename: filename, stamp: stamp, generated: filenameIsGenerated))
-        - icon: EXACTLY one token from this list, nothing else. Choose what the document IS, not what it is about. Reserve "photo" for images with no other identifiable purpose — if a photograph is OF a receipt, a card, a vehicle or a whiteboard, use that icon instead.
+        - icon: EXACTLY one token from this list, nothing else. Choose what the document is ABOUT — its subject, the part of life it belongs to — NOT what kind of artifact it is. A receipt from a restaurant is "menu". A vet bill is "pet". A screenshot of a restaurant's phone number is "menu". The fact that something is a receipt, a bill or a screenshot is carried by the tint below and by the tags, so never spend the icon on it. Only fall back to a form-based token ("receipt", "card", "photo", "document") when the document genuinely has no subject.
         \(DocumentIcon.promptGuide)
-        - tint: EXACTLY one token from this list, nothing else: \(DocumentTint.promptTokenList).
-          Pick the colour that best matches the document's own character. Reserve "red" for medical and urgent documents, and "gray" for things with no strong character of their own.
+        - tint: EXACTLY one token from this list, nothing else. The tint says what KIND of thing the document is, which is a different question from the icon. Answer both.
+        \(DocumentTint.promptGuide)
         - If you are unsure of the icon, use "document". If unsure of the tint, use "gray".
         - Return valid JSON only. No other text.\(contextLine)
         \(content.map { "\n\nDocument text:\n\($0)" } ?? "")

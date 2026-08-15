@@ -198,11 +198,27 @@ struct TraceMacContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .navigateToRecord)) { note in
             guard let type = note.userInfo?["type"] as? String,
                   let id   = note.userInfo?["id"]   as? String else { return }
+            // Routed through `openSearchResult` rather than setting the section
+            // and the pending id here.
+            //
+            // **These two cases were a hand copy of two cases in that function**,
+            // and Session 72 needed a third for the visit sheet's Endeavor row.
+            // Adding it here would have made the copy three deep and left the
+            // same gap the copy already had: `openSearchResult` records into
+            // `navigator`, and this did not, so Back did nothing after a "Go to
+            // Place" from a visit while it worked after the identical jump from
+            // a search result. One funnel, per D112.
+            //
+            // Empty query: nothing here is a search, and the argument only
+            // reaches the documents case.
+            let destination: MacSearchDestination?
             switch type {
-            case "person": selectedSection = .directory; pendingPersonID = id
-            case "place":  selectedSection = .directory; pendingPlaceID  = id
-            default: break
+            case "person":   destination = .person(id)
+            case "place":    destination = .place(id)
+            case "endeavor": destination = .endeavor(id)
+            default:         destination = nil
             }
+            if let destination { openSearchResult(destination, query: "") }
         }
         // Consume-and-clear, not a notification. The hot key can fire while
         // this window is being restored, and a notification posted then lands
@@ -276,6 +292,11 @@ struct TraceMacContentView: View {
             async let b: ()  = notionService.fetchBilliardsSessions()
             async let w: ()  = notionService.fetchWorkouts()
             _ = await (p, pe, b, w)
+
+            // A place with visits that still says "Want to Visit" is provably
+            // wrong, and David asked for it fixed rather than reported. Runs
+            // after `fetchPlaces` because it reads the rollup that call brings.
+            await notionService.reconcileVisitedStatuses()
 
             // Text extraction (spec §8 step 2) at launch rather than only when
             // the Satchel section is visited. Search reads every document

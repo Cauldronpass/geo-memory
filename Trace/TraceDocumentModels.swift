@@ -51,6 +51,10 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
     case manual
     case menu
     case reading
+    /// Session 72. David: *"the arlington heights animal hospital receipt shows
+    /// as a document which is true but the more important aspect to get right is
+    /// that it is a receipt for my dogs health."*
+    case pet
 
     /// SF Symbol name. Kept to long-established symbols (all iOS 16 or earlier,
     /// well under the 26.5 deployment target) because a wrong symbol name fails
@@ -80,6 +84,7 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
         case .manual:    return "book.closed"
         case .menu:      return "fork.knife"
         case .reading:   return "newspaper"
+        case .pet:       return "pawprint"
         }
     }
 
@@ -107,8 +112,12 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
         case .map:       return "Map"
         case .note:      return "Note"
         case .manual:    return "Manual"
-        case .menu:      return "Menu"
+        // "Dining", not "Menu", since Session 72 widened it — the token stays
+        // `menu` so no sidecar has to be rewritten, but nothing in the UI should
+        // still tell David a restaurant reservation is a menu.
+        case .menu:      return "Dining"
         case .reading:   return "Reading"
+        case .pet:       return "Pet"
         }
     }
 
@@ -136,11 +145,24 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
         case .note:      return "handwritten or typed notes"
         case .manual:    return "the manufacturer's own document: manuals, guides, warranties. Your own record about the house is home"
         case .legal:     return "wills, deeds, mortgage, titles, court documents, powers of attorney"
-        case .menu:      return "restaurant menus and food — often somewhere you want to try, usually filed to a trip"
+        case .menu:      return "DINING in the broad sense: restaurants and food. Menus, reservations and confirmations, a restaurant's contact details, a food order or pickup receipt. If the document is about a place you eat, this is the type"
         case .reading:   return "articles and PDFs you mean to read, whether temporary or kept"
+        case .pet:       return "anything about an animal: vet visits and bills, vaccination records, medication, grooming, boarding, licence tags"
         }
     }
 
+    /// **Swatch colour for pickers only. NOT what a document is tinted.**
+    ///
+    /// Session 72 gave colour its own meaning — see `DocumentTint` — so a
+    /// document's colour can no longer be a function of its icon: the two axes
+    /// answer different questions, and deriving one from the other would make
+    /// every document's type read as a restatement of its subject.
+    /// `resolvedTint` now falls back to `.gray`, not to this.
+    ///
+    /// Kept because the icon pickers draw a swatch per candidate and a grid of
+    /// twenty-four grey tiles is harder to scan than a coloured one. Nothing
+    /// here is written to a sidecar.
+    ///
     /// The tint this icon carries when the scan did not supply one. Pairing the
     /// default to the icon rather than to the file type is what keeps the grid
     /// coherent when several documents fall back at once.
@@ -169,6 +191,7 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
         case .manual:    return .gray
         case .menu:      return .rose
         case .reading:   return .teal
+        case .pet:       return .green
         }
     }
 
@@ -221,6 +244,53 @@ enum DocumentTint: String, CaseIterable, Hashable, Codable, Sendable {
     case gray
 
     var label: String { rawValue.capitalized }
+
+    // MARK: What a colour MEANS, since Session 72
+    //
+    // **Two axes, and each answers one question.** The icon says what a document
+    // is ABOUT; the colour says what KIND of thing it is. Before this they both
+    // tried to answer the first, badly: the scan prompt said *"choose what the
+    // document IS, not what it is about"*, which forced the shape onto the type
+    // axis, and colour was left as "whatever matches the document's character"
+    // and defaulted from the icon — a second copy of the shape.
+    //
+    // David, on three real documents that were all correctly typed and all
+    // useless: the Panera screenshot read `receipt`, the vet bill read
+    // `document`, the Nick's reservation read `card`. *"The type is a secondary
+    // thing that yes i will look for but only occasionally. What does color
+    // signify? can we use that in the rule?"* Exactly right, and colour is the
+    // correct home for a secondary signal — you read shape first and hunt by
+    // colour only when you are looking for one.
+    //
+    // **Two of the eight are spoken for and stay out of the type palette.**
+    // `amber` reads as private everywhere in this app since Session 71 (orange
+    // with a lock), so an amber receipt would be misread at a glance. `red` used
+    // to mean medical, which is now the icon's job, so it is free — held for
+    // "needs action" rather than reassigned, because a colour that means two
+    // things is how this whole problem started.
+    var typeMeaning: String? {
+        switch self {
+        case .green:  return "Receipt, bill, proof of payment"
+        case .blue:   return "Confirmation, reservation, ticket"
+        case .indigo: return "Contract, policy, anything official"
+        case .teal:   return "Reference: contact details, amenities, manuals"
+        case .rose:   return "Personal, keepsake"
+        case .gray:   return "Unclassified"
+        case .amber:  return nil   // private, app-wide
+        case .red:    return nil   // held for "needs action"
+        }
+    }
+
+    /// The six a document may be typed as. `amber` and `red` are deliberately
+    /// absent — see `typeMeaning`.
+    static var typeCases: [DocumentTint] { [.green, .blue, .indigo, .teal, .rose, .gray] }
+
+    /// The tint half of the scan prompt, built from the same table the pickers
+    /// read, so the model and the UI cannot describe different colours.
+    static var promptGuide: String {
+        typeCases.compactMap { t in t.typeMeaning.map { "  \(t.rawValue) — \($0)" } }
+            .joined(separator: "\n")
+    }
 
     /// Lenient parse. Unknown tokens return nil so the icon's `defaultTint` applies.
     static func parse(_ raw: String?) -> DocumentTint? {
@@ -383,7 +453,11 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// The tint to draw. Never nil — an explicit tint wins, otherwise the
     /// resolved icon's own default, which keeps fallback documents coherent.
     var resolvedTint: DocumentTint {
-        tint ?? resolvedIcon.defaultTint
+        // Session 72: `.gray`, not the icon's swatch colour. Colour is the
+        // document's TYPE now (receipt, confirmation, reference…), which an
+        // icon cannot imply — so an untyped document is honestly uncoloured
+        // rather than borrowing a hue that means something else.
+        tint ?? .gray
     }
 
     /// Type-based fallback: category first (it is the folder David filed it in,
@@ -454,5 +528,112 @@ struct DocumentScanResult {
         self.title = title
         self.icon = icon
         self.tint = tint
+    }
+}
+
+// MARK: - Buckets
+//
+// Session 72. David, looking at Megan's Wedding Week on the phone: *"for these
+// travel endeavors, we have some sort of organization for the various notes and
+// documents on IOS… i could have flight tickets for example or hotel
+// confirmation documents, or dinner reservation screen shots or other
+// attraction documents or notes."*
+//
+// **The key is `DocumentIcon`, which already exists and is already populated.**
+// The scan model assigns exactly one per document ("what the document IS, not
+// what it is about"), it is already drawn on every chip and row, and
+// `SatchelIconPickerView` lets a wrong one be corrected by hand — so a document
+// in the wrong bucket is a one-tap fix in the app that owns it. No new field, no
+// picker at attach time, no migration, nothing to backfill. D119's argument
+// again: this is readable off something already stored.
+//
+// **`tags:` was the obvious alternative and it is unusable for this.** Read the
+// real ones: `[panera bread, pickup, order, receipt, illinois]`, `[album, music,
+// rock, tom petty, wedding, wildflowers]`. They are model-written descriptions
+// of content, near-unique per document, and would produce roughly ninety buckets
+// over twenty-five files.
+//
+// **Bucketed on `resolvedIcon`, not on `icon`.** Only sixteen of about
+// twenty-five sidecars carry an explicit `icon:` key today, and bucketing on the
+// raw field would drop the other nine into `.other` while the chip beside them
+// drew a perfectly good glyph from `fallbackIcon`. **The rule that matters: a
+// document's group must agree with the picture on its own chip**, or the way to
+// fix a wrong group stops being obvious. So both read the same property, and an
+// unscanned document is typed by its category, tags and extension exactly as it
+// is drawn.
+//
+// Linked notes are not documents and have no icon. They stay their own row.
+enum DocumentBucket: String, CaseIterable, Hashable, Sendable {
+    case travel
+    case stay
+    case tickets
+    case food
+    case receipts
+    case papers
+    case other
+
+    /// David's own words for these, in his order.
+    var label: String {
+        switch self {
+        case .travel:   return "Travel"
+        case .stay:     return "Stay"
+        case .tickets:  return "Tickets & Attractions"
+        case .food:     return "Food"
+        case .receipts: return "Receipts"
+        case .papers:   return "Papers"
+        case .other:    return "Other"
+        }
+    }
+
+    /// Shorter, for the Mac rail, which is 232pt wide.
+    var shortLabel: String {
+        self == .tickets ? "Tickets" : label
+    }
+
+    /// The bucket's own glyph, not any member document's. Long-established SF
+    /// Symbols only, for the reason `DocumentIcon.sfSymbol` states: a wrong
+    /// symbol name fails silently at render rather than at compile.
+    var sfSymbol: String {
+        switch self {
+        case .travel:   return "airplane"
+        case .stay:     return "bed.double"
+        case .tickets:  return "ticket"
+        case .food:     return "fork.knife"
+        case .receipts: return "banknote"
+        case .papers:   return "doc.text"
+        case .other:    return "tray"
+        }
+    }
+
+    /// Which bucket an icon belongs to. `nil` — a document scanned before the
+    /// icon field existed, or one the model declined to type — is `.other`
+    /// rather than a fourth state, because "we do not know" and "none of the
+    /// above" want the same row and the same fix.
+    static func of(_ icon: DocumentIcon?) -> DocumentBucket {
+        guard let icon else { return .other }
+        switch icon {
+        case .plane, .train, .car, .map:                 return .travel
+        case .lodging, .home:                            return .stay
+        case .ticket:                                    return .tickets
+        case .menu:                                      return .food
+        case .receipt, .card, .finance:                  return .receipts
+        case .passport, .id, .contract, .legal,
+             .medical, .work, .education, .pet:          return .papers
+        case .document, .note, .photo, .reading, .manual: return .other
+        }
+    }
+
+    /// Documents grouped, in the fixed order above, empty buckets dropped.
+    ///
+    /// **Fixed order, not sorted by count.** A list whose rows move as documents
+    /// are added is a list you have to re-read every time; travel-then-stay-then
+    /// -tickets is the order of a trip and it holds still. `.other` is last by
+    /// enum order, which is also where it belongs.
+    static func group(_ documents: [TraceMacDocument]) -> [(bucket: DocumentBucket, documents: [TraceMacDocument])] {
+        let byBucket = Dictionary(grouping: documents) { of($0.resolvedIcon) }
+        return allCases.compactMap { bucket in
+            guard let docs = byBucket[bucket], !docs.isEmpty else { return nil }
+            return (bucket, docs)
+        }
     }
 }

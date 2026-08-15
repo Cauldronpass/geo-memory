@@ -22,15 +22,42 @@ import SwiftUI
 // person/place lookups here are the same inline scans placeVisitsTab/personActivityTab
 // already do; the "next" sheet is a struct these views already know how to present.
 
+/// One field, so `.sheet(item:)` has something Identifiable to hold. The third
+/// of these in the app; each file keeps its own rather than sharing one, which
+/// is what `DayflowAgendaSection` and `DayflowWikiSummaryView` already do.
+private struct VisitEndeavorRef: Identifiable {
+    let id: String
+}
+
 struct DayflowVisitDetailView: View {
     let visit: Visit
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
+    /// Pushed when the Endeavor row is tapped. Session 72.
+    @State private var openEndeavorID: String? = nil
 
     private var place: Place? {
         NotionService.shared.places.first(where: { $0.id == visit.placeID })
+    }
+
+    /// The endeavor this visit was part of, if any.
+    ///
+    /// Session 72. David: *"if i click the visit it would be helpful to see on
+    /// the visit screen what endeavor that was part of."*
+    ///
+    /// `claimsVisit` is the shared rule on the model — inside the dates AND
+    /// named in the endeavor's trip log — the same one the endeavor screen's own
+    /// Visits list reads. A visit sitting under "Also that day" over there gets
+    /// nothing here, which is the answer David curates by hand.
+    ///
+    /// Off `EndeavorStore.shared`, which this app already keeps loaded, rather
+    /// than a walk of its own.
+    private var matchedEndeavor: Endeavor? {
+        EndeavorStore.shared.endeavors.first {
+            $0.claimsVisit(placeName: visit.placeName, on: visit.date)
+        }
     }
 
     private var attendees: [Person] {
@@ -61,6 +88,43 @@ struct DayflowVisitDetailView: View {
                 .disabled(place == nil)
 
                 LabeledContent("Date", value: visit.date.formatted(.dateTime.month(.wide).day().year()))
+
+                if let endeavor = matchedEndeavor {
+                    Button {
+                        openEndeavorID = endeavor.id
+                    } label: {
+                        HStack {
+                            Text("Endeavor")
+                            Spacer()
+                            Text(endeavor.name)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    // Hosted on the Button, not on the List.
+                    //
+                    // **D36.** The List already carries `.sheet(item:
+                    // $wikiLinkTarget)`, and two `.sheet` modifiers on one view
+                    // is a coin flip that the later one wins in silence. A
+                    // distinct host view is the pattern this app already uses
+                    // for exactly this — `DayflowAgendaSection` and
+                    // `DayflowWikiSummaryView` both open an endeavor this way,
+                    // each with its own one-field Identifiable wrapper.
+                    .sheet(item: Binding(
+                        get: { openEndeavorID.map(VisitEndeavorRef.init) },
+                        set: { openEndeavorID = $0?.id }
+                    )) { ref in
+                        NavigationStack {
+                            DayflowEndeavorView(endeavorID: ref.id)
+                        }
+                    }
+                }
+
                 if let rating = visit.rating, rating > 0 {
                     LabeledContent("Rating") {
                         Text(String(repeating: "★", count: min(rating, 7)))
@@ -148,6 +212,13 @@ struct DayflowVisitDetailView: View {
         }
         .navigationTitle("Visit")
         .navigationBarTitleDisplayMode(.inline)
+        // The Endeavor row reads `EndeavorStore.shared`, and this sheet can be
+        // reached on a launch where nothing has loaded it yet — from a Place
+        // card, from Search. An unloaded store and a visit that belongs to no
+        // endeavor look identical from here, so load rather than assume.
+        .task {
+            if EndeavorStore.shared.endeavors.isEmpty { EndeavorStore.shared.reload() }
+        }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Done") { dismiss() }

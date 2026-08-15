@@ -30,6 +30,11 @@ struct PlaceDetailView: View {
     @State private var showingSpots = false
     @State private var isEditingTags = false
     @State private var newTagText = ""
+    /// The description while it is being edited. Reloaded on `place.id` so a
+    /// half-typed description cannot follow you to another place and be saved
+    /// onto it.
+    @State private var editDescription: String = ""
+    @FocusState private var descriptionFocused: Bool
     @State private var markedForReview = false
     @State private var isEnriching = false
     @State private var enrichError: String?
@@ -186,9 +191,34 @@ struct PlaceDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 DetailRow(label: "Status") {
-                    Text(livePlace.status)
-                        .foregroundStyle(livePlace.status == "Visited" ? .green : .orange)
-                        .bold()
+                    // Session 72. Was a static label on both platforms while
+                    // Category, immediately below, has been a menu on both
+                    // since it shipped. David, on the Mac: *"I wanted to click
+                    // and make a change to the status (it says want to visit
+                    // but i visited it already)."* Same gap here, same fix, so
+                    // the two apps do not disagree about which fields are live.
+                    //
+                    // `updatePlace` has always taken `status`; the edit sheet's
+                    // segmented picker is where these two values come from.
+                    Menu {
+                        ForEach(["Visited", "Want to Visit"], id: \.self) { value in
+                            Button(value) {
+                                Task {
+                                    try? await notionService.updatePlace(livePlace, name: livePlace.name, category: livePlace.category, status: value)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(livePlace.status.isEmpty ? "None" : livePlace.status)
+                                .foregroundStyle(livePlace.status == "Visited" ? .green : .orange)
+                                .bold()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tint(.primary)
                 }
                 DetailRow(label: "Category") {
                     Menu {
@@ -214,10 +244,31 @@ struct PlaceDetailView: View {
                     }
                     .tint(.primary)
                 }
-                if let description = place.notes, !description.isEmpty {
-                    DetailRow(label: "Description") {
-                        Text(description)
-                    }
+                // Always present, even when empty — a description you have not
+                // written yet is exactly the one you want to write, and there
+                // was nowhere to tap. `updatePlace` has always taken `notes:`;
+                // the edit sheet behind the pencil was the only door.
+                //
+                // Saves on focus loss, so one Notion write per edit rather than
+                // per keystroke.
+                DetailRow(label: "Description") {
+                    TextField("Add a description", text: $editDescription, axis: .vertical)
+                        .font(.subheadline)
+                        .lineLimit(1...6)
+                        .focused($descriptionFocused)
+                        .onChange(of: descriptionFocused) { _, focused in
+                            guard !focused else { return }
+                            let trimmed = editDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard trimmed != (livePlace.notes ?? "") else { return }
+                            Task {
+                                try? await notionService.updatePlace(
+                                    livePlace,
+                                    name: livePlace.name,
+                                    category: livePlace.category,
+                                    status: livePlace.status,
+                                    notes: trimmed)
+                            }
+                        }
                 }
                 if let summary = place.aiSummary, !summary.isEmpty {
                     DetailRow(label: "Summary") {
@@ -517,6 +568,7 @@ struct PlaceDetailView: View {
             placeNoteLoaded = true
             placeNoteContent = (try? NoteStore.shared.readFile(placeNotePath)) ?? ""
         }
+        .task(id: place.id) { editDescription = livePlace.notes ?? "" }
         .onReceive(NotificationCenter.default.publisher(for: .noteStorePlaceNoteDidChange)) { notification in
             // Reload if another route (e.g. capture triage) just wrote this place's note
             guard let updatedPlace = notification.object as? String,

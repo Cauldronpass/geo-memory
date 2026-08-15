@@ -417,7 +417,6 @@ struct SatchelCaptureView: View {
                 ForEach(alternates, id: \.self) { alt in
                     Button {
                         icon = alt
-                        tint = alt.defaultTint
                     } label: {
                         SatchelDocumentMark(icon: alt, tint: alt.defaultTint,
                                             size: 28, cornerRadius: 8, glyphSize: 14)
@@ -928,7 +927,10 @@ struct SatchelCaptureView: View {
         }
         if let suggestedIcon = result.icon {
             icon = suggestedIcon
-            tint = result.tint ?? suggestedIcon.defaultTint
+            // Session 72: no icon-derived fallback. Colour is the document's
+            // TYPE now, so an unscored one stays gray rather than borrowing a
+            // hue that means something else.
+            tint = result.tint ?? .gray
             aiFilled.insert("icon")
             filledAnything = true
         } else if let suggestedTint = result.tint {

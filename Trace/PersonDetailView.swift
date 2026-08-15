@@ -128,6 +128,9 @@ struct PersonDetailView: View {
 
     // Info tab
     @State private var isArchived = false
+    /// Session 72, for the inline tag editor.
+    @State private var isEditingTags = false
+    @State private var newTagText = ""
     @State private var phoneForAction: String? = nil
     @State private var selectedPlace: Place? = nil
     @State private var showingPlacePicker = false
@@ -452,24 +455,67 @@ struct PersonDetailView: View {
             placeSection(d)
         }
 
-        if !d.tags.isEmpty {
-            Section("Tags") {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(d.tags, id: \.self) { tag in
-                            Text(tag)
-                                .font(.caption)
+        // Editable in place, Session 72, and the section is **always** shown —
+        // it used to appear only when there were tags, which is right for a
+        // display and wrong for an editor: a person with no tags is the one you
+        // want to tag. `enrichPerson` has always taken `tags:`; the edit sheet
+        // was the only door. Same control the place Overview has had since it
+        // shipped, so the two records are tagged the same way.
+        Section("Tags") {
+            VStack(alignment: .leading, spacing: 8) {
+                if !d.tags.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(d.tags, id: \.self) { tag in
+                                HStack(spacing: 4) {
+                                    Text(tag).font(.caption)
+                                    Button {
+                                        Task { await setTags(d.tags.filter { $0 != tag }) }
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.caption2.weight(.semibold))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.secondary)
+                                }
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
                                 .background(Color.accentColor.opacity(0.12))
                                 .foregroundStyle(Color.accentColor)
                                 .clipShape(Capsule())
+                            }
                         }
+                        .padding(.vertical, 2)
                     }
-                    .padding(.vertical, 2)
                 }
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                if isEditingTags {
+                    HStack(spacing: 8) {
+                        TextField("New tag", text: $newTagText)
+                            .font(.subheadline)
+                            .submitLabel(.done)
+                            .onSubmit { Task { await addTypedTag(to: d) } }
+                        Button("Add") { Task { await addTypedTag(to: d) } }
+                            .font(.subheadline)
+                            .disabled(newTagText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        Button("Cancel") { isEditingTags = false; newTagText = "" }
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    // No menu of tags already in use, unlike the place editor:
+                    // `Person` has no `tags` field — they live on
+                    // `PersonDetail`, fetched one person at a time — so
+                    // offering the vocabulary would mean a detail fetch per
+                    // contact. Plain Add until `fetchPeople` carries tags.
+                    Button {
+                        isEditingTags = true
+                    } label: {
+                        Label("Add tag", systemImage: "plus").font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
         }
     }
 
@@ -1001,6 +1047,33 @@ struct PersonDetailView: View {
     }
 
     // MARK: - Data loading
+
+    /// Writes a new tag set and re-reads the person. Everything else is `nil`,
+    /// which `enrichPerson` reads as "leave alone".
+    private func setTags(_ tags: [String]) async {
+        try? await notion.enrichPerson(
+            id: personID,
+            relationship: nil,
+            relationshipStrength: nil,
+            companyContext: nil,
+            city: nil,
+            howWeMet: nil,
+            tags: tags
+        )
+        await loadDetail()
+    }
+
+    private func addTypedTag(to d: PersonDetail) async {
+        let tag = newTagText.trimmingCharacters(in: .whitespaces)
+        guard !tag.isEmpty, !d.tags.contains(tag) else {
+            newTagText = ""
+            isEditingTags = false
+            return
+        }
+        newTagText = ""
+        isEditingTags = false
+        await setTags(d.tags + [tag])
+    }
 
     private func loadDetail() async {
         isLoading = true

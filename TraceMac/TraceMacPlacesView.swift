@@ -800,6 +800,15 @@ struct TraceMacPlaceDetail: View {
         .onAppear {
             radiusStr = livePlace.geofenceRadius.map { String($0) } ?? ""
             dwellStr  = livePlace.dwellTime.map { String($0) } ?? ""
+            editDescription = livePlace.notes ?? ""
+        }
+        // **`.task(id:)`, not only `.onAppear`.** This view is reused as the
+        // selection changes rather than rebuilt, so an `onAppear`-only load
+        // would leave one place's description in the field while another place
+        // is on screen — and the next focus loss would save it onto the wrong
+        // record. Same failure `DocMetadataPanel`'s `userContext` had.
+        .task(id: place.id) {
+            editDescription = livePlace.notes ?? ""
         }
         .sheet(item: $editingVisit) { visit in
             MacVisitDetailView(visit: visit)
@@ -876,9 +885,43 @@ struct TraceMacPlaceDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 MacDetailRow(label: "Status") {
-                    Text(livePlace.status)
-                        .foregroundStyle(livePlace.status == "Visited" ? .green : .orange)
-                        .fontWeight(.semibold)
+                    // Was a static label, on both platforms, while Category
+                    // directly below it has been a menu on both since it
+                    // shipped. David, looking at Nick's on the Lake: *"I wanted
+                    // to click and make a change to the status (it says want to
+                    // visit but i visited it already)."*
+                    //
+                    // The record was already contradicting itself on screen —
+                    // status "Want to Visit" above a Visits tab holding a rated
+                    // 31 July visit — and the only way to resolve it was the
+                    // edit sheet behind the pencil, which is where it had been
+                    // possible all along. `updatePlace` has always taken the
+                    // status argument; nothing here is a new capability, only a
+                    // second door on the value it describes.
+                    //
+                    // Two values, from the edit sheet's segmented picker. Kept
+                    // as a Menu rather than a toggle: a click that flips a value
+                    // with no menu is a click you cannot cancel once you have
+                    // started it.
+                    Menu {
+                        ForEach(Self.statuses, id: \.self) { value in
+                            Button(value) {
+                                Task {
+                                    try? await notionService.updatePlace(
+                                        livePlace,
+                                        name: livePlace.name,
+                                        category: livePlace.category,
+                                        status: value)
+                                }
+                            }
+                        }
+                    } label: {
+                        Text(livePlace.status.isEmpty ? "None" : livePlace.status)
+                            .foregroundStyle(livePlace.status == "Visited" ? .green : .orange)
+                            .fontWeight(.semibold)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
                 MacDetailRow(label: "Category") {
                     // Was a static label. iOS has let you change the category
@@ -906,8 +949,37 @@ struct TraceMacPlaceDetail: View {
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                 }
-                if let description = livePlace.notes, !description.isEmpty {
-                    MacDetailRow(label: "Description") { Text(description) }
+                // **Always present, even when empty.** It was drawn only when
+                // there was something to draw, which is fine for a label and
+                // wrong for a field — a description you have not written yet is
+                // exactly the one you want to write, and there was nowhere to
+                // click. Second finding of the read-only sweep David asked for
+                // after the Status fix, and the same shape: a working write path
+                // (`updatePlace` takes `notes:`), an editable sibling right
+                // below it (Tags), and no way in from here.
+                //
+                // Saves when the field gives up focus, not on every keystroke —
+                // one Notion write per edit rather than per character. `.vertical`
+                // so a long description grows instead of scrolling sideways past
+                // its own edge.
+                MacDetailRow(label: "Description") {
+                    TextField("Add a description", text: $editDescription, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1...6)
+                        .focused($descriptionFocused)
+                        .onChange(of: descriptionFocused) { _, focused in
+                            guard !focused else { return }
+                            let trimmed = editDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard trimmed != (livePlace.notes ?? "") else { return }
+                            Task {
+                                try? await notionService.updatePlace(
+                                    livePlace,
+                                    name: livePlace.name,
+                                    category: livePlace.category,
+                                    status: livePlace.status,
+                                    notes: trimmed)
+                            }
+                        }
                 }
                 if let summary = livePlace.aiSummary, !summary.isEmpty {
                     MacDetailRow(label: "Summary") { Text(summary) }
@@ -1273,6 +1345,19 @@ struct TraceMacPlaceDetail: View {
                                      "Attraction", "Venue", "House", "Fitness",
                                      "Office", "Airport", "Medical", "Park", "Grocery"]
 
+    /// The Notion "Status" select. Two values, and they are the two the edit
+    /// sheet's segmented picker has always offered — not a new vocabulary, the
+    /// existing one reached from one more place.
+    private static let statuses = ["Visited", "Want to Visit"]
+
+    /// The description, while it is being edited. Reloaded whenever the
+    /// selection changes, for the reason `DocMetadataPanel.load` records: state
+    /// that belongs to a selection but is not derived from it goes stale, and
+    /// the stale version here would be one place's description saved onto
+    /// another.
+    @State private var editDescription: String = ""
+    @FocusState private var descriptionFocused: Bool
+
     // MARK: - Visits
 
     private var visitsTab: some View {
@@ -1571,7 +1656,15 @@ private struct MacStarDisplay: View {
 struct MacVisitDetailView: View {
     let visit: Visit
     @Environment(NotionService.self) private var notionService
+    @Environment(NoteStore.self) private var noteStore
     @Environment(\.dismiss) private var dismiss
+
+    /// Session 72. Its own store rather than one handed down: this sheet is
+    /// presented from three places (the Places sidebar, All Visits, and the
+    /// Journal), and threading a store through all three to render one row is
+    /// more drift than a folder walk of two dozen files is cost. Same shape
+    /// `TraceMacDocumentsView` already uses.
+    @State private var endeavorStore: TraceMacEndeavorStore? = nil
 
     @State private var rating: Int?
     @State private var notes: String
@@ -1605,6 +1698,22 @@ struct MacVisitDetailView: View {
 
     private var livePhotoURLs: [String] {
         notionService.visits.first { $0.id == visit.id }?.photoURLs ?? visit.photoURLs
+    }
+
+    /// The endeavor this visit was part of, if any.
+    ///
+    /// `claimsVisit` is the shared definition on the model, the same one the
+    /// Endeavors rail reads: inside the dates and named in the log. So a visit
+    /// sitting under "Also that day (N)" over there shows nothing here, which
+    /// is the correct answer and the one David curates by hand.
+    ///
+    /// First match, not all matches. Two endeavors overlapping the same day and
+    /// both naming the same place is not a thing that exists in this vault, and
+    /// a row that can render a list is a row that has to decide an order.
+    private var matchedEndeavor: Endeavor? {
+        endeavorStore?.endeavors.first {
+            $0.claimsVisit(placeName: visit.placeName, on: visit.date)
+        }
     }
 
     var body: some View {
@@ -1670,6 +1779,43 @@ struct MacVisitDetailView: View {
                         .popover(isPresented: $showDatePopover, arrowEdge: .bottom) {
                             DatePicker("", selection: $date, displayedComponents: .date)
                                 .datePickerStyle(.graphical).labelsHidden().padding().frame(width: 280)
+                        }
+                    }
+
+                    // Endeavor
+                    //
+                    // David: *"if i click the visit it would be helpful to see
+                    // on the visit screen what endeavor that was part of."*
+                    //
+                    // Read-only here, and that is not an omission. The place to
+                    // change what is in an endeavor is the endeavor's own rail,
+                    // where the pool of candidate visits is on screen next to
+                    // what has been chosen from it. A control here would let you
+                    // add a visit to an endeavor while looking at neither.
+                    if let endeavor = matchedEndeavor {
+                        MacDetailRow(label: "Endeavor") {
+                            Button {
+                                dismiss()
+                                // Same dismiss-then-post the "Go to" link above
+                                // uses. The sheet has to be down before the
+                                // window changes section underneath it.
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                                    NotificationCenter.default.post(
+                                        name: .navigateToRecord, object: nil,
+                                        userInfo: ["type": "endeavor", "id": endeavor.id]
+                                    )
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "suitcase.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(Color.indigo)
+                                    Text(endeavor.name)
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open \(endeavor.name)")
                         }
                     }
 
@@ -1820,6 +1966,10 @@ struct MacVisitDetailView: View {
             }
         }
         .frame(width: 560, height: 660)
+        .task {
+            if endeavorStore == nil { endeavorStore = TraceMacEndeavorStore(noteStore: noteStore) }
+            await endeavorStore?.reload()
+        }
         .confirmationDialog(
             "Delete this visit to \(visit.placeName)?",
             isPresented: $showingDeleteConfirm,

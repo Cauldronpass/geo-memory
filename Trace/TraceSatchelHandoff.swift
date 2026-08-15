@@ -264,10 +264,25 @@ struct SatchelDocumentChips: View {
     /// the endeavor in Satchel appear alongside those linked to the note.
     /// Defaulted, so the four non-Endeavor hosts are unchanged.
     var endeavorID: String? = nil
+    /// Group the documents into `DocumentBucket` rows, collapsed, under a
+    /// header of their own. Session 72, and **defaulted off so the four
+    /// non-Endeavor hosts are untouched** — a person's note with one receipt
+    /// filed against it does not need a taxonomy laid over it.
+    ///
+    /// David, on the endeavor screen: *"the various notes and documents are
+    /// great but they start to crowd out the note at the bottom."* Collapsing is
+    /// the fix for that as much as the organisation is: an unbounded grid
+    /// becomes a handful of one-line rows and the editor beneath it gets its
+    /// space back.
+    var grouped: Bool = false
 
     @State private var chipStore = TraceSatchelChipStore.shared
     @State private var noteStore = NoteStore.shared
     @State private var showingUnavailable = false
+    /// Which buckets are open. **Empty by default, so everything starts
+    /// collapsed** — the whole point is to give the page its height back, and a
+    /// panel that opens itself has not.
+    @State private var expanded: Set<DocumentBucket> = []
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
 
@@ -278,23 +293,7 @@ struct SatchelDocumentChips: View {
     var body: some View {
         Group {
             if !documents.isEmpty {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 136), spacing: 8)],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    // Keyed on `relativePath`, not `id`. `TraceMacDocument.id` is a
-                    // fresh UUID minted at parse time, so every reload would look
-                    // to SwiftUI like a completely different set of rows.
-                    ForEach(documents, id: \.relativePath) { doc in
-                        Button { open(doc) } label: { chip(doc) }
-                            .buttonStyle(.plain)
-                    }
-                }
-                // Supplied here rather than by the caller, because the Person host
-                // is a `Form` row with its insets zeroed out.
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
+                if grouped { groupedBody } else { plainGrid }
             }
         }
         // REFRESH ON EVERY APPEARANCE, not `loadIfNeeded`.
@@ -328,6 +327,99 @@ struct SatchelDocumentChips: View {
         } message: {
             Text("This document lives in Satchel, the documents app. Install it on this device to open it.")
         }
+    }
+
+    /// The original ungrouped grid, unchanged, for the four hosts that never
+    /// asked for buckets.
+    private var plainGrid: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 136), spacing: 8)],
+            alignment: .leading,
+            spacing: 8
+        ) {
+            // Keyed on `relativePath`, not `id`. `TraceMacDocument.id` is a
+            // fresh UUID minted at parse time, so every reload would look
+            // to SwiftUI like a completely different set of rows.
+            ForEach(documents, id: \.relativePath) { doc in
+                Button { open(doc) } label: { chip(doc) }
+                    .buttonStyle(.plain)
+            }
+        }
+        // Supplied here rather than by the caller, because the Person host
+        // is a `Form` row with its insets zeroed out.
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
+    /// Header, then one collapsed line per bucket.
+    ///
+    /// **The header is the other half of David's report:** *"it says Notes but
+    /// the pills include notes as well as documents from satchel."* The list was
+    /// never mixed — `attachedChips` draws a titled Notes row and this view drew
+    /// its grid directly underneath with no title of its own, so the documents
+    /// read as more Notes. One word fixes it, and it only appears in grouped
+    /// mode because the other four hosts sit inside sections that are already
+    /// titled.
+    private var groupedBody: some View {
+        let groups = DocumentBucket.group(documents)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("DOCUMENTS")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Text("\(documents.count)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+
+            ForEach(groups, id: \.bucket) { group in
+                let isOpen = expanded.contains(group.bucket)
+                Button {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        if isOpen { expanded.remove(group.bucket) }
+                        else { expanded.insert(group.bucket) }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: group.bucket.sfSymbol)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20)
+                        Text(group.bucket.label)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.primary)
+                        Text("\(group.documents.count)")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isOpen ? 90 : 0))
+                    }
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if isOpen {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 136), spacing: 8)],
+                        alignment: .leading,
+                        spacing: 8
+                    ) {
+                        ForEach(group.documents, id: \.relativePath) { doc in
+                            Button { open(doc) } label: { chip(doc) }
+                                .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.bottom, 6)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 
     private func chip(_ doc: TraceMacDocument) -> some View {
