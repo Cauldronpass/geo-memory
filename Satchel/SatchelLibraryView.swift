@@ -76,6 +76,12 @@ struct SatchelLibraryView: View {
     /// kind of fix worth making to a bug whose comments already described the
     /// hazard correctly.
     @State private var captureRequest: SatchelCaptureRequest?
+    /// David: *"when i click in the search box there is no way to exit that view
+    /// and dismiss the keyboard to see the main screen."* The field had no
+    /// focus binding at all, so nothing could put the keyboard away — the `x`
+    /// cleared the text and left it up, and it only appeared once there was
+    /// text to clear.
+    @FocusState private var searchFocused: Bool
 
     private var kit: KitMembership.Layout {
         KitMembership.assemble(
@@ -105,9 +111,14 @@ struct SatchelLibraryView: View {
                     }
                     .padding(.bottom, 110)
                 }
-                .refreshable { await store.reload() }
+                .refreshable {
+                await store.reload()
+                await store.extractTextForNewArrivals()
+            }
+                // Third way out: drag the list. The one people try first.
+                .scrollDismissesKeyboard(.interactively)
 
-                scanButton
+                captureButtons
             }
             .satchelBackground()
             .toolbar(.hidden, for: .navigationBar)
@@ -145,10 +156,45 @@ struct SatchelLibraryView: View {
                 drainRouter(includingDestination: false)
                 consumeSharedFile()
             }
-            .sheet(item: $captureRequest) { request in
+            // **Extraction after a capture, not only at launch.**
+            //
+            // `extractTextForNewArrivals` was called from `.task(id:
+            // noteStore.hasAccess)`, which fires when access arrives and never
+            // again — so a document captured during a session was not read until
+            // the next cold launch. Invisible for an ordinary capture, which
+            // gets an AI title and tags to search on. **Fatal for a private
+            // one**, whose only searchable content is the words on the page.
+            .sheet(item: $captureRequest, onDismiss: {
+                Task {
+                    await store.reload()
+                    await store.extractTextForNewArrivals()
+                }
+            }) { request in
                 SatchelCaptureView(source: request.source, store: store,
                                    prefilledNote: request.noteLink,
-                                   incoming: request.incoming)
+                                   incoming: request.incoming,
+                                   isPrivate: request.isPrivate)
+                    // **A NEW VIEW FOR EVERY REQUEST, NOT A REUSED ONE.**
+                    //
+                    // David's hypothesis, after a private scan followed by an
+                    // ordinary one came back with nothing filled in: *"do you
+                    // think that it might have been the sequence?"* SwiftUI will
+                    // sometimes reuse a sheet's content across presentations
+                    // rather than rebuild it, and a reused capture sheet would
+                    // inherit the previous one's `@State` — including `tags`
+                    // still holding `private`, which makes the guard inside
+                    // `runScan` fire and return in silence. That is precisely
+                    // the symptom.
+                    //
+                    // It does not fully fit — carried-over tags would have shown
+                    // a visible `private` chip on the ordinary document and he
+                    // saw none — so this is not a confirmed diagnosis. **It is
+                    // the elimination of a whole class for one line**, which is
+                    // worth more than another round of reasoning about which
+                    // half of the theory holds. If it recurs after this, the
+                    // cause is elsewhere and the next step is instrumentation,
+                    // not a fourth guess.
+                    .id(request.id)
             }
             .navigationDestination(item: $chipRoute) { route in
                 switch route {
@@ -311,29 +357,50 @@ struct SatchelLibraryView: View {
     // MARK: Search
 
     private var searchBar: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.satchelSecondary)
-            TextField("Search documents", text: $query)
-                .font(.system(size: 13))
-                .foregroundStyle(Color.satchelInk)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            if isSearching {
-                Button {
-                    query = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.satchelTertiary)
+        HStack(spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.satchelSecondary)
+                TextField("Search documents", text: $query)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.satchelInk)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .focused($searchFocused)
+                    // Return puts the keyboard away and keeps the results. The
+                    // search runs as you type, so Return has nothing else to do.
+                    .submitLabel(.search)
+                    .onSubmit { searchFocused = false }
+                // **Shown while focused, not only while there is text.** An empty
+                // field with the keyboard up was the exact dead end: nothing to
+                // clear, so no button, so no way out.
+                if isSearching || searchFocused {
+                    Button {
+                        query = ""
+                        searchFocused = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.satchelTertiary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .background(Color.satchelFill, in: RoundedRectangle(cornerRadius: 10))
+
+            // A worded way out beside the field, because the `x` inside it reads
+            // as "clear" and this reads as "done". Two intentions, two controls.
+            if searchFocused {
+                Button("Done") { searchFocused = false }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.satchelBlue)
+                    .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 8)
-        .background(Color.satchelFill, in: RoundedRectangle(cornerRadius: 10))
+        .animation(.easeInOut(duration: 0.15), value: searchFocused)
         .padding(.horizontal, 21)
         .padding(.bottom, 12)
     }
@@ -751,7 +818,49 @@ struct SatchelLibraryView: View {
         .padding(.bottom, 14)
     }
 
-    // MARK: Scan FAB
+    // MARK: Capture FABs
+
+    /// The blue one, and a smaller orange one beside it.
+    ///
+    /// **A second button rather than a mode, a menu entry or a toggle.** The
+    /// long-press menu was the obvious cheap home for this and is the wrong one:
+    /// scope §5 hides the three rare sources behind a hold precisely because
+    /// they are rare, and a control you reach for while holding a bank statement
+    /// must not be behind a gesture. David asked for a button and a button is
+    /// right.
+    ///
+    /// Orange with a lock, matching the `private` tag on the Mac as of this
+    /// session, so the button, the tag and the warning are one idea rather than
+    /// three.
+    private var captureButtons: some View {
+        HStack(alignment: .bottom, spacing: 12) {
+            privateButton
+            scanButton
+        }
+    }
+
+    private var privateButton: some View {
+        VStack(spacing: 4) {
+            Button {
+                captureRequest = SatchelCaptureRequest(source: .scan, isPrivate: true)
+            } label: {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 46, height: 46)
+                    .background(Color.orange, in: Circle())
+                    .shadow(color: Color.orange.opacity(0.40), radius: 7, x: 0, y: 6)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Private scan, nothing is sent")
+
+            Text("PRIVATE")
+                .font(.system(size: 9.5, weight: .bold))
+                .kerning(0.3)
+                .foregroundStyle(Color.satchelSecondary)
+        }
+        .padding(.bottom, 7)
+    }
 
     private var scanButton: some View {
         VStack(spacing: 4) {
@@ -843,6 +952,16 @@ enum SatchelDocumentSearch {
         // The type's own label — "receipt", "card", "statement". It is a visible
         // chip on every row, so it is a reasonable thing to type.
         if doc.resolvedIcon.label.lowercased().contains(q) { return true }
+        // **THE WORDS ON THE PAGE.** David, on a private capture: *"nothing shows
+        // up when i search for keywords."* The text was there — extraction writes
+        // `## Text` into the sidecar and the global search engine indexes
+        // `extractedText` — but Satchel's own library search never consulted it,
+        // so the one screen showing the document could not find it by contents.
+        //
+        // It matters most for exactly the documents the AI cannot describe: a
+        // private capture has no AI title and no AI tags, so the page's own
+        // words are all there is to search.
+        if doc.extractedText.lowercased().contains(q) { return true }
         return false
     }
 
@@ -967,10 +1086,23 @@ struct DocumentRow: View {
         HStack(alignment: .top, spacing: 12) {
             SatchelDocumentMark.row(document)
             VStack(alignment: .leading, spacing: 3) {
-                Text(document.title)
-                    .font(.system(size: 14.5, weight: .semibold))
-                    .foregroundStyle(Color.satchelInk)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    // David: *"there is no way to see which are private without
+                    // opening each one which is not like the good visual i have
+                    // on Mac."* On the title line rather than among the chips,
+                    // because it is a property of the document rather than one
+                    // more thing it is filed under, and because a row is scanned
+                    // left to right and this is the thing to notice first.
+                    if SatchelPrivateTag.isPrivate(document) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.orange)
+                    }
+                    Text(document.title)
+                        .font(.system(size: 14.5, weight: .semibold))
+                        .foregroundStyle(Color.satchelInk)
+                        .lineLimit(1)
+                }
                 HStack(spacing: 6) {
                     SatchelChip(filing: SatchelFiling.of(document))
                     Text(kindLabel(for: document))
@@ -1892,6 +2024,9 @@ struct SatchelDocumentDetailView: View {
     @State private var confirmingDelete = false
     @State private var isScanning = false
     @State private var scanError: String?
+    /// Raised when the AI button is pressed on a document tagged `private`.
+    @State private var showPrivatePrompt = false
+    @State private var showPrivateSummaryPrompt = false
     @State private var note = ""
     @State private var isSummarising = false
     @State private var summaryError: String?
@@ -2016,11 +2151,16 @@ struct SatchelDocumentDetailView: View {
                                 dirty = true
                             } label: {
                                 HStack(spacing: 4) {
+                                    if SatchelPrivateTag.matches(tag) {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 8, weight: .bold))
+                                    }
                                     Text(tag)
                                     Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
                                 }
                                 .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Color(red: 0.420, green: 0.420, blue: 0.439))
+                                .foregroundStyle(SatchelPrivateTag.tint(
+                                    tag, base: Color(red: 0.420, green: 0.420, blue: 0.439)))
                                 .padding(.horizontal, 9)
                                 .padding(.vertical, 3)
                                 .background(Color.satchelFill, in: RoundedRectangle(cornerRadius: 7))
@@ -2104,21 +2244,29 @@ struct SatchelDocumentDetailView: View {
 
                 Button {
                     guard let store else { return }
-                    Task { await summarise(using: store) }
+                    // **The third AI button in this app, and the one nobody had
+                    // thought about.** It now asks the same question the other
+                    // two do — and the service refuses regardless, so this is
+                    // the explanation rather than the defence.
+                    if isPrivate { showPrivateSummaryPrompt = true }
+                    else { Task { await summarise(using: store) } }
                 } label: {
                     HStack(spacing: 7) {
                         if isSummarising {
                             ProgressView().controlSize(.small)
                             Text("Reading the whole document…")
                         } else {
-                            Image(systemName: "text.append")
+                            Image(systemName: isPrivate ? "lock.fill" : "text.append")
                                 .font(.system(size: 12, weight: .semibold))
-                            Text(current.summary.isEmpty ? "Summarise this document" : "Summarise again")
+                            Text(isPrivate
+                                 ? "Private. Nothing has been sent"
+                                 : (current.summary.isEmpty ? "Summarise this document" : "Summarise again"))
                         }
                         Spacer(minLength: 0)
                     }
                     .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(isSummarising ? Color.satchelSecondary : Color.satchelAI)
+                    .foregroundStyle(isSummarising ? Color.satchelSecondary
+                                     : (isPrivate ? Color.orange : Color.satchelAI))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2126,6 +2274,20 @@ struct SatchelDocumentDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isSummarising || store == nil)
+                .confirmationDialog("Send this private document to the AI?",
+                                    isPresented: $showPrivateSummaryPrompt,
+                                    titleVisibility: .visible) {
+                    Button("Send and remove private tag", role: .destructive) {
+                        tags.removeAll { $0.caseInsensitiveCompare("private") == .orderedSame }
+                        dirty = true
+                        save()
+                        if let store { Task { await summarise(using: store) } }
+                    }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("Summarising sends the whole document to the AI. That removes "
+                         + "the private tag permanently and makes it readable by Ask.")
+                }
 
                 if let summaryError {
                     Text(summaryError)
@@ -2369,7 +2531,12 @@ struct SatchelDocumentDetailView: View {
         if let store {
             VStack(spacing: 6) {
                 Button {
-                    Task { await rescan(using: store) }
+                    // **The gate, and it is a gate rather than a warning.**
+                    // Before this, the phone had no notion of `private` at all
+                    // outside Ask — one tap here sent a bank statement with no
+                    // prompt, which was worse than the Mac has ever been.
+                    if isPrivate { showPrivatePrompt = true }
+                    else { Task { await rescan(using: store) } }
                 } label: {
                     HStack(spacing: 7) {
                         if isScanning {
@@ -2390,6 +2557,25 @@ struct SatchelDocumentDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isScanning)
+                .confirmationDialog("Send this private document to the AI?",
+                                    isPresented: $showPrivatePrompt,
+                                    titleVisibility: .visible) {
+                    Button("Send and remove private tag", role: .destructive) {
+                        promoteFromPrivate(using: store)
+                    }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("It was captured privately and has never left this phone. "
+                         + "Sending it to the AI removes the private tag permanently "
+                         + "and makes the document readable by Ask.")
+                }
+
+                // Said where the button is, not buried in a dialog nobody opens.
+                if isPrivate {
+                    Text("Private. Nothing about this document has been sent.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.orange)
+                }
 
                 if let scanError {
                     Text(scanError)
@@ -2406,7 +2592,31 @@ struct SatchelDocumentDetailView: View {
     /// Writes straight through rather than into the fields, then reloads them —
     /// a re-scan is a decision to replace, and leaving the result sitting in
     /// unsaved state would mean it silently vanished if the screen was dismissed.
+    /// Carries the `private` tag. Read off the live editor state, not the
+    /// stored document, so removing the tag and pressing the button in one
+    /// sitting behaves the way it looks.
+    private var isPrivate: Bool {
+        tags.contains { $0.caseInsensitiveCompare("private") == .orderedSame }
+    }
+
+    /// Drop the tag, save it, then scan.
+    ///
+    /// **Saved before the request goes out**, exactly as the Mac does, so the
+    /// file on disk can never claim to be private while its contents are in
+    /// flight.
+    private func promoteFromPrivate(using store: iOSDocumentStore) {
+        tags.removeAll { $0.caseInsensitiveCompare("private") == .orderedSame }
+        dirty = true
+        save()
+        Task { await rescan(using: store) }
+    }
+
     private func rescan(using store: iOSDocumentStore) async {
+        // A hard gate, not a courtesy, and the same shape as the Mac's:
+        // `promoteFromPrivate` is the only way past it and it clears the tag
+        // first, so no future caller can reintroduce the hole by wiring itself
+        // straight to `rescan`.
+        guard !isPrivate else { return }
         isScanning = true
         scanError = nil
         defer { isScanning = false }
@@ -2941,11 +3151,16 @@ struct SatchelCaptureRequest: Identifiable {
     let source: SatchelCaptureSource
     var incoming: IncomingDocument? = nil
     var noteLink: String? = nil
+    /// Private captures skip the AI entirely. See `SatchelCaptureView.isPrivate`.
+    var isPrivate: Bool = false
 
     /// One capture sheet is presentable at a time, so the source identifies the
     /// request. Including the payload here would re-present the sheet whenever
     /// it changed, which is the opposite of what is wanted.
-    var id: String { source.rawValue }
+    /// Privacy is part of the identity: a private scan and an ordinary scan are
+    /// two different requests, and re-presenting the sheet for the other one is
+    /// exactly what should happen if both are somehow asked for.
+    var id: String { isPrivate ? "\(source.rawValue)-private" : source.rawValue }
 }
 
 enum SatchelCaptureSource: String, Identifiable {

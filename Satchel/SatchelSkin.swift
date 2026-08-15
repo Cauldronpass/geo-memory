@@ -314,3 +314,39 @@ struct SatchelAIBadge: View {
             .background(Color.satchelAIFill, in: RoundedRectangle(cornerRadius: 5))
     }
 }
+
+// MARK: - Private tag
+
+/// `private` is a warning, not a topic, and it is drawn in four places.
+///
+/// **One rule in one function, because on the Mac the same change took three
+/// renderers and one was missed** — David spotted a blue `private` chip in the
+/// list an hour after the other two went orange. A safety marker that is orange
+/// in some places and not others teaches the eye that the ordinary colour is
+/// fine, which is worse than never having coloured it.
+///
+/// Orange matches the Mac's chips and Satchel's PRIVATE capture button, so the
+/// button that creates the state, the tag that records it and the warning that
+/// enforces it are one idea.
+enum SatchelPrivateTag {
+
+    static let name = "private"
+
+    static func matches(_ tag: String) -> Bool {
+        tag.caseInsensitiveCompare(name) == .orderedSame
+    }
+
+    /// Delegates to the model's own property, which is the single definition
+    /// and the one the services enforce on. Two spellings of "is this private"
+    /// is how the third leak happened.
+    static func isPrivate(_ document: TraceMacDocument) -> Bool { document.isPrivate }
+
+    static func isPrivate(_ tags: [String]) -> Bool {
+        tags.contains(where: matches)
+    }
+
+    /// The colour a tag chip should use.
+    static func tint(_ tag: String, base: Color) -> Color {
+        matches(tag) ? .orange : base
+    }
+}

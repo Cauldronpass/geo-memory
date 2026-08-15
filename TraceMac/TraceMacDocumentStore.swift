@@ -341,18 +341,21 @@ class TraceMacDocumentStore {
                 && doc.tags.isEmpty
                 && doc.description.isEmpty
                 && !scanAttempted.contains(doc.relativePath)
-                // A sidecar that EXISTS and does not say private is an answer,
-                // and answers do not need waiting for. The delay applies only
-                // when there is no sidecar at all, which is the one state that
-                // cannot be told apart from "the sidecar has not landed yet".
-                // So a drop that arrives with its metadata is scanned as
-                // promptly as it ever was, and only the genuinely ambiguous
-                // case pays the fifteen seconds.
+                // A sidecar that READS and does not say private is an answer,
+                // and answers do not need waiting for — a drop that arrives with
+                // its metadata is scanned as promptly as it ever was.
                 //
-                // `?? false` on the date: a file whose creation date cannot be
-                // read waits rather than proceeds. Failing closed is the only
-                // sane default when the thing being guarded is unrecoverable.
-                && (sidecarExists(doc)
+                // **`readable`, not `exists`.** An iCloud sidecar can be present
+                // as a stub whose contents have not arrived, which is exactly
+                // how a private capture from the phone got scanned here: the
+                // file existed, so the delay was skipped, and it could not be
+                // parsed, so it read as not private.
+                //
+                // Everything else waits out the settle window and is
+                // reconsidered, including a file whose creation date cannot be
+                // read (`?? false`). Failing closed is the only sane default
+                // when the thing being guarded is unrecoverable.
+                && (privacyOnDisk(doc) == .notPrivate
                     || (doc.created.map { now.timeIntervalSince($0) >= Self.arrivalSettleSeconds } ?? false))
         }
         guard !candidates.isEmpty, candidates.count <= limit else {
@@ -374,7 +377,10 @@ class TraceMacDocumentStore {
             // Not marked attempted: if it is private it will fail the
             // `tags.isEmpty` filter next time anyway, and if this read failed
             // for some other reason it deserves another look.
-            if isPrivateOnDisk(doc) { continue }
+            // **Only a definite "not private" proceeds.** `.unknown` waits: it
+            // is not marked attempted, so the next reload — after iCloud has
+            // finished delivering the sidecar — reconsiders it.
+            guard privacyOnDisk(doc) == .notPrivate else { continue }
             scanAttempted.insert(doc.relativePath)
             guard let result = try? await DocumentScanService.scan(
                 doc: doc,
@@ -455,17 +461,34 @@ class TraceMacDocumentStore {
     /// ever suggesting one. `renderSidecar` emits a bare `title:` line, and
     /// `parseSidecar` reads that back as nil, so the derived title still wins
     /// and the document is still a scan candidate.
-    /// Whether a sidecar file is present for this document right now.
-    func sidecarExists(_ doc: TraceMacDocument) -> Bool {
-        guard let url = noteStore.resolvedURL(for: doc.sidecarPath) else { return false }
-        return FileManager.default.fileExists(atPath: url.path)
+    /// What the disk says about this document's privacy, **including "I cannot
+    /// tell yet".**
+    ///
+    /// **The two-valued version of this shipped a private document to Anthropic.**
+    /// David captured one on his phone with the new private button; the Mac
+    /// picked it up over iCloud, ran the AI on it, and the result synced back.
+    /// `isPrivateOnDisk` had been `guard let data = parseSidecar(…) else {
+    /// return false }` — so a sidecar that exists but has not finished
+    /// downloading, and therefore cannot be read, answered **"not private"**.
+    ///
+    /// That is the identical defect as D114, D116 and D117, committed inside the
+    /// function written to prevent it. Absence of an answer is not an answer,
+    /// and when the consequence is a bank statement leaving the machine it has
+    /// to be its own case with its own name.
+    enum DiskPrivacy {
+        case notPrivate
+        case isPrivate
+        /// No sidecar, or one that could not be read. **Never scan on this.**
+        case unknown
     }
 
-    /// The `private` tag as it stands on disk right now, not as it stood when
-    /// `documents` was last built.
-    func isPrivateOnDisk(_ doc: TraceMacDocument) -> Bool {
-        guard let data = parseSidecar(at: doc.sidecarPath) else { return false }
+    func privacyOnDisk(_ doc: TraceMacDocument) -> DiskPrivacy {
+        guard let url = noteStore.resolvedURL(for: doc.sidecarPath),
+              FileManager.default.fileExists(atPath: url.path)
+        else { return .unknown }
+        guard let data = parseSidecar(at: doc.sidecarPath) else { return .unknown }
         return data.tags.contains { $0.caseInsensitiveCompare("private") == .orderedSame }
+            ? .isPrivate : .notPrivate
     }
 
     private func writeExtractedText(_ text: String, for doc: TraceMacDocument) throws {

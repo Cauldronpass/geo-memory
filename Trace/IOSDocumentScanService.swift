@@ -27,6 +27,12 @@ import UniformTypeIdentifiers
 // MARK: - Errors
 
 enum iOSDocumentScanError: LocalizedError {
+    /// The document is tagged `private` and must not be sent.
+    ///
+    /// **Thrown by the service, not checked by the caller.** Every UI guard is
+    /// an explanation; this is the enforcement. A future button wired straight
+    /// to `scan` or `summarize` now fails loudly instead of leaking quietly.
+    case isPrivate
     case noContent
     case apiError(String)
     case parseError(String)
@@ -34,6 +40,7 @@ enum iOSDocumentScanError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .isPrivate:           return "This document is tagged private. Nothing about it has been sent."
         case .noContent:           return "Claude returned no content."
         case .apiError(let msg):   return "API error: \(msg)"
         case .parseError(let msg): return "Parse error: \(msg)"
@@ -77,6 +84,7 @@ enum iOSDocumentScanService {
         userContext: String = "",
         filenameIsGenerated: Bool = false
     ) async throws -> DocumentScanResult {
+        guard !doc.isPrivate else { throw iOSDocumentScanError.isPrivate }
         guard let fileURL = noteStore.resolvedURL(for: doc.relativePath) else {
             throw iOSDocumentScanError.noContent
         }
@@ -111,6 +119,7 @@ enum iOSDocumentScanService {
         noteStore: NoteStore,
         userContext: String = ""
     ) async throws -> String {
+        guard !doc.isPrivate else { throw iOSDocumentScanError.isPrivate }
         guard let fileURL = noteStore.resolvedURL(for: doc.relativePath) else {
             throw iOSDocumentScanError.noContent
         }

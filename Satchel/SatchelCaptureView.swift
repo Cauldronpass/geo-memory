@@ -53,6 +53,23 @@ struct SatchelCaptureView: View {
     /// `prefilledNote` above. Adding a property in the middle of this struct
     /// reorders the init and breaks every call site.
     var incoming: IncomingDocument? = nil
+    /// Capture without sending anything to Anthropic.
+    ///
+    /// **The phone auto-sends and the Mac does not.** `finishWrite` fires
+    /// `runScan` the moment the file exists, so by the time the metadata sheet
+    /// is on screen the document has already gone. A private toggle *in* this
+    /// sheet would be theatre — the decision has to be made before the capture
+    /// starts, which is what the second FAB does.
+    ///
+    /// David's own weighting decided the shape: *"most of the time say 90%
+    /// would be items that are not sensitive… The rare time i have a bank
+    /// statement or something that is truly private on my phone i can press
+    /// another button."* Inverting the default would have taxed nine ordinary
+    /// captures to protect the tenth. This taxes none of them.
+    ///
+    /// **Declared LAST**, for the memberwise-initialiser reason `prefilledNote`
+    /// and `incoming` both record above.
+    var isPrivate: Bool = false
 
     @Environment(\.dismiss) private var dismiss
 
@@ -72,6 +89,8 @@ struct SatchelCaptureView: View {
     @State private var previews: [UIImage] = []
     @State private var isWriting = false
     @State private var isScanning = false
+    /// Raised when the AI button is pressed on a private capture.
+    @State private var showPrivatePrompt = false
     /// Which fields the AI actually supplied. The "AI" badge claims authorship,
     /// so it must not appear on a field that fell back to a local rule — that
     /// is how a photo ended up looking like the model had picked its icon when
@@ -324,7 +343,8 @@ struct SatchelCaptureView: View {
         if draft != nil {
             Button {
                 guard let draft else { return }
-                Task { await runScan(on: draft, overwrite: true) }
+                if isPrivateNow { showPrivatePrompt = true }
+                else { Task { await runScan(on: draft, overwrite: true) } }
             } label: {
                 HStack(spacing: 7) {
                     if isScanning {
@@ -333,7 +353,9 @@ struct SatchelCaptureView: View {
                     } else {
                         Image(systemName: "sparkles")
                             .font(.system(size: 12, weight: .semibold))
-                        Text(aiFilled.isEmpty ? "Ask AI to fill this in" : "Ask AI again")
+                        Text(isPrivateNow
+                             ? "Private. Nothing has been sent"
+                             : (aiFilled.isEmpty ? "Ask AI to fill this in" : "Ask AI again"))
                     }
                     Spacer(minLength: 0)
                 }
@@ -346,6 +368,19 @@ struct SatchelCaptureView: View {
             }
             .buttonStyle(.plain)
             .disabled(isScanning)
+            .confirmationDialog("Send this private document to the AI?",
+                                isPresented: $showPrivatePrompt,
+                                titleVisibility: .visible) {
+                Button("Send and remove private tag", role: .destructive) {
+                    tags.removeAll { $0.caseInsensitiveCompare("private") == .orderedSame }
+                    if let draft { Task { await runScan(on: draft, overwrite: true) } }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("It was captured privately and has never left this phone. "
+                     + "Sending it removes the private tag permanently and makes "
+                     + "the document readable by Ask.")
+            }
             .padding(.horizontal, 15)
             .padding(.bottom, scanNote == nil ? 14 : 5)
 
@@ -428,12 +463,17 @@ struct SatchelCaptureView: View {
                                 tags.removeAll { $0 == tag }
                             } label: {
                                 HStack(spacing: 4) {
+                                    if SatchelPrivateTag.matches(tag) {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 8, weight: .bold))
+                                    }
                                     Text(tag)
                                     Image(systemName: "xmark")
                                         .font(.system(size: 8, weight: .bold))
                                 }
                                 .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Color(red: 0.420, green: 0.420, blue: 0.439))
+                                .foregroundStyle(SatchelPrivateTag.tint(
+                                    tag, base: Color(red: 0.420, green: 0.420, blue: 0.439)))
                                 .padding(.horizontal, 9)
                                 .padding(.vertical, 3)
                                 .background(Color.satchelFill, in: RoundedRectangle(cornerRadius: 7))
@@ -735,17 +775,35 @@ struct SatchelCaptureView: View {
                 category: year,
                 fileExtension: ext,
                 title: slug.replacingOccurrences(of: "-", with: " "),
-                tags: [],
+                // **The document carries its own privacy from the moment it
+                // exists.** It used to be `[]`, with `private` living only in
+                // this view's `@State`, so a service-level guard reading
+                // `doc.isPrivate` would have seen an ordinary document. The tag
+                // belongs to the record, not to the screen showing it.
+                tags: isPrivate ? ["private"] : [],
                 created: Date(),
                 linkedNote: nil,
                 people: [],
                 description: ""
             )
             draft = document
+            // Tagged before anything else happens, so a crash, a dismissal or a
+            // future caller cannot leave a private capture untagged on disk.
+            if isPrivate, !tags.contains(where: { $0.caseInsensitiveCompare("private") == .orderedSame }) {
+                tags.append("private")
+            }
             title = document.title
             icon = document.resolvedIcon
             tint = document.resolvedTint
             isWriting = false
+            // **The one branch that matters.** No network call is made for a
+            // private capture, ever — not gated, not deferred, not asked about.
+            // The document is already tagged by the time this runs, so nothing
+            // downstream has to be trusted to check.
+            guard !isPrivate else {
+                scanNote = "Kept on this device. Nothing was sent."
+                return
+            }
             Task { await runScan(on: document) }
         } catch {
             errorText = error.localizedDescription
@@ -755,7 +813,35 @@ struct SatchelCaptureView: View {
 
     // MARK: AI pre-fill
 
+    /// Private right now, from the live tag list as well as the capture mode.
+    /// Read from `tags` too, so removing the tag by hand in this sheet behaves
+    /// the way it looks.
+    private var isPrivateNow: Bool {
+        // **Only the tag, deliberately.** `isPrivate` says how the capture
+        // STARTED; the tag says what the document IS. `finishWrite` writes the
+        // tag before anything else can run, so the tag is authoritative from
+        // that moment on — and it is what every other screen, and the Mac, will
+        // read. Consulting the launch flag as well would mean a document whose
+        // tag had been deliberately removed still refused to scan, which is a
+        // control that ignores you.
+        tags.contains { $0.caseInsensitiveCompare("private") == .orderedSame }
+    }
+
     private func runScan(on document: TraceMacDocument, overwrite: Bool = false) async {
+        // **A HARD GATE, AND IT BELONGS HERE.**
+        //
+        // The first version of this feature gated the AUTOMATIC call in
+        // `finishWrite` and left `runScan` open, so the "Ask AI to fill this in"
+        // button on this very sheet sent the document anyway. David found it in
+        // the first minute: *"pressing the Ask AI just went ahead and processed
+        // rather than asking for confirmation."*
+        //
+        // `TraceMacDocumentsView.runScan` carries a comment saying exactly this —
+        // *"`runScan` used to be wired straight to the button, and that was a
+        // hole"* — which I read the same day and did not apply here. **A guard
+        // at one of two call sites is not a guard.** It now lives at the single
+        // point that talks to the network, so no future caller can go round it.
+        guard !isPrivateNow else { return }
         isScanning = true
         defer { isScanning = false }
 

@@ -11,6 +11,9 @@ import AppKit
 // MARK: - Errors
 
 enum DocumentScanError: LocalizedError {
+    /// Tagged `private`. See `TraceMacDocument.isPrivate`. The view's dialog
+    /// explains; this enforces.
+    case isPrivate
     case noContent
     case apiError(String)
     case parseError(String)
@@ -19,6 +22,7 @@ enum DocumentScanError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .isPrivate:             return "This document is tagged private. Nothing about it has been sent."
         case .noContent:             return "Claude returned no content."
         case .apiError(let msg):     return "API error: \(msg)"
         case .parseError(let msg):   return "Parse error: \(msg)"
@@ -68,6 +72,10 @@ enum DocumentScanService {
         existingTags: [String],
         userContext: String = ""
     ) async throws -> DocumentScanResult {
+        // Before everything, including the key check: a private document is not
+        // sent for any reason, and the cheapest possible refusal is the right
+        // one.
+        guard !doc.isPrivate else { throw DocumentScanError.isPrivate }
         // Checked before any work: rendering pages and base64-encoding an image
         // only to be told the request was unauthenticated wastes time and, on a
         // large scan, a noticeable amount of it.

@@ -329,6 +329,18 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// frontmatter key and why the distinction matters.
     var textExtracted: Bool = false
 
+    /// Tagged `private`. **The single definition, in the file every target
+    /// compiles**, because this decides whether the document may be sent.
+    ///
+    /// Session 71 shipped this guard three times in three places and leaked
+    /// three times: the automatic scan at capture, then the library's AI button,
+    /// then the Summarise button that nobody had thought about. Each fix was a
+    /// button. **A rule enforced per button is a rule you re-discover per
+    /// button** — and David found each one, in minutes, by pressing it.
+    var isPrivate: Bool {
+        tags.contains { $0.caseInsensitiveCompare("private") == .orderedSame }
+    }
+
     var isPDF: Bool   { fileExtension == "pdf" }
     var isImage: Bool { ["jpg","jpeg","png","heic","gif","webp"].contains(fileExtension) }
 
