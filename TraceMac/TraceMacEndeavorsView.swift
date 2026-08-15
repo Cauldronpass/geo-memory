@@ -246,6 +246,30 @@ struct TraceMacEndeavorsView: View {
         // one on screen, which is the one worth returning to.
         .onChange(of: selected?.id) { _, id in
             guard let id else { return }
+            // **NOT WHILE A DEEP LINK IS IN FLIGHT.**
+            //
+            // David: *"i clicked the arrow and went back to the megan wedding
+            // endeavor. When i then pressed the back arrow nothing happened. I
+            // had to press that back arrow a few times."*
+            //
+            // `selected` is derived and falls back to `filtered.first`, which is
+            // the property that makes the comment above this work — and the
+            // property that breaks it on arrival. Landing here from a document's
+            // Endeavor arrow, the rail renders once with the filter's first row
+            // selected, records THAT as a place, and only then does the deep-link
+            // `.task` run `reveal` and move to the requested Endeavor. So the
+            // back stack gains an Endeavor he never chose, sitting between where
+            // he is and where he came from — and pressing back lands on the same
+            // screen showing a different record, which reads as nothing
+            // happening.
+            //
+            // Suppressed rather than de-duplicated afterwards: an intermediate
+            // the view picked for itself is not a place anyone visited, and the
+            // honest fix is not to report it. `openSearchResult` has already
+            // recorded the real destination by this point, so nothing is lost —
+            // and `reveal`'s own selection change records an entry equal to
+            // `current`, which `record` discards.
+            guard deepLinkEndeavorID?.wrappedValue == nil else { return }
             navigator.record(.record(.endeavor(id)))
         }
         .task {

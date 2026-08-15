@@ -166,6 +166,18 @@ class TraceMacDocumentStore {
     ///
     /// Every `existing?.x ?? doc.x` line below must have a counterpart in
     /// `SidecarData`, `parseSidecar` and `renderSidecar`. Four places, one key.
+    /// What a save should do to the document's Endeavor.
+    ///
+    /// **This file could read the association and never change it**, which is
+    /// why the Mac had no way to file a document to an Endeavor: you could add
+    /// a document from inside an Endeavor, and never the other way round.
+    /// David: *"There doesnt seem to be a way to connect a document when im in
+    /// satchel to an endeavor… is that true and fixable?"* True, and this is it.
+    enum EndeavorAssignment {
+        case set(id: String, name: String)
+        case clear
+    }
+
     func saveSidecar(
         for doc: TraceMacDocument,
         title: String,
@@ -173,7 +185,8 @@ class TraceMacDocumentStore {
         linkedNote: String?,
         people: [String],
         description: String = "",
-        date: Date? = nil                // explicit override; falls back to doc.created or today
+        date: Date? = nil,               // explicit override; falls back to doc.created or today
+        endeavor: EndeavorAssignment? = nil
     ) throws {
         // Preserve whatever Satchel wrote. Disk wins over the in-memory doc,
         // which may be a synthetic value built by a move (see
@@ -194,8 +207,21 @@ class TraceMacDocumentStore {
         data.people      = people
         data.description = description
 
-        data.endeavor     = existing?.endeavor     ?? doc.endeavor
-        data.endeavorName = existing?.endeavorName ?? doc.endeavorName
+        // **Three states, not two.** `nil` means "leave it alone", which is
+        // what every existing caller wants and gets by omitting the argument;
+        // `.clear` means "remove it". Collapsing those two into one optional is
+        // how a save of the title would silently unfile a document.
+        switch endeavor {
+        case .none:
+            data.endeavor     = existing?.endeavor     ?? doc.endeavor
+            data.endeavorName = existing?.endeavorName ?? doc.endeavorName
+        case .clear:
+            data.endeavor     = nil
+            data.endeavorName = nil
+        case .set(let id, let name):
+            data.endeavor     = id
+            data.endeavorName = name
+        }
         data.pinned       = existing?.pinned       ?? doc.pinned
         data.icon         = existing?.icon         ?? doc.icon
         data.tint         = existing?.tint         ?? doc.tint
@@ -286,12 +312,48 @@ class TraceMacDocumentStore {
     ///
     /// Fires after a reload triggered from outside the app, which is the only
     /// time documents appear that nobody in this process just created.
+    /// How long a newly arrived file is left alone before it can be scanned.
+    ///
+    /// **A private drop is TWO files, and the tag that protects it is in the
+    /// second one.** David's workflow is CleanShot to Dropzone to here, and
+    /// Dropzone writes the image and then a sidecar carrying `tags: [private]`;
+    /// nothing in this codebase ever writes that tag, it only reads it. The
+    /// view above already notes that "a single drop lands as two events, the
+    /// binary and then its sidecar", and debounces 400ms before reloading.
+    ///
+    /// That debounce is a guess about file ordering, and what it guards is a
+    /// screenshot of a bank statement going to Anthropic. `tags.isEmpty` on a
+    /// document whose sidecar has not arrived does not mean "no tags", it means
+    /// **not known yet** — and the two must never collapse into each other when
+    /// the consequence of guessing wrong is unrecoverable. Same rule as D94 and
+    /// D116, applied where it costs the most to get wrong.
+    ///
+    /// Fifteen seconds is far longer than two adjacent file writes and far
+    /// shorter than anyone waiting for a title. A deferred document is NOT
+    /// marked attempted, so the sidecar landing triggers another reload and it
+    /// is reconsidered then.
+    private static let arrivalSettleSeconds: TimeInterval = 15
+
     func autoScanNewArrivals(limit: Int = 5) async {
+        let now = Date()
         let candidates = documents.filter { doc in
             (doc.isPDF || doc.isImage)
                 && doc.tags.isEmpty
                 && doc.description.isEmpty
                 && !scanAttempted.contains(doc.relativePath)
+                // A sidecar that EXISTS and does not say private is an answer,
+                // and answers do not need waiting for. The delay applies only
+                // when there is no sidecar at all, which is the one state that
+                // cannot be told apart from "the sidecar has not landed yet".
+                // So a drop that arrives with its metadata is scanned as
+                // promptly as it ever was, and only the genuinely ambiguous
+                // case pays the fifteen seconds.
+                //
+                // `?? false` on the date: a file whose creation date cannot be
+                // read waits rather than proceeds. Failing closed is the only
+                // sane default when the thing being guarded is unrecoverable.
+                && (sidecarExists(doc)
+                    || (doc.created.map { now.timeIntervalSince($0) >= Self.arrivalSettleSeconds } ?? false))
         }
         guard !candidates.isEmpty, candidates.count <= limit else {
             // Mark an over-limit batch as seen so it does not re-evaluate on
@@ -303,6 +365,16 @@ class TraceMacDocumentStore {
         }
 
         for doc in candidates {
+            // **Re-read the sidecar from disk immediately before sending.**
+            // `documents` was built when the folder was last walked, and the
+            // tag that forbids this may have landed since. The settle delay
+            // above makes that unlikely; this makes it not matter. Two cheap
+            // checks against one irreversible mistake.
+            //
+            // Not marked attempted: if it is private it will fail the
+            // `tags.isEmpty` filter next time anyway, and if this read failed
+            // for some other reason it deserves another look.
+            if isPrivateOnDisk(doc) { continue }
             scanAttempted.insert(doc.relativePath)
             guard let result = try? await DocumentScanService.scan(
                 doc: doc,
@@ -383,6 +455,19 @@ class TraceMacDocumentStore {
     /// ever suggesting one. `renderSidecar` emits a bare `title:` line, and
     /// `parseSidecar` reads that back as nil, so the derived title still wins
     /// and the document is still a scan candidate.
+    /// Whether a sidecar file is present for this document right now.
+    func sidecarExists(_ doc: TraceMacDocument) -> Bool {
+        guard let url = noteStore.resolvedURL(for: doc.sidecarPath) else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    /// The `private` tag as it stands on disk right now, not as it stood when
+    /// `documents` was last built.
+    func isPrivateOnDisk(_ doc: TraceMacDocument) -> Bool {
+        guard let data = parseSidecar(at: doc.sidecarPath) else { return false }
+        return data.tags.contains { $0.caseInsensitiveCompare("private") == .orderedSame }
+    }
+
     private func writeExtractedText(_ text: String, for doc: TraceMacDocument) throws {
         var body = readBody(at: doc.sidecarPath)
         body.text = text

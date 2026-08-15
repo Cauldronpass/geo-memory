@@ -102,6 +102,140 @@ enum MacTextExtraction {
         }
     }
 
+    // MARK: - Local headline
+
+    /// A title and a one-line description read off text this machine already
+    /// extracted. **No network, ever.**
+    ///
+    /// Built for the private case. A document tagged `private` cannot be sent to
+    /// the AI without dropping the tag, and dropping it is permanent — so the
+    /// choice used to be an untitled `CleanShot 2026-08-14 at 20.19.45.png`
+    /// forever, or sending a bank statement to an API. David: *"I really want to
+    /// avoid the info going to Anthropic for the private things like bank
+    /// account numbers."* This is the third option, and it costs nothing.
+    ///
+    /// **Deliberately not clever.** It takes the first substantial line as a
+    /// title and the next stretch as a description. It is not summarising and it
+    /// does not pretend to; a heuristic that guessed and got it subtly wrong
+    /// would be worse than the filename, because the filename never looks like
+    /// it knows something.
+    ///
+    /// Returns `nil` when there is nothing usable, so the caller can SAY so
+    /// rather than silently doing nothing.
+    nonisolated static func localHeadline(from text: String) -> (title: String, description: String)? {
+        let lines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return nil }
+
+        // **Start at the first letter.** David's loan page produced
+        // `- 1-07 Direct Parent PLUS`, and his verdict was exact: *"that prefix
+        // doesnt mean anything."* A row label, a plan code, a bullet — OCR
+        // reads them in the order they sit on the page, and the words are what
+        // he is naming the document by. Trimming to the first letter turns that
+        // line into `Direct Parent PLUS`, which is what he retyped by hand.
+        func trimmedToWords(_ line: String) -> String {
+            var t = Substring(line)
+            while let f = t.first, !f.isLetter { t = t.dropFirst() }
+            return String(t).trimmingCharacters(in: .whitespaces)
+        }
+
+        // A line that is mostly digits and punctuation is an account number or
+        // a date row, not a name. Six characters, at least two words, and more
+        // than half of it letters.
+        func looksLikeAName(_ line: String) -> Bool {
+            let c = trimmedToWords(line)
+            guard c.count >= 6, c.split(separator: " ").count >= 2 else { return false }
+            let letters = c.filter { $0.isLetter }.count
+            return Double(letters) / Double(c.count) >= 0.6
+        }
+
+        guard let titleLine = lines.first(where: looksLikeAName)
+                ?? lines.first(where: { trimmedToWords($0).count >= 4 })
+                ?? lines.first
+        else { return nil }
+
+        let title = String(trimmedToWords(titleLine).prefix(70))
+            .trimmingCharacters(in: .whitespaces)
+        let rest = lines
+            .drop { $0 != titleLine }
+            .dropFirst()
+            .joined(separator: " ")
+        let description = String(rest.prefix(220)).trimmingCharacters(in: .whitespaces)
+        return (title, description)
+    }
+
+    /// Which of `vocabulary` actually appear in `text`, as whole words.
+    ///
+    /// **Recognition, not invention.** A local pass cannot know that a Colorado
+    /// State loan page deserves a tag called "tuition" unless that tag already
+    /// exists somewhere in the library — so this matches against a vocabulary
+    /// the caller supplies (tags already in use, people already in Notion) and
+    /// proposes nothing beyond it. That is a real limit and the caller should
+    /// say so rather than let an empty result read as "nothing here".
+    ///
+    /// Whole-word matching, done by collapsing everything non-alphanumeric to
+    /// single spaces and padding both sides. Substring matching would tag a
+    /// document "csu" because the text contains "focus", and one wrong tag
+    /// costs more trust than ten missing ones.
+    ///
+    /// Terms shorter than three characters are skipped: at that length the
+    /// false-positive rate stops being worth the recall.
+    nonisolated static func vocabularyMatches(in text: String, vocabulary: [String]) -> [String] {
+        let haystack = " " + normalised(text) + " "
+        guard haystack.count > 2 else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        for term in vocabulary {
+            let needle = normalised(term)
+            guard needle.count >= 3, seen.insert(needle).inserted else { continue }
+            if haystack.contains(" " + needle + " ") { out.append(term) }
+        }
+        return out
+    }
+
+    /// A typed hint split into the things it is naming.
+    ///
+    /// Commas first, because "loan, hannah, csu" is how a person writes a list;
+    /// whitespace after, because "loan hannah" is how they write it when in a
+    /// hurry. Both mean the same thing here.
+    nonisolated static func hintTerms(in raw: String) -> [String] {
+        raw.components(separatedBy: CharacterSet(charactersIn: ",;"))
+            .flatMap { $0.split(separator: " ") }
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 3 }
+    }
+
+    /// `#tag` markers in a typed hint. Explicit, so they are always honoured.
+    ///
+    /// Added after bare words from a sentence became eleven tags. A hash is two
+    /// characters and it removes every guess: prose stays prose, and anything
+    /// he actually wants filed under is said out loud.
+    nonisolated static func hashTags(in raw: String) -> [String] {
+        raw.split(separator: "#").dropFirst().compactMap { chunk in
+            let term = chunk.prefix { $0.isLetter || $0.isNumber || $0 == "-" }
+            let t = String(term).lowercased()
+            return t.count >= 2 ? t : nil
+        }
+    }
+
+    nonisolated private static func normalised(_ raw: String) -> String {
+        let folded = raw.lowercased()
+        var out = ""
+        var lastWasSpace = false
+        for ch in folded {
+            if ch.isLetter || ch.isNumber {
+                out.append(ch)
+                lastWasSpace = false
+            } else if !lastWasSpace {
+                out.append(" ")
+                lastWasSpace = true
+            }
+        }
+        return out.trimmingCharacters(in: .whitespaces)
+    }
+
     // MARK: - PDF
 
     /// The text layer first, and OCR only if there is not one.

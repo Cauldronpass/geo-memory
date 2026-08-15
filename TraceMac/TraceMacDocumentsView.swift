@@ -23,9 +23,24 @@ struct TraceMacDocumentsView: View {
     /// paint it on the page. Consumed and cleared alongside the path.
     var deepLinkQuery: Binding<String?>? = nil
 
+    /// Open a record elsewhere in the app.
+    ///
+    /// Supplied by `TraceMacContentView` and wired straight to
+    /// `openSearchResult`, which is the one funnel every routed jump already
+    /// uses. Typed as `MacSearchDestination` for the reason D105 records: a
+    /// second enum of places, with its own switch over the same folders, is
+    /// drift this project has already paid for three times.
+    var onOpen: ((MacSearchDestination) -> Void)? = nil
+
     @Environment(NoteStore.self) private var noteStore
 
     @State private var store: TraceMacDocumentStore? = nil
+    /// **One per section, not one per document.** It lived on
+    /// `DocMetadataPanel`, which is rebuilt on every selection, so choosing a
+    /// document walked the Endeavors folder again — main-actor file reads over
+    /// iCloud, and David got a spinning wheel for it. The panel now receives a
+    /// store that is loaded once.
+    @State private var endeavorStore: TraceMacEndeavorStore? = nil
     @State private var selectedDoc: TraceMacDocument? = nil
     @State private var searchText = ""
     @State private var activeTag: String? = nil
@@ -230,6 +245,10 @@ struct TraceMacDocumentsView: View {
             // above won the race — that hope is exactly what the old 0.4s delay
             // was standing in for.
             if store == nil { store = TraceMacDocumentStore(noteStore: noteStore) }
+            if endeavorStore == nil {
+                endeavorStore = TraceMacEndeavorStore(noteStore: noteStore)
+                await endeavorStore?.reload()
+            }
             if store?.documents.isEmpty ?? true { await store?.reload() }
             // Query before selection. Setting `selectedDoc` builds the
             // viewer, and the viewer reads `find.query` as it loads; assigning
@@ -596,13 +615,15 @@ struct TraceMacDocumentsView: View {
     }
 
     private func tagChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        // Same rule as the metadata chips, through the same function.
+        let accent = DocChipsEditor.tint(for: label, base: .accentColor)
+        return Button(action: action) {
             Text(label)
                 .font(.caption)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(isActive ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1))
-                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+                .background(isActive ? accent.opacity(0.2) : accent.opacity(0.1))
+                .foregroundStyle(isActive ? accent : accent.opacity(0.75))
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -738,7 +759,11 @@ struct TraceMacDocumentsView: View {
                             .onHover { $0 ? NSCursor.resizeUpDown.push() : NSCursor.pop() }
 
                             ScrollView {
-                                DocMetadataPanel(doc: doc, store: store!) { movedDoc in
+                                DocMetadataPanel(doc: doc,
+                                                 store: store!,
+                                                 onTagTap: { activeTag = $0 },
+                                                 onOpen: onOpen,
+                                                 endeavorStore: endeavorStore) { movedDoc in
                                     Task {
                                         await store?.reload()
                                         selectedDoc = store?.documents.first { $0.filename == movedDoc.filename }
@@ -927,13 +952,19 @@ struct DocListRow: View {
             }
             if !doc.tags.isEmpty {
                 HStack(spacing: 4) {
+                    // THE THIRD PLACE TAGS ARE DRAWN, and it was missed when
+                    // `private` went orange. David: *"the private tag is orange
+                    // in the file itself but the tag on the column is still
+                    // blue."* Three renderers, one rule — the tint function is
+                    // shared precisely so the next one cannot drift either.
                     ForEach(doc.tags.prefix(3), id: \.self) { tag in
+                        let tint = DocChipsEditor.tint(for: tag, base: .accentColor)
                         Text(tag)
                             .font(.caption2)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
-                            .background(Color.accentColor.opacity(0.12))
-                            .foregroundStyle(Color.accentColor)
+                            .background(tint.opacity(0.14))
+                            .foregroundStyle(tint)
                             .clipShape(Capsule())
                     }
                 }
@@ -1095,6 +1126,16 @@ struct DocNotePanel: View {
 struct DocMetadataPanel: View {
     let doc: TraceMacDocument
     let store: TraceMacDocumentStore
+    /// Filter the library to a tag. David: *"when i click on any tag in satchel
+    /// is it possible to have that be the search and see a list of all the
+    /// documents… with that same tag?"* The filter already existed behind a
+    /// dropdown in the toolbar; the tag sitting under his cursor did nothing,
+    /// which is the more discoverable of the two doing less.
+    var onTagTap: ((String) -> Void)? = nil
+    /// Open a record elsewhere. See `TraceMacDocumentsView.onOpen`.
+    var onOpen: ((MacSearchDestination) -> Void)? = nil
+    /// Supplied by the section, already loaded. See its declaration there.
+    var endeavorStore: TraceMacEndeavorStore? = nil
     let onSave: (TraceMacDocument) -> Void
 
     @Environment(NotionService.self) private var notion
@@ -1110,7 +1151,55 @@ struct DocMetadataPanel: View {
     @State private var isSaving = false
     @State private var isScanning = false
     @State private var scanError: String? = nil
+    /// Neutral feedback from the local fill. Separate from `scanError` because
+    /// it is not an error and must not be red — "no matches" is a fact about
+    /// his vocabulary, not a failure.
+    @State private var localNote: String? = nil
     @State private var userContext: String = ""
+    /// Which document `userContext` was typed for.
+    ///
+    /// `load()` used to clear the hint unconditionally, for a good reason
+    /// recorded there — a hint left behind followed the next document. But
+    /// `save()` reloads the same document, so pressing the button also threw
+    /// away what he had just typed. David: *"the context itself is gone after
+    /// it processed. is that right?"* No. Clearing on a change of SELECTION is
+    /// what that lesson actually needed; clearing on every load was the blunt
+    /// version of it.
+    @State private var contextOwner: String = ""
+    /// The on-device pass is running. Separate from `isScanning`, which gates
+    /// the network path and must stay gated for private documents.
+    @State private var isThinkingLocally = false
+    @State private var endeavorID: String? = nil
+    @State private var endeavorName: String? = nil
+    /// Loaded lazily so a panel that never opens the menu never walks the
+    /// Endeavors folder. Same shape the Endeavors and Journal views already use.
+    @State private var showingEndeavorPicker = false
+
+
+    /// Above this many, the menu offers a search field instead of more rows.
+    /// David, looking at two Endeavors and thinking ahead: *"probably should
+    /// allow me to search if the endeavor list gets long."*
+    private static let inlineEndeavorLimit = 8
+
+    /// **Soonest-first, future before past.** His words: *"it should sort from
+    /// the most forward dated endeavor to the oldest."* An Endeavor is a thing
+    /// you are about to do or have just done, so recency by start date is the
+    /// order the list is actually used in — the trip next week is what a
+    /// document is being filed against, not the lunch in July.
+    ///
+    /// Undated ones sort last rather than first: no date means no claim on the
+    /// top of the list.
+    private var sortedEndeavors: [Endeavor] {
+        (endeavorStore?.endeavors ?? []).sorted {
+            ($0.starts ?? $0.ends ?? .distantPast) > ($1.starts ?? $1.ends ?? .distantPast)
+        }
+    }
+
+    private func assign(_ endeavor: Endeavor) {
+        endeavorID = endeavor.id
+        endeavorName = endeavor.name
+        save()
+    }
     @State private var isExpanded = true
     @State private var showingTagPopover = false
     @State private var newTagText = ""
@@ -1124,6 +1213,7 @@ struct DocMetadataPanel: View {
         DisclosureGroup("Metadata", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 filedToRow
+                endeavorRow
                 yearRow
                 titleRow
                 dateRow
@@ -1132,6 +1222,9 @@ struct DocMetadataPanel: View {
                 descriptionRow
                 if let err = scanError {
                     Text(err).font(.caption).foregroundStyle(.red)
+                }
+                if let localNote {
+                    Text(localNote).font(.caption).foregroundStyle(.secondary)
                 }
                 HStack {
                     Button("Delete", role: .destructive) { showingDeleteConfirm = true }
@@ -1227,6 +1320,108 @@ struct DocMetadataPanel: View {
         }
     }
 
+    /// Which Endeavor this document belongs to.
+    ///
+    /// **It was visible from one end only.** The Endeavor screen has listed its
+    /// documents since it was built; the document said nothing about the
+    /// Endeavor. David: *"the document called vacation rental amenities is
+    /// linked to the Megan Wedding Endeavor but there is no indication of that
+    /// on the satchel document but it is showing in the endeavor. it should be
+    /// both ways."*
+    ///
+    /// The confusion is compounded by `filedToRow` directly above, which reads
+    /// "Filed to" and shows the linked NOTE — so a document filed to an
+    /// Endeavor reads as "Filed to: Nothing". Two different associations, one
+    /// of them displayed, and the undisplayed one owning the word "filed".
+    ///
+    /// Satchel on iOS has shown this as a suitcase chip all along, which is
+    /// where the icon comes from: same idea, same glyph, two apps.
+    ///
+    /// **Read-only for now, deliberately.** Tapping through wants the router on
+    /// `TraceMacContentView`, which has no path down to this panel;
+    /// `MacNavigator` records history but does not route. Inventing a second
+    /// routing vocabulary to save one click is the drift D105 and D112 both
+    /// warn about. Parked in the backlog with the reciprocal views for Notes
+    /// and Places, which are the same idea at larger scale.
+    /// Which Endeavor this document belongs to — **now settable, not just shown.**
+    ///
+    /// A Menu rather than a chip plus a chevron, because the row has two jobs
+    /// and one of them is rare. Opening the Endeavor is the common act and sits
+    /// at the top; reassigning is a list underneath it. Two separate controls
+    /// three points apart would be a smaller target for both.
+    ///
+    /// **Always visible, even when unset.** The row used to appear only when a
+    /// document already had an Endeavor, which meant the control for setting one
+    /// was hidden from exactly the documents that needed it.
+    @ViewBuilder
+    private var endeavorRow: some View {
+        HStack {
+            fieldLabel("Endeavor")
+            Menu {
+                Button("None") {
+                    endeavorID = nil
+                    endeavorName = nil
+                    save()
+                }
+                let list = sortedEndeavors
+                if !list.isEmpty {
+                    Divider()
+                    // Only the first handful inline. A menu you scroll is a menu
+                    // you read one item at a time.
+                    ForEach(list.prefix(Self.inlineEndeavorLimit)) { endeavor in
+                        Button(endeavor.name) { assign(endeavor) }
+                    }
+                    if list.count > Self.inlineEndeavorLimit {
+                        Divider()
+                        Button("Search all \(list.count)…") { showingEndeavorPicker = true }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: endeavorName == nil ? "suitcase" : "suitcase.fill")
+                        .font(.caption2)
+                    Text(endeavorName ?? "Nothing").font(.caption)
+                    Image(systemName: "chevron.down").font(.caption2)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Color.indigo.opacity(endeavorName == nil ? 0.08 : 0.14))
+                .foregroundStyle(endeavorName == nil ? Color.secondary : Color.indigo)
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .popover(isPresented: $showingEndeavorPicker, arrowEdge: .bottom) {
+                DocEndeavorPicker(endeavors: sortedEndeavors) { picked in
+                    showingEndeavorPicker = false
+                    assign(picked)
+                }
+            }
+
+            // GO IS ITS OWN TARGET, next to the one that CHANGES.
+            //
+            // The menu had an "Open …" item and that was two clicks for the
+            // common act and one for the rare one. David: *"can we somehow also
+            // make the Endeavor i chose clickable or if that doesnt work since i
+            // might want to change the item, a little button next to that."*
+            // He named the tension himself — a pill cannot both navigate and
+            // open a picker on one click — and chose the right resolution.
+            //
+            // Only when there is somewhere to go. A document with no Endeavor
+            // gets no arrow, rather than a disabled one nobody can interpret.
+            if let id = endeavorID, let onOpen {
+                Button { onOpen(.endeavor(id)) } label: {
+                    Image(systemName: "arrow.up.forward.circle.fill")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.indigo)
+                .help("Open \(endeavorName ?? "this endeavor")")
+            }
+            Spacer()
+        }
+    }
+
     private var yearRow: some View {
         HStack {
             fieldLabel("Year")
@@ -1281,7 +1476,12 @@ struct DocMetadataPanel: View {
                 chips: $tags,
                 allSuggestions: existingTags,
                 placeholder: "Add tag…",
-                color: .accentColor
+                color: .accentColor,
+                // Not on People: a person chip filtering the document list by
+                // person is a different feature with no filter behind it yet,
+                // and a chip that looks tappable and is not is worse than one
+                // that plainly is not.
+                onChipTap: onTagTap
             )
         }
     }
@@ -1301,7 +1501,24 @@ struct DocMetadataPanel: View {
                 allSuggestions: [],
                 placeholder: "Add person…",
                 color: .purple,
-                onAddTap: { showingPeoplePicker = true }
+                onAddTap: { showingPeoplePicker = true },
+                // David: *"clicking Hannah in people should open her record."*
+                // Resolved by name against the live Notion list, and silently
+                // inert when the name is not in it — a person typed by hand who
+                // has no record cannot be opened, and pretending otherwise is
+                // the dead-control defect D114 was written about.
+                //
+                // LAST in the argument list, because a memberwise initialiser
+                // takes its parameters in declaration order and `onChipTap` is
+                // declared after `onAddTap`.
+                onChipTap: onOpen.map { open in
+                    { name in
+                        guard let match = notion.people.first(where: {
+                            $0.name.caseInsensitiveCompare(name) == .orderedSame
+                        }) else { return }
+                        open(.person(match.id))
+                    }
+                }
             )
         }
     }
@@ -1338,7 +1555,7 @@ struct DocMetadataPanel: View {
                         // field's own placeholder implies.
                         .onSubmit { requestScan() }
                     if userContext.isEmpty {
-                        Text("Optional hint for AI (who, what, when…)")
+                        Text("Hint: who, what, when. Use #tag to force a tag")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .padding(.horizontal, 8)
@@ -1349,7 +1566,7 @@ struct DocMetadataPanel: View {
                     requestScan()
                 } label: {
                     HStack(spacing: 4) {
-                        if isScanning {
+                        if isScanning || isThinkingLocally {
                             ProgressView().controlSize(.mini)
                         } else {
                             Image(systemName: "sparkles").font(.caption2)
@@ -1368,21 +1585,36 @@ struct DocMetadataPanel: View {
                     .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .disabled(isScanning)
+                .disabled(isScanning || isThinkingLocally)
                 .help(isPrivate
-                      ? "This document is private and has never been sent. Running the AI will send it."
+                      ? "This document is private and has never been sent. You will be offered a local option that sends nothing."
                       : hasScanResults
                         ? "Run the AI again, using the context above"
                         : "Fill in title, tags and description using AI")
                 .confirmationDialog("Send this private document to the AI?",
                                     isPresented: $showPrivatePrompt,
                                     titleVisibility: .visible) {
-                    Button("Send and remove private tag") { promoteFromPrivate() }
+                    // **The safe option first, and it is a real option rather
+                    // than a consolation.** Vision has already read this file on
+                    // this machine — the `private` tag is deliberately not
+                    // consulted by `extractTextForNewArrivals`, because nothing
+                    // there leaves the Mac — so a title and a description can be
+                    // taken off text that is already sitting in the sidecar,
+                    // with no network at all. Before this the choice was an
+                    // untitled screenshot forever or sending a bank statement to
+                    // an API, and that is not a choice.
+                    Button("Fill in from text already on this Mac") { fillLocally() }
+                    // Marked destructive because it is: the tag comes off, is
+                    // saved before the request goes out, and does not come back.
+                    Button("Send and remove private tag", role: .destructive) {
+                        promoteFromPrivate()
+                    }
                     Button("Cancel", role: .cancel) { }
                 } message: {
                     Text("It arrived through the private drop and has never left this Mac. "
                          + "Running the AI sends its contents to Anthropic and makes it "
-                         + "readable by Ask.")
+                         + "readable by Ask, permanently. Filling in from local text sends "
+                         + "nothing and keeps the private tag.")
                 }
             }
 
@@ -1446,6 +1678,146 @@ struct DocMetadataPanel: View {
     ///
     /// The tag is removed and **saved before the request goes out**, so the file
     /// on disk can never claim to be private while its contents are in flight.
+    /// Title and description from text Vision already read on this Mac.
+    ///
+    /// Nothing is sent. The `private` tag is untouched, so the document stays
+    /// withheld from Ask exactly as before.
+    private func fillLocally() {
+        let context = userContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = doc.extractedText
+        guard !text.isEmpty || !context.isEmpty else {
+            scanError = doc.textExtracted
+                ? "No readable text was found in this document. Type a title, or add a hint in Context and press this again."
+                : "This document has not been read yet. That happens automatically a few seconds after it arrives — try again shortly."
+            return
+        }
+        scanError = nil
+        isThinkingLocally = true
+        Task {
+            // **The on-device model first, the heuristic underneath it.**
+            //
+            // David asked whether a local pass could read intention rather than
+            // words: *"It should look at the meaning of what i was trying to get
+            // across and use a few and only a few (say 3 at most) tags."* A
+            // keyword pass cannot. Apple's on-device model can, and it runs on
+            // this machine with nothing sent anywhere, which is the only reason
+            // it is allowed near a document tagged `private`.
+            //
+            // `suggest` returns nil for every failure including an unavailable
+            // model, so this reads as "did the good path work" with no error
+            // handling to get wrong.
+            let suggestion = await MacLocalIntelligence.suggest(text: text, hint: context)
+            await MainActor.run {
+                isThinkingLocally = false
+                applyLocal(suggestion: suggestion, context: context, text: text)
+            }
+        }
+    }
+
+    private func applyLocal(suggestion: MacLocalIntelligence.Suggestion?,
+                            context: String,
+                            text: String) {
+        let headline = MacTextExtraction.localHeadline(from: text)
+
+        // Title stays with the document's own words. The model writes a
+        // sentence, and a sentence is a description, not a name.
+        if let headline { title = headline.title }
+
+        if let suggestion, !suggestion.summary.isEmpty {
+            description = suggestion.summary
+        } else if description.trimmingCharacters(in: .whitespaces).isEmpty, let headline {
+            description = headline.description
+        }
+
+        func addTag(_ name: String) {
+            let t = name.trimmingCharacters(in: .whitespaces).lowercased()
+            guard !t.isEmpty,
+                  !tags.contains(where: { $0.caseInsensitiveCompare(t) == .orderedSame })
+            else { return }
+            // **A person is not a tag.** The first run produced `hannah`
+            // alongside `Hannah Weiss` in People — the same fact recorded twice,
+            // in two places, one of which cannot be filtered on properly.
+            if people.contains(where: { person in
+                person.lowercased().split(separator: " ").contains(Substring(t))
+            }) { return }
+            // **No tag that contains another tag.** It produced `loan` and
+            // `loan statement`, which is one idea and two chips. The shorter one
+            // wins: it is the one that will still match next year.
+            if tags.contains(where: { existing in
+                let e = existing.lowercased()
+                return t.split(separator: " ").contains(Substring(e))
+            }) { return }
+            tags.append(t)
+        }
+        func addPerson(_ name: String) {
+            guard !people.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame })
+            else { return }
+            people.append(name)
+        }
+
+        let before = (tags.count, people.count)
+
+        // ── People ───────────────────────────────────────────────────────
+        // Unchanged, because it worked: Hannah Weiss came out right first time.
+        let activePeople = notion.people.filter { !$0.isArchived }
+        for name in MacTextExtraction.vocabularyMatches(in: context + " " + text,
+                                                        vocabulary: activePeople.map { $0.name }) {
+            addPerson(name)
+        }
+        let hints = MacTextExtraction.hintTerms(in: context)
+        let byFirstName = Dictionary(grouping: activePeople) {
+            ($0.name.split(separator: " ").first.map(String.init) ?? "").lowercased()
+        }
+        for hint in hints {
+            guard let bucket = byFirstName[hint.lowercased()], bucket.count == 1 else { continue }
+            addPerson(bucket[0].name)
+        }
+
+        // ── Tags ─────────────────────────────────────────────────────────
+        //
+        // **Bare words from Context are no longer tags.** That is what produced
+        // `this`, `the`, `for`, `her` and `aidvantage.` from one ordinary
+        // sentence. Three sources now, all of them deliberate:
+        //
+        //   1. `#tag` in the hint. Explicit, always honoured, model or no model.
+        //   2. The model's three, when it ran.
+        //   3. Tags already in the library that appear in the document's text.
+        //
+        // Prose stays prose and is handed to the model as the owner's statement
+        // of intent, which is the one place it is genuinely useful.
+        for marked in MacTextExtraction.hashTags(in: context) { addTag(marked) }
+
+        if let suggestion {
+            for tag in suggestion.tags { addTag(tag) }
+        }
+
+        let knownTags = Array(Set(store.documents.flatMap { $0.tags }))
+        for tag in MacTextExtraction.vocabularyMatches(in: text, vocabulary: knownTags) {
+            addTag(tag)
+        }
+
+        let addedTags = tags.count - before.0
+        let addedPeople = people.count - before.1
+
+        // Says which path ran, because the two have very different ceilings and
+        // he should not have to guess which one he is looking at.
+        switch MacLocalIntelligence.availability {
+        case .ready where suggestion != nil:
+            localNote = nil
+        case .ready:
+            localNote = "The on-device model did not answer, so this was filled from the text alone."
+        case .notBuilt:
+            localNote = "Filled from the text alone. The on-device model is not part of this build."
+        case .unavailable(let why):
+            localNote = "Filled from the text alone. \(why)"
+        }
+        if localNote == nil, addedTags == 0, addedPeople == 0 {
+            localNote = "Nothing was added to Tags or People. Add #tag to the Context hint to force one."
+        }
+
+        save()
+    }
+
     private func promoteFromPrivate() {
         tags.removeAll { $0.caseInsensitiveCompare("private") == .orderedSame }
         save()
@@ -1460,6 +1832,7 @@ struct DocMetadataPanel: View {
         guard !isScanning else { return }
         isScanning = true
         scanError = nil
+        localNote = nil
         let currentTags = existingTags
         let context = userContext.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
@@ -1506,6 +1879,8 @@ struct DocMetadataPanel: View {
 
     private func load() {
         title = doc.title
+        endeavorID = doc.endeavor
+        endeavorName = doc.endeavorName
         tags = doc.tags
         linkedNote = doc.linkedNote ?? ""
         people = doc.people
@@ -1522,7 +1897,10 @@ struct DocMetadataPanel: View {
         // could not go stale. This one had no `doc` to read from, so it was
         // simply forgotten — the failure mode of state that belongs to a
         // selection but is not derived from it.
-        userContext = ""
+        if contextOwner != doc.relativePath {
+            userContext = ""
+            contextOwner = doc.relativePath
+        }
 
         // Auto-scan if this looks like a freshly imported doc with no metadata yet
         let noMetadata = doc.tags.isEmpty && doc.description.isEmpty
@@ -1541,7 +1919,14 @@ struct DocMetadataPanel: View {
             linkedNote: linkedNote.trimmingCharacters(in: .whitespaces).isEmpty ? nil : linkedNote,
             people: people,
             description: description,
-            date: docDate
+            date: docDate,
+            // Explicit on every save, because the panel now owns this value.
+            // Passing `nil` would mean "leave whatever is on disk", and the
+            // whole point is that he can now change it.
+            endeavor: {
+                guard let id = endeavorID, let name = endeavorName else { return .clear }
+                return .set(id: id, name: name)
+            }()
         )
         isSaving = false
         onSave(doc)
@@ -1564,6 +1949,60 @@ struct DocMetadataPanel: View {
 }
 
 // MARK: - Chips editor
+/// A searchable Endeavor list, for when the menu is no longer the right shape.
+///
+/// Same pattern as `DocPersonPickerSheet`, deliberately: a project with two
+/// spellings of "pick one thing from a list" ends up with two sets of keyboard
+/// behaviour and one of them is always the worse one.
+struct DocEndeavorPicker: View {
+    let endeavors: [Endeavor]
+    let onPick: (Endeavor) -> Void
+
+    @State private var searchText = ""
+
+    private var filtered: [Endeavor] {
+        guard !searchText.isEmpty else { return endeavors }
+        return endeavors.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Search endeavors", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 240)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(filtered) { endeavor in
+                        Button {
+                            onPick(endeavor)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "suitcase.fill").font(.caption2)
+                                Text(endeavor.name).font(.caption)
+                                Spacer()
+                                if let starts = endeavor.starts {
+                                    Text(starts, format: .dateTime.month(.abbreviated).year())
+                                        .font(.caption2).foregroundStyle(.tertiary)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, 2)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if filtered.isEmpty {
+                        Text("No endeavor matches that.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(width: 240, height: 220)
+        }
+        .padding(10)
+    }
+}
+
 // Reusable tag/people chip list with inline add-by-typing or custom add action.
 
 struct DocChipsEditor: View {
@@ -1572,6 +2011,9 @@ struct DocChipsEditor: View {
     let placeholder: String
     let color: Color
     var onAddTap: (() -> Void)? = nil   // if set, "+" opens this instead of the text popover
+    /// Tapping the chip's LABEL, as distinct from its `x`. Optional, so a list
+    /// with nothing to do on tap renders exactly as it did before.
+    var onChipTap: ((String) -> Void)? = nil
 
     @State private var showingPopover = false
     @State private var newText = ""
@@ -1595,17 +2037,46 @@ struct DocChipsEditor: View {
         }
     }
 
+    /// `private` is not a topic, it is a warning, and it now reads as one.
+    ///
+    /// David: *"I was wondering if we should make the private tag a different
+    /// colour always so that it stands out."* Yes. It sat in the same blue as
+    /// `loan` and `csu` while being the only tag that changes what the app is
+    /// allowed to do with the document — the one chip on the screen that
+    /// decides whether contents can be sent anywhere. Uniform styling made the
+    /// most consequential piece of state the least visible.
+    ///
+    /// One function so the list and the filter bar cannot drift apart.
+    static func tint(for text: String, base: Color) -> Color {
+        text.caseInsensitiveCompare("private") == .orderedSame ? .orange : base
+    }
+
     private func chipView(_ text: String) -> some View {
-        HStack(spacing: 3) {
-            Text(text).font(.caption)
+        let chipColor = Self.tint(for: text, base: color)
+        return HStack(spacing: 3) {
+            if text.caseInsensitiveCompare("private") == .orderedSame {
+                Image(systemName: "lock.fill").font(MacGlyph.smallBold)
+            }
+            // The label filters, the `x` removes. Two targets in one chip, and
+            // the pointer cursor is what tells them apart.
+            Group {
+                if let onChipTap {
+                    Button { onChipTap(text) } label: { Text(text).font(.caption) }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        .help("Show everything tagged \(text)")
+                } else {
+                    Text(text).font(.caption)
+                }
+            }
             Button { chips.removeAll { $0 == text } } label: {
                 Image(systemName: "xmark").font(MacGlyph.smallBold)
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 7).padding(.vertical, 3)
-        .background(color.opacity(0.12))
-        .foregroundStyle(color)
+        .background(chipColor.opacity(0.16))
+        .foregroundStyle(chipColor)
         .clipShape(Capsule())
     }
 

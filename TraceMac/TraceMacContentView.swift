@@ -483,8 +483,16 @@ struct TraceMacContentView: View {
                 .environment(noteStore)
                 .environment(notionService)
         case .documents:
+            // **The router goes in, rather than a new one coming out.**
+            // Three separate asks in one session — a tappable Endeavor row,
+            // tappable People chips, a tag that filters — all needed the same
+            // thing: somewhere for this screen to say "open that". Handing it
+            // `openSearchResult` reuses the single funnel every routed jump in
+            // the app already passes through, so back/forward (D112) records
+            // these for free and no second vocabulary of places appears (D105).
             TraceMacDocumentsView(deepLinkPath: $pendingDocumentPath,
-                                  deepLinkQuery: $pendingDocumentQuery)
+                                  deepLinkQuery: $pendingDocumentQuery,
+                                  onOpen: { openSearchResult($0, query: "") })
                 .environment(noteStore)
         case .inbox:
             TraceMacInboxView(deepLinkFile: $pendingInboxFile)

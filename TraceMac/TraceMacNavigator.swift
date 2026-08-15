@@ -96,6 +96,27 @@ final class MacNavigator {
     func record(_ place: MacPlace) {
         guard place != current else { return }
 
+        // 4. A bare section report matching where we already are.
+        //
+        // **This is what made back take two presses.** `goBack` sets `current`
+        // to the target and asks `TraceMacContentView` to replay it; replaying a
+        // document sets `selectedSection = .documents`, and the section watcher
+        // reports `.section(.documents)`. That is not equal to
+        // `.record(.document(path))`, and no-op 3 does not catch it because it
+        // tests the OLD value for being a section, not the new one. So every
+        // back press pushed the place it had just returned to, and the stack
+        // grew as fast as he could unwind it.
+        //
+        // A bare section is only ever a *step* when it moves you between
+        // sections. Arriving at the section you are already in — by replay, or
+        // by clicking the sidebar item for the screen you are looking at — is
+        // not a move, and recording it says otherwise.
+        //
+        // Still no `isReplaying` flag, for the reason recorded on no-op 2: this
+        // is knowable from the values themselves, and a flag would have to
+        // survive an async hand-off of unknown length.
+        if case .section(let value) = place, current?.section == value { return }
+
         if let existing = current {
             if case .section(let value) = existing, place.section == value {
                 current = place
