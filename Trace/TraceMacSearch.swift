@@ -521,7 +521,16 @@ enum MacSearchEngine {
             }
     }
 
-    private static func rank(_ a: MacSearchResult, _ b: MacSearchResult) -> Bool {
+    /// `nonisolated` because it is handed to `sorted(by:)` as a plain closure.
+    ///
+    /// The project sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so without
+    /// the annotation this is a main-actor method being passed where a
+    /// non-isolated comparator is expected — a warning in Swift 5 and an error
+    /// in 6. It was there on the Mac too and nobody had looked at the warning
+    /// list closely enough to see it; moving the file into three more targets
+    /// printed it three more times, which is how it surfaced. Pure comparison
+    /// over `Sendable` values, so there is nothing to isolate.
+    nonisolated private static func rank(_ a: MacSearchResult, _ b: MacSearchResult) -> Bool {
         if a.score != b.score { return a.score > b.score }
         let da = a.sortDate ?? .distantPast
         let db = b.sortDate ?? .distantPast

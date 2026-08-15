@@ -124,6 +124,27 @@ final class ThingsService {
         return Date().timeIntervalSince(fetched) < maxCacheAge
     }
 
+    /// The last attempt failed and what is on screen is older than it looks.
+    ///
+    /// **This exists because a stale list is indistinguishable from a current
+    /// one, and Dayflow was showing a stale one.** David, 2026-08-14: Things had
+    /// two to-dos, Dayflow showed four, one of them completed days earlier. The
+    /// cache is the right behaviour — an unreachable Mini should not blank the
+    /// home screen — but presenting it as live is not. Third instance of this
+    /// shape in one session, after the destination pills (D114) and the phone's
+    /// unread `## Text` (D115).
+    var isShowingStaleTasks: Bool {
+        lastError != nil && !tasks.isEmpty
+    }
+
+    /// How old the list on screen is, in words, or nil if it has never loaded.
+    var tasksAgeDescription: String? {
+        guard let lastFetched else { return nil }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f.localizedString(for: lastFetched, relativeTo: Date())
+    }
+
     /// True when a Things API URL is configured (regardless of whether fetch succeeded).
     var isConfigured: Bool {
         guard let url = UserDefaults.standard.string(forKey: "things_api_url"), !url.isEmpty else { return false }
@@ -169,8 +190,23 @@ final class ThingsService {
         await MainActor.run { isLoading = true }
 
         do {
-            // 4-second timeout — short enough to fail fast in simulator if Mini is unreachable.
-            var request = URLRequest(url: url, timeoutInterval: 4)
+            // **4s → 20s, 2026-08-14 (Session 71).** The old value's comment
+            // called it "short enough to fail fast in simulator", and the
+            // `fetchAnytime` header three functions down records that every GET
+            // endpoint got slower when notes were added — a `task.notes()`
+            // JXA/AppleScript bridge call per task — with `/upcoming` MEASURED
+            // timing out at 6.37s. `/upcoming` and `/anytime` were bumped to 20s
+            // then. `/today` was left at 4 on the argument that it is a small
+            // list and "still fine at 4s", which was an assumption and not a
+            // measurement.
+            //
+            // On the day David reported Dayflow showing four tasks against
+            // Things' two, including one completed a while ago, a timing-out
+            // `/today` is the single explanation that produces every symptom at
+            // once: the throw lands in `catch`, the cached list stays on screen,
+            // and nothing anywhere said so. Failing fast is only a virtue when
+            // something notices the failure.
+            var request = URLRequest(url: url, timeoutInterval: 20)
             request.cachePolicy = .reloadIgnoringLocalCacheData
             authorize(&request)
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -183,6 +219,12 @@ final class ThingsService {
                 totalCount = decoded.today.count
                 inboxCount = decoded.inboxCount
                 lastFetched = Date()
+                // **`lastError` was never cleared on success.** Set once, it
+                // stayed set for the life of the process, so anything that
+                // trusted it as "the last attempt failed" would have been wrong
+                // forever after the first blip. Found while giving the agenda
+                // something to read; the property had simply never had a reader.
+                lastError = nil
                 isLoading = false
             }
             saveCache()
@@ -344,6 +386,19 @@ final class ThingsService {
     /// a background refresh, not something blocking the UI.
     func refreshAll() async {
         await fetch()
+        await refreshBrowseLists()
+    }
+
+    /// Everything except `/today`.
+    ///
+    /// **Split out 2026-08-15.** Raising every timeout to 20s (Session 71) made
+    /// `refreshAll` worst-case **80 seconds** of sequential waiting, and Sync Now
+    /// showed "Syncing…" for all of it before saying a word — which is a worse
+    /// silence than the one that change was made to end. `/today` is the list the
+    /// Agenda draws and the only one `lastFetched` and `lastError` describe, so a
+    /// caller that wants an answer can await `fetch()`, report, and leave these
+    /// three to finish behind it.
+    func refreshBrowseLists() async {
         await fetchAnytime()
         await fetchUpcoming()
         await fetchInbox()
@@ -507,6 +562,19 @@ final class ThingsService {
             let decoded = try? JSONDecoder().decode(UpdateResponse.self, from: data)
             let success = decoded?.success ?? false
             if success {
+                // **The bridge saying yes is not the same as Things agreeing**,
+                // and on 2026-08-14 those two came apart: a date moved two weeks
+                // out was accepted and Things kept a different one. A repeating
+                // to-do is the likeliest reason — Things regenerates a repeater's
+                // instance from its template, so the write lands on something
+                // that is then discarded — but the app cannot know that and does
+                // not need to. It can check.
+                //
+                // `refreshAll()` below re-reads the list; `verifyDate` compares
+                // what came back against what was asked for and reports a
+                // mismatch to the caller. Silence after a successful-looking
+                // save is exactly the defect that made this session's first
+                // three bugs invisible.
                 // Sequential, not concurrent — same reasoning as refreshAll()
                 // above (its header comment has the full story): the Mini's
                 // server only handles one request at a time, so firing these
@@ -516,12 +584,33 @@ final class ThingsService {
                 // the notes feature made the GET endpoints slow enough for it
                 // to matter — fixed here for consistency, same day.
                 await refreshAll()
+                // Only meaningful when a specific date was requested. Clearing a
+                // date, or moving to a Things-native bucket, has no single value
+                // to compare against.
+                if !clearDate, let date {
+                    let f = DateFormatter()
+                    f.locale = Locale(identifier: "en_US_POSIX")
+                    f.dateFormat = "yyyy-MM-dd"
+                    let wanted = f.string(from: date)
+                    let all = tasks + anytimeTasks + upcomingTasks + inboxTasks
+                    if let found = all.first(where: { $0.id == taskID }),
+                       let got = found.scheduledDateString,
+                       !got.isEmpty, got != wanted {
+                        lastWriteMismatch = "Things kept \(got) rather than \(wanted). "
+                            + "If this to-do repeats, Things rebuilds its date from the repeat rule and the change cannot stick."
+                        return false
+                    }
+                }
             }
             return success
         } catch {
             return false
         }
     }
+
+    /// Set when a write reported success and the value did not take. Read once
+    /// by the editor, then cleared.
+    var lastWriteMismatch: String?
 
     // MARK: - Cache
 

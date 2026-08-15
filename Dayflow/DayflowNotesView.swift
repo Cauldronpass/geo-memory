@@ -384,6 +384,13 @@ struct DayflowNotesView: View {
     // MARK: Header — matches DayflowAnytimeView's Browse-destination header
 
     private var header: some View {
+        // Back by reversing the gesture that got you here: Home swipes LEFT to
+        // reach Notes, so Notes swipes RIGHT to go back. See the matching
+        // comment in `DayflowNotesInboxView`. Header-confined for the same
+        // reason, and kept identical here even though this screen has no
+        // `.swipeActions` of its own — two screens whose back-swipe works in
+        // different places would read as flakiness rather than as two rules.
+
         HStack {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.left")
@@ -400,6 +407,17 @@ struct DayflowNotesView: View {
             Spacer()
             Color.clear.frame(width: 32, height: 32)
         }
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 30)
+                .onEnded { value in
+                    let h = value.translation.width
+                    guard h > 50,
+                          h > abs(value.translation.height) * 1.5 else { return }
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    dismiss()
+                }
+        )
         .padding(.horizontal, 16)
         .padding(.top, 14)
         .padding(.bottom, 4)

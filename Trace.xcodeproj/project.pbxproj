@@ -139,7 +139,11 @@
 				NotionService.swift,
 				ThingsService.swift,
 				TraceDocumentModels.swift,
+				TraceMacAskService.swift,
+				TraceMacSearch.swift,
+				TraceMacTextExtraction.swift,
 				TraceSatchelHandoff.swift,
+				TraceSearchIOS.swift,
 				TripLog.swift,
 			);
 			target = 636863DD300D7848000A3F02 /* Dayflow */;
@@ -217,6 +221,7 @@
 				IOSDocumentStore.swift,
 				NoteStore.swift,
 				TraceDocumentModels.swift,
+				TraceMacTextExtraction.swift,
 			);
 			target = 636864C330170629000A3F02 /* Satchel */;
 		};
@@ -264,6 +269,9 @@
 				OTScanService.swift,
 				PlaceHelpers.swift,
 				TraceDocumentModels.swift,
+				TraceMacAskService.swift,
+				TraceMacSearch.swift,
+				TraceMacTextExtraction.swift,
 				TripLog.swift,
 			);
 			target = 63FF44112FF7655C00EAC44A /* TraceMac */;
@@ -925,7 +933,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Dayflow/Dayflow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 41;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -964,7 +972,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Dayflow/Dayflow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 41;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1140,7 +1148,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = DayflowWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 41;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DayflowWidget/Info.plist;
@@ -1173,7 +1181,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = DayflowWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 41;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DayflowWidget/Info.plist;
@@ -1206,7 +1214,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Satchel/Satchel.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 17;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1243,7 +1251,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Satchel/Satchel.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 17;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1278,7 +1286,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = SatchelShareExtension/SatchelShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 17;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SatchelShareExtension/Info.plist;
@@ -1307,7 +1315,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = SatchelShareExtension/SatchelShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 17;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SatchelShareExtension/Info.plist;
@@ -1338,7 +1346,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = TraceWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 106;
+				CURRENT_PROJECT_VERSION = 107;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceWidget/Info.plist;
@@ -1369,7 +1377,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = TraceWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 106;
+				CURRENT_PROJECT_VERSION = 107;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TraceWidget/Info.plist;
@@ -1523,7 +1531,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 107;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1570,7 +1578,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Trace.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 107;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;

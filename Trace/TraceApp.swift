@@ -178,6 +178,7 @@ struct TraceApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var notionService = NotionService.shared
     @State private var locationManager = LocationManager.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -195,6 +196,19 @@ struct TraceApp: App {
                     if UserDefaults.standard.bool(forKey: "geofence_enabled") {
                         GeofenceManager.shared.startMonitoring(places: notionService.places)
                     }
+                }
+                // D103 on the phone (Session 71). Trace is the device that
+                // WRITES most visits — a geofence exit files one every time he
+                // leaves anywhere — so its own copy is the one that goes stale
+                // fastest. Until now the `.task` above was the only fetch in the
+                // app's life.
+                //
+                // `refreshStale` owns the windows (visits 2 min, places 15,
+                // people 60) and skips any collection that never loaded, so this
+                // cannot become a first fetch for a screen that is never opened.
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active else { return }
+                    Task { await notionService.refreshStale() }
                 }
         }
     }

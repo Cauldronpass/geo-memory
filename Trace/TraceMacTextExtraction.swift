@@ -68,9 +68,38 @@ enum MacTextExtraction {
     }
 
     nonisolated private static func cap(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = stripControls(text).trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > maxCharacters else { return trimmed }
         return String(trimmed.prefix(maxCharacters)) + "\n\n" + truncationNotice
+    }
+
+    /// Strips control characters a PDF text layer can carry through.
+    ///
+    /// **Found in the live container, Session 71**, while round-tripping the
+    /// phone's new sidecar parser against David's real documents: the sidecar
+    /// for "Megan & Ryan Wedding Timeline" holds eight `NUL` bytes inside its
+    /// `## Text` section. They are valid UTF-8 and Swift handles them fine,
+    /// which is exactly why nothing ever complained — but `grep` reclassifies
+    /// the file as binary, and they ride into the search index and into an Ask
+    /// prompt as noise nobody can see.
+    ///
+    /// Tabs, newlines and carriage returns are kept; those are layout.
+    /// Everything else below `0x20` is not text and never was.
+    ///
+    /// **Only affects future extractions.** A sidecar that already carries a
+    /// `## Text` heading is never re-read, by design, so those eight bytes stay
+    /// until that document is extracted again. Eight bytes is not worth a
+    /// migration that rewrites every sidecar in the container.
+    nonisolated private static func stripControls(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: isJunk) else { return text }
+        return String(String.UnicodeScalarView(text.unicodeScalars.filter { !isJunk($0) }))
+    }
+
+    nonisolated private static func isJunk(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar {
+        case "\t", "\n", "\r": return false
+        default: return scalar.value < 0x20 || scalar.value == 0x7F
+        }
     }
 
     // MARK: - PDF

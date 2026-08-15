@@ -112,7 +112,22 @@ struct DayflowApp: App {
                 // cannot land mid-edit: a foreground toggle has already written
                 // through to disk before the app can be backgrounded.
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { DayflowFlagStore.shared.reload() }
+                    guard phase == .active else { return }
+                    DayflowFlagStore.shared.reload()
+                    // D103 on the phone (Session 71). Until now these caches
+                    // loaded once in the `.task` above and never again, so a
+                    // place added on another device was invisible until Dayflow
+                    // was force-quit — and a launch fetch that came back short
+                    // stayed short for the whole session, which is the other
+                    // half of the "destination pills are not clickable" report
+                    // that opened this session.
+                    //
+                    // `refreshStale` is already in the shared `NotionService`
+                    // with its own per-collection windows (visits 2 min, places
+                    // 15, people 60) and it SKIPS anything that never loaded, so
+                    // this cannot turn into a first fetch for a screen that is
+                    // never opened. One line, no new code.
+                    Task { await NotionService.shared.refreshStale() }
                 }
         }
     }

@@ -121,6 +121,14 @@ struct SatchelLibraryView: View {
 #endif
                 await endeavorStore.reload()
                 await store.reload()
+                // Read the words off anything captured since the last sweep.
+                // **After `reload()`, and it reloads again itself if it wrote**
+                // — the pass reads `store.documents` to decide what is pending,
+                // so running it first would find nothing on a cold launch.
+                // Satchel is the documents app and the app the phone's captures
+                // go through, which makes it the right and only place for this;
+                // Dayflow running Vision would be the wrong app doing it.
+                await store.extractTextForNewArrivals()
                 // Deep-link destinations drain HERE, after the store is loaded,
                 // not on appear: `satchel://document?path=…` resolves against
                 // `store.documents`, and on a cold launch that is still empty

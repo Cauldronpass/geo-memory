@@ -445,6 +445,26 @@ struct DayflowEndeavorView: View {
     @State private var attachRequest: MarkdownAttachKind? = nil
     /// Set when a tapped `[[wikilink]]` resolves to a real place or person.
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
+    /// A tapped name that resolved to nothing. Held so the screen can SAY so.
+    @State private var unresolvedLink: String? = nil
+    /// A project note PUSHED onto this screen's own navigation stack.
+    ///
+    /// David, after the first round: *"when I went into megans wedding endeavor
+    /// and clicked on final wedding speech it opens but when i click the back
+    /// arrow it takes me to notes instead of back to Megans endeavor. that
+    /// seems too far back to me."*
+    ///
+    /// He is right, and the cause is that opening it was never navigation at
+    /// all. `dayflow://note?path=` sets `showNotes = true`, and `route(_:)`
+    /// clears every presentation first — including the sheet this endeavor is
+    /// sitting in — so the endeavor was torn down and rebuilt as the Notes
+    /// screen with a project selected. Back then means back to Notes, because
+    /// Notes is genuinely where he now is. Nothing was broken; the wrong verb
+    /// was used.
+    @State private var pushedNoteTitle: String? = nil
+    /// Set when the push has to wait for the full-screen editor to close, for
+    /// the same reason `pendingWikiNoteURL` exists.
+    @State private var pendingPushNoteTitle: String? = nil
     /// Which attach picker is open, if any. One enum and one sheet rather than
     /// two of each — two `.sheet` modifiers on one view is a coin flip and the
     /// later one wins silently (the Mac's D36, and this view already carries
@@ -572,6 +592,25 @@ struct DayflowEndeavorView: View {
                 DayflowWikiSummaryView(target: target, sourceNoteText: body_)
             }
         }
+        // A pill that does nothing is indistinguishable from a pill that is
+        // broken, and David reported these as "not clickable" — which is what
+        // silence looks like from the outside. See `resolveWikiLink`.
+        // Every host presents this view inside a `NavigationStack` — checked,
+        // all four: the Endeavors list, the agenda row, the wiki summary sheet
+        // and ContentView's route. A `navigationDestination` with no stack
+        // above it compiles, renders and does nothing, which is the exact
+        // failure mode this session has already met twice.
+        .navigationDestination(item: $pushedNoteTitle) { title in
+            DayflowProjectNoteView(title: title, onBack: { pushedNoteTitle = nil })
+        }
+        .alert("Nothing to open", isPresented: Binding(
+            get: { unresolvedLink != nil },
+            set: { if !$0 { unresolvedLink = nil } }
+        )) {
+            Button("OK", role: .cancel) { unresolvedLink = nil }
+        } message: {
+            Text(unresolvedMessage)
+        }
         .task(id: noteStore.hasAccess) {
             store.reload()
             guard !loaded, let endeavor else { return }
@@ -629,7 +668,7 @@ struct DayflowEndeavorView: View {
                 // directly below, and a second visual language two rows apart
                 // would be drift rather than variety.
                 attachedChips(e)
-                SatchelDocumentChips(notePath: e.relativePath)
+                SatchelDocumentChips(notePath: e.relativePath, endeavorID: e.id)
                 SatchelAddDocumentButton(notePath: e.relativePath, style: .bar)
             }
 
@@ -695,6 +734,11 @@ struct DayflowEndeavorView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: editorFocused)
         .fullScreenCover(isPresented: $fullScreenEditing, onDismiss: {
+            if let title = pendingPushNoteTitle {
+                pendingPushNoteTitle = nil
+                pushedNoteTitle = title
+                return
+            }
             guard let url = pendingWikiNoteURL else { return }
             pendingWikiNoteURL = nil
             openURL(url)
@@ -859,9 +903,18 @@ struct DayflowEndeavorView: View {
     /// than about a day. A date wikilink still types and still renders; it just
     /// does not open anything, which is what it did before this change too.
     private func resolveWikiLink(_ name: String) {
-        if let place = NotionService.shared.places.first(where: { $0.name == name }) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // CASE-INSENSITIVE ON RECORDS TOO. The note branch below got that
+        // comparison in Session 67 and the two branches above it were never
+        // revisited, so `[[lakemore resort]]` opened nothing while
+        // `[[Lakemore Resort]]` opened the place. Nobody chose that difference.
+        if let place = NotionService.shared.places.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }) {
             wikiLinkTarget = .place(place)
-        } else if let person = NotionService.shared.people.first(where: { $0.name == name }) {
+        } else if let person = NotionService.shared.people.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }) {
             wikiLinkTarget = .person(person)
         } else if let note = NoteStore.shared.linkableNotes().first(where: {
             $0.title.localizedCaseInsensitiveCompare(name) == .orderedSame
@@ -882,31 +935,117 @@ struct DayflowEndeavorView: View {
             // `URLComponents` so a name with an ampersand survives — a fourth
             // enum case would have rippled through `DayflowWikiSummaryView` for
             // nothing.
-            var comps = URLComponents()
-            comps.scheme = "dayflow"
-            comps.host   = "note"
-            comps.queryItems = [URLQueryItem(name: "path", value: note.relativePath)]
-            if let url = comps.url {
-                // **Not in the same turn as the dismissal.** `dayflow://note`
-                // ends in `route { showNotes = true }`, which presents a screen;
-                // firing that while the full-screen editor is still animating
-                // away means two presentations in flight, and SwiftUI drops one.
-                // David: *"it brings me to Dayflow projects but not the specific
-                // project note"* — the presentation survived, the routed title
-                // did not.
-                //
-                // Waited on the cover's own `onDismiss` rather than a delay.
-                // Session 63 deleted four hand-tuned `asyncAfter` values from
-                // this codebase for being guesses at exactly this; the framework
-                // reports when it is finished, so ask it.
-                if fullScreenEditing {
-                    pendingWikiNoteURL = url
-                    fullScreenEditing = false
-                } else {
-                    openURL(url)
-                }
-            }
+            openNote(note.relativePath)
+        } else {
+            // **NOTHING MATCHED, AND THIS USED TO BE AN EMPTY `else`.**
+            //
+            // A destination pill whose name is not a Place record, not a Person
+            // and not a note simply did nothing when tapped — no sheet, no
+            // message, no log line — which from the outside is exactly what a
+            // broken button looks like. David: *"the destination pills are not
+            // clickable."*
+            //
+            // The distinction that matters is D94's, and it is the reason this
+            // is not a single string: on a cold launch `places` and `people`
+            // arrive from Notion, so a tap before they land must say "still
+            // loading" and never "there is no such place". Same rule the Mac's
+            // search learned the hard way.
+            unresolvedLink = name
         }
+    }
+
+    /// Why the tapped name opened nothing, in the user's terms.
+    private var unresolvedMessage: String {
+        let name = unresolvedLink ?? "That name"
+        let notion = NotionService.shared
+        if notion.placesLoad == .loading || notion.peopleLoad == .loading {
+            return "Places and people are still loading from Notion. Try \(name) again in a moment."
+        }
+        if notion.placesLoad == .failed || notion.peopleLoad == .failed {
+            return "Places and people could not be loaded from Notion, so \(name) cannot be resolved. Reopen the app to try again."
+        }
+        return "Nothing named \(name) exists as a place, a person or a note yet."
+    }
+
+    /// Routes to a note through the app's own deep link.
+    ///
+    /// **Not in the same turn as a dismissal.** `dayflow://note` ends in
+    /// `route { showNotes = true }`, which presents a screen; firing that while
+    /// the full-screen editor is still animating away means two presentations in
+    /// flight, and SwiftUI drops one. David: *"it brings me to Dayflow projects
+    /// but not the specific project note"* — the presentation survived, the
+    /// routed title did not.
+    ///
+    /// Waited on the cover's own `onDismiss` rather than a delay. Session 63
+    /// deleted four hand-tuned `asyncAfter` values from this codebase for being
+    /// guesses at exactly this; the framework reports when it is finished, so
+    /// ask it.
+    ///
+    /// Extracted from `resolveWikiLink` in Session 71 so the Notes chips route
+    /// the same way rather than growing a second copy of it.
+    private func openNote(_ relativePath: String) {
+        // PUSH A PROJECT NOTE, ROUTE ANYTHING ELSE.
+        //
+        // A project note is the case David actually hits from here — a speech,
+        // a packing list, a plan linked out of the endeavor body — and pushing
+        // it keeps the endeavor underneath, so back returns to the endeavor.
+        // `DayflowProjectNoteView` is built to be pushed and carries no
+        // `NavigationStack` of its own, which is why it fits with no wrapper.
+        //
+        // **Direct children of `Notes/Projects` only.** An archived note lives
+        // in `Notes/Projects/Archive/`, and `DayflowProjectNoteView` looks its
+        // content up by title in the Projects list, so pushing one would open a
+        // screen that renders empty. Same judgement `MacSearchEngine.destination`
+        // makes about the Archive, for the same reason.
+        //
+        // A Calendar note still goes through the URL: a daily note has its own
+        // full-page screen and its own date plumbing, and re-implementing that
+        // inside this stack would be a second answer to a solved question.
+        let projects = NoteStore.projectsFolder
+        if relativePath.hasPrefix(projects + "/"),
+           !relativePath.dropFirst(projects.count + 1).contains(where: { $0 == "/" }),
+           relativePath.hasSuffix(".md") {
+            let title = String(relativePath
+                .dropFirst(projects.count + 1)
+                .dropLast(3))
+            if fullScreenEditing {
+                pendingPushNoteTitle = title
+                fullScreenEditing = false
+            } else {
+                pushedNoteTitle = title
+            }
+            return
+        }
+
+        var comps = URLComponents()
+        comps.scheme = "dayflow"
+        comps.host   = "note"
+        comps.queryItems = [URLQueryItem(name: "path", value: relativePath)]
+        guard let url = comps.url else { return }
+        if fullScreenEditing {
+            pendingWikiNoteURL = url
+            fullScreenEditing = false
+        } else {
+            openURL(url)
+        }
+    }
+
+    /// The notes this endeavor's body links to, in the order it names them.
+    ///
+    /// The Mac's Linked notes rail (D64), as chips. Reads `body_` rather than
+    /// `e.body` so a link typed in this sitting appears without a save-and-
+    /// reload, and falls back to the stored body before the editor has loaded.
+    private func linkedNotes(_ e: Endeavor) -> [LinkableNote] {
+        let source = body_.isEmpty ? e.body : body_
+        let targets = NoteStore.wikilinkTargets(in: source)
+        guard !targets.isEmpty else { return [] }
+        let all = NoteStore.shared.linkableNotes()
+        var seen = Set<String>()
+        return targets
+            .compactMap { t in
+                all.first { $0.title.localizedCaseInsensitiveCompare(t) == .orderedSame }
+            }
+            .filter { seen.insert($0.relativePath).inserted }
     }
 
     // MARK: - Destinations and People
@@ -921,15 +1060,35 @@ struct DayflowEndeavorView: View {
     @ViewBuilder
     private func attachedChips(_ e: Endeavor) -> some View {
         let people = unionedPeople(e)
+        let notes  = linkedNotes(e)
         VStack(alignment: .leading, spacing: 6) {
-                chipRow(title: "Destinations",
+            chipRow(title: "Destinations",
                     icon: "mappin.circle.fill",
                     names: e.places,
-                    empty: "Nowhere attached yet.") { attaching = .place }
+                    empty: "Nowhere attached yet.",
+                    onTap: { resolveWikiLink($0) }) { attaching = .place }
             chipRow(title: "People",
                     icon: "person.circle.fill",
                     names: people,
-                    empty: "Nobody attached yet.") { attaching = .person }
+                    empty: "Nobody attached yet.",
+                    onTap: { resolveWikiLink($0) }) { attaching = .person }
+            // Notes, ported from the Mac's Linked notes rail (D64). No plus:
+            // a note is linked by typing `[[` in the body, so an add button
+            // here would be a second, worse way to do one thing. The empty
+            // string says that instead, exactly as the Mac's does.
+            chipRow(title: "Notes",
+                    icon: "doc.text",
+                    names: notes.map(\.title),
+                    empty: "Type [[ in the note to link one.",
+                    onTap: { title in
+                        // Straight to the note, not through `resolveWikiLink`.
+                        // These chips were built FROM the note list, so the
+                        // records-first ordering that is right for a wikilink
+                        // would be a way to open something else from here.
+                        if let n = notes.first(where: {
+                            $0.title.localizedCaseInsensitiveCompare(title) == .orderedSame
+                        }) { openNote(n.relativePath) }
+                    })
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
@@ -960,25 +1119,30 @@ struct DayflowEndeavorView: View {
     }
 
     @ViewBuilder
+    /// `onAdd` is optional and stays last so the existing trailing-closure call
+    /// sites read unchanged; the Notes row has nothing to add by hand.
     private func chipRow(title: String,
                          icon: String,
                          names: [String],
                          empty: String,
-                         onAdd: @escaping () -> Void) -> some View {
+                         onTap: @escaping (String) -> Void,
+                         onAdd: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Text(title.uppercased())
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.tertiary)
                 Spacer()
-                Button(action: onAdd) {
-                    Image(systemName: "plus")
-                        .font(.caption.weight(.semibold))
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
+                if let onAdd {
+                    Button(action: onAdd) {
+                        Image(systemName: "plus")
+                            .font(.caption.weight(.semibold))
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
             }
             if names.isEmpty {
                 Text(empty).font(.caption2).foregroundStyle(.tertiary)
@@ -987,7 +1151,7 @@ struct DayflowEndeavorView: View {
                     HStack(spacing: 6) {
                         ForEach(names, id: \.self) { name in
                             Button {
-                                resolveWikiLink(name)
+                                onTap(name)
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: icon).font(.caption2)

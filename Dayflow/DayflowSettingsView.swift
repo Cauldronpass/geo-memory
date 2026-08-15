@@ -47,6 +47,12 @@ struct DayflowSettingsView: View {
     @State private var testState: ConnectionTestState = .idle
     @State private var availableCalendars: [EKCalendar] = []
     @State private var lastSyncedText: String = "Never"
+    @State private var isSyncing = false
+    /// What the last Sync Now did. **The button used to report nothing at all**,
+    /// so a failed sync and a successful one looked identical — which is how
+    /// David could sync today and still be looking at a list from yesterday
+    /// without anything telling him.
+    @State private var syncStatus: String? = nil
     /// **TEMPORARY, added 2026-07-25** — widget weather debug readout. The
     /// widget face is too small to show a full error string legibly
     /// (confirmed: David couldn't read it even zoomed into a screenshot),
@@ -79,10 +85,19 @@ struct DayflowSettingsView: View {
             Form {
                 weatherDebugSection
                 thingsSection
+                // MOVED UP, 2026-08-14 (Session 71). It was below the calendar
+                // sections under a bare "Sync" header, which reads as a global
+                // sync and is where David went looking for it and did not find
+                // it: *"That section of settings is not in the Things section
+                // but rather toward the bottom of the settings screen."* It has
+                // always been Things and nothing else — the button calls
+                // `ThingsService.refreshAll()` and the row reads
+                // `ThingsService.lastFetched`. A control filed under the wrong
+                // heading is a control you have to already know about.
+                syncSection
                 appearanceSection
                 calendarSection
                 includedCalendarsSection
-                syncSection
                 // One entry here serves Trace, Satchel and the Mac too — they
                 // all read the same App Group key. Dayflow gets the field
                 // because it is the only iOS app in the family with a Settings
@@ -350,21 +365,56 @@ struct DayflowSettingsView: View {
 
     private var syncSection: some View {
         Section {
-            Button("Sync Now") {
+            Button(isSyncing ? "Syncing…" : "Sync Now") {
+                isSyncing = true
+                syncStatus = nil
                 Task {
-                    await ThingsService.shared.refreshAll()
-                    await MainActor.run { updateLastSyncedText() }
+                    // `/today` ONLY before reporting. It is the list the Agenda
+                    // draws and the only one `lastError` describes; the other
+                    // three are browse-view sources and cost up to 60 seconds
+                    // more between them. Answering after 20 rather than 80 is
+                    // the difference between a slow button and a stuck one.
+                    await ThingsService.shared.fetch()
+                    await MainActor.run {
+                        isSyncing = false
+                        updateLastSyncedText()
+                        // `lastError` is set and cleared by `/today` alone, so
+                        // it describes exactly the list the Agenda draws.
+                        if let error = ThingsService.shared.lastError {
+                            syncStatus = "Could not reach Things. \(error)"
+                        } else {
+                            syncStatus = "Up to date."
+                        }
+                    }
+                    // Behind the answer, not in front of it.
+                    await ThingsService.shared.refreshBrowseLists()
                 }
             }
+            .disabled(isSyncing)
             HStack {
                 Text("Last synced")
                 Spacer()
                 Text(lastSyncedText).foregroundStyle(.secondary)
             }
+            if let syncStatus {
+                Text(syncStatus)
+                    .font(.caption)
+                    // `Color.` on both branches, explicitly. Bare `.secondary`
+                    // resolves to `HierarchicalShapeStyle` and bare `.orange` to
+                    // `Color`, and a ternary needs one type.
+                    .foregroundStyle(syncStatus.hasPrefix("Up to date") ? Color.secondary : Color.orange)
+            }
+            // Shown whether or not Sync Now was pressed this visit: a stale list
+            // is the thing worth knowing about on arrival, not on request.
+            if syncStatus == nil, ThingsService.shared.isShowingStaleTasks {
+                Text("The last refresh failed, so the Agenda is showing an older list.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
         } header: {
-            Text("Sync")
+            Text("Things Sync")
         } footer: {
-            Text("Dayflow also refreshes automatically when you switch back to it from another app.")
+            Text("\"Last synced\" only moves when a refresh succeeds. Dayflow also refreshes automatically when you switch back to it from another app.")
         }
     }
 

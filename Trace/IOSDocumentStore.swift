@@ -102,7 +102,9 @@ class iOSDocumentStore {
                     tint: sidecar?.tint,
                     remindOn: sidecar?.remindOn,
                     note: body.note,
-                    summary: body.summary
+                    summary: body.summary,
+                    extractedText: body.text,
+                    textExtracted: body.hasTextSection
                 )
                 result.append(doc)
             }
@@ -338,6 +340,62 @@ class iOSDocumentStore {
 
     // MARK: - Helpers
 
+    // MARK: - Text extraction
+
+    /// Read the words off every image and PDF that has not been read yet.
+    ///
+    /// The Mac's `extractTextForNewArrivals`, on the phone, deliberately down to
+    /// the name. The Mac has backfilled phone-captured documents since Session
+    /// 70, so this is not a hole it fills — it is a **latency** one. Capture a
+    /// scorecard or a rental confirmation on the phone and, until the Mac next
+    /// opens and sweeps, the phone could not search its contents. That window
+    /// did not matter before Session 71, because the phone had no search.
+    ///
+    /// **The `private` tag is not consulted, deliberately.** §5b binds Ask,
+    /// which sends text to an API. Nothing here leaves the device, and a private
+    /// document that cannot be found by local search is unfindable in the one
+    /// place it was safe to find. Same reasoning, same words, as the Mac's.
+    func extractTextForNewArrivals() async {
+        let pending = documents.filter { doc in
+            (doc.isPDF || doc.isImage) && !doc.textExtracted
+        }
+        guard !pending.isEmpty else { return }
+
+        var wrote = false
+        for doc in pending {
+            guard let url = noteStore.resolvedURL(for: doc.relativePath) else { continue }
+            // Detached, and it has to be: the project sets
+            // `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so a plain `Task`
+            // would run Vision on the main actor (D106). Tens of milliseconds
+            // for a photo, and that per page for a scanned PDF.
+            let text = await Task.detached { MacTextExtraction.extract(from: url) }.value
+            // `nil` means "not a kind this can read" and must NOT write a
+            // marker — a `.txt` arriving one day should not be recorded as
+            // having no text. An empty string DOES write one: the pass ran and
+            // this photograph has no writing in it, and without the marker it
+            // would be re-read on every launch forever.
+            guard let text else { continue }
+            do {
+                try writeExtractedText(text, for: doc)
+                wrote = true
+            } catch { continue }
+        }
+        if wrote { await reload() }
+    }
+
+    private func writeExtractedText(_ text: String, for doc: TraceMacDocument) throws {
+        var body = readBody(at: doc.sidecarPath)
+        body.text = text
+        body.hasTextSection = true
+
+        var data = parseSidecar(at: doc.sidecarPath) ?? SidecarData()
+        if data.created == nil { data.created = doc.created ?? Date() }
+
+        try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
+    }
+
+    // MARK: - Helpers
+
     private func listSubfolders(in subfolder: String) throws -> [String] {
         guard let base = noteStore.containerURL else { return [] }
         let folderURL = base.appendingPathComponent(subfolder)
@@ -423,15 +481,40 @@ class iOSDocumentStore {
     struct SidecarBody {
         var note: String = ""
         var summary: String = ""
+        /// On-device OCR / PDF text layer, under `## Text`.
+        ///
+        /// **iOS used to leave this in `extra` on purpose.** The Mac's own
+        /// comment on `SidecarBody.hasTextSection` says so in as many words: a
+        /// body heading rather than a frontmatter key precisely *because* the
+        /// phone would file the section under `extra` and re-emit it untouched,
+        /// which costs nothing when the phone has no use for it.
+        ///
+        /// **Session 71 gave the phone a use for it.** iOS search and Ask index
+        /// `doc.extractedText`, so an unparsed `## Text` meant the Satchel group
+        /// on the phone could only ever match a document's title and tags — the
+        /// words on the page were sitting in the sidecar, on this device,
+        /// unreadable. Round-tripping was the right call for preservation and
+        /// the wrong one the moment search shipped.
+        var text: String = ""
+        /// Whether a `## Text` heading is present on disk, **independently of
+        /// whether there is anything under it.** "Needs extraction" is *no
+        /// heading*, not *no text*: a pass that found nothing leaves behind
+        /// exactly what "no text" looks like, and without the marker a
+        /// photograph of a sunset is re-OCR'd forever. Same trap D90 named.
+        var hasTextSection: Bool = false
         var extra: String = ""
 
         var isEmpty: Bool {
             note.isEmpty && summary.isEmpty && extra.isEmpty
+                && text.isEmpty && !hasTextSection
         }
     }
 
     static let noteHeading = "## Note"
     static let summaryHeading = "## Summary"
+    /// Must stay byte-identical to `TraceMacDocumentStore.textHeading`. Two
+    /// spellings of one heading is two parsers that disagree about the same file.
+    static let textHeading = "## Text"
 
     func parseBody(_ raw: String) -> SidecarBody {
         var body = SidecarBody()
@@ -448,9 +531,10 @@ class iOSDocumentStore {
             index += 1
         }
 
-        enum Section { case none, note, summary }
+        enum Section { case none, note, summary, text }
         var section: Section = .none
         var note: [String] = [], summary: [String] = [], extra: [String] = []
+        var text: [String] = []
 
         while index < lines.count {
             let line = lines[index]
@@ -459,6 +543,9 @@ class iOSDocumentStore {
                 section = .note
             } else if trimmed == Self.summaryHeading {
                 section = .summary
+            } else if trimmed == Self.textHeading {
+                section = .text
+                body.hasTextSection = true
             } else if trimmed.hasPrefix("## ") {
                 // An unrecognised heading — hand it and everything under it to
                 // `extra` rather than swallowing it into the previous section.
@@ -468,6 +555,7 @@ class iOSDocumentStore {
                 switch section {
                 case .note:    note.append(line)
                 case .summary: summary.append(line)
+                case .text:    text.append(line)
                 case .none:    extra.append(line)
                 }
             }
@@ -479,6 +567,7 @@ class iOSDocumentStore {
         }
         body.note = tidy(note)
         body.summary = tidy(summary)
+        body.text = tidy(text)
         body.extra = tidy(extra)
         return body
     }
@@ -491,6 +580,17 @@ class iOSDocumentStore {
         }
         if !body.summary.isEmpty {
             out += "\n\(Self.summaryHeading)\n\n\(body.summary)\n"
+        }
+        // Order matches `TraceMacDocumentStore.renderBody` exactly: note,
+        // summary, text, extra. A different order here would rewrite every
+        // sidecar the other device touched and churn iCloud for nothing.
+        //
+        // The heading is written even when the text is empty. That IS the
+        // marker: the pass ran and this file has nothing readable in it.
+        if body.hasTextSection {
+            out += body.text.isEmpty
+                ? "\n\(Self.textHeading)\n"
+                : "\n\(Self.textHeading)\n\n\(body.text)\n"
         }
         if !body.extra.isEmpty {
             out += "\n\(body.extra)\n"

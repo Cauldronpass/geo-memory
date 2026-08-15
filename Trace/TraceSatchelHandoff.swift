@@ -177,15 +177,31 @@ final class TraceSatchelChipStore {
             .sorted { ($0.remindOn ?? .distantFuture) < ($1.remindOn ?? .distantFuture) }
     }
 
+    /// Every document the store knows about.
+    ///
+    /// Added Session 71 for iOS search, which needs the whole set rather than
+    /// one note's. Read off this shared store rather than a second
+    /// `iOSDocumentStore`, because a sidecar sweep is real file I/O and this one
+    /// is already loaded and already refreshed on foreground.
+    var all: [TraceMacDocument] { store.documents }
+
     /// Documents whose sidecar names this note. Newest first.
     ///
     /// Exact string match, deliberately. `SatchelRouter.normalizedNote(_:)` does
     /// the tidying on the way in precisely so both sides settle on one spelling;
     /// a fuzzy match here would paper over a hand-off that is writing the wrong
     /// path and make the real bug much harder to see.
-    func documents(linkedTo notePath: String) -> [TraceMacDocument] {
+    ///
+    /// **`endeavor` is a second, equally normal association.** Satchel's own
+    /// capture writes `endeavor:` into the sidecar; the Add Document button on
+    /// the phone's Endeavor screen writes `linked_note:`. Filtering on one key
+    /// meant a document attached the other way was invisible, on that screen,
+    /// with nothing anywhere saying so. The Mac unions both in
+    /// `TraceMacEndeavorsView.documents(for:)` for exactly this reason and left
+    /// the phone half-fixed. One filter over one array, so nothing appears twice.
+    func documents(linkedTo notePath: String, endeavor endeavorID: String? = nil) -> [TraceMacDocument] {
         store.documents
-            .filter { $0.linkedNote == notePath }
+            .filter { $0.linkedNote == notePath || ($0.endeavor != nil && $0.endeavor == endeavorID) }
             .sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
     }
 
@@ -244,6 +260,10 @@ final class TraceSatchelChipStore {
 struct SatchelDocumentChips: View {
 
     let notePath: String
+    /// When the host note is an Endeavor, its id — so documents filed against
+    /// the endeavor in Satchel appear alongside those linked to the note.
+    /// Defaulted, so the four non-Endeavor hosts are unchanged.
+    var endeavorID: String? = nil
 
     @State private var chipStore = TraceSatchelChipStore.shared
     @State private var noteStore = NoteStore.shared
@@ -252,7 +272,7 @@ struct SatchelDocumentChips: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private var documents: [TraceMacDocument] {
-        chipStore.documents(linkedTo: notePath)
+        chipStore.documents(linkedTo: notePath, endeavor: endeavorID)
     }
 
     var body: some View {

@@ -69,6 +69,22 @@
 import SwiftUI
 
 struct DayflowNotesInboxView: View {
+
+    /// Open straight into a blank note instead of the list.
+    ///
+    /// **The swipe is a capture gesture, not a browse gesture.** David,
+    /// 2026-08-14: *"swiping right gets me to the inbox but Id like to be
+    /// automatically placed in a new note when i do that. I dont see any reason
+    /// i should have to hit the plus key next."* Right — the Inbox is where
+    /// evergreen jottings land, and the reason to reach for it in a hurry is to
+    /// write one.
+    ///
+    /// A parameter rather than unconditional behaviour, even though the swipe is
+    /// the only door today. "Show me the Inbox" and "start an Inbox note" are
+    /// different intents, and a second door built to review the backlog must not
+    /// silently create a note on arrival.
+    var startInNewNote: Bool = false
+
     @Environment(\.dismiss) private var dismiss
     @State private var files: [InboxNoteFile] = []
     @State private var isLoading = true
@@ -76,6 +92,9 @@ struct DayflowNotesInboxView: View {
     @State private var editingTarget: InboxNoteFile?
     @State private var deleteCandidate: InboxNoteFile?
     @State private var showDeleteConfirm = false
+    /// One-shot. `.task` can run again — `hasAccess` flipping, a re-entry — and
+    /// a second run must not open a second note.
+    @State private var didAutoOpen = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -135,7 +154,15 @@ struct DayflowNotesInboxView: View {
             .padding(.bottom, 16)
         }
         .dayflowSkinBackground()
-        .task { await loadFiles() }
+        .task {
+            await loadFiles()
+            // After the load, deliberately: `openBlankNote` reuses an existing
+            // empty note when there is one, and it can only see that once
+            // `files` is populated.
+            guard startInNewNote, !didAutoOpen else { return }
+            didAutoOpen = true
+            openBlankNote()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreInboxDidChange)) { _ in
             Task { await loadFiles() }
         }
@@ -164,6 +191,20 @@ struct DayflowNotesInboxView: View {
     // MARK: Header
 
     private var header: some View {
+        // BACK BY REVERSING THE GESTURE THAT GOT YOU HERE.
+        //
+        // David, after the first TestFlight round: *"When I swipe left for
+        // Notes Id like to swipe right to go back to where i started… Same for
+        // when I am in the Inbox screen i should be able to swipe left to go
+        // back."* One rule to hold in the head, and the arrow stays where it is
+        // for anyone who would rather tap.
+        //
+        // **On the header, not the whole screen**, for the reason the home
+        // screen's pull-down already records. Here it is not theoretical: this
+        // screen's rows carry `.swipeActions`, which ARE a horizontal drag, and
+        // a screen-wide gesture would race File and Delete on every row.
+        // `fullScreenCover` has no interactive dismissal of its own, which is
+        // why this has to be built rather than inherited.
         HStack {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.left")
@@ -186,13 +227,26 @@ struct DayflowNotesInboxView: View {
             // `Color.clear` spacer that used to just balance the leading
             // back button — same 32x32 sizing, so the centered title still
             // sits dead center.
-            Button { createNote() } label: {
+            Button { openBlankNote() } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 16, weight: .semibold))
                     .frame(width: 32, height: 32)
             }
             .buttonStyle(.plain)
         }
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 30)
+                .onEnded { value in
+                    // Leftward, the reverse of the rightward swipe that opens
+                    // this screen from Home.
+                    let h = value.translation.width
+                    guard h < -50,
+                          abs(h) > abs(value.translation.height) * 1.5 else { return }
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    dismiss()
+                }
+        )
         .padding(.horizontal, 16)
         .padding(.top, 14)
         .padding(.bottom, 4)
@@ -239,7 +293,10 @@ struct DayflowNotesInboxView: View {
             let created = url.flatMap {
                 (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.creationDate] as? Date
             }
-            return InboxNoteFile(filename: filename, title: (title?.isEmpty == false ? title! : "New Note"), created: created)
+            return InboxNoteFile(filename: filename,
+                                 title: (title?.isEmpty == false ? title! : "New Note"),
+                                 created: created,
+                                 isEmpty: content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         isLoading = false
         files = loaded.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
@@ -280,6 +337,28 @@ struct DayflowNotesInboxView: View {
     /// heading marker exists yet for a fresh note, so there's nothing to
     /// accidentally corrupt — the first line only becomes a real heading if
     /// the person deliberately types "# " themselves.
+    /// The blank note to type in: the newest one that is still empty, or a new
+    /// one if every note has something in it.
+    ///
+    /// **Reuse rather than create-every-time**, and the swipe is why. The plus
+    /// button is a deliberate act a few times a day; a swipe is cheap and will
+    /// be made by accident, and a screen that mints a file on arrival would
+    /// leave a drift of empty timestamped notes behind it. Deleting them on
+    /// dismissal was the alternative and it is worse: it races the editor's own
+    /// save, and the failure mode of that race is losing a sentence David just
+    /// typed. Reuse has no destructive path in it at all.
+    ///
+    /// The plus button routes through here too. It had the same accumulation,
+    /// just more slowly.
+    private func openBlankNote() {
+        // `files` is sorted newest-first, so this is the most recent blank.
+        if let blank = files.first(where: { $0.isEmpty }) {
+            editingTarget = blank
+        } else {
+            createNote()
+        }
+    }
+
     private func createNote() {
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
@@ -287,7 +366,8 @@ struct DayflowNotesInboxView: View {
         let filename = "\(fmt.string(from: Date())).md"
         let path = "Notes/Inbox/\(filename)"
         try? NoteStore.shared.writeFile(path, content: "")
-        let newFile = InboxNoteFile(filename: filename, title: "New Note", created: Date())
+        let newFile = InboxNoteFile(filename: filename, title: "New Note",
+                                    created: Date(), isEmpty: true)
         files.insert(newFile, at: 0)
         editingTarget = newFile
     }
@@ -303,6 +383,9 @@ struct InboxNoteFile: Identifiable, Hashable {
     let filename: String
     var title: String
     var created: Date?
+    /// Nothing typed yet. Read once during `loadFiles`, which already has the
+    /// file's contents in hand, rather than re-read per lookup.
+    var isEmpty: Bool = false
 }
 
 // MARK: - Filing sheet

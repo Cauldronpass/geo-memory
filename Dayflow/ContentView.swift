@@ -133,6 +133,27 @@ struct ContentView: View {
     /// reached from that top-bar Menu. See DayflowNotesInboxView.swift's
     /// header comment for the full feature design.
     @State private var showNotesInbox = false
+    /// For handing a Satchel document path back to Satchel. Search is the first
+    /// thing in this file that opens another app.
+    @Environment(\.openURL) private var openURL
+    /// Whether the Inbox should open straight into a blank note.
+    ///
+    /// **The swipe and the menu are different intents and now say so.** David,
+    /// after the first round: *"i have no way to look at the inbox other than
+    /// to swipe left so in order to do that i have to create a document now."*
+    /// Right — making the capture gesture the only door meant browsing had to
+    /// go through creating. The parameter for this already existed; it just had
+    /// no caller passing `false`.
+    @State private var inboxStartsInNewNote = true
+    /// Pull down on the header for search and Ask (Session 71).
+    @State private var showSearch = false
+    /// Where a tapped search result wants to go, acted on after the cover
+    /// closes. Same reason `pendingWikiNoteURL` exists on the Endeavor screen:
+    /// SwiftUI drops a presentation requested in the same update as a dismissal.
+    @State private var pendingSearchDestination: MacSearchDestination? = nil
+    /// People and Places have no Dayflow screen, but they do have the summary
+    /// sheet the wikilinks already use.
+    @State private var searchWikiTarget: WikiLinkTarget? = nil
 
     // MARK: dayflow://note?path= routing (E35, 2026-07-29)
     //
@@ -180,24 +201,58 @@ struct ContentView: View {
             // `recentLog` debug strip that used to also live in this VStack
             // was removed 2026-07-20 — see `log(_:)`'s doc comment below.)
             VStack(alignment: .leading, spacing: 12) {
-                topBar
+                // PULL DOWN ON THE HEADER FOR SEARCH (Session 71).
+                //
+                // **On the header, not on the root VStack**, and that is the
+                // whole of the design. The swipe-right gesture below could sit
+                // on the root because it was gated to mostly-HORIZONTAL drags,
+                // and a grep confirmed nothing on this screen used those. A
+                // vertical gate has no such luxury: `DayflowAgendaSection` is a
+                // list and vertical drag is what a list is for. Confining the
+                // pull to the header is the same call Jot's CaptureView made for
+                // the same reason, and it keeps the gesture off every scrollable
+                // thing on the screen.
+                //
+                // The Mac reaches search with a system-wide hot key. A phone has
+                // no equivalent, and both obvious gestures on this screen were
+                // already spent — right on the Inbox, left on Notes as of this
+                // session. Pull-down is the iOS convention for revealing a
+                // search field and it was the one direction still free.
+                VStack(alignment: .leading, spacing: 12) {
+                    topBar
 
-                Button {
-                    showDateCalendar = true
-                } label: {
-                    Text(dateHeadlineText)
+                    Button {
+                        showDateCalendar = true
+                    } label: {
+                        Text(dateHeadlineText)
                         // Skin locked 2026-07-21 (Session 29) — was
                         // .custom("Georgia", ...); David flagged Georgia's
                         // capital J as visibly off vs. Parchment's real
                         // letterforms. `design: .serif` resolves to New York
                         // on Apple platforms, which is the actual fix — see
                         // DayflowSkin.swift.
-                        .font(.dayflowSerif(26))
-                        .padding(.top, 2)
-                        .padding(.bottom, 4)
+                            .font(.dayflowSerif(26))
+                            .padding(.top, 2)
+                            .padding(.bottom, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.primary)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.primary)
+                // `contentShape` so the gaps between the two rows drag too; a
+                // gesture you have to land on a glyph to start is a gesture
+                // nobody finds twice.
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 30)
+                        .onEnded { value in
+                            let vertical = value.translation.height
+                            let horizontal = value.translation.width
+                            guard vertical > 50,
+                                  vertical > abs(horizontal) * 1.5 else { return }
+                            showSearch = true
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }
+                )
 
                 DayflowAgendaSection(
                     date: selectedDate,
@@ -256,15 +311,43 @@ struct ContentView: View {
             // gating below is the same conflict-avoidance pattern proven
             // out for Jot, but this is a bigger, more content-dense surface
             // than that one header row was.
+            //
+            // **Swipe LEFT to Notes, added 2026-08-14 (Session 71).** David:
+            // *"I keep going to the notes screen in Dayflow. it is one of my
+            // favorite sections but it requires me to click that small icon on
+            // the Daily Note screen. I was thinking a left swipe would take me
+            // to that screen."* Left was the free direction, right was already
+            // taken by the Inbox above, and the mostly-horizontal gating below
+            // is already proven on this exact surface — so this is a mirror of a
+            // working gesture rather than a new one to re-validate. The small
+            // icon on the Daily Note card stays; a gesture is a shortcut, not a
+            // replacement for a control you can see.
             .gesture(
                 DragGesture(minimumDistance: 30)
                     .onEnded { value in
                         let horizontal = value.translation.width
                         let vertical = value.translation.height
-                        guard horizontal > 0,
-                              horizontal > abs(vertical) * 1.5,
-                              horizontal > 50 else { return }
-                        showNotesInbox = true
+                        // One gate for both directions, deliberately. Written as
+                        // two guards it would be two thresholds to keep in step,
+                        // and they would eventually disagree.
+                        guard abs(horizontal) > abs(vertical) * 1.5,
+                              abs(horizontal) > 50 else { return }
+                        if horizontal > 0 {
+                            inboxStartsInNewNote = true
+                            showNotesInbox = true
+                        } else {
+                            // **`routedProjectTitle` is cleared first**, exactly
+                            // as the card's `onOpenNotes` does, and for the same
+                            // reason: it is set by
+                            // `dayflow://note?path=Notes/Projects/…` and a route
+                            // that is acted on without being consumed re-opens
+                            // the same project on every later entry. That
+                            // regression was introduced and fixed on 2026-07-30,
+                            // and the obvious one-line version of this swipe
+                            // would have reintroduced it on a second door.
+                            routedProjectTitle = nil
+                            showNotes = true
+                        }
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
             )
@@ -317,11 +400,32 @@ struct ContentView: View {
             // door into Calendar browsing from the main screen.
             DayflowCalendarBrowseView(onSelect: { picked in selectedDate = picked })
         }
+        .fullScreenCover(isPresented: $showSearch, onDismiss: {
+            // Acted on here rather than at the tap, for the reason recorded on
+            // `pendingSearchDestination`.
+            guard let destination = pendingSearchDestination else { return }
+            pendingSearchDestination = nil
+            openSearchDestination(destination)
+        }) {
+            TraceSearchView { destination in
+                guard canOpenFromSearch(destination) else { return false }
+                pendingSearchDestination = destination
+                showSearch = false
+                return true
+            }
+        }
+        .sheet(item: $searchWikiTarget) { target in
+            NavigationStack {
+                DayflowWikiSummaryView(target: target, sourceNoteText: "")
+            }
+        }
         .fullScreenCover(isPresented: $showNotesInbox) {
             // Session 44 addendum 10 — swipe-right destination. See
             // `showNotesInbox`'s own declaration above and
             // DayflowNotesInboxView.swift's header comment.
-            DayflowNotesInboxView()
+            // The swipe lands in a blank note; the Browse menu lands on the
+            // list. See that view's own comment on the parameter.
+            DayflowNotesInboxView(startInNewNote: inboxStartsInNewNote)
         }
         .fullScreenCover(item: $browseDestination) { destination in
             switch destination {
@@ -510,6 +614,65 @@ struct ContentView: View {
         let id: String
     }
 
+    // MARK: - Search routing
+
+    /// Whether this app can actually show the thing.
+    ///
+    /// **Asked before the cover closes**, so a row that cannot be routed expands
+    /// its text in place instead of dismissing search and landing nowhere.
+    /// `.weeklyNote` is `Notes/Horizons`, which Dayflow deliberately has no
+    /// screen for — see `DayflowBacklinksView.isOpenable`, which has said so
+    /// since it was written. `.document` needs Satchel installed, which is not
+    /// knowable until `openURL` reports back, so it is optimistically true and
+    /// the failure surfaces there.
+    private func canOpenFromSearch(_ destination: MacSearchDestination) -> Bool {
+        switch destination {
+        case .dailyOrProjectNote, .inboxNote, .endeavor, .document:
+            return true
+        case .person(let id):
+            return NotionService.shared.people.contains { $0.id == id }
+        case .place(let id):
+            return NotionService.shared.places.contains { $0.id == id }
+        case .weeklyNote, .preview:
+            return false
+        }
+    }
+
+    /// Every branch here is a route that already existed. Nothing new was
+    /// invented to receive a search result, which is the same rule
+    /// `MacSearchDestination` was written under.
+    private func openSearchDestination(_ destination: MacSearchDestination) {
+        switch destination {
+        case .dailyOrProjectNote(let path):
+            pendingNotePath = path
+            resolveNoteRoute()
+        case .inboxNote:
+            // The Inbox list, NOT `startInNewNote:` — arriving from a search
+            // result means he is looking for something that exists, and minting
+            // a blank note on top of it would be the opposite of the answer.
+            route { showNotesInbox = true }
+        case .endeavor(let id):
+            pendingEndeavorID = id
+            resolveNoteRoute()
+        case .person(let id):
+            guard let person = NotionService.shared.people.first(where: { $0.id == id })
+            else { return }
+            route { searchWikiTarget = .person(person) }
+        case .place(let id):
+            guard let place = NotionService.shared.places.first(where: { $0.id == id })
+            else { return }
+            route { searchWikiTarget = .place(place) }
+        case .document(let path):
+            guard let url = TraceSatchelHandoff.documentURL(path: path) else { return }
+            openURL(url)
+        case .weeklyNote, .preview:
+            // Declined by `canOpenFromSearch`, so this is unreachable. Left
+            // exhaustive rather than `default:` so a new case has to be thought
+            // about here instead of silently falling through to nothing.
+            break
+        }
+    }
+
     /// Anything currently covering the home screen.
     ///
     /// **This is why a hand-off used to be swallowed.** David, 2026-07-30: tapping
@@ -530,6 +693,7 @@ struct ContentView: View {
     private var isPresentingSomething: Bool {
         showNotes || showNoteFullPage || showNotesInbox || showSettings
             || showQuickAdd || browseDestination != nil || endeavorRoute != nil
+            || showSearch
     }
 
     /// Clears whatever is open, then performs the presentation.
@@ -556,6 +720,7 @@ struct ContentView: View {
             showQuickAdd = false
             browseDestination = nil
             endeavorRoute = nil
+            showSearch = false
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { present() }
     }
@@ -693,6 +858,13 @@ struct ContentView: View {
                 // "checklist" for the same reason — "tray" is already the
                 // established icon for the notes concept (QuickAppendSheet's
                 // Inbox destination, TraceMacInboxView's empty state).
+                Button {
+                    // Review, not capture. Nothing is created by arriving here.
+                    inboxStartsInNewNote = false
+                    showNotesInbox = true
+                } label: {
+                    Label("Inbox", systemImage: "tray")
+                }
                 Button { browseDestination = .inbox } label: {
                     Label("Unfiled Tasks", systemImage: "checklist")
                 }

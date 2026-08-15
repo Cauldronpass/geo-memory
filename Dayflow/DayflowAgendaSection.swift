@@ -168,6 +168,28 @@ struct DayflowAgendaSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            // A STALE LIST MUST SAY SO.
+            //
+            // David, 2026-08-14: Things had two to-dos and this showed four, one
+            // of them completed days before. The cache behind that is correct —
+            // an unreachable Mini should not blank the home screen — but drawing
+            // it as though it were live is not, and nothing here read
+            // `lastError`, which `ThingsService` had been setting all along.
+            //
+            // Only when `isToday`: any other date reads `upcomingTasks`, which
+            // this flag does not describe.
+            if isToday, ThingsService.shared.isShowingStaleTasks {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                        .font(.caption2)
+                    Text(ThingsService.shared.tasksAgeDescription.map {
+                        "Tasks could not be refreshed. Showing the list from \($0)."
+                    } ?? "Tasks could not be refreshed.")
+                    .font(.caption2)
+                }
+                .foregroundStyle(.orange)
+                .padding(.top, 4)
+            }
             if isCollapsed {
                 Text(summaryLabel)
                     .font(.caption)

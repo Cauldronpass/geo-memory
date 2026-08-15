@@ -50,6 +50,9 @@ struct DayflowTaskEditSheet: View {
     @State private var notes: String
     @State private var showWhenPicker = false
     @State private var isSaving = false
+    /// A save the bridge accepted and Things did not keep. See
+    /// `ThingsService.lastWriteMismatch`.
+    @State private var writeMismatch: String? = nil
 
     init(taskID: String, initialTitle: String, initialDate: Date?, initialList: String?,
          initialNotes: String? = nil, onSaved: @escaping () -> Void = {}) {
@@ -106,6 +109,14 @@ struct DayflowTaskEditSheet: View {
                 // actually there. TextEditor has no built-in placeholder, so
                 // one is overlaid manually when empty, matching the pattern
                 // DayflowQuickAddSheet's own new Notes row uses.
+                if let writeMismatch {
+                    Section {
+                        Text(writeMismatch)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
                 Section("Notes") {
                     ZStack(alignment: .topLeading) {
                         TextEditor(text: $notes)
@@ -226,8 +237,18 @@ struct DayflowTaskEditSheet: View {
             await MainActor.run {
                 isSaving = false
                 if success {
+                    writeMismatch = nil
                     onSaved()
                     dismiss()
+                } else {
+                    // **The sheet stays open and now says why.** Before this it
+                    // stayed open and said nothing, which reads as a save that
+                    // is still thinking. `lastWriteMismatch` is set only when
+                    // the bridge reported success and the value did not take;
+                    // any other failure keeps the generic line.
+                    writeMismatch = ThingsService.shared.lastWriteMismatch
+                        ?? "Things did not accept the change. The Mac Mini may be unreachable."
+                    ThingsService.shared.lastWriteMismatch = nil
                 }
             }
         }
