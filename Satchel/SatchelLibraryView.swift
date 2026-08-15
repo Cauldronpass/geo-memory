@@ -2030,6 +2030,11 @@ struct SatchelDocumentDetailView: View {
     @State private var note = ""
     @State private var isSummarising = false
     @State private var summaryError: String?
+    /// Web addresses found in `## Text`. **Derived on every load, never
+    /// stored** -- see `MacTextExtraction.links(in:)`. Held in state rather
+    /// than computed in `body` because `body` re-renders on every keystroke in
+    /// the title field and the detector is not free.
+    @State private var links: [URL] = []
 
     /// The live copy from the store, so a re-scan or a pin toggle is reflected
     /// without popping the screen.
@@ -2061,6 +2066,7 @@ struct SatchelDocumentDetailView: View {
                         .onChange(of: descriptionText) { _, _ in dirty = true }
                 }
                 tagField
+                linksField
                 // "Filed to" sits ABOVE the typed note and Summary as of
                 // 2026-07-28. It used to be second from the bottom, next to
                 // Delete, which meant anyone looking for "how do I link this to
@@ -2095,6 +2101,13 @@ struct SatchelDocumentDetailView: View {
         .onChange(of: linkedNote) { _, _ in dirty = true }
         .onChange(of: icon) { _, _ in dirty = true }
         .onChange(of: tint) { _, _ in dirty = true }
+        // Extraction can land while this screen is open -- a scan that arrives
+        // during `extractTextForNewArrivals` refreshes the store underneath us.
+        // Without this the Links row would be right only for documents whose
+        // text was already on disk when the screen opened.
+        .onChange(of: current.extractedText) { _, new in
+            links = MacTextExtraction.links(in: new)
+        }
         .task {
             await endeavorStore.reload()
             guard !loaded else { return }
@@ -2193,6 +2206,69 @@ struct SatchelDocumentDetailView: View {
         tags.append(value)
         newTag = ""
         dirty = true
+    }
+
+    // MARK: Links
+
+    /// Web addresses read off the scan.
+    ///
+    /// David: *"I have a lot of urls that are part of scans... Id like the url
+    /// if it is something picked up in the scan it would show up as a field in
+    /// the document like the other fields like a person or an endeavor."*
+    ///
+    /// **Derived, not stored.** No frontmatter key, no parser change, no
+    /// migration, and it cannot go stale because it is recomputed from the text
+    /// it came from. Detection is `NSDataDetector`, entirely local, so this
+    /// works on a `private` document exactly as it does on any other.
+    ///
+    /// The row is absent when there are none rather than showing an empty card:
+    /// most documents have no links and a permanent "None" is a line of noise
+    /// on every receipt.
+    ///
+    /// Same shape and the same teal on the Mac panel, so the two apps show one
+    /// feature rather than two.
+    @ViewBuilder
+    private var linksField: some View {
+        if !links.isEmpty {
+            field("Links") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(links, id: \.absoluteString) { url in
+                        Button { openURL(url) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "link")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Color.teal)
+                                Text(linkLabel(url))
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .foregroundStyle(Color.satchelInk)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer(minLength: 0)
+                                Image(systemName: "arrow.up.forward")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Color.satchelSecondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+                .satchelCard()
+            }
+        }
+    }
+
+    /// Host without `www.`, plus the last path component when it adds meaning
+    /// and the whole thing still fits on one line of a phone.
+    private func linkLabel(_ url: URL) -> String {
+        var host = url.host ?? url.absoluteString
+        if host.lowercased().hasPrefix("www.") { host = String(host.dropFirst(4)) }
+        let last = url.pathComponents.last ?? ""
+        if last.count > 1, last != "/", host.count + last.count < 44 {
+            return "\(host)/\(last)"
+        }
+        return host
     }
 
     // MARK: Note
@@ -2560,6 +2636,12 @@ struct SatchelDocumentDetailView: View {
                 .confirmationDialog("Send this private document to the AI?",
                                     isPresented: $showPrivatePrompt,
                                     titleVisibility: .visible) {
+                    // **The safe door first**, exactly as on the Mac. It is also
+                    // the retry path: the capture-time local pass can come back
+                    // empty if the on-device model was still downloading, and
+                    // without this there was no way to ask again short of
+                    // sending the document.
+                    Button("Fill in from text on this phone") { fillLocally() }
                     Button("Send and remove private tag", role: .destructive) {
                         promoteFromPrivate(using: store)
                     }
@@ -2604,6 +2686,37 @@ struct SatchelDocumentDetailView: View {
     /// **Saved before the request goes out**, exactly as the Mac does, so the
     /// file on disk can never claim to be private while its contents are in
     /// flight.
+    /// Title, summary and tags from text already on this phone. Sends nothing,
+    /// keeps the tag. The phone's half of the Mac's local fill.
+    private func fillLocally() {
+        let text = current.extractedText
+        guard !text.isEmpty else {
+            scanError = current.textExtracted
+                ? "No readable text was found in this document."
+                : "This document has not been read yet. Pull the list down to refresh, then try again."
+            return
+        }
+        scanError = nil
+        Task {
+            let suggestion = await MacLocalIntelligence.suggest(text: text, hint: "")
+            await MainActor.run {
+                if let headline = MacTextExtraction.localHeadline(from: text) {
+                    title = headline.title
+                    if descriptionText.isEmpty { descriptionText = headline.description }
+                }
+                if let suggestion {
+                    if !suggestion.summary.isEmpty { descriptionText = suggestion.summary }
+                    for tag in suggestion.tags
+                    where !tags.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) {
+                        tags.append(tag)
+                    }
+                }
+                dirty = true
+                save()
+            }
+        }
+    }
+
     private func promoteFromPrivate(using store: iOSDocumentStore) {
         tags.removeAll { $0.caseInsensitiveCompare("private") == .orderedSame }
         dirty = true
@@ -2715,6 +2828,7 @@ struct SatchelDocumentDetailView: View {
         pinned = doc.pinned
         note = doc.note
         linkedNote = doc.linkedNote
+        links = MacTextExtraction.links(in: doc.extractedText)
     }
 
     private func save() {

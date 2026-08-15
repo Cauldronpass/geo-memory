@@ -1140,8 +1140,14 @@ struct DocMetadataPanel: View {
 
     @Environment(NotionService.self) private var notion
     @Environment(NoteStore.self) private var noteStore
+    /// For the Links row. A URL read off a scan opens in the default browser.
+    @Environment(\.openURL) private var openURL
 
     @State private var title: String = ""
+    /// Web addresses found in the extracted text. **Derived, not stored** --
+    /// see `MacTextExtraction.links(in:)` for why there is no `links:`
+    /// frontmatter key. Recomputed in `load()`, which is once per selection.
+    @State private var links: [URL] = []
     @State private var tags: [String] = []
     @State private var linkedNote: String = ""
     @State private var people: [String] = []
@@ -1219,6 +1225,7 @@ struct DocMetadataPanel: View {
                 dateRow
                 tagsRow
                 peopleRow
+                linksRow
                 descriptionRow
                 if let err = scanError {
                     Text(err).font(.caption).foregroundStyle(.red)
@@ -1521,6 +1528,61 @@ struct DocMetadataPanel: View {
                 }
             )
         }
+    }
+
+    // MARK: - Links
+
+    /// Web addresses read off the document.
+    ///
+    /// David: *"I have a lot of urls that are part of scans... Id like the url
+    /// if it is something picked up in the scan it would show up as a field in
+    /// the document like the other fields like a person or an endeavor."*
+    ///
+    /// **Nothing is written.** The addresses are recomputed from `## Text` on
+    /// selection, so they cannot disagree with the document, they need no
+    /// parser or store change on either platform, and they work on a `private`
+    /// document because `NSDataDetector` never leaves the machine.
+    ///
+    /// The label is the host, not the URL. A full payment link is sixty
+    /// characters of query string and `tuxedo.menswearhouse.com` is the part he
+    /// is scanning for. The whole thing is in the tooltip and in the click.
+    ///
+    /// Absent, not empty, when there are none: a Links row reading "Nothing" on
+    /// every receipt would cost a line on every document to say so.
+    @ViewBuilder
+    private var linksRow: some View {
+        if !links.isEmpty {
+            HStack(alignment: .top, spacing: 0) {
+                fieldLabel("Links").padding(.top, 4)
+                FlowLayout(spacing: 6) {
+                    ForEach(links, id: \.absoluteString) { url in
+                        Button { openURL(url) } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "link").font(.caption2)
+                                Text(linkLabel(url)).font(.caption).lineLimit(1)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Color.teal.opacity(0.12))
+                            .foregroundStyle(Color.teal)
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help(url.absoluteString)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Host without `www.`, plus the last path component when it says something.
+    private func linkLabel(_ url: URL) -> String {
+        var host = url.host ?? url.absoluteString
+        if host.lowercased().hasPrefix("www.") { host = String(host.dropFirst(4)) }
+        let last = url.pathComponents.last ?? ""
+        if last.count > 1, last != "/", host.count + last.count < 44 {
+            return "\(host)/\(last)"
+        }
+        return host
     }
 
     // MARK: - Description + AI scan
@@ -1886,6 +1948,7 @@ struct DocMetadataPanel: View {
         people = doc.people
         description = doc.description
         docDate = doc.created ?? Date()
+        links = MacTextExtraction.links(in: doc.extractedText)
         // Cleared on every load, and it was not before Session 69. `userContext`
         // is a hint typed for ONE document; leaving it behind meant the next
         // document inherited it. David selected a Peloton screenshot and found

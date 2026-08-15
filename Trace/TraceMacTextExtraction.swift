@@ -102,6 +102,56 @@ enum MacTextExtraction {
         }
     }
 
+    // MARK: - Links
+
+    /// Every web address in the document's own text.
+    ///
+    /// **Derived, never stored.** David: *"I have a lot of urls that are part of
+    /// scans… Id like the url if it is something picked up in the scan it would
+    /// show up as a field in the document."* The words are already in the
+    /// sidecar under `## Text`, so a `links:` frontmatter key would add a field
+    /// to two stores, two parsers and two renderers to hold something that can
+    /// be recomputed exactly. It also cannot go stale, and it works on a
+    /// `private` document because detection is local.
+    ///
+    /// `NSDataDetector`, the same thing `MarkdownTextStorage` already uses to
+    /// make links live in notes.
+    ///
+    /// **Trailing punctuation is stripped**, because the detector will happily
+    /// swallow the full stop that ends a sentence. This is not hypothetical:
+    /// David's own container holds `https://www.pluginillinois.org/fixedrate.aspx.`
+    /// with the sentence's period attached.
+    ///
+    /// `http` and `https` only. A phone number or an email address that the
+    /// detector also recognises is a different kind of thing and belongs in a
+    /// different row, if it ever earns one.
+    nonisolated static func links(in text: String) -> [URL] {
+        guard !text.isEmpty,
+              let detector = try? NSDataDetector(
+                  types: NSTextCheckingResult.CheckingType.link.rawValue)
+        else { return [] }
+
+        let ns = text as NSString
+        var seen = Set<String>()
+        var out: [URL] = []
+        for match in detector.matches(in: text,
+                                      range: NSRange(location: 0, length: ns.length)) {
+            guard var raw = match.url?.absoluteString else { continue }
+            while let last = raw.last, ".,;:!?)]\'\"".contains(last) { raw.removeLast() }
+            guard let url = URL(string: raw),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  url.host != nil,
+                  seen.insert(raw.lowercased()).inserted
+            else { continue }
+            out.append(url)
+            // A page of small print can carry dozens. Twelve is more than anyone
+            // reads off a row, and the full text is still searchable.
+            if out.count == 12 { break }
+        }
+        return out
+    }
+
     // MARK: - Local headline
 
     /// A title and a one-line description read off text this machine already

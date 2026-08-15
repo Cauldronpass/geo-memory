@@ -14,10 +14,17 @@
 // bank statement going to an API or a screenshot called
 // `CleanShot 2026-08-14 at 17.35.50` forever.
 //
-// **Mac-only, deliberately, and in `TraceMac/` so it needs no project edit.**
-// The phone could run the same framework, but no iOS screen in this family
-// edits document metadata, so shipping it there would be building for a caller
-// that does not exist. Move the file to `Trace/` the day one does.
+// **Shared, as of the same session it was written.** It began Mac-only in
+// `TraceMac/` on the argument that no iOS screen needed it. That stopped being
+// true within hours: Satchel's private capture refuses the cloud scan by
+// design, so a privately captured document arrived named after its own file.
+// The local pass is the only thing that can title it, and it is exactly what
+// this was built for.
+//
+// Now in `Trace/`, with membership in TraceMac and Satchel. The prefix is
+// vestigial and stays, for the reason the search engine's filenames stayed:
+// renaming the file while the types keep the `Mac` prefix makes the name
+// promise something the contents do not.
 //
 // **Availability is checked, never assumed.** The model needs Apple silicon,
 // a supported OS, Apple Intelligence switched on, and the assets downloaded —

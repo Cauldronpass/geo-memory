@@ -802,6 +802,7 @@ struct SatchelCaptureView: View {
             // downstream has to be trusted to check.
             guard !isPrivate else {
                 scanNote = "Kept on this device. Nothing was sent."
+                Task { await fillLocally(for: document) }
                 return
             }
             Task { await runScan(on: document) }
@@ -825,6 +826,45 @@ struct SatchelCaptureView: View {
         // tag had been deliberately removed still refused to scan, which is a
         // control that ignores you.
         tags.contains { $0.caseInsensitiveCompare("private") == .orderedSame }
+    }
+
+    /// Title, summary and tags for a private capture, read on this device.
+    ///
+    /// **Nothing is sent, and that is the whole point.** Vision has already put
+    /// the page's words in the sidecar; Apple's on-device model turns them into
+    /// a name. Before this a private capture arrived called
+    /// `2026-08-15-scan`, which is findable only by someone who remembers
+    /// scanning it.
+    ///
+    /// Fails quietly to the heuristic and then to nothing: the model may be
+    /// unavailable on this device, and a private capture with a plain title is
+    /// a mild disappointment rather than a problem.
+    private func fillLocally(for document: TraceMacDocument) async {
+        // The extraction pass runs on the library's side after this sheet
+        // closes, so read the file directly rather than waiting for it.
+        guard let url = noteStore.resolvedURL(for: document.relativePath) else { return }
+        let text = await Task.detached { MacTextExtraction.extract(from: url) }.value ?? ""
+        guard !text.isEmpty else { return }
+
+        if let suggestion = await MacLocalIntelligence.suggest(text: text, hint: "") {
+            if !suggestion.summary.isEmpty, descriptionText.isEmpty {
+                descriptionText = suggestion.summary
+            }
+            if !suggestion.tags.isEmpty {
+                for tag in suggestion.tags
+                where !tags.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) {
+                    tags.append(tag)
+                }
+            }
+            scanNote = "Named on this device by the on-device model. Nothing was sent."
+        }
+        // The title comes from the document's own words either way — a model
+        // writes a sentence, and a sentence is a description, not a name.
+        if let headline = MacTextExtraction.localHeadline(from: text),
+           title.trimmingCharacters(in: .whitespacesAndNewlines) == document.title {
+            title = headline.title
+            if descriptionText.isEmpty { descriptionText = headline.description }
+        }
     }
 
     private func runScan(on document: TraceMacDocument, overwrite: Bool = false) async {
