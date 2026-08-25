@@ -83,6 +83,40 @@ enum JotToolbarItemID: String, CaseIterable, Identifiable {
 }
 
 private let kJotToolbarOrderKey = "jotToolbarOrder"
+private let kJotFontSizeKey = "jotFontSize"
+
+/// Jot's editor body size. Added 2026-08-24, David's ask: the field read as
+/// "very small," and the cause was that `CaptureView` passed
+/// `.systemFont(ofSize: 17)` — the plain iOS default — into `JotTextView`.
+///
+/// **A fixed, settable number rather than Dynamic Type**, David's call when
+/// asked: `UIFont.preferredFont(forTextStyle: .body)` would honour Settings →
+/// Display & Brightness → Text Size and grow on any future device, but it
+/// also relayouts every other piece of Jot's chrome (the 12/13pt header, pill
+/// and toolbar labels), which is a bigger change than the one being asked
+/// for. This keeps the chrome exactly where it is and moves only the text
+/// he types.
+///
+/// Default is 20, not 17. The clamp exists because the value is read back
+/// from `UserDefaults` and a garbage/absent read must not produce an
+/// unreadable or comically large field — same defensive shape as
+/// `loadJotToolbarOrder()` above, which repairs a stale saved order rather
+/// than trusting it.
+let kJotFontSizeDefault: CGFloat = 20
+let kJotFontSizeRange: ClosedRange<CGFloat> = 15...28
+
+func loadJotFontSize() -> CGFloat {
+    let saved = UserDefaults.standard.double(forKey: kJotFontSizeKey)
+    // `double(forKey:)` returns 0 for an absent key, which is also the only
+    // value that can't be a real size — so 0 means "never set," not "set to
+    // zero," and falls through to the default.
+    guard saved > 0 else { return kJotFontSizeDefault }
+    return min(max(CGFloat(saved), kJotFontSizeRange.lowerBound), kJotFontSizeRange.upperBound)
+}
+
+func saveJotFontSize(_ size: CGFloat) {
+    UserDefaults.standard.set(Double(size), forKey: kJotFontSizeKey)
+}
 
 /// Returns the saved toolbar order, or the default (declaration) order if
 /// none saved yet, or if a saved order is missing/has stale entries (e.g.
@@ -101,20 +135,32 @@ func saveJotToolbarOrder(_ order: [JotToolbarItemID]) {
     UserDefaults.standard.set(order.map(\.rawValue), forKey: kJotToolbarOrderKey)
 }
 
-// MARK: - Reorder sheet
+// MARK: - Settings sheet
 
-/// Presented from the toolbar's gear button (see JotTextView.swift's
-/// Coordinator). A plain drag-to-reorder List — no icons-in-a-row editor,
-/// just the standard iOS reorder pattern (EditButton-style drag handles),
-/// same interaction MarkdownEditorView.swift's own ToolbarCustomizeSheet
-/// already uses.
-struct JotToolbarCustomizeSheet: View {
+/// Presented from the toolbar's slider button (see JotTextView.swift's
+/// Coordinator). Two sections: the drag-to-reorder toolbar list this sheet
+/// was originally built for, and a text-size slider added 2026-08-24.
+///
+/// **Why the size control lives here rather than as A- / A+ buttons in the
+/// toolbar row**, David's call when asked: the row already carries six
+/// formatting buttons plus this one and a Done button, and on an iPhone that
+/// is a full bar. The sheet is a tap he already makes, and it has room for a
+/// live preview line, which two nudge buttons do not.
+///
+/// `onDone` now hands back both values. It stayed a single callback rather
+/// than splitting into two so the caller keeps one place to rebuild from —
+/// the toolbar and the font are applied in the same pass.
+struct JotSettingsSheet: View {
     @State private var items: [JotToolbarItemID]
-    var onDone: ([JotToolbarItemID]) -> Void
+    @State private var fontSize: CGFloat
+    var onDone: ([JotToolbarItemID], CGFloat) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    init(current: [JotToolbarItemID], onDone: @escaping ([JotToolbarItemID]) -> Void) {
-        _items = State(initialValue: current)
+    init(currentOrder: [JotToolbarItemID],
+         currentFontSize: CGFloat,
+         onDone: @escaping ([JotToolbarItemID], CGFloat) -> Void) {
+        _items = State(initialValue: currentOrder)
+        _fontSize = State(initialValue: currentFontSize)
         self.onDone = onDone
     }
 
@@ -122,24 +168,77 @@ struct JotToolbarCustomizeSheet: View {
         NavigationStack {
             List {
                 Section {
+                    // Preview sits above the slider so the thumb never covers
+                    // it under a dragging finger.
+                    Text("The quick brown fox jumps over the lazy dog.")
+                        .font(.system(size: fontSize))
+                        .foregroundStyle(.primary)
+                        .padding(.vertical, 4)
+
+                    HStack(spacing: 12) {
+                        Text("A")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                        Slider(
+                            value: $fontSize,
+                            in: kJotFontSizeRange,
+                            step: 1
+                        )
+                        Text("A")
+                            .font(.system(size: 20))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack {
+                        Text("Size")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(Int(fontSize))")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                        // An explicit way back to 20 — a slider with no
+                        // marked default gives no way to find it again once
+                        // it has been moved.
+                        Button("Reset") {
+                            fontSize = kJotFontSizeDefault
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(fontSize == kJotFontSizeDefault)
+                    }
+                    .font(.system(size: 13))
+                } header: {
+                    Text("Text Size")
+                } footer: {
+                    Text("Applies to the text you type. The header and toolbar stay the same size.")
+                }
+
+                Section {
                     ForEach(items) { item in
                         Label(item.label, systemImage: item.systemImage)
                     }
                     .onMove { source, destination in
                         items.move(fromOffsets: source, toOffset: destination)
                     }
+                } header: {
+                    Text("Toolbar")
                 } footer: {
                     Text("Drag to reorder toolbar buttons")
                 }
+                // Scoped to this Section, not the whole List as it was before
+                // the Text Size section existed. An always-active editMode on
+                // the List indents every row and can grey out controls in
+                // rows that aren't movable, which would reach the slider and
+                // the Reset button.
+                .environment(\.editMode, .constant(.active))
             }
-            .environment(\.editMode, .constant(.active))
-            .navigationTitle("Customize Toolbar")
+            .navigationTitle("Jot Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
                         saveJotToolbarOrder(items)
-                        onDone(items)
+                        saveJotFontSize(fontSize)
+                        onDone(items, fontSize)
                         dismiss()
                     }
                 }

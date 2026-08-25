@@ -34,6 +34,32 @@ struct MacColumnResizer: View {
     var minWidth: Double = 160
     var maxWidth: Double = 560
 
+    /// **Which side of this strip the resized view is on.**
+    ///
+    /// Added Session 73, and it was a real bug rather than a missing option.
+    /// Every caller until now put the resized column to the LEFT of the strip,
+    /// so `base + translation.width` was right and looked like a general rule.
+    /// Satchel's filter pane is the first one on the RIGHT, and there dragging
+    /// left has to make it WIDER — the same arithmetic pushes it the other way
+    /// and the pane runs away from the pointer.
+    ///
+    /// David, who found it the moment he tried: *"what i meant for the
+    /// draggable right pane is to do that by dragging on the screen, not having
+    /// to go into the settings."* It was draggable. It was draggable backwards,
+    /// which reads exactly like not being draggable at all.
+    ///
+    /// Defaulted to `.leading` so the three existing call sites keep the
+    /// behaviour they already have.
+    var edge: HorizontalEdge = .leading
+
+    /// Draw a hairline down the middle of the strip.
+    ///
+    /// Off by default: the existing resizers sit between two columns that are
+    /// already visually separated, and a second line there would be noise. The
+    /// filter pane needs it, because a 6pt invisible strip at the window's
+    /// trailing edge gives you nothing to aim at and nothing to notice.
+    var showsLine = false
+
     /// Width when the current drag began.
     ///
     /// `DragGesture.translation` is measured from the start of the drag, not
@@ -54,12 +80,26 @@ struct MacColumnResizer: View {
             .fill(Color.primary.opacity(0.001))
             .frame(width: 6)
             .contentShape(Rectangle())
+            // A `Rectangle`, not a `Divider`. `Divider` takes its orientation
+            // from the stack it is in and this is an overlay, so it would draw
+            // horizontally across a 6pt strip and look like a defect.
+            .overlay {
+                if showsLine {
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor))
+                        .frame(width: 1)
+                }
+            }
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { value in
                         let base = startWidth ?? width
                         if startWidth == nil { startWidth = base }
-                        width = min(maxWidth, max(minWidth, base + value.translation.width))
+                        // Trailing panes grow leftwards.
+                        let delta = edge == .leading
+                            ? value.translation.width
+                            : -value.translation.width
+                        width = min(maxWidth, max(minWidth, base + delta))
                     }
                     .onEnded { _ in startWidth = nil }
             )

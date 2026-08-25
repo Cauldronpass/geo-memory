@@ -248,6 +248,34 @@ struct TraceMacContentView: View {
         .onChange(of: selectedSection) { _, new in
             navigator.record(.section(new ?? .notes))
         }
+        // Session 73. Satchel's filter-pane shortcut, user-settable in Settings.
+        //
+        // **Installed here, not in the Satchel view**, so it means something
+        // from every section: pressed from Notes it switches to Satchel and
+        // opens the pane; pressed while already there it toggles. A shortcut
+        // that silently does nothing on five of seven tabs is a shortcut you
+        // stop trusting, and "nothing happened" is indistinguishable from
+        // "it is broken".
+        //
+        // Capturing `selectedSection` in an escaping closure is safe **here and
+        // only here**: this is the root view, the binding's storage outlives
+        // every closure it could hand out, and `install` reassigns its handler
+        // on each call rather than stacking monitors. Do not copy the pattern
+        // into a view that comes and goes.
+        .onAppear {
+            MacSatchelFilterShortcut.shared.install {
+                if selectedSection == .documents {
+                    SatchelFilterPane.toggle()
+                } else {
+                    // Open, not toggle. You asked for the filters; arriving with
+                    // them shut would be the shortcut answering a different
+                    // question.
+                    SatchelFilterPane.show()
+                    selectedSection = .documents
+                }
+            }
+        }
+        .onDisappear { MacSatchelFilterShortcut.shared.uninstall() }
         // The header arrows, consumed here because this is the view that holds
         // the pending-link state a move is made of.
         .onChange(of: navigator.pendingReplay) { _, place in

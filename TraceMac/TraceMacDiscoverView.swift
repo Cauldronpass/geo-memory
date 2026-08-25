@@ -77,6 +77,11 @@ struct TraceMacDiscoverView: View {
     @State private var searchResults: [GooglePlace] = []
     @State private var isSearching = false
     @State private var searchError: String?
+    /// The search worked, but not the usual way — today that means Google
+    /// refused and MapKit answered instead. Kept apart from `searchError`
+    /// because there are real results on screen and colouring them red would
+    /// be its own small lie. Same split as the phone's (D138).
+    @State private var searchNotice: String?
     @State private var searchTask: Task<Void, Never>?
 
     @State private var cameraPosition: MapCameraPosition = .automatic
@@ -127,7 +132,13 @@ struct TraceMacDiscoverView: View {
     }
 
     private func isAlreadySaved(_ result: GooglePlace) -> Bool {
-        savedGooglePlaceIDs.contains(result.id)
+        // Google ids only. An Apple result's id is an `apple:` string that no
+        // stored record can legitimately hold, so the comparison could only
+        // ever produce a false positive against a corrupted row. It returns
+        // false today either way; the guard is here so the next reader does not
+        // have to work that out.
+        guard result.source == .google else { return false }
+        return savedGooglePlaceIDs.contains(result.id)
     }
 
     // What the list shows: search results while actively searching, otherwise
@@ -156,11 +167,20 @@ struct TraceMacDiscoverView: View {
     // places — otherwise typing with Search toggled off does nothing to the
     // Saved list, which is confusing (flagged by David 2026-07-06).
     private func matchesSearchText(_ place: Place) -> Bool {
-        let trimmed = searchText.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return true }
-        return place.name.localizedCaseInsensitiveContains(trimmed)
-            || place.category.localizedCaseInsensitiveContains(trimmed)
-            || place.tags.contains { $0.localizedCaseInsensitiveContains(trimmed) }
+        // Token matching, 2026-08-24, same pass as the phone's. This was
+        // `localizedCaseInsensitiveContains(trimmed)` on the whole query, so
+        // "Arlington Animal" found nothing here either. **Fixed in the same
+        // pass on purpose** — David reported it against one search, but every
+        // search in the app had it, and repairing them one at a time is how two
+        // screens end up disagreeing about what a two-word query means.
+        let tokens = TokenMatch.tokens(from: searchText)
+        guard !tokens.isEmpty else { return true }
+        var haystacks = [
+            TokenMatch.normalize(place.name),
+            TokenMatch.normalize(place.category)
+        ]
+        haystacks.append(contentsOf: place.tags.map { TokenMatch.normalize($0) })
+        return TokenMatch.matchesAll(tokens, inNormalized: haystacks)
     }
 
     // Saved places and search results, filtered but NOT yet gated by the
@@ -386,6 +406,14 @@ struct TraceMacDiscoverView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
             }
+
+            if let notice = searchNotice {
+                Label(notice, systemImage: "map")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+            }
         }
         .frame(maxWidth: 420)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
@@ -521,6 +549,7 @@ struct TraceMacDiscoverView: View {
         guard !trimmed.isEmpty else {
             searchResults = []
             searchError = nil
+            searchNotice = nil
             return
         }
         // Search source toggled off — the typed text still filters Saved
@@ -537,17 +566,53 @@ struct TraceMacDiscoverView: View {
     private func runSearch(_ query: String) async {
         isSearching = true
         searchError = nil
+        searchNotice = nil
         do {
             let results = try await GooglePlacesService.shared.textSearch(query: query, coordinate: cameraCenter)
             guard !Task.isCancelled else { return }
-            searchResults = results
             if results.isEmpty {
-                searchError = "No results. If this persists, check the Google Places key in Settings."
+                // Google ran and matched nothing. Ask MapKit before concluding
+                // the place does not exist — the two indexes genuinely differ.
+                await fallBackToAppleMaps(query, googleFailure: nil)
+            } else {
+                searchResults = results
             }
         } catch {
-            searchError = error.localizedDescription
+            guard !Task.isCancelled else { return }
+            // **The Mac reached this pass second and for a reason worth
+            // recording.** It already showed the error, which is why it was
+            // never as blind as the phone was — but showing an error is not the
+            // same as still working. `AppleMapsSearchService` needs no key, no
+            // billing and no quota, so the Mac's Discover now survives the
+            // thing that took the phone's out for an entire trip (D137/D138).
+            await fallBackToAppleMaps(query, googleFailure: error.localizedDescription)
         }
         isSearching = false
+    }
+
+    /// Same three outcomes the phone distinguishes: Apple found things (show
+    /// them, blue note if Google had failed), Apple found nothing and Google had
+    /// failed (show Google's error, which is still the actionable fact), Apple
+    /// found nothing and Google was merely empty (plain no-results).
+    private func fallBackToAppleMaps(_ query: String, googleFailure: String?) async {
+        let appleResults = (try? await AppleMapsSearchService.search(
+            query: query,
+            near: cameraCenter
+        )) ?? []
+        guard !Task.isCancelled else { return }
+
+        if appleResults.isEmpty {
+            searchResults = []
+            searchError = googleFailure
+                ?? "No results. If this persists, check the Google Places key in Settings."
+            searchNotice = nil
+            return
+        }
+
+        searchResults = appleResults
+        searchError = nil
+        searchNotice = googleFailure.map { "Google Places unavailable. Showing Apple Maps results. (\($0))" }
+            ?? "Google found nothing. Showing Apple Maps results."
     }
 
     // MARK: - List
@@ -703,7 +768,11 @@ struct TraceMacDiscoverView: View {
         let placeID: String?
         switch pin {
         case .saved(let place):  placeID = place.googlePlaceID
-        case .search(let result): placeID = result.id
+        // **Apple results have no Google place ID to look up.** Sending the
+        // `apple:` string would spend a `GetPlaceRequest` on a call that cannot
+        // succeed, and the failure is swallowed below, so it would burn quota
+        // silently — against a per-day cap David has just set deliberately.
+        case .search(let result): placeID = result.source == .google ? result.id : nil
         }
         guard let placeID else { return }
         isLoadingReviews = true
@@ -1446,7 +1515,13 @@ private struct AddDiscoveredPlaceSheet: View {
                 category: category,
                 latitude: result.latitude,
                 longitude: result.longitude,
-                googlePlaceID: result.id,
+                // **Never store an Apple result's id here** — same guard the
+                // phone got with D138. It is not a Google place ID, and a
+                // record carrying a fake one matches nothing forever while
+                // looking perfectly healthy in Notion. Left nil so the place
+                // stays eligible for real enrichment later, via the
+                // "Re-enrich from Google" path in the place detail.
+                googlePlaceID: result.source == .google ? result.id : nil,
                 phone: result.phone,
                 website: result.website,
                 status: status

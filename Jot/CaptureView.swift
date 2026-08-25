@@ -129,6 +129,13 @@ struct CaptureView: View {
     @State private var showingDatePicker = false
     @State private var pickerDate = Date()
 
+    /// Editor body size, David's ask 2026-08-24. Seeded from UserDefaults at
+    /// launch and written by the settings sheet the toolbar's slider button
+    /// presents; `JotTextView` takes it as a binding so the two never
+    /// disagree. See `loadJotFontSize()` in JotFormattingToolbar.swift for
+    /// why this is a fixed settable number rather than Dynamic Type.
+    @State private var fontSize: CGFloat = loadJotFontSize()
+
     private static let draftTextKey = "jot_draft_text"
     private static let draftDateKey = "jot_draft_date"
 
@@ -305,7 +312,7 @@ struct CaptureView: View {
                 // old @FocusState/.focused() wiring is gone.
                 JotTextView(
                     text: $text,
-                    font: .systemFont(ofSize: 17),
+                    fontSize: $fontSize,
                     onPinSucceeded: {
                         errorMessage = nil
                         savedConfirmationText = "Pin dropped"

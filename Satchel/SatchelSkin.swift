@@ -130,6 +130,68 @@ extension SatchelSectionTitle where Trailing == EmptyView {
     }
 }
 
+// MARK: - Collapsible section title
+//
+// Session 73. David: *"please make Kind of thing and the browse sections as
+// expandable so they both dont take up the full space if i dont want them to.
+// Recent is a nice thing to see most of the time."*
+//
+// Two rows of chips plus a second titled row of colours had pushed Recent below
+// the fold on an iPhone, and Recent is the section he actually reads.
+//
+// ── The count is not decoration ───────────────────────────────────────────
+//
+// A collapsed section shows its count. Without it a folded Browse is a bare
+// word with nothing under it, which is indistinguishable from a section that
+// has nothing IN it — and Session 72 was spent twice on exactly that confusion,
+// once on a suppressed bucket header and once on a decision rendered nowhere.
+// **If the app is hiding something, it says how much.**
+//
+// ── The whole row is the target ───────────────────────────────────────────
+//
+// Not just the chevron. A 9pt glyph is a poor thumb target and the label beside
+// it looks tappable anyway, so making only the glyph work would produce a row
+// that responds to some taps and not others — which reads as broken rather than
+// as precise. Same reasoning as `chipGestures` being applied to every chip and
+// not only the long ones.
+struct SatchelCollapsibleSectionTitle: View {
+    let title: String
+    @Binding var isExpanded: Bool
+    /// Drawn when collapsed. See the note above: a folded section has to say
+    /// how much it is holding.
+    var collapsedCount: Int? = nil
+
+    var body: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.22)) { isExpanded.toggle() }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(title.uppercased())
+                    .font(.system(size: 12.5, weight: .bold))
+                    .kerning(0.6)
+                    .foregroundStyle(Color.satchelSecondary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.satchelTertiary)
+                    // Rotated rather than swapped for `chevron.right`: the
+                    // rotation animates and shows which way it is going, and a
+                    // glyph swap at 9pt just blinks.
+                    .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                if !isExpanded, let collapsedCount {
+                    Text("\(collapsedCount)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.satchelTertiary)
+                }
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 6)
+            .padding(.bottom, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Document mark
 //
 // The glyph-on-tinted-tile that identifies every document. Scope doc §5 says it

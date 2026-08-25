@@ -50,6 +50,7 @@ struct SatchelLibraryView: View {
     enum ChipRoute: Hashable, Identifiable {
         case endeavor(String)
         case type(DocumentIcon)
+        case tint(DocumentTint)
         case allTrips
         case allTypes
         var id: Self { self }
@@ -83,6 +84,17 @@ struct SatchelLibraryView: View {
     /// text to clear.
     @FocusState private var searchFocused: Bool
 
+    // Session 73. Both default to open, so nothing moves under him until he
+    // folds one — and then it stays folded, which is the entire point. A
+    // collapse that resets on launch is a control you use once and stop
+    // trusting, the same defect `MacColumnResizer` was built to fix on the Mac
+    // side (`@State private var sidebarWidth` resetting every morning).
+    //
+    // Plain `UserDefaults` via `@AppStorage`, not the App Group suite: this is
+    // one app's view state and nothing else reads it.
+    @AppStorage("satchel.browse.expanded") private var browseExpanded = true
+    @AppStorage("satchel.kinds.expanded") private var kindsExpanded = true
+
     private var kit: KitMembership.Layout {
         KitMembership.assemble(
             documents: store.documents,
@@ -95,9 +107,11 @@ struct SatchelLibraryView: View {
     }
 
     private var searchResults: [TraceMacDocument] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return [] }
-        return store.documents.filter { SatchelDocumentSearch.matches($0, q) }
+        // Tokenised once per search, not once per document — see
+        // `DocumentSearch.tokens(from:)`.
+        let tokens = DocumentSearch.tokens(from: query)
+        guard !tokens.isEmpty else { return [] }
+        return store.documents.filter { DocumentSearch.matches($0, tokens: tokens) }
     }
 
     var body: some View {
@@ -204,6 +218,9 @@ struct SatchelLibraryView: View {
                 case .type(let type):
                     SatchelAllDocumentsView(documents: store.documents,
                                             store: store, type: type)
+                case .tint(let tint):
+                    SatchelAllDocumentsView(documents: store.documents,
+                                            store: store, tint: tint)
                 case .allTrips:
                     SatchelEndeavorIndexView(documents: store.documents,
                                              store: store, endeavorStore: endeavorStore)
@@ -558,8 +575,21 @@ struct SatchelLibraryView: View {
 
     // MARK: Browse
     //
-    // Browse leads with TYPE, because that is how David retrieves: *kind of thing
-    // it is* first, then name, then date, tags last. The row used to lead with
+    // Browse leads with SUBJECT, because that is how David retrieves: *what the
+    // document is about* first, then name, then date, tags last.
+    //
+    // **It said TYPE until Session 73**, and so did every string on this screen.
+    // That word was chosen before D123 existed; D123 then gave "kind of thing"
+    // to COLOUR and left the icon answering "what is it ABOUT". The phone went on
+    // saying Type for the icon while the Mac's pane said TYPE and meant the
+    // colour, so one word named opposite axes in two apps built from one model.
+    // Three words now, each true and each used in exactly one place:
+    //
+    //   Subject — the icon. What the document is about.
+    //   Kind    — the colour. What kind of thing it is. D123's own phrase.
+    //   Format  — PDF or image. Was `Kind`, which is what forced the collision.
+    //
+    // The row used to lead with
     // Endeavors / Notes / Places / Tags — an arrangement from before the type
     // taxonomy existed, where a document with no tags, no linked note and no
     // Endeavor appeared under nothing at all.
@@ -589,62 +619,153 @@ struct SatchelLibraryView: View {
     private var browseSection: some View {
         if !typeCounts.isEmpty || !endeavorCounts.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
-                SatchelSectionTitle("Browse")
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 104), spacing: 8)],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    ForEach(shownEndeavors, id: \.0) { id, name, count in
-                        SatchelBrowseChip(label: name, count: count, endeavor: true)
-                            .chipGestures(id: id, name: name, count: count,
-                                          revealed: $revealedChip) {
-                                chipRoute = .endeavor(id)
-                            }
-                    }
+                SatchelCollapsibleSectionTitle(title: "Browse",
+                                               isExpanded: $browseExpanded,
+                                               collapsedCount: browseChipCount)
+                if browseExpanded {
+                    // 160, matching the colour row below. See the long note
+                    // there for where the number comes from.
+                    //
+                    // This row was left at 104 for one pass, on the argument
+                    // that Endeavor names are arbitrarily long and truncate at
+                    // any width, so widening buys nothing the long press does
+                    // not already give. **David: "same for the browse then."**
+                    // He is right, and the argument was answering the wrong
+                    // question: it asked whether wider cells fix truncation
+                    // here, when what matters is that these two grids sit two
+                    // rows apart. Chips of two different widths stacked like
+                    // that read as a mistake, and no user has the context to
+                    // know that one row has a fixed vocabulary and the other
+                    // does not.
+                    //
+                    // Type labels also stop truncating as a side effect —
+                    // `Reference` and `Education` did not fit at 104 either.
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 160), spacing: 8)],
+                        alignment: .leading,
+                        spacing: 8
+                    ) {
+                        ForEach(shownEndeavors, id: \.0) { id, name, count in
+                            SatchelBrowseChip(label: name, count: count, endeavor: true)
+                                .chipGestures(id: id, name: name, count: count,
+                                              revealed: $revealedChip) {
+                                    chipRoute = .endeavor(id)
+                                }
+                        }
 
-                    // THE DOOR TO THE REST. Two chips have always been the cap,
-                    // and until now the third trip onwards was reachable only by
-                    // searching for a name you had to already remember. `All
-                    // types` has had this door since the row was built; trips
-                    // never got one. David, 2026-08-01: *"being able to see files
-                    // for endeavors would be nice (a filter or a way to look at
-                    // past trips and the documents that are associated)."*
-                    if endeavorCounts.count > Self.endeavorChipLimit {
-                        SatchelBrowseChip(label: "All trips",
-                                          count: endeavorCounts.count,
-                                          showsChevron: true)
-                            .chipGestures(id: "all-trips", name: "All trips",
-                                          count: endeavorCounts.count,
-                                          revealed: $revealedChip) {
-                                chipRoute = .allTrips
-                            }
-                    }
+                        // THE DOOR TO THE REST. Two chips have always been the cap,
+                        // and until now the third trip onwards was reachable only by
+                        // searching for a name you had to already remember. `All
+                        // types` has had this door since the row was built; trips
+                        // never got one. David, 2026-08-01: *"being able to see files
+                        // for endeavors would be nice (a filter or a way to look at
+                        // past trips and the documents that are associated)."*
+                        if endeavorCounts.count > Self.endeavorChipLimit {
+                            SatchelBrowseChip(label: "All trips",
+                                              count: endeavorCounts.count,
+                                              showsChevron: true)
+                                .chipGestures(id: "all-trips", name: "All trips",
+                                              count: endeavorCounts.count,
+                                              revealed: $revealedChip) {
+                                    chipRoute = .allTrips
+                                }
+                        }
 
-                    ForEach(shownTypes, id: \.0) { type, count in
-                        SatchelBrowseChip(type: type, count: count)
-                            .chipGestures(id: type.label, name: type.label, count: count,
-                                          revealed: $revealedChip) {
-                                chipRoute = .type(type)
-                            }
-                    }
+                        ForEach(shownTypes, id: \.0) { type, count in
+                            SatchelBrowseChip(type: type, count: count)
+                                .chipGestures(id: type.label, name: type.label, count: count,
+                                              revealed: $revealedChip) {
+                                    chipRoute = .type(type)
+                                }
+                        }
 
-                    if typeCounts.count > shownTypes.count {
-                        SatchelBrowseChip(label: "All types",
-                                          count: typeCounts.count,
-                                          showsChevron: true)
-                            .chipGestures(id: "all-types", name: "All types",
-                                          count: typeCounts.count,
-                                          revealed: $revealedChip) {
-                                chipRoute = .allTypes
+                        if typeCounts.count > shownTypes.count {
+                            SatchelBrowseChip(label: "All subjects",
+                                              count: typeCounts.count,
+                                              showsChevron: true)
+                                .chipGestures(id: "all-subjects", name: "All subjects",
+                                              count: typeCounts.count,
+                                              revealed: $revealedChip) {
+                                    chipRoute = .allTypes
+                                }
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                }
+
+                // The colour axis, Session 73. Its own titled row rather than
+                // more chips in the grid above: they answer a different
+                // question, and mixed into one grid the only thing telling them
+                // apart would be that some are round-cornered squares of colour
+                // and some are glyphs. That is a distinction you have to be told
+                // about, which means it is not one.
+                //
+                // "Kind", D123's own word for what colour answers. Session 73
+                // freed it: the icon axis gave up "Type" for "Subject" and the
+                // PDF-or-image filter gave up "Kind" for "Format".
+                if !tintCounts.isEmpty {
+                    SatchelCollapsibleSectionTitle(title: "Kind",
+                                                   isExpanded: $kindsExpanded,
+                                                   collapsedCount: tintCounts.count)
+                        .padding(.top, 14)
+                    if kindsExpanded {
+                        // **160, not the 104 the Browse grid above uses.**
+                        //
+                        // Session 73. At 104 an iPhone fits three columns, which
+                        // leaves about 42pt for the label once the swatch, the
+                        // count and the padding are paid for — roughly six
+                        // characters. Paid fitted and Booked did not, and because
+                        // SwiftUI shares the squeeze between the label and the
+                        // count it truncated INCONSISTENTLY: Official survived
+                        // while Untyped became `Unty…`. That inconsistency is
+                        // what made it read as a defect rather than as tight.
+                        //
+                        // 160 gives two columns on every iPhone size — 328pt of
+                        // grid against 333 available on the narrowest, 351 on a
+                        // regular Pro — and about 100pt of label, which clears
+                        // "Needs action" with room. It stays `.adaptive` rather
+                        // than two `.flexible()` columns so an iPad still uses
+                        // the width it has.
+                        //
+                        // Browse above uses the same 160. It was briefly left
+                        // at 104 on the argument that Endeavor names truncate at
+                        // any width anyway; that argument was true and beside
+                        // the point, since the two grids are two rows apart and
+                        // chips of two widths that close read as a mistake.
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 160), spacing: 8)],
+                            alignment: .leading,
+                            spacing: 8
+                        ) {
+                            ForEach(tintCounts, id: \.0) { tint, count in
+                                SatchelBrowseChip(tint: tint, count: count)
+                                    .chipGestures(id: "tint-" + tint.rawValue,
+                                                  name: tint.satchelLongLabel,
+                                                  count: count,
+                                                  revealed: $revealedChip) {
+                                        chipRoute = .tint(tint)
+                                    }
                             }
+                        }
+                        .padding(.horizontal, 6)
                     }
                 }
-                .padding(.horizontal, 6)
             }
             .padding(.horizontal, 15)
             .padding(.bottom, 14)
         }
+    }
+
+    /// How many chips Browse is holding when it is folded shut.
+    ///
+    /// Counts what the row would actually DRAW, doors included, not how many
+    /// types and trips exist. A folded section saying 24 that opens to show
+    /// six chips has told you something false.
+    private var browseChipCount: Int {
+        shownEndeavors.count
+            + (endeavorCounts.count > Self.endeavorChipLimit ? 1 : 0)
+            + shownTypes.count
+            + (typeCounts.count > shownTypes.count ? 1 : 0)
     }
 
     /// The most-used types, capped, then sorted alphabetically so their positions
@@ -693,6 +814,26 @@ struct SatchelLibraryView: View {
         return counts
             .sorted { $0.value == $1.value ? $0.key.label < $1.key.label : $0.value > $1.value }
             .map { ($0.key, $0.value) }
+    }
+
+    /// Colours in use, in the palette's own documented order.
+    ///
+    /// **Not sorted by count, and not capped.** There are only ever six type
+    /// colours plus the two reserved ones, so the row cannot run away — the
+    /// fixed-footprint problem the type chips have does not exist here. Fixed
+    /// order for the same reason §5 gives: a target that moves is worse than
+    /// one you have to look for once. `DocumentTint.typeCases` is the order the
+    /// scan prompt and both pickers already read down.
+    private var tintCounts: [(DocumentTint, Int)] {
+        var counts: [DocumentTint: Int] = [:]
+        for doc in store.documents {
+            counts[doc.resolvedTint, default: 0] += 1
+        }
+        let order = DocumentTint.typeCases + [.amber, .red]
+        return order.compactMap { t in
+            guard let n = counts[t], n > 0 else { return nil }
+            return (t, n)
+        }
     }
 
     private var endeavorCounts: [(String, String, Int)] {
@@ -931,45 +1072,10 @@ struct SatchelLibraryView: View {
 /// The linked note is matched on its display name, not its path: nobody types
 /// "Notes/People/", and matching the raw path would let "notes" match every
 /// document in the library.
-enum SatchelDocumentSearch {
-
-    /// `q` must already be lowercased and trimmed — both callers do it once,
-    /// before filtering, rather than per document.
-    ///
-    /// Written as `_ lowercasedQuery q: String` at first, which is not valid
-    /// Swift: that is two argument labels for one parameter. The intent belongs in
-    /// the doc comment, not smuggled into the signature.
-    static func matches(_ doc: TraceMacDocument, _ q: String) -> Bool {
-        if q.isEmpty { return false }
-        if doc.title.lowercased().contains(q) { return true }
-        if doc.description.lowercased().contains(q) { return true }
-        if doc.tags.contains(where: { $0.lowercased().contains(q) }) { return true }
-        if let name = doc.endeavorName, name.lowercased().contains(q) { return true }
-        if doc.people.contains(where: { $0.lowercased().contains(q) }) { return true }
-        if let note = doc.linkedNote, noteDisplayNameForSearch(note).lowercased().contains(q) {
-            return true
-        }
-        // The type's own label — "receipt", "card", "statement". It is a visible
-        // chip on every row, so it is a reasonable thing to type.
-        if doc.resolvedIcon.label.lowercased().contains(q) { return true }
-        // **THE WORDS ON THE PAGE.** David, on a private capture: *"nothing shows
-        // up when i search for keywords."* The text was there — extraction writes
-        // `## Text` into the sidecar and the global search engine indexes
-        // `extractedText` — but Satchel's own library search never consulted it,
-        // so the one screen showing the document could not find it by contents.
-        //
-        // It matters most for exactly the documents the AI cannot describe: a
-        // private capture has no AI title and no AI tags, so the page's own
-        // words are all there is to search.
-        if doc.extractedText.lowercased().contains(q) { return true }
-        return false
-    }
-
-    /// `Notes/People/Mitch Weiss.md` → `Mitch Weiss`.
-    private static func noteDisplayNameForSearch(_ path: String) -> String {
-        ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-    }
-}
+// `SatchelDocumentSearch` lived here until 2026-08-24. It is now
+// `DocumentSearch` in `Trace/DocumentSearchPredicate.swift`, shared with
+// TraceMac through `membershipExceptions` — one predicate rather than two kept
+// in step by hand. See that file's header for what the hand-keeping cost.
 
 struct DocumentCard: View {
     let documents: [TraceMacDocument]
@@ -1147,12 +1253,53 @@ func relativeDateLabel(_ date: Date?) -> String {
 /// as the same visual system as the tiles and rows it filters to. An Endeavor
 /// chip is indigo, matching the auto-Kit marker, so the two kinds of chip are
 /// answering visibly different questions.
+// MARK: - Short names for the colour axis
+//
+// Session 73. The colour axis reaches the phone as Browse chips, and a chip is
+// about eleven characters wide. `DocumentTint.typeMeaning` is a sentence —
+// "Receipt, bill, proof of payment" — which is right for the scan prompt and
+// for the Mac pane's list, and impossible here.
+//
+// **These six words are new vocabulary and they are chosen to collide with
+// nothing.** No `DocumentIcon` label is Paid, Booked, Official, Reference,
+// Personal or Untyped — which matters most for green: calling it "Receipts"
+// would put it a thumb away from the `receipt` SUBJECT chip, two chips reading
+// the same and filtering differently.
+//
+// The long press every chip already has reveals the full sentence, and the
+// filtered screen is titled with it, so nothing is lost by shortening.
+//
+// The wider naming collision this note used to describe — "type" meaning the
+// icon here and the colour on the Mac — was resolved later the same session.
+// See the Subject / Kind / Format note above `browseSection`.
+extension DocumentTint {
+    var satchelShortLabel: String {
+        switch self {
+        case .green:  return "Paid"
+        case .blue:   return "Booked"
+        case .indigo: return "Official"
+        case .teal:   return "Reference"
+        case .rose:   return "Personal"
+        case .gray:   return "Untyped"
+        case .amber:  return "Private"
+        case .red:    return "Needs action"
+        }
+    }
+
+    /// What the long press reveals, and what the filtered screen is titled.
+    var satchelLongLabel: String { typeMeaning ?? satchelShortLabel }
+}
+
 struct SatchelBrowseChip: View {
     var type: DocumentIcon? = nil
+    /// The colour axis. Draws a plain swatch rather than a glyph — the whole
+    /// point of this chip is that colour IS the content, so putting an icon in
+    /// it would say the subject axis is answering again.
+    var tint: DocumentTint? = nil
     var label: String = ""
     let count: Int
     var endeavor: Bool = false
-    /// The "All types" chip — swaps the mark for a grid glyph and adds a chevron,
+    /// The "All subjects" chip — swaps the mark for a grid glyph and adds a chevron,
     /// so the door to the full list does not look like just another type.
     var showsChevron: Bool = false
 
@@ -1161,6 +1308,14 @@ struct SatchelBrowseChip: View {
             if let type {
                 SatchelDocumentMark(icon: type, tint: type.defaultTint,
                                     size: 26, cornerRadius: 8, glyphSize: 14)
+            } else if let tint {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(tint.background)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(tint.foreground.opacity(0.45), lineWidth: 1.5)
+                    }
+                    .frame(width: 26, height: 26)
             } else {
                 Image(systemName: showsChevron ? "square.grid.2x2" : "briefcase.fill")
                     .font(.system(size: 11, weight: .semibold))
@@ -1170,7 +1325,7 @@ struct SatchelBrowseChip: View {
                                 in: RoundedRectangle(cornerRadius: 8))
             }
 
-            Text(type?.label ?? label)
+            Text(type?.label ?? tint?.satchelShortLabel ?? label)
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(endeavor ? Color.satchelAuto : Color.satchelInk)
                 .lineLimit(1)
@@ -1555,7 +1710,7 @@ func noteOwnerAppURL(for path: String?) -> (label: String, url: URL)? {
 
 // MARK: - Type index
 //
-// The door behind `All types`. Every type in use, alphabetical, with counts.
+// The door behind `All subjects`. Every subject in use, alphabetical, with counts.
 // Alphabetical rather than by count on purpose: this is the screen you come to
 // when the chip you wanted was not on the Library, so it is scanned by name.
 
@@ -1609,7 +1764,7 @@ struct SatchelTypeIndexView: View {
             .padding(.bottom, 30)
         }
         .satchelBackground()
-        .navigationTitle("All types")
+        .navigationTitle("All subjects")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -2944,7 +3099,7 @@ struct SatchelAllDocumentsView: View {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .all:   return "Any kind"
+            case .all:   return "Any format"
             case .pdf:   return "PDFs"
             case .image: return "Images"
             }
@@ -2954,6 +3109,7 @@ struct SatchelAllDocumentsView: View {
     @State private var sort: Sort = .newest
     @State private var kind: Kind = .all
     @State private var type: DocumentIcon? = nil
+    @State private var tint: DocumentTint? = nil
     @State private var endeavorID: String? = nil
     @State private var tag: String? = nil
     @State private var kitOnly = false
@@ -2966,10 +3122,12 @@ struct SatchelAllDocumentsView: View {
     init(documents: [TraceMacDocument],
          store: iOSDocumentStore,
          type: DocumentIcon? = nil,
+         tint: DocumentTint? = nil,
          endeavorID: String? = nil) {
         self.documents = documents
         self.store = store
         _type = State(initialValue: type)
+        _tint = State(initialValue: tint)
         _endeavorID = State(initialValue: endeavorID)
     }
 
@@ -2984,10 +3142,18 @@ struct SatchelAllDocumentsView: View {
         Array(Set(documents.flatMap { $0.tags })).sorted()
     }
 
+    /// Same rule as `availableTypes`: only colours something is actually
+    /// wearing. In the palette's fixed order rather than by count.
+    private var availableTints: [DocumentTint] {
+        let present = Set(documents.map { $0.resolvedTint })
+        return (DocumentTint.typeCases + [.amber, .red]).filter { present.contains($0) }
+    }
+
     private var filtered: [TraceMacDocument] {
         var out = documents
 
         if let type { out = out.filter { $0.resolvedIcon == type } }
+        if let tint { out = out.filter { $0.resolvedTint == tint } }
         if let endeavorID { out = out.filter { $0.endeavor == endeavorID } }
         if let tag { out = out.filter { $0.tags.contains(tag) } }
         if kitOnly { out = out.filter { $0.pinned } }
@@ -2997,12 +3163,14 @@ struct SatchelAllDocumentsView: View {
         case .image: out = out.filter { $0.isImage }
         }
 
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !q.isEmpty {
-            // Shared predicate. These two searches had drifted apart already —
-            // the Library's matched the Endeavor name and this one did not — which
-            // is how "it finds it on one screen but not the other" happens.
-            out = out.filter { SatchelDocumentSearch.matches($0, q) }
+        let tokens = DocumentSearch.tokens(from: query)
+        if !tokens.isEmpty {
+            // Shared predicate — now shared with the Mac as well, not just with
+            // the Library screen above. These two searches had drifted apart
+            // once already, which is how "it finds it on one screen but not the
+            // other" happens; `DocumentSearch` is the file that makes that
+            // impossible rather than merely unlikely.
+            out = out.filter { DocumentSearch.matches($0, tokens: tokens) }
         }
 
         switch sort {
@@ -3091,7 +3259,7 @@ struct SatchelAllDocumentsView: View {
     }
 
     private var isFiltered: Bool {
-        type != nil || endeavorID != nil || tag != nil || kitOnly || kind != .all
+        type != nil || tint != nil || endeavorID != nil || tag != nil || kitOnly || kind != .all
     }
 
     private var endeavorLabel: String? {
@@ -3103,6 +3271,10 @@ struct SatchelAllDocumentsView: View {
     /// chip should say Receipts.
     private var screenTitle: String {
         if let type { return "\(type.label) · \(filtered.count)" }
+        // The long name, not the chip's short one. A screen has room for
+        // "Receipt, bill, proof of payment" and arriving from a chip labelled
+        // Paid is exactly when you want to be told what Paid meant.
+        if let tint { return "\(tint.satchelLongLabel) · \(filtered.count)" }
         if let endeavorLabel { return "\(endeavorLabel) · \(filtered.count)" }
         if filtered.count == documents.count { return "\(documents.count) documents" }
         return "\(filtered.count) of \(documents.count)"
@@ -3158,14 +3330,33 @@ struct SatchelAllDocumentsView: View {
                         }
                     }
 
-                    Picker("Kind", selection: $kind) {
+                    // `Kind` the Swift type, `Format` the word on screen.
+                    // Renaming the enum is churn with no user visible in it, and
+                    // it would land in the same commit as a shipping batch. The
+                    // three words that matter are the ones he reads.
+                    Picker("Format", selection: $kind) {
                         ForEach(Kind.allCases) { option in
                             Text(option.label).tag(option)
                         }
                     }
 
-                    Menu("Type") {
-                        Button("Any type") { type = nil }
+                    Menu("Kind") {
+                        Button("Any kind") { tint = nil }
+                        ForEach(availableTints, id: \.self) { candidate in
+                            Button {
+                                tint = (tint == candidate) ? nil : candidate
+                            } label: {
+                                if tint == candidate {
+                                    Label(candidate.satchelShortLabel, systemImage: "checkmark")
+                                } else {
+                                    Text(candidate.satchelShortLabel)
+                                }
+                            }
+                        }
+                    }
+
+                    Menu("Subject") {
+                        Button("Any subject") { type = nil }
                         ForEach(availableTypes, id: \.self) { candidate in
                             Button {
                                 type = (type == candidate) ? nil : candidate
@@ -3220,6 +3411,7 @@ struct SatchelAllDocumentsView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 7) {
                 if let type { filterChip(type.label, systemImage: type.sfSymbol) { self.type = nil } }
+                if let tint { filterChip(tint.satchelShortLabel, systemImage: "circle.fill") { self.tint = nil } }
                 if let endeavorLabel { filterChip(endeavorLabel, systemImage: "briefcase") { self.endeavorID = nil } }
                 if let tag { filterChip(tag, systemImage: "tag") { self.tag = nil } }
                 if kitOnly { filterChip("In Kit", systemImage: "pin.fill") { kitOnly = false } }
@@ -3249,7 +3441,7 @@ struct SatchelAllDocumentsView: View {
     }
 
     private func clearFilters() {
-        type = nil; endeavorID = nil; tag = nil; kitOnly = false; kind = .all
+        type = nil; tint = nil; endeavorID = nil; tag = nil; kitOnly = false; kind = .all
     }
 }
 

@@ -377,6 +377,110 @@ class NoteStore {
         • Tap ☐ toolbar button to insert a checkbox
         """
         try? sample.write(to: dailyFile, atomically: true, encoding: .utf8)
+
+        seedEndeavors(at: root)
+    }
+
+    /// Endeavor notes for the Simulator, and **only** for the Simulator.
+    ///
+    /// ── Why this exists ──────────────────────────────────────────────────
+    ///
+    /// Session 73. David spent an evening unable to find Session 72's Endeavor
+    /// row on the visit sheet. It was not broken and his build was current: the
+    /// row draws only when an endeavor claims the visit, and **in the Simulator
+    /// no endeavor can ever claim anything**, because `init` above forces local
+    /// mode and `seedLocalContent` wrote exactly one file — today's daily note.
+    /// `EndeavorFile.loadAll` returned `[]` on every launch.
+    ///
+    /// The confusing part, and the reason this went unnoticed for a session: the
+    /// Simulator looks fully populated. Places, visits, people and ratings all
+    /// arrive from Notion over the network, and Satchel has a seed of its own in
+    /// `SatchelSimulatorSeed.swift`. **Everything on screen was real except the
+    /// one folder this feature reads**, which is the hardest possible shape of
+    /// empty to notice.
+    ///
+    /// ── Why it mirrors a REAL trip ───────────────────────────────────────
+    ///
+    /// `claimsVisit` needs the endeavor's dates to cover a visit AND its body to
+    /// name that visit's place. The visits come from Notion and are real, so an
+    /// invented trip to an invented place would match nothing and reproduce the
+    /// exact problem it is here to fix. This is a copy of Lunch with Bronwyn in
+    /// LG, 31 July 2026, whose log names three places he actually visited.
+    ///
+    /// The second one is deliberate too: **a trip whose Log is empty, so it
+    /// claims nothing.** That is Megan's Wedding Week's real shape, and it is the
+    /// state that looks identical to a bug from the outside. Both states want to
+    /// be reachable in the Simulator, or testing only ever proves the easy half.
+    ///
+    /// ── Gating ───────────────────────────────────────────────────────────
+    ///
+    /// `#if targetEnvironment(simulator)`, not merely "local mode". A real device
+    /// falls back to local mode whenever iCloud is unavailable — signed out, or
+    /// offline on first launch — and writing invented trip notes into a folder
+    /// that may later sync is how seed data reaches a real vault. The compiler
+    /// makes that impossible rather than a rule someone has to remember.
+    ///
+    /// Overwritten every launch, matching the daily note above. These are seeds
+    /// rather than documents, so an edit made to them in the Simulator is not
+    /// worth preserving — and a stale seed that silently survived a change to
+    /// this function would be its own small mystery.
+    private func seedEndeavors(at root: URL) {
+#if targetEnvironment(simulator)
+        let dir = root.appendingPathComponent("Notes/Endeavors")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let claiming = """
+        ---
+        id: lunch-with-bronwyn-in-lg-2026
+        name: Lunch with Bronwyn in LG
+        type: Travel
+        starts: 2026-07-31
+        ends: 2026-07-31
+        destination: Lake Geneva,WI
+        skipped: 111 Minna Gallery
+        stamp_captures: false
+        ---
+
+        ### Friday, 31 July
+
+        **[[Inspired]]**
+        with [[Bronwyn Kelly|Bronwyn]], [[Karla Weiss|Karla]]
+
+        Seeded copy for the Simulator. The three places below are what make the
+        Endeavor row testable — `claimsVisit` matches on the log body, so these
+        names have to be the real ones.
+
+        **[[Nick's on the Lake (formerly known as Popeye's)|Nick's on the Lake]]**
+        with [[Bronwyn Kelly|Bronwyn]], [[Karla Weiss|Karla]]
+
+        **[[Cornerstone Shop & Gallery]]**
+        """
+        try? claiming.write(to: dir.appendingPathComponent("Lunch with Bronwyn in LG.md"),
+                            atomically: true, encoding: .utf8)
+
+        // Dates but no log. Claims nothing, on purpose — see the note above.
+        let empty = """
+        ---
+        id: seed-empty-log-2026
+        name: Seeded Trip With No Log
+        type: Travel
+        starts: 2026-08-16
+        ends: 2026-08-23
+        destination: Traverse City, MI
+        places: Lakemore Resort, Cherry Basket Farm
+        stamp_captures: true
+        ---
+
+        ## Summary
+        A trip whose Log is empty. `places:` is prospective and deliberately not
+        consulted by `claimsVisit`, so this correctly claims no visits at all.
+
+        ## Log
+
+        """
+        try? empty.write(to: dir.appendingPathComponent("Seeded Trip With No Log.md"),
+                         atomically: true, encoding: .utf8)
+#endif
     }
 
     // MARK: - iCloud change observation

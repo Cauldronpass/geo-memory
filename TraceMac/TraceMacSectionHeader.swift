@@ -102,11 +102,26 @@ struct MacSectionHeader<Tabs: View>: View {
     private let tabs: Tabs
     private let action: MacHeaderButton?
 
+    /// A second glyph button, drawn immediately before `action`.
+    ///
+    /// Session 73, for Satchel's filter pane. David: *"an icon on the top right
+    /// next to the plus."* Additive with a default, so the seven existing call
+    /// sites are untouched — and typed `MacHeaderButton` rather than `any View`
+    /// for the reason the note below `action` gives: a slot that takes any view
+    /// is a slot where each section picks its own size.
+    ///
+    /// **Deliberately not a variadic or an array.** Two is the number of verbs
+    /// a section header can carry before it stops reading as a header, and an
+    /// array would be an invitation to find out.
+    private let leadingAction: MacHeaderButton?
+
     init(_ title: String,
+         leadingAction: MacHeaderButton? = nil,
          action: MacHeaderButton? = nil,
          @ViewBuilder tabs: () -> Tabs) {
         self.title  = title
         self.action = action
+        self.leadingAction = leadingAction
         self.tabs   = tabs()
     }
 
@@ -176,6 +191,7 @@ struct MacSectionHeader<Tabs: View>: View {
 
                 Spacer(minLength: 0)
 
+                leadingAction
                 action
             }
             .padding(.horizontal, MacChrome.headerInset)
@@ -194,8 +210,10 @@ extension MacSectionHeader where Tabs == EmptyView {
     /// Deliberately has **no closure parameter**, which is what keeps every
     /// existing `MacSectionHeader("Notes") { picker }` unambiguous: a trailing
     /// closure has exactly one init it can bind to.
-    init(_ title: String, action: MacHeaderButton? = nil) {
-        self.init(title, action: action) { EmptyView() }
+    init(_ title: String,
+         leadingAction: MacHeaderButton? = nil,
+         action: MacHeaderButton? = nil) {
+        self.init(title, leadingAction: leadingAction, action: action) { EmptyView() }
     }
 }
 

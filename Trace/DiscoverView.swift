@@ -29,6 +29,16 @@ struct DiscoverView: View {
     @State private var hasSearched = false
     @State private var selectedResult: GooglePlace? = nil
     @State private var selectedMapFeature: MapFeature? = nil
+    /// Set when a Google search fails, cleared when one succeeds. Added
+    /// 2026-08-24 — see `GooglePlacesError` in GooglePlacesService.swift for
+    /// the four different failures that all used to render as "No results".
+    @State private var searchError: String? = nil
+    /// Set when the search succeeded but not the way it normally does — today
+    /// that means Google refused and MapKit answered instead (D138). Separate
+    /// from `searchError` because **this is not a failure**: there are real
+    /// results on screen. Colouring a working result set red would be its own
+    /// small lie.
+    @State private var searchNotice: String? = nil
     @State private var activeSheet: DiscoverSheet? = nil
     @State private var resultsExpanded = true
     @State private var mapPosition: MapCameraPosition = .userLocation(fallback: .automatic)
@@ -59,28 +69,44 @@ struct DiscoverView: View {
             .filter { !showPinnedOnly || $0.flagged }
             .filter { selectedCategory == nil || $0.category == selectedCategory }
             .filter { selectedTag == nil || $0.tags.contains(selectedTag!) }
-            .filter {
+            .filter { place in
                 guard myPlacesOnly, !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return true }
-                let q = searchText.lowercased()
-                return $0.name.lowercased().contains(q) || $0.category.lowercased().contains(q)
+                // Token matching, 2026-08-24. Was `contains(wholeQuery)`, so
+                // "Arlington Animal" could not find "Arlington Heights Animal
+                // Hospital" here either. See `TokenMatch`.
+                let tokens = TokenMatch.tokens(from: searchText)
+                return TokenMatch.matchesAll(tokens, inNormalized: [
+                    TokenMatch.normalize(place.name),
+                    TokenMatch.normalize(place.category)
+                ])
             }
     }
 
     // Local database places matching the current search text — updated on every keystroke.
     private var matchingLocalPlaces: [Place] {
-        let q = normalized(searchText.trimmingCharacters(in: .whitespaces))
-        guard !q.isEmpty else { return [] }
+        // **David's report, and the reason this pass exists:** *"if I type
+        // Arlington Animal it should find Arlington Heights Animal Hospital
+        // even though i changed the order of the search terms."* This filter
+        // used one normalised `q` and `contains`, so any reordering or any word
+        // in between failed. `TokenMatch` keeps the same diacritic-folding and
+        // punctuation-stripping this line already did — the normalisation is
+        // unchanged, only the whole-string assumption is gone.
+        let tokens = TokenMatch.tokens(from: searchText)
+        guard !tokens.isEmpty else { return [] }
         let filtered = notion.places
             .filter { $0.status != "Archived" }
             .filter { !showPinnedOnly || $0.flagged }
             .filter { selectedCategory == nil || $0.category == selectedCategory }
             .filter { selectedTag == nil || $0.tags.contains(selectedTag!) }
             .filter { place in
-                normalized(place.name).contains(q) ||
-                normalized(place.city).contains(q) ||
-                normalized(place.address).contains(q) ||
-                place.tags.contains { normalized($0).contains(q) } ||
-                (place.notes.map { normalized($0).contains(q) } ?? false)
+                var haystacks = [
+                    TokenMatch.normalize(place.name),
+                    TokenMatch.normalize(place.city),
+                    TokenMatch.normalize(place.address)
+                ]
+                haystacks.append(contentsOf: place.tags.map { TokenMatch.normalize($0) })
+                if let notes = place.notes { haystacks.append(TokenMatch.normalize(notes)) }
+                return TokenMatch.matchesAll(tokens, inNormalized: haystacks)
             }
         // Sort by distance when location is available; fall back to alphabetical
         if let userLoc = locationManager.location {
@@ -251,6 +277,8 @@ struct DiscoverView: View {
                         if trimmed.isEmpty {
                             searchResults = []
                             hasSearched = false
+                            searchError = nil
+                            searchNotice = nil
                         }
                         return
                     }
@@ -322,10 +350,13 @@ struct DiscoverView: View {
                                     .frame(width: 36, height: 4)
                                     .padding(.top, 8)
                                 HStack {
-                                    Text(totalResultCount == 0
-                                         ? "No results"
-                                         : "\(totalResultCount) place\(totalResultCount == 1 ? "" : "s") found")
+                                    Text(searchError != nil && totalResultCount == 0
+                                         ? "Search failed"
+                                         : (totalResultCount == 0
+                                            ? "No results"
+                                            : "\(totalResultCount) place\(totalResultCount == 1 ? "" : "s") found"))
                                         .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(searchError != nil && totalResultCount == 0 ? Color.red : Color.primary)
                                     Spacer()
                                     Image(systemName: resultsExpanded ? "chevron.down" : "chevron.up")
                                         .font(.caption.weight(.semibold))
@@ -338,7 +369,60 @@ struct DiscoverView: View {
 
                         if resultsExpanded {
                             Divider()
-                            if totalResultCount == 0 {
+                            // The banner sits ABOVE the list rather than
+                            // replacing it. A Google failure says nothing about
+                            // the saved places, which are matched locally and
+                            // are still perfectly good results — swapping them
+                            // out for an error would be a second empty state
+                            // standing in for something that is not empty.
+                            if let searchNotice {
+                                // Amber, not red, and it sits above real
+                                // results. See `searchNotice` for why the
+                                // distinction is kept.
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "map")
+                                        .font(.footnote)
+                                        .foregroundStyle(.blue)
+                                    Text(searchNotice)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                Divider()
+                            }
+
+                            if let searchError {
+                                // Say what happened, not just that nothing came
+                                // back. The message is Google's own wording
+                                // where there is one — "API key not valid",
+                                // "Places API (New) has not been used in this
+                                // project before or it is disabled" — because a
+                                // generic "search failed" would leave us
+                                // exactly where we started.
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle")
+                                        .font(.footnote)
+                                        .foregroundStyle(.orange)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(searchError)
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+                                        Text(matchingLocalPlaces.isEmpty
+                                             ? "Only saved places can be searched right now."
+                                             : "Saved places below are unaffected.")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                Divider()
+                            }
+
+                            if totalResultCount == 0 && searchError == nil {
                                 Text("No matching places")
                                     .font(.subheadline).foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity).padding(.vertical, 24)
@@ -434,9 +518,21 @@ struct DiscoverView: View {
 
                                             // Google Places results
                                             if !filteredSearchResults.isEmpty {
-                                                if !matchingLocalPlaces.isEmpty {
+                                                // The header used to appear only
+                                                // when there were saved results
+                                                // above it to separate from. It
+                                                // now also appears whenever the
+                                                // rows came from MapKit, because
+                                                // **a result with no rating and
+                                                // no hours should say why**
+                                                // rather than look like a Google
+                                                // result that lost its details.
+                                                if !matchingLocalPlaces.isEmpty
+                                                    || filteredSearchResults.first?.source == .apple {
                                                     HStack {
-                                                        Text("Nearby")
+                                                        Text(filteredSearchResults.first?.source == .apple
+                                                             ? "Nearby · Apple Maps"
+                                                             : "Nearby")
                                                             .font(.caption.weight(.semibold))
                                                             .foregroundStyle(.secondary)
                                                         Spacer()
@@ -516,8 +612,12 @@ struct DiscoverView: View {
     }
 
     private func isInDatabase(_ place: GooglePlace) -> Bool {
-        // Prefer Google Place ID match — exact and unambiguous.
-        if notion.places.contains(where: { $0.googlePlaceID == place.id }) {
+        // Prefer Google Place ID match — exact and unambiguous. Guarded on
+        // source: an Apple result's id is an `apple:` string that no stored
+        // record can legitimately hold, so the comparison could only ever
+        // produce a false positive against a corrupted row.
+        if place.source == .google,
+           notion.places.contains(where: { $0.googlePlaceID == place.id }) {
             return true
         }
         // Name-only fallback: only match if no Google Place ID is stored on the local record
@@ -551,12 +651,70 @@ struct DiscoverView: View {
             } else {
                 searchResults = results
             }
-            zoomToFit(searchResults)
-            resultsExpanded = true
+            if results.isEmpty {
+                // Google ran and matched nothing. Ask MapKit before concluding
+                // the place does not exist — the two indexes genuinely differ,
+                // and Google having no answer is not the same as there being
+                // no answer.
+                await fallBackToAppleMaps(googleFailure: nil)
+            } else {
+                zoomToFit(searchResults)
+                resultsExpanded = true
+                searchError = nil
+                searchNotice = nil
+            }
         } catch {
-            searchResults = []
+            // **Was `catch { searchResults = [] }`.** That line is the reason
+            // this bug survived a whole trip: it turned every failure into the
+            // same empty list a successful no-match produces, so the app could
+            // not tell David the difference and neither could anyone reading
+            // the code afterwards.
+            //
+            // Now it does two things instead: keeps the explanation (D137) and
+            // tries the backend that does not depend on a key (D138).
+            await fallBackToAppleMaps(googleFailure: error.localizedDescription)
         }
         isSearching = false
+    }
+
+    /// Runs the MapKit search and decides what the user is told.
+    ///
+    /// Three outcomes, deliberately distinct:
+    /// - Apple found things → show them, with an amber note naming why they are
+    ///   Apple's if Google had failed. Not red: the search worked.
+    /// - Apple found nothing and Google had failed → show Google's error, since
+    ///   that is still the actionable fact.
+    /// - Apple found nothing and Google was merely empty → plain "no results",
+    ///   which is now the honest answer rather than a disguise for four other
+    ///   things.
+    private func fallBackToAppleMaps(googleFailure: String?) async {
+        let appleResults = (try? await AppleMapsSearchService.search(
+            query: searchText,
+            near: locationManager.location?.coordinate
+        )) ?? []
+
+        if appleResults.isEmpty {
+            searchResults = []
+            searchError = googleFailure
+            searchNotice = nil
+            resultsExpanded = true
+            return
+        }
+
+        if let userLoc = locationManager.location {
+            searchResults = appleResults.sorted {
+                let d1 = CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: userLoc)
+                let d2 = CLLocation(latitude: $1.latitude, longitude: $1.longitude).distance(from: userLoc)
+                return d1 < d2
+            }
+        } else {
+            searchResults = appleResults
+        }
+        searchError = nil
+        searchNotice = googleFailure.map { "Google Places unavailable. Showing Apple Maps results. (\($0))" }
+            ?? "Google found nothing. Showing Apple Maps results."
+        zoomToFit(searchResults)
+        resultsExpanded = true
     }
 
     private func zoomToFit(_ places: [GooglePlace]) {
@@ -641,7 +799,24 @@ struct DiscoverResultRow: View {
     @State private var categorySeeded = false
     @State private var categoryTouched = false
     @State private var showingCategoryPicker = false
-    @State private var status = "Visited"
+    /// **"Want to Visit", not "Visited" — changed 2026-08-24, David's call.**
+    ///
+    /// This defaulted to "Visited", and `savePlace()` logs a visit dated today
+    /// whenever the status is "Visited", so **adding a place from Discover
+    /// fabricated a visit unless you noticed a picker and moved it.** It
+    /// surfaced from a test save: a restaurant David has never been to acquired
+    /// a visit record and a `Last Visited` stamp of today.
+    ///
+    /// The argument for the old default was that Discover is mostly used while
+    /// standing outside the place. David overruled it: *"the discovery and add
+    /// to Trace shouldnt automatically add a visit."*
+    ///
+    /// **Choosing "Visited" still logs the visit**, and that is deliberate —
+    /// his rule: *"if i change to visited then use my decision as the source of
+    /// truth."* No confirmation toggle on top of an explicit choice. The sheet
+    /// already reveals Date visited and the star rating only when "Visited" is
+    /// selected, so the two halves agree without further work.
+    @State private var status = "Want to Visit"
     @State private var visitDate = Date()
     @State private var pinPlace = false
     @State private var placeNotes = ""
@@ -996,8 +1171,11 @@ struct DiscoverResultRow: View {
         .onAppear {
             if customName.isEmpty { customName = place.name }
             if matchedPlaceID == nil {
-                // Pass 1: Google Place ID match — exact, unambiguous
-                matchedPlaceID = notion.places.first { $0.googlePlaceID == place.id }?.id
+                // Pass 1: Google Place ID match — exact, unambiguous. Skipped
+                // for Apple results for the same reason as `isInDatabase`.
+                if place.source == .google {
+                    matchedPlaceID = notion.places.first { $0.googlePlaceID == place.id }?.id
+                }
                 // Pass 2: name + city fallback — only for local records with no Google Place ID
                 if matchedPlaceID == nil {
                     let lower = place.name.lowercased()
@@ -1059,7 +1237,12 @@ struct DiscoverResultRow: View {
                 category: category,
                 latitude: place.latitude,
                 longitude: place.longitude,
-                googlePlaceID: place.id,
+                // **Never store an Apple result's id here.** It is not a
+                // Google place ID, and a record carrying a fake one matches
+                // nothing forever while looking perfectly healthy — the exact
+                // silent-write failure `PlaceSource` exists to prevent. Left
+                // nil so the place stays eligible for real enrichment later.
+                googlePlaceID: place.source == .google ? place.id : nil,
                 phone: place.phone,
                 website: place.website,
                 status: status,
@@ -1101,8 +1284,8 @@ struct DiscoverResultRow: View {
 // MARK: - Helpers
 
 /// Strips diacritics and punctuation so "OHare" matches "O'Hare", "cafe" matches "café".
-private func normalized(_ s: String) -> String {
-    s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-     .components(separatedBy: CharacterSet.punctuationCharacters)
-     .joined()
-}
+// `normalized(_:)` lived here. It is now `TokenMatch.normalize` in
+// `Trace/DocumentSearchPredicate.swift`, unchanged in behaviour, so the query
+// and the haystacks are folded by the same function rather than by two that
+// happen to agree. Removed rather than left as a wrapper: a file-private helper
+// with no callers is a thing the next reader has to prove is dead.

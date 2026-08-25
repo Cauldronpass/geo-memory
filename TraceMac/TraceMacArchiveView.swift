@@ -154,10 +154,17 @@ private struct ArchivedPeopleView: View {
                     // Tab content — reusing the same structs as the main People section
                     switch selectedTab {
                     case .info:
+                        // Session 73. The second `MacInfoTab` call site, and
+                        // the one that broke the build when the People view's
+                        // copy gained this parameter — Archive reuses the same
+                        // struct, which is exactly why it was worth reusing and
+                        // exactly why a grep of one file was not an
+                        // exhaustiveness check.
                         MacInfoTab(
                             detail: d,
                             notionService: notionService,
-                            onDeletePerson: { showDeleteConfirm = true }
+                            onDeletePerson: { showDeleteConfirm = true },
+                            onTagsChanged: { await reloadDetail(id: d.id) }
                         )
                     case .activity:
                         MacActivityTab(
@@ -211,6 +218,18 @@ private struct ArchivedPeopleView: View {
                 detail = nil; selectedID = nil; interactions = []
             }
         }
+    }
+
+    /// Re-read one person after a tag write.
+    ///
+    /// Written out here rather than shared with `TraceMacPeopleView`'s copy: the
+    /// two views own their own `detail` state and neither can see the other's.
+    /// Lifting it would mean a store, which is a larger change than this bug
+    /// deserves — but the duplication is real and both copies must clear the
+    /// cache, so it is named here rather than left to be discovered.
+    private func reloadDetail(id: String) async {
+        notionService.personDetailCache.removeValue(forKey: id)
+        detail = try? await notionService.fetchPersonDetail(id: id)
     }
 
     // Lightweight header — no photo upload, just display

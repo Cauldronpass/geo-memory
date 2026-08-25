@@ -1175,7 +1175,7 @@ struct SatchelIconPickerView: View {
                     }
                     .padding(.bottom, 22)
 
-                    SatchelSectionTitle("Tint")
+                    SatchelSectionTitle("Kind")
                     LazyVGrid(columns: columns, spacing: 12) {
                         ForEach(DocumentTint.allCases, id: \.self) { candidate in
                             Button {

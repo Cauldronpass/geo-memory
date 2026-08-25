@@ -43,7 +43,17 @@ struct TraceMacDocumentsView: View {
     @State private var endeavorStore: TraceMacEndeavorStore? = nil
     @State private var selectedDoc: TraceMacDocument? = nil
     @State private var searchText = ""
-    @State private var activeTag: String? = nil
+    /// Multi-select since Session 73, and the reason the Tags pill changed
+    /// shape. It was `activeTag: String?`, owned outright by that pill; the
+    /// filter pane needs a set so tags can narrow by AND, and two controls
+    /// cannot hold two versions of one filter. The pill is now a view onto
+    /// this — see `filterBar`.
+    @State private var selectedTags: Set<String> = []
+    /// OR within the axis, because a document has exactly one icon. See the
+    /// semantics note in `TraceMacDocumentFacets.swift`.
+    @State private var selectedIcons: Set<DocumentIcon> = []
+    /// OR within the axis, for the same reason.
+    @State private var selectedTints: Set<DocumentTint> = []
     @State private var activeProject: String? = nil
     @State private var filterYear: Int? = nil
     @State private var filterMonth: Int? = nil
@@ -76,6 +86,14 @@ struct TraceMacDocumentsView: View {
     /// again on the next launch.
     @AppStorage("tracemac.column.satchel") private var listWidth: Double = 240
 
+    /// The filter pane. Remembered across launches like the column opposite it
+    /// — a pane you have to reopen every morning is one you stop opening.
+    @AppStorage(SatchelFilterPane.visibleKey) private var showFacets = false
+    @AppStorage(SatchelFilterPane.widthKey) private var facetWidth: Double = SatchelFilterPane.defaultWidth
+    /// Only so the header button's tooltip can name the current combination.
+    /// The key itself is caught in `TraceMacContentView` — see the note there.
+    @State private var filterShortcut = MacSatchelFilterShortcut.shared
+
     /// Divider strip height. Thick enough to aim at without hunting.
     private let dividerThickness: CGFloat = 6
 
@@ -106,25 +124,90 @@ struct TraceMacDocumentsView: View {
 
     private var filtered: [TraceMacDocument] {
         guard let store else { return [] }
+        let tokens = searchTokens
+        return store.documents.filter { matches($0, tokens: tokens) }
+    }
+
+    /// The one predicate, with each facet axis switchable off.
+    ///
+    /// Split out in Session 73 so the filter pane can count a facet against
+    /// every filter EXCEPT its own axis, which is what stops every unselected
+    /// icon reading zero the moment one icon is picked. A second copy of this
+    /// logic written for the counts is exactly the drift
+    /// [[feedback_trace_renderer_drift]] records, one level down.
+    /// **Read once by each caller and passed down**, which is why `matches`
+    /// takes tokens rather than reaching for this itself: it is a computed
+    /// property, so touching it inside the predicate would re-split the query
+    /// once per document across four separate filters over the whole store.
+    private var searchTokens: [String] { DocumentSearch.tokens(from: searchText) }
+
+    private func matches(_ doc: TraceMacDocument,
+                         tokens: [String],
+                         applyIcons: Bool = true,
+                         applyTints: Bool = true,
+                         applyTags: Bool = true) -> Bool {
         let cal = Calendar.current
-        return store.documents.filter { doc in
-            let matchesSearch = searchText.isEmpty
-                || doc.title.localizedCaseInsensitiveContains(searchText)
-                || doc.filename.localizedCaseInsensitiveContains(searchText)
-                || doc.tags.contains { $0.localizedCaseInsensitiveContains(searchText) }
-            let matchesTag = activeTag == nil || doc.tags.contains(activeTag!)
-            let matchesProject = activeProject == nil || doc.linkedNote == activeProject
-            let matchesYear = filterYear == nil || {
-                guard let d = doc.created else { return false }
-                return cal.component(.year, from: d) == filterYear!
-            }()
-            let matchesMonth = filterMonth == nil || {
-                guard let d = doc.created else { return false }
-                return cal.component(.month, from: d) == filterMonth!
-            }()
-            return matchesSearch && matchesTag && matchesProject
-                && matchesYear && matchesMonth
-        }
+
+        // ── Text ──────────────────────────────────────────────────────────
+        //
+        // **One predicate, in `Trace/DocumentSearchPredicate.swift`, shared with
+        // Satchel through `membershipExceptions`.** Eleven clauses lived here
+        // and eleven near-identical ones lived on the phone, kept in step by
+        // hand and by a comment asking the next reader to diff them by eye.
+        // D134 is what that cost: this predicate was missing five fields the
+        // phone had matched for months, and nothing failed — a search that
+        // returns too little still returns something.
+        //
+        // The shared version also closes the two gaps D134 could only log
+        // (`filename` on iOS, `note` and `summary` on both) and matches by
+        // token rather than by whole string, so "Arlington Animal" finds
+        // "Arlington Heights Animal Hospital".
+        let matchesSearch = DocumentSearch.matches(doc, tokens: tokens)
+
+        // ── Facets ────────────────────────────────────────────────────────
+        //
+        // OR within icon and within tint (a document has one of each, so AND
+        // would always be empty); AND within tags (a document has many, and
+        // narrowing is the point); AND across all three.
+        let matchesIcon = !applyIcons || selectedIcons.isEmpty
+            || selectedIcons.contains(doc.resolvedIcon)
+        let matchesTint = !applyTints || selectedTints.isEmpty
+            || selectedTints.contains(doc.resolvedTint)
+        let matchesTag = !applyTags || selectedTags.isSubset(of: Set(doc.tags))
+
+        let matchesProject = activeProject == nil || doc.linkedNote == activeProject
+        let matchesYear = filterYear == nil || {
+            guard let d = doc.created else { return false }
+            return cal.component(.year, from: d) == filterYear!
+        }()
+        let matchesMonth = filterMonth == nil || {
+            guard let d = doc.created else { return false }
+            return cal.component(.month, from: d) == filterMonth!
+        }()
+        return matchesSearch && matchesIcon && matchesTint && matchesTag
+            && matchesProject && matchesYear && matchesMonth
+    }
+
+    // `noteDisplayName` lived here, existing only to serve the search predicate
+    // above — its own doc comment said it returned "" rather than an optional
+    // "so the caller stays one flat `||` chain like the iOS one it is being kept
+    // in step with." That chain is gone, and so is the reason for the shape.
+    // `DocumentSearch.noteDisplayName` is the one that matters now.
+    //
+    // Removed rather than left: a private helper with no callers is a thing the
+    // next reader has to prove is dead before they can touch anything near it.
+
+    /// Everything the filter pane draws. Rebuilt when anything it depends on
+    /// moves, which on a library this size is far cheaper than caching it.
+    private var facetModel: DocFacetModel {
+        guard let store else { return DocFacetModel() }
+        let tokens = searchTokens
+        return DocFacetModel.build(
+            all: store.documents,
+            matchingWithoutIcons: { matches($0, tokens: tokens, applyIcons: false) },
+            matchingWithoutTints: { matches($0, tokens: tokens, applyTints: false) },
+            matchingAll:          { matches($0, tokens: tokens) }
+        )
     }
 
     /// Unique (year, month) pairs across all docs, newest first.
@@ -168,6 +251,16 @@ struct TraceMacDocumentsView: View {
         return Array(Set(store.documents.flatMap { $0.tags })).sorted()
     }
 
+    /// What the Tags pill says. One tag by name; several by count, since the
+    /// names would not fit and a truncated list is worse than an honest number.
+    private var tagPillLabel: String {
+        switch selectedTags.count {
+        case 0:  return "Tags"
+        case 1:  return selectedTags.first ?? "Tags"
+        default: return "\(selectedTags.count) tags"
+        }
+    }
+
     // Human-readable label for the active date filter
     private var dateFilterLabel: String? {
         guard filterYear != nil || filterMonth != nil else { return nil }
@@ -194,7 +287,23 @@ struct TraceMacDocumentsView: View {
             // (the folder on disk stays `Documents/` — see `MacSection`), and a
             // header that disagreed with the row you clicked would be worse than
             // no header.
+            // Two buttons now. David: *"a right hand pane that appears or
+            // disappears with a keyboard stroke or an icon on the top right
+            // next to the plus."*
+            //
+            // The tooltip names the **current** combination rather than a
+            // literal, because Session 73 made it settable and a tooltip that
+            // says ⇧⌘F after he has changed it is worse than one that says
+            // nothing: it is a confident wrong answer about his own settings.
             MacSectionHeader("Satchel",
+                             leadingAction: MacHeaderButton(
+                                icon: showFacets
+                                    ? "line.3.horizontal.decrease.circle.fill"
+                                    : "line.3.horizontal.decrease.circle",
+                                help: (showFacets ? "Hide filters (" : "Show filters (")
+                                      + filterShortcut.combo.label + ")") {
+                                    showFacets.toggle()
+                                },
                              action: MacHeaderButton(icon: "plus",
                                                      help: "Add a document") { importDocument() })
             columns
@@ -211,6 +320,23 @@ struct TraceMacDocumentsView: View {
             }
             CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
             rightColumn.frame(maxWidth: .infinity)
+            if showFacets {
+                // `.trailing`, and this is the only site that needs it: the
+                // pane is to the RIGHT of the strip, so it grows as you drag
+                // left. `showsLine` because there is no column beyond it to
+                // draw the seam for free.
+                MacColumnResizer(width: $facetWidth,
+                                 minWidth: SatchelFilterPane.minWidth,
+                                 maxWidth: SatchelFilterPane.maxWidth,
+                                 edge: .trailing,
+                                 showsLine: true)
+                DocFacetPanel(model: facetModel,
+                              selectedIcons: $selectedIcons,
+                              selectedTints: $selectedTints,
+                              selectedTags: $selectedTags,
+                              width: CGFloat(facetWidth),
+                              resultCount: filtered.count)
+            }
         }
         .task {
             if store == nil {
@@ -510,12 +636,18 @@ struct TraceMacDocumentsView: View {
     private var filterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                // Tag filter pill
+                // Tag filter pill. A view onto `selectedTags` since Session 73,
+                // not a second store of the same filter. It still picks ONE tag
+                // — the popover is a single-select list — but it reports the
+                // truth when the pane has set more than one, because a pill
+                // reading "Tags" while three are active is a filter you cannot
+                // see, and an invisible filter is the shape Session 72 was spent
+                // on.
                 filterPill(
                     icon: "tag",
-                    label: activeTag ?? "Tags",
-                    isActive: activeTag != nil,
-                    onClear: { activeTag = nil }
+                    label: tagPillLabel,
+                    isActive: !selectedTags.isEmpty,
+                    onClear: { selectedTags.removeAll() }
                 ) {
                     showingTagFilter = true
                 }
@@ -523,8 +655,8 @@ struct TraceMacDocumentsView: View {
                     DocFilterPickerPopover(
                         title: "Filter by Tag",
                         items: allTags,
-                        selected: activeTag,
-                        onSelect: { activeTag = $0; showingTagFilter = false }
+                        selected: selectedTags.count == 1 ? selectedTags.first : nil,
+                        onSelect: { selectedTags = [$0]; showingTagFilter = false }
                     )
                 }
 
@@ -761,7 +893,13 @@ struct TraceMacDocumentsView: View {
                             ScrollView {
                                 DocMetadataPanel(doc: doc,
                                                  store: store!,
-                                                 onTagTap: { activeTag = $0 },
+                                                 // Replaces rather than adds:
+                                                 // *"see a list of all the
+                                                 // documents… with that same
+                                                 // tag"* is a jump, not a
+                                                 // refinement of wherever you
+                                                 // happened to be.
+                                                 onTagTap: { selectedTags = [$0] },
                                                  onOpen: onOpen,
                                                  endeavorStore: endeavorStore) { movedDoc in
                                     Task {
@@ -1529,7 +1667,7 @@ struct DocMetadataPanel: View {
     /// a colour that means two things is the problem this row was built to fix.
     private var typeRow: some View {
         HStack {
-            fieldLabel("Type")
+            fieldLabel("Kind")
             Menu {
                 ForEach(DocumentTint.typeCases, id: \.self) { candidate in
                     Button {

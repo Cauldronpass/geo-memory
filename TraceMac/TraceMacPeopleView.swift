@@ -352,7 +352,8 @@ struct TraceMacPeopleView: View {
                     MacInfoTab(
                         detail: d,
                         notionService: notionService,
-                        onDeletePerson: { showDeletePerson = true }
+                        onDeletePerson: { showDeletePerson = true },
+                        onTagsChanged: { await reloadDetail(id: d.id) }
                     )
                 case .activity:
                     MacActivityTab(
@@ -602,6 +603,24 @@ struct MacInfoTab: View {
     let notionService: NotionService
     let onDeletePerson: () -> Void
 
+    /// Re-read this person after a tag write. Session 73.
+    ///
+    /// **`detail` is a `let` snapshot, and the tag list is the only thing on
+    /// this tab that reads it directly.** Phone, email and address are bound to
+    /// local `@State`, so they show the typed value whether or not the write
+    /// landed; tags had no local copy, so adding one wrote to Notion correctly
+    /// and then showed nothing. David: *"i clicked on Megan people record and
+    /// added a family tag. Now it is not showing… i went to another page then
+    /// back and it is there now."* Exactly right, and the trip away was doing
+    /// the refetch this callback now does in place.
+    ///
+    /// **Refetch, not an optimistic local edit.** `setTags` swallows its error
+    /// with `try?`, so painting the tag immediately would show a tag that may
+    /// not have saved — which is worse than the bug, because the lie survives
+    /// until you next look. The parent's `reloadDetail` also clears
+    /// `personDetailCache`, so what comes back is what Notion actually holds.
+    let onTagsChanged: () async -> Void
+
     @State private var isArchived: Bool
     @State private var editPhone: String
     @State private var editEmail: String
@@ -611,10 +630,14 @@ struct MacInfoTab: View {
     @State private var newTagText = ""
     @State private var isSavingContact = false
 
-    init(detail: PersonDetail, notionService: NotionService, onDeletePerson: @escaping () -> Void) {
+    init(detail: PersonDetail,
+         notionService: NotionService,
+         onDeletePerson: @escaping () -> Void,
+         onTagsChanged: @escaping () async -> Void) {
         self.detail = detail
         self.notionService = notionService
         self.onDeletePerson = onDeletePerson
+        self.onTagsChanged = onTagsChanged
         _isArchived  = State(initialValue: detail.isArchived)
         _editPhone   = State(initialValue: detail.phone   ?? "")
         _editEmail   = State(initialValue: detail.email   ?? "")
@@ -897,6 +920,9 @@ struct MacInfoTab: View {
             email: editEmail.isEmpty   ? nil : editEmail,
             address: editAddress.isEmpty ? nil : editAddress
         )
+        // Covers removal as well as addition — the chip's `x` comes through
+        // here too, and it had the same silence in the other direction.
+        await onTagsChanged()
     }
 
     private func addTypedTag() async {

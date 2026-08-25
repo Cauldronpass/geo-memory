@@ -17,6 +17,10 @@ struct TraceMacSettingsView: View {
     /// Shared with the search panel through `@AppStorage`, so the toggle and
     /// the thing it governs read one key and neither owns it.
     @AppStorage("tracemac.ask.includeNotion") private var includeNotionInAsk = false
+    /// The same key `TraceMacDocumentsView` reads. `@AppStorage` in two views is
+    /// two readers of one default, not two copies — dragging the pane moves this
+    /// slider and vice versa, live, with nothing to keep in step.
+    @AppStorage(SatchelFilterPane.widthKey) private var facetWidth: Double = SatchelFilterPane.defaultWidth
 
     private var sharedDefaults: UserDefaults {
         UserDefaults(suiteName: "group.com.david.trace") ?? .standard
@@ -93,6 +97,29 @@ struct TraceMacSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // Session 73. The pane's two knobs, both of which have a second
+            // control elsewhere and share one stored value with it rather than
+            // keeping their own copy: the width also drags at the pane's edge,
+            // and the pane also opens from the button beside Satchel's `+`.
+            Section("Satchel filter pane") {
+                MacSatchelShortcutRecorder()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Width")
+                        Spacer()
+                        Text("\(Int(facetWidth)) pt")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $facetWidth,
+                           in: SatchelFilterPane.minWidth...SatchelFilterPane.maxWidth)
+                    Text("Also draggable at the pane\u{2019}s left edge \u{2014} both write the same setting, so neither is the real one.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
         }
         .formStyle(.grouped)
         .frame(width: 420)
@@ -152,9 +179,64 @@ struct TraceMacSettingsView: View {
 ///   * Escape, which is how you cancel recording.
 ///   * Anything `RegisterEventHotKey` rejects, which in practice means another
 ///     app already owns it. The previous shortcut is put back and stays live.
+/// The global-search recorder. A thin wrapper since Session 73, when a second
+/// shortcut needed the same control and the recording logic was still married to
+/// `MacHotKeyCenter`.
 struct MacHotKeyRecorder: View {
 
     @State private var center = MacHotKeyCenter.shared
+
+    var body: some View {
+        MacShortcutRecorder(
+            title: "Shortcut",
+            currentLabel: center.combo.label,
+            ownerError: center.lastError,
+            help: "Works anywhere on the Mac, and inside Trace. Needs a modifier — fn cannot be used.",
+            onRecord: { combo in
+                center.update(to: combo) ? nil : (center.lastError ?? "Could not register that combination.")
+            },
+            onReset: { _ = center.update(to: .default) }
+        )
+    }
+}
+
+/// The Satchel filter pane's recorder.
+///
+/// Same control, different owner, and the difference that matters is in the
+/// helper line: this one is **in-app only**. See `MacSatchelFilterShortcut` for
+/// why that is the right scope and why it is a local `NSEvent` monitor rather
+/// than either of the two mechanisms this app already had.
+struct MacSatchelShortcutRecorder: View {
+
+    @State private var shortcut = MacSatchelFilterShortcut.shared
+
+    var body: some View {
+        MacShortcutRecorder(
+            title: "Shortcut",
+            currentLabel: shortcut.combo.label,
+            ownerError: nil,
+            help: "Inside Trace only, from any section — it switches to Satchel and opens the pane. Needs a modifier.",
+            onRecord: { shortcut.update(to: $0) },
+            onReset: { shortcut.reset() }
+        )
+    }
+}
+
+// MARK: - The recorder itself
+
+struct MacShortcutRecorder: View {
+
+    let title: String
+    let currentLabel: String
+    /// A standing error from whoever owns the shortcut — the global one can be
+    /// refused by the system long after it was recorded, when another app takes
+    /// the combination. Shown when there is no fresher rejection to show.
+    let ownerError: String?
+    let help: String
+    /// Returns nil on success, or the sentence to put on screen.
+    let onRecord: (MacHotKeyCombo) -> String?
+    let onReset: () -> Void
+
     @State private var recording = false
     @State private var monitor: Any?
     @State private var rejection: String?
@@ -162,26 +244,27 @@ struct MacHotKeyRecorder: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Shortcut")
+                Text(title)
                 Spacer()
-                Button(recording ? "Press a combination…" : center.combo.label) {
+                Button(recording ? "Press a combination…" : currentLabel) {
                     if recording { stop() } else { start() }
                 }
                 .buttonStyle(.bordered)
                 .tint(recording ? .orange : nil)
                 Button("Reset") {
-                    apply(.default)
+                    rejection = nil
+                    onReset()
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
             }
 
-            if let message = rejection ?? center.lastError {
+            if let message = rejection ?? ownerError {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else {
-                Text("Works anywhere on the Mac, and inside Trace. Needs a modifier — fn cannot be used.")
+                Text(help)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -223,6 +306,6 @@ struct MacHotKeyRecorder: View {
     }
 
     private func apply(_ combo: MacHotKeyCombo) {
-        rejection = center.update(to: combo) ? nil : center.lastError
+        rejection = onRecord(combo)
     }
 }

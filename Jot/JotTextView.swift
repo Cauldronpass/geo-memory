@@ -41,7 +41,12 @@ import CoreLocation
 
 struct JotTextView: UIViewRepresentable {
     @Binding var text: String
-    var font: UIFont = .systemFont(ofSize: 17)
+    /// Body size for the text being typed, in points. A binding rather than a
+    /// plain value because the settings sheet presented from this file's own
+    /// toolbar writes it, and CaptureView owns the state — see
+    /// JotFormattingToolbar.swift's `loadJotFontSize()` for why this is a
+    /// fixed settable number and not Dynamic Type.
+    @Binding var fontSize: CGFloat
     var onPinSucceeded: () -> Void = {}
     var onPinFailed: (String) -> Void = { _ in }
     /// Fires with the capture's Notion page ID when a
@@ -53,7 +58,7 @@ struct JotTextView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UITextView {
         let tv = UITextView()
-        tv.font = font
+        tv.font = .systemFont(ofSize: fontSize)
         tv.text = text
         tv.backgroundColor = .clear
         tv.textContainerInset = UIEdgeInsets(top: 8, left: 6, bottom: 8, right: 6)
@@ -96,16 +101,25 @@ struct JotTextView: UIViewRepresentable {
         if tv.text != text {
             tv.text = text
         }
+        // The font DOES need an unconditional-ish push, unlike the text
+        // above: it only changes when the settings sheet writes it, never as
+        // a side effect of typing, so there is no cursor-reset hazard here.
+        // The equality check is just to avoid re-laying out the whole text
+        // container on every unrelated re-render.
+        if tv.font?.pointSize != fontSize {
+            tv.font = .systemFont(ofSize: fontSize)
+        }
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onPinSucceeded: onPinSucceeded, onPinFailed: onPinFailed, onCaptureTap: onCaptureTap)
+        Coordinator(text: $text, fontSize: $fontSize, onPinSucceeded: onPinSucceeded, onPinFailed: onPinFailed, onCaptureTap: onCaptureTap)
     }
 
     // MARK: - Coordinator
 
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var text: Binding<String>
+        var fontSize: Binding<CGFloat>
         var onPinSucceeded: () -> Void
         var onPinFailed: (String) -> Void
         var onCaptureTap: (String) -> Void
@@ -113,8 +127,9 @@ struct JotTextView: UIViewRepresentable {
         weak var formattingStack: UIStackView?
         weak var toolbarContainer: UIView?
 
-        init(text: Binding<String>, onPinSucceeded: @escaping () -> Void, onPinFailed: @escaping (String) -> Void, onCaptureTap: @escaping (String) -> Void) {
+        init(text: Binding<String>, fontSize: Binding<CGFloat>, onPinSucceeded: @escaping () -> Void, onPinFailed: @escaping (String) -> Void, onCaptureTap: @escaping (String) -> Void) {
             self.text = text
+            self.fontSize = fontSize
             self.onPinSucceeded = onPinSucceeded
             self.onPinFailed = onPinFailed
             self.onCaptureTap = onCaptureTap
@@ -122,6 +137,153 @@ struct JotTextView: UIViewRepresentable {
 
         func textViewDidChange(_ tv: UITextView) {
             text.wrappedValue = tv.text
+        }
+
+        // MARK: - Return continues a list, Tab indents
+        //
+        // Added 2026-08-24. **Jot had no `shouldChangeTextIn` at all**, so it
+        // had no Return handling of any kind — a checkbox list stopped dead at
+        // the first Return and every following line had to be re-inserted from
+        // the toolbar. Trace's `MarkdownEditorView.swift` has had this working
+        // for months (its own `shouldChangeTextIn`, ~line 1242).
+        //
+        // **This is a port of that branch, not a second implementation.** One
+        // format, two editors, a behaviour present in one and absent in the
+        // other is the renderer-drift shape that keeps costing us: it never
+        // announces itself, because the editor without the behaviour just
+        // does the boring thing and looks fine. The characters are already
+        // identical on both sides (☐/☑ U+2610/U+2611, • U+2022, 2 spaces per
+        // indent — see JotFormattingToolbar.swift's header), which is what
+        // makes a port possible rather than a rewrite.
+        //
+        // Simplified where Jot genuinely differs, same way the formatting
+        // actions above are: no `scheduleSave` (Jot writes on commit()), no
+        // checkbox overlay refresh and no `sendTarget` check (Jot has no
+        // custom NSTextStorage, so there is no hidden attribute to read and
+        // no Things/Tweek send to fire from a Return).
+        //
+        // Returning false means `textViewDidChange` never fires, so every
+        // branch that edits the storage directly writes `text.wrappedValue`
+        // itself — same requirement the toolbar actions already have.
+        func textView(_ tv: UITextView,
+                      shouldChangeTextIn range: NSRange,
+                      replacementText replacement: String) -> Bool {
+
+            // Tab → indent, matching the → toolbar button. Reachable from a
+            // hardware keyboard and from the Simulator.
+            if replacement == "\t" {
+                indentLine()
+                return false
+            }
+
+            // "- " at the very start of a line becomes "• ". Jot's toolbar
+            // writes U+2022 and so does Trace's, so a note typed with a dash
+            // habit still renders as a real bullet when it opens in Dayflow.
+            if replacement == " " {
+                let ns = tv.textStorage.string as NSString
+                let lr = ns.lineRange(for: NSRange(location: range.location, length: 0))
+                if range.location - lr.location == 1,
+                   ns.character(at: lr.location) == 0x2D {  // ASCII '-'
+                    tv.textStorage.replaceCharacters(
+                        in: NSRange(location: lr.location, length: 1), with: "\u{2022}")
+                    // true → iOS still inserts the space, giving "• ".
+                    // textViewDidChange fires afterward and updates the binding.
+                    return true
+                }
+            }
+
+            guard replacement == "\n" else { return true }
+
+            let ns = tv.textStorage.string as NSString
+            let lineRange = ns.lineRange(for: NSRange(location: range.location, length: 0))
+            let line = ns.substring(with: lineRange)
+
+            // D52's fix, ported with the rest. **Every branch below asks what
+            // line the caret is on; none of them ask where in it.** Return at
+            // offset 0 of "☐ Buy rings" reads as "continue the list" when what
+            // it means is "put a blank line above this", and Trace shipped
+            // that bug once already. At the very start of a line a plain
+            // newline is always right.
+            guard range.location > lineRange.location else { return true }
+
+            let bulletChar = "\u{2022}"   // not a raw literal — \u{} is not interpreted in #"..."#
+
+            // Bullet — "• item", or indented "  • item".
+            if line.range(of: "^( *)\(bulletChar) ", options: .regularExpression) != nil {
+                let indent = String(line.prefix(while: { $0 == " " }))
+                let contentStart = line.index(line.startIndex,
+                                              offsetBy: indent.count + 2,
+                                              limitedBy: line.endIndex) ?? line.endIndex
+                let content = String(line[contentStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if content.isEmpty {
+                    // Return on a bare bullet drops out of the list rather
+                    // than adding a third one.
+                    tv.textStorage.replaceCharacters(in: lineRange, with: "\n")
+                    tv.selectedRange = NSRange(location: lineRange.location + 1, length: 0)
+                } else {
+                    let insertion = "\n\(indent)\(bulletChar) "
+                    tv.textStorage.replaceCharacters(in: range, with: insertion)
+                    tv.selectedRange = NSRange(location: range.location + insertion.utf16.count, length: 0)
+                }
+                text.wrappedValue = tv.text
+                return false
+            }
+
+            // Checkbox — "☐ item" / "☑ item", or indented.
+            //
+            // **Deliberately handles leading indent, which Trace's own
+            // checkbox branch does not** — Trace matches a bare `hasPrefix("☐ ")`
+            // three lines below a bullet branch that does honour indent, which
+            // reads as an oversight rather than a decision. Jot has indent and
+            // outdent buttons, so an indented checkbox is a thing you can make
+            // here in two taps and it should continue like any other. Logged
+            // in Trace-Backlog.md as a fix owed to Trace in the other
+            // direction; the drift is noted, not silently widened.
+            if line.range(of: "^( *)[\u{2610}\u{2611}] ", options: .regularExpression) != nil {
+                let indent = String(line.prefix(while: { $0 == " " }))
+                let contentStart = line.index(line.startIndex,
+                                              offsetBy: indent.count + 2,
+                                              limitedBy: line.endIndex) ?? line.endIndex
+                let content = String(line[contentStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if content.isEmpty {
+                    tv.textStorage.replaceCharacters(in: lineRange, with: "\n")
+                    tv.selectedRange = NSRange(location: lineRange.location + 1, length: 0)
+                } else {
+                    // A continued checkbox is always unchecked, never ☑ —
+                    // inheriting the tick from the line above would mark work
+                    // done that has not been started.
+                    let insertion = "\n\(indent)\u{2610} "
+                    tv.textStorage.replaceCharacters(in: range, with: insertion)
+                    tv.selectedRange = NSRange(location: range.location + insertion.utf16.count, length: 0)
+                }
+                text.wrappedValue = tv.text
+                return false
+            }
+
+            // Dash bullet — "- item", indented or not. Kept even though the
+            // space handler above converts a freshly typed "- " to "• ",
+            // because pasted text arrives with its dashes intact and Trace
+            // continues those too.
+            if !line.hasPrefix("- [x]"),
+               line.range(of: "^( *)- ", options: .regularExpression) != nil {
+                let indent = String(line.prefix(while: { $0 == " " }))
+                let contentStart = line.index(line.startIndex,
+                                              offsetBy: indent.count + 2,
+                                              limitedBy: line.endIndex) ?? line.endIndex
+                let content = String(line[contentStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if content.isEmpty {
+                    tv.textStorage.replaceCharacters(in: lineRange, with: "\n")
+                    tv.selectedRange = NSRange(location: lineRange.location + 1, length: 0)
+                } else {
+                    let insertion = "\n\(indent)- "
+                    tv.textStorage.replaceCharacters(in: range, with: insertion)
+                    tv.selectedRange = NSRange(location: range.location + insertion.utf16.count, length: 0)
+                }
+                text.wrappedValue = tv.text
+                return false
+            }
+
+            return true
         }
 
         func gestureRecognizer(
@@ -277,6 +439,10 @@ struct JotTextView: UIViewRepresentable {
             textView?.resignFirstResponder()
         }
 
+        /// Renamed in spirit 2026-08-24 — the sheet now carries text size as
+        /// well as toolbar order (`JotSettingsSheet`). The selector name is
+        /// unchanged because it is referenced by `#selector` in makeToolbar
+        /// above and renaming it buys nothing.
         @objc func showToolbarCustomize() {
             guard let container = toolbarContainer,
                   let windowScene = container.window?.windowScene,
@@ -285,14 +451,27 @@ struct JotTextView: UIViewRepresentable {
             while let presented = top.presentedViewController { top = presented }
 
             let currentOrder = loadJotToolbarOrder()
-            let sheet = UIHostingController(rootView: JotToolbarCustomizeSheet(current: currentOrder) { [weak self] newOrder in
-                guard let self else { return }
-                top.dismiss(animated: true)
-                self.rebuildToolbar(order: newOrder)
-            })
+            let sheet = UIHostingController(
+                rootView: JotSettingsSheet(
+                    currentOrder: currentOrder,
+                    currentFontSize: self.fontSize.wrappedValue
+                ) { [weak self] newOrder, newSize in
+                    guard let self else { return }
+                    top.dismiss(animated: true)
+                    self.rebuildToolbar(order: newOrder)
+                    // Write through the binding so CaptureView's own state is
+                    // the single source of truth; `updateUIView` applies it to
+                    // the live UITextView on the resulting re-render. Setting
+                    // `textView?.font` directly here as well would work today
+                    // but would leave two writers for one value.
+                    self.fontSize.wrappedValue = newSize
+                }
+            )
             sheet.modalPresentationStyle = .pageSheet
             if let det = sheet.sheetPresentationController {
-                det.detents = [.medium()]
+                // Was `.medium()` only. The sheet grew a Text Size section, so
+                // large is offered too and medium stays the opening detent.
+                det.detents = [.medium(), .large()]
                 det.prefersGrabberVisible = true
             }
             top.present(sheet, animated: true)
