@@ -232,6 +232,28 @@ final class CalendarService {
         return events.map { makeEvent($0) }
     }
 
+    /// Timed-event count per day of `month` — the New Event composer's busy
+    /// dots (Session 77, David: "i like the dot suggestion"). One ranged
+    /// query over the same included calendars the day views use; all-day and
+    /// canceled events skipped.
+    func fetchMonthEventCounts(for month: Date) async -> [Int: Int] {
+        guard hasAccess else { return [:] }
+        let cal = Calendar.current
+        guard let start = cal.date(from: cal.dateComponents([.year, .month], from: month)),
+              let end = cal.date(byAdding: .month, value: 1, to: start) else { return [:] }
+        let pred = store.predicateForEvents(withStart: start, end: end,
+                                            calendars: includedCalendarsForDayflow())
+        let events = store.events(matching: pred)
+            .filter { !$0.isAllDay }
+            .filter { $0.status != .canceled }
+            .filter { !shouldExclude(title: $0.title ?? "") }
+        var counts: [Int: Int] = [:]
+        for ev in events {
+            counts[cal.component(.day, from: ev.startDate), default: 0] += 1
+        }
+        return counts
+    }
+
     // MARK: - Dayflow: date-range fetch (Browse: Upcoming)
     //
     // Added 2026-07-20 for Dayflow's Upcoming browse view

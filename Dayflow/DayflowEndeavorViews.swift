@@ -232,17 +232,21 @@ struct DayflowEndeavorListSection: View {
             Button {
                 showingCreate = true
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "plus.circle.fill")
+                // Editorial (Session 77): the shared dashed-circle add
+                // grammar — see DayflowNotesView.newProjectRow.
+                HStack(spacing: 12) {
+                    Circle()
+                        .strokeBorder(Color.dayflowFaint,
+                                      style: StrokeStyle(lineWidth: 1.3, dash: [3, 2.5]))
+                        .frame(width: 20, height: 20)
                     Text("New Endeavor")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 13.5))
+                        .italic()
+                        .foregroundStyle(Color.dayflowFaint)
                     Spacer()
                 }
-                .foregroundStyle(.blue)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
-                .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.blue.opacity(0.25), lineWidth: 1))
+                .frame(minHeight: 40)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 16)
@@ -1587,7 +1591,7 @@ struct EndeavorPlacePicker: View {
                         Text("No place").foregroundStyle(Color.dayflowInk)
                         Spacer()
                         if placeID == nil {
-                            Image(systemName: "checkmark").foregroundStyle(.blue)
+                            Image(systemName: "checkmark").foregroundStyle(Color.dayflowAccent)
                         }
                     }
                 }
@@ -1605,7 +1609,7 @@ struct EndeavorPlacePicker: View {
                             }
                             Spacer()
                             if placeID == place.id {
-                                Image(systemName: "checkmark").foregroundStyle(.blue)
+                                Image(systemName: "checkmark").foregroundStyle(Color.dayflowAccent)
                             }
                         }
                     }

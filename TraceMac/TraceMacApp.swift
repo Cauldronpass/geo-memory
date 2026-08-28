@@ -14,6 +14,9 @@ struct TraceMacApp: App {
     /// Carbon hot key is app-wide and outlives the window, so closing the window
     /// does not stop the shortcut that reopens it.
     @State private var hotKeys = MacHotKeyCenter.shared
+    /// Spotlight results arrive here on macOS, not through SwiftUI's
+    /// `onContinueUserActivity`. See the delegate file's header.
+    @NSApplicationDelegateAdaptor(TraceMacSpotlightDelegate.self) private var spotlightDelegate
     // An `@NSApplicationDelegateAdaptor(TraceMacDropReceiver.self)` lived here
     // for one evening. Removed 2026-08-11 with the rest of the file-handoff
     // attempt: eight tries across Dock-icon drops and Finder Services, all

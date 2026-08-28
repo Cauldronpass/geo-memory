@@ -41,7 +41,6 @@ struct NotesView: View {
     @Environment(NotionService.self) private var notion
     @State private var noteStore = NoteStore.shared
     @State private var selectedTab: NoteTab = .day
-    @State private var showingSearch = false
     @State private var showingFABDailyPicker = false
     @State private var fabDailyDate: Date = Date()
 
@@ -72,13 +71,27 @@ struct NotesView: View {
                 // browser now, and documents filed to a Place or Person note
                 // already appear as chips on that note.
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showingSearch = true } label: {
+                    // 2026-08-25 — this button used to open the notes-only
+                    // `GlobalSearchView` sheet. It now opens the shared
+                    // Search + Ask screen (`TraceSearchView`, the same one
+                    // Dayflow and the Mac use), owned by ContentView so a
+                    // result can route to a Person, Place, day note or
+                    // Satchel document — none of which this tab can present.
+                    // David's call: replace, not add a second magnifier.
+                    // `GlobalSearchView` is still compiled and now unreferenced.
+                    Button {
+                        NotificationCenter.default.post(name: .traceOpenSearch, object: nil)
+                    } label: {
                         Image(systemName: "magnifyingglass")
                     }
                 }
             }
-            .sheet(isPresented: $showingSearch) {
-                GlobalSearchView()
+            // Day, not Week: a search result (ContentView, 2026-08-25) is a
+            // specific note. `DailyNoteTab` receives the same post and loads the
+            // date; this view owns the segment. The FAB picker below already
+            // sets `.day` before posting, so this is a no-op for it.
+            .onReceive(NotificationCenter.default.publisher(for: .traceNotesOpenDay)) { _ in
+                selectedTab = .day
             }
             .sheet(isPresented: $showingFABDailyPicker) {
                 FABDailyPickerSheet(selectedDate: $fabDailyDate) { date in

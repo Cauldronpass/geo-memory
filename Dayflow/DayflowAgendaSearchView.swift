@@ -42,8 +42,8 @@ struct DayflowAgendaSearchView: View {
     private var matchingTasks: [ThingsTask] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return [] }
-        let all = ThingsService.shared.tasks + ThingsService.shared.anytimeTasks
-            + ThingsService.shared.upcomingTasks + ThingsService.shared.inboxTasks
+        let all = ReminderTaskStore.shared.tasks + ReminderTaskStore.shared.anytimeTasks
+            + ReminderTaskStore.shared.upcomingTasks + ReminderTaskStore.shared.inboxTasks
         var seen = Set<String>()
         var out: [ThingsTask] = []
         for t in all {
@@ -85,7 +85,7 @@ struct DayflowAgendaSearchView: View {
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
                                   initialDate: task.date, initialList: task.list,
                                   initialNotes: task.notes) {
-                Task { await ThingsService.shared.refreshAll() }
+                Task { await ReminderTaskStore.shared.refreshAll() }
             }
         }
         .sheet(item: $selectedEvent) { event in
@@ -156,7 +156,7 @@ struct DayflowAgendaSearchView: View {
         // (already-correct) results branch below.
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if query.isEmpty {
-            Text("Search across your Things tasks and calendar events.")
+            Text("Search across your reminders and calendar events.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)

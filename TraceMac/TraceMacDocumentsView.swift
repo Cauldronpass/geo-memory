@@ -1315,6 +1315,10 @@ struct DocMetadataPanel: View {
     /// his vocabulary, not a failure.
     @State private var localNote: String? = nil
     @State private var userContext: String = ""
+    /// Sidecar `remind:`, as the panel holds it. Filled by the scan when the
+    /// document states a date (2026-08-27); no Mac row edits it yet — the
+    /// phone's Satchel has the picker and the Reminders button. Backlog.
+    @State private var remindOn: Date? = nil
     /// Which document `userContext` was typed for.
     ///
     /// `load()` used to clear the hint unconditionally, for a good reason
@@ -2162,11 +2166,13 @@ struct DocMetadataPanel: View {
         let context = userContext.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             do {
+                let knownPeople = notion.people.filter { !$0.isArchived }.map(\.name)
                 let result = try await DocumentScanService.scan(
                     doc: doc,
                     noteStore: noteStore,
                     existingTags: currentTags,
-                    userContext: context
+                    userContext: context,
+                    knownPeople: knownPeople
                 )
                 await MainActor.run {
                     // Merge new tags — preserve what's already selected, append new
@@ -2178,6 +2184,16 @@ struct DocMetadataPanel: View {
                     // Apply suggested title only if Claude flagged the filename as nonsensical
                     if let suggestedTitle = result.title {
                         title = suggestedTitle
+                    }
+                    // A stated date is the document's, so it is written; the
+                    // phone shows and edits it. See `remindOn`.
+                    if let date = result.remindOn { remindOn = date }
+                    if let dated = result.datedOn { docDate = dated }
+                    // List-only, spelled the list's way, same rule as the phone.
+                    for name in result.people
+                    where knownPeople.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame })
+                        && !people.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                        people.append(knownPeople.first { $0.caseInsensitiveCompare(name) == .orderedSame } ?? name)
                     }
                     isScanning = false
                     // Auto-save so the list reflects the AI-generated title immediately
@@ -2213,6 +2229,7 @@ struct DocMetadataPanel: View {
         docDate = doc.created ?? Date()
         docIcon = doc.icon
         docTint = doc.tint
+        remindOn = doc.remindOn
         links = MacTextExtraction.links(in: doc.extractedText)
         // Cleared on every load, and it was not before Session 69. `userContext`
         // is a hint typed for ONE document; leaving it behind meant the next
@@ -2260,7 +2277,8 @@ struct DocMetadataPanel: View {
             // rather than "leave it alone". Passing a bare `nil` would make
             // clearing an icon impossible.
             icon: .some(docIcon),
-            tint: .some(docTint)
+            tint: .some(docTint),
+            remindOn: .some(remindOn)
         )
         isSaving = false
         onSave(doc)

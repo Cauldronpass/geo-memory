@@ -91,8 +91,8 @@ struct DayflowWhenPickerSheet: View {
 
     private var captionText: String {
         kind == .event
-            ? "For events, no Evening/Someday language — those are Things concepts. Today + a real date, written straight to your default calendar via EventKit."
-            : "Modeled on Things' own When picker — Today/Evening/Someday route through the Things URL scheme directly from-device, not the Mini bridge, so this works offline too."
+            ? "Today or a date, written straight to your default calendar."
+            : "Today or a date. The date is the day it shows up in Today; there is no separate deadline."
     }
 
     // MARK: Body
@@ -115,12 +115,9 @@ struct DayflowWhenPickerSheet: View {
                           checked: currentValue == .today) {
                         pick(.today)
                     }
-                    if kind == .task {
-                        whenRow(systemImage: "moon.stars.fill", tint: .indigo, title: "This Evening",
-                                checked: currentValue == .thisEvening) {
-                            pick(.thisEvening)
-                        }
-                    }
+                    // This Evening and Someday rows removed 2026-08-27 with the
+                    // move to Reminders: one date, the day it appears. The enum
+                    // cases stay so old drafts decode; nothing offers them.
                 }
 
                 weekNav
@@ -137,12 +134,6 @@ struct DayflowWhenPickerSheet: View {
                 if showMonthPicker {
                     DayflowMonthGridView(monthCursor: $monthCursor) { picked in
                         pick(.date(picked))
-                    }
-                }
-
-                if kind == .task {
-                    whenRow(systemImage: "tray.fill", tint: .orange, title: "Someday", checked: currentValue == .someday) {
-                        pick(.someday)
                     }
                 }
 

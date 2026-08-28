@@ -9,7 +9,7 @@ import SwiftUI
 // Things directly."
 //
 // **Real data as of 2026-07-20.** Originally this stood in with
-// `ThingsService.shared.tasks` (today's list only) since the Mini bridge had
+// `ReminderTaskStore.shared.tasks` (today's list only) since the Mini bridge had
 // no true "every no-date task, all areas" endpoint — David found it "only
 // shows the two tasks that are on the today sheet." Fixed by adding a real
 // `/anytime` endpoint to `things-jxa-server.py` (`things.lists.byName
@@ -23,7 +23,7 @@ import SwiftUI
 // **Pull-to-refresh added 2026-07-20** — see DayflowUpcomingView.swift's
 // header comment for the "note edited directly in Things didn't show up in
 // Dayflow" finding this addresses. This view already reads
-// `ThingsService.shared.anytimeTasks` live (no local snapshot), so no other
+// `ReminderTaskStore.shared.anytimeTasks` live (no local snapshot), so no other
 // change was needed here.
 
 struct DayflowAnytimeView: View {
@@ -34,7 +34,7 @@ struct DayflowAnytimeView: View {
     private static let collapsedCount = 3
 
     private var grouped: [(list: String, tasks: [ThingsTask])] {
-        let byList = Dictionary(grouping: ThingsService.shared.anytimeTasks) { task -> String in
+        let byList = Dictionary(grouping: ReminderTaskStore.shared.anytimeTasks) { task -> String in
             let list = task.list ?? ""
             return list.isEmpty ? "No List" : list
         }
@@ -51,12 +51,12 @@ struct DayflowAnytimeView: View {
             // Skin fix 2026-07-22 (Session 32) — same card treatment as the
             // home screen / Notes / Upcoming. See DayflowSkin.swift.
             Group {
-                if ThingsService.shared.isLoadingAnytime && ThingsService.shared.anytimeTasks.isEmpty {
+                if ReminderTaskStore.shared.isLoadingAnytime && ReminderTaskStore.shared.anytimeTasks.isEmpty {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
-                            if ThingsService.shared.anytimeTasks.isEmpty {
+                            if ReminderTaskStore.shared.anytimeTasks.isEmpty {
                                 Text("Nothing here.")
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
@@ -71,7 +71,7 @@ struct DayflowAnytimeView: View {
                         .padding(.top, 8)
                         .padding(.bottom, 24)
                     }
-                    .refreshable { await ThingsService.shared.fetchAnytime() }
+                    .refreshable { await ReminderTaskStore.shared.fetchAnytime() }
                 }
             }
             .dayflowCard()
@@ -81,12 +81,12 @@ struct DayflowAnytimeView: View {
         // Skin fix 2026-07-22 (Session 32) — same warm gradient as the home
         // screen. See DayflowSkin.swift.
         .dayflowSkinBackground()
-        .task { await ThingsService.shared.fetchAnytime() }
+        .task { await ReminderTaskStore.shared.fetchAnytime() }
         .sheet(item: $editingTask) { task in
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
                                   initialDate: task.date, initialList: task.list,
                                   initialNotes: task.notes) {
-                Task { await ThingsService.shared.fetchAnytime() }
+                Task { await ReminderTaskStore.shared.fetchAnytime() }
             }
         }
     }
@@ -152,7 +152,7 @@ struct DayflowAnytimeView: View {
     private func taskRow(_ task: ThingsTask) -> some View {
         HStack(spacing: 9) {
             Button {
-                Task { await ThingsService.shared.complete(taskID: task.id) }
+                Task { await ReminderTaskStore.shared.complete(taskID: task.id) }
             } label: {
                 Circle()
                     .strokeBorder(Color.gray.opacity(0.45), lineWidth: 2)

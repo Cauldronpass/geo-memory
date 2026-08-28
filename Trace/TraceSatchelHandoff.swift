@@ -162,7 +162,9 @@ final class TraceSatchelChipStore {
 
     private let store = iOSDocumentStore()
     private var hasLoaded = false
-    private var isLoading = false
+    /// The sweep currently running, if any. A second caller awaits it rather
+    /// than being turned away — see `loadIfNeeded`.
+    private var inFlight: Task<Void, Never>?
 
     private init() { }
 
@@ -222,11 +224,24 @@ final class TraceSatchelChipStore {
         //
         // Callers pair this with `.task(id: noteStore.hasAccess)` so it re-runs
         // the moment access arrives.
-        guard !hasLoaded, !isLoading, NoteStore.shared.hasAccess else { return }
-        isLoading = true
-        await store.reload()
+        //
+        // A CALLER THAT ARRIVES MID-SWEEP WAITS FOR IT; IT IS NOT TURNED AWAY.
+        // The first version had an `isLoading` flag and returned at once if it
+        // was set. Home starts the sweep on appearance and the Spotlight
+        // reindex (`ContentView`, 2026-08-25) called `refresh()` in the same
+        // instant, was refused, read an empty `all`, and wrote an index with
+        // no documents in it. The receipt was on the phone and unfindable.
+        guard NoteStore.shared.hasAccess else { return }
+        if let inFlight {
+            await inFlight.value
+            if hasLoaded { return }
+        }
+        guard !hasLoaded else { return }
+        let task = Task { await store.reload() }
+        inFlight = task
+        await task.value
         hasLoaded = true
-        isLoading = false
+        inFlight = nil
     }
 
     /// Marks the cache stale so the next `loadIfNeeded()` actually reloads.
@@ -275,6 +290,18 @@ struct SatchelDocumentChips: View {
     /// becomes a handful of one-line rows and the editor beneath it gets its
     /// space back.
     var grouped: Bool = false
+    /// When the host is a day note, its date: documents whose `remind:` falls
+    /// on that day appear here too, with a bell, so a receipt scanned on the
+    /// 14th with "Ready On 8/15" is on the 15th's page. 2026-08-27, David:
+    /// *"a way to surface this on my daily note."* Defaulted nil so the
+    /// other hosts are untouched.
+    var dueOn: Date? = nil
+    /// When the host is a person's page, their name: documents whose sidecar
+    /// `people:` names them appear alongside the linked ones, as on the Mac.
+    /// 2026-08-27 — David: *"I realize that people are not currently
+    /// associated with documents."* They were, in the sidecar; the phone never
+    /// read it.
+    var personName: String? = nil
 
     @State private var chipStore = TraceSatchelChipStore.shared
     @State private var noteStore = NoteStore.shared
@@ -287,7 +314,27 @@ struct SatchelDocumentChips: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private var documents: [TraceMacDocument] {
-        chipStore.documents(linkedTo: notePath, endeavor: endeavorID)
+        var linked = chipStore.documents(linkedTo: notePath, endeavor: endeavorID)
+        if let personName {
+            let named = chipStore.all.filter { doc in
+                doc.people.contains { $0.caseInsensitiveCompare(personName) == .orderedSame }
+                    && !linked.contains(where: { $0.relativePath == doc.relativePath })
+            }.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+            linked += named
+        }
+        guard let dueOn else { return linked }
+        let cal = Calendar.current
+        let due = chipStore.dated.filter { doc in
+            guard let d = doc.remindOn else { return false }
+            return cal.isDate(d, inSameDayAs: dueOn)
+                && !linked.contains(where: { $0.relativePath == doc.relativePath })
+        }
+        return linked + due
+    }
+
+    private func isDue(_ doc: TraceMacDocument) -> Bool {
+        guard let dueOn, let d = doc.remindOn else { return false }
+        return Calendar.current.isDate(d, inSameDayAs: dueOn)
     }
 
     var body: some View {
@@ -435,6 +482,11 @@ struct SatchelDocumentChips: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
+            if isDue(doc) {
+                Image(systemName: "bell.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.orange)
+            }
         }
         .padding(.leading, 5)
         .padding(.trailing, 11)

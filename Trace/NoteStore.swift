@@ -1649,6 +1649,58 @@ enum ReminderButtonState: Equatable {
     case idle, working, added, failed(String)
 }
 
+/// The People list, mirrored into the App Group so an app without
+/// `NotionService` can offer it. 2026-08-27, for Satchel's People row.
+///
+/// David: *"list only on the phone … I dont want a loose string."* Satchel does
+/// not compile `NotionService` (and should not — it is a documents app with no
+/// Notion key), so the list reaches it the way the Claude key does: written to
+/// the shared defaults by whichever app fetched it last. Trace and Dayflow both
+/// fetch People at launch, so the mirror is at most one launch stale, which for
+/// a list that changes monthly is nothing.
+///
+/// Names and ids only. Agenda text has no business in a documents app.
+enum PeopleIndex {
+    static let suiteName = "group.com.david.trace"
+    static let key = "people_index_v1"
+
+    struct Entry: Codable, Identifiable, Hashable {
+        let id: String
+        let name: String
+        let relationship: String?
+    }
+
+    /// Lives in `NoteStore.swift` because that is the only file every target
+    /// compiles (see the note above `ClaudeKeyStore`); `Models.swift` is not in
+    /// Satchel, which is exactly the app that needs to read this.
+    static func write(_ entries: [Entry]) {
+        let entries = entries
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        UserDefaults(suiteName: suiteName)?.set(data, forKey: key)
+    }
+
+    static func read() -> [Entry] {
+        guard let data = UserDefaults(suiteName: suiteName)?.data(forKey: key),
+              let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return [] }
+        return entries
+    }
+
+    /// The names in `candidates` that exactly match someone on the list,
+    /// spelled the list's way. Anything else is dropped — the whole point.
+    static func known(_ candidates: [String], in entries: [Entry]) -> [String] {
+        var out: [String] = []
+        for raw in candidates {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty,
+                  let match = entries.first(where: { $0.name.caseInsensitiveCompare(t) == .orderedSame }),
+                  !out.contains(match.name) else { continue }
+            out.append(match.name)
+        }
+        return out
+    }
+}
+
 enum ReminderService {
 
     enum Failure: Error { case denied, saveFailed }

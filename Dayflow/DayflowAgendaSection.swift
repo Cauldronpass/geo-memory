@@ -14,9 +14,9 @@ import SwiftUI
 //     alongside this file — separate from Trace's own Home-widget fetch, see
 //     that file's comment) get a rounded-square marker (can't check off).
 //   - No-date Things tasks get a round checkbox (can complete). For today,
-//     pulled from the Mac Mini bridge's `/today` list (`ThingsService.shared.
+//     pulled from the Mac Mini bridge's `/today` list (`ReminderTaskStore.shared.
 //     tasks`); for any other date, filtered from the real `/upcoming` list
-//     (`ThingsService.shared.upcomingTasks`, each task carrying its own real
+//     (`ReminderTaskStore.shared.upcomingTasks`, each task carrying its own real
 //     `scheduled_date` — see `tasksForDay` below).
 // The right "Timed" column is calendar events only — Things to-dos have no
 // time field, matching the design plan's explicit call-out.
@@ -27,7 +27,7 @@ import SwiftUI
 // showed up in Browse: Upcoming but not here. Root cause: `showsRealTasks`
 // gated task-fetching on `isDateInToday`, so the Agenda never even asked
 // `ThingsService` for a non-today date's tasks, regardless of whether real
-// data existed. Fixed by filtering `ThingsService.shared.upcomingTasks` (real
+// data existed. Fixed by filtering `ReminderTaskStore.shared.upcomingTasks` (real
 // per-day data, built in Session 6) down to the selected day for any
 // non-today date. Yesterday (and any other past date) is still uncovered —
 // `/upcoming` is forward-looking only, so there's no real backend source for
@@ -113,22 +113,23 @@ struct DayflowAgendaSection: View {
     /// why this changed and what's still not covered (past dates).
     private var tasksForDay: [ThingsTask] {
         if isToday {
-            return ThingsService.shared.tasks
+            return ReminderTaskStore.shared.tasks
         }
         let cal = Calendar.current
-        return ThingsService.shared.upcomingTasks.filter { task in
+        return ReminderTaskStore.shared.upcomingTasks.filter { task in
             guard let taskDate = task.date else { return false }
             return cal.isDate(taskDate, inSameDayAs: date)
         }
     }
 
     private var noTimeItems: [DayflowAgendaItem] {
-        let events = dayEvents.filter(\.isAllDay).map { ev in
-            DayflowAgendaItem(id: "event-\(ev.id)", kind: .event, title: ev.title,
-                              isAllDay: true, timeLabel: nil, metaLabel: "Calendar · All day",
-                              taskID: nil, taskDate: nil, taskNotes: nil,
-                              endeavorID: nil, event: ev)
-        }
+        // All-day CALENDAR events no longer render here — David, 2026-08-28
+        // (Session 77): "The all day items on the calendar are taking up
+        // space. I dont think i need that." Endeavor rows already carry the
+        // day's context, and the next-meeting logic below skipped all-day
+        // events all along. Timed events are untouched. Trace's own home
+        // calendar section still honours its `cal_show_all_day` setting;
+        // this is Dayflow's day list only.
         let tasks = tasksForDay.map { t in
             DayflowAgendaItem(id: "task-\(t.id)", kind: .task, title: t.title,
                               isAllDay: true, timeLabel: nil, metaLabel: t.list,
@@ -146,7 +147,7 @@ struct DayflowAgendaSection: View {
                               taskID: nil, taskDate: nil, taskNotes: nil,
                               endeavorID: entry.endeavor.id, event: nil)
         }
-        return endeavors + events + tasks
+        return endeavors + tasks
     }
 
     /// Reuses `rawTodayTimedEvents` (see the Timed-column section below) so
@@ -178,11 +179,11 @@ struct DayflowAgendaSection: View {
             //
             // Only when `isToday`: any other date reads `upcomingTasks`, which
             // this flag does not describe.
-            if isToday, ThingsService.shared.isShowingStaleTasks {
+            if isToday, ReminderTaskStore.shared.isShowingStaleTasks {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
                         .font(.caption2)
-                    Text(ThingsService.shared.tasksAgeDescription.map {
+                    Text(ReminderTaskStore.shared.tasksAgeDescription.map {
                         "Tasks could not be refreshed. Showing the list from \($0)."
                     } ?? "Tasks could not be refreshed.")
                     .font(.caption2)
@@ -674,7 +675,7 @@ struct DayflowAgendaSection: View {
             Text("🕒").font(.system(size: 11)).padding(.top, 1)
         } else if item.kind == .task, let taskID = item.taskID {
             Button {
-                Task { await ThingsService.shared.complete(taskID: taskID) }
+                Task { await ReminderTaskStore.shared.complete(taskID: taskID) }
             } label: {
                 Circle()
                     .strokeBorder(Color.gray.opacity(0.45), lineWidth: 2)
@@ -716,7 +717,7 @@ struct DayflowAgendaSection: View {
         // fetches `/upcoming` (filtered down to the day by `tasksForDay`
         // above) — added 2026-07-20, see this file's header comment.
         if isToday {
-            async let taskFetch: Void = ThingsService.shared.fetch()
+            async let taskFetch: Void = ReminderTaskStore.shared.fetch()
             // Tomorrow's events — only needed for `tomorrowFirstTimedEvent`
             // (the "first meeting of tomorrow" preview below), so only
             // fetched when actually viewing today. Added 2026-07-24.
@@ -726,7 +727,7 @@ struct DayflowAgendaSection: View {
             tomorrowEvents = await tomorrow
             await taskFetch
         } else {
-            async let taskFetch: Void = ThingsService.shared.fetchUpcoming()
+            async let taskFetch: Void = ReminderTaskStore.shared.fetchUpcoming()
             dayEvents = await events
             tomorrowEvents = []
             await taskFetch

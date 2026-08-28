@@ -1421,6 +1421,76 @@ private extension View {
 // so it lives here too, and Trace can render a chip for every document whose
 // `linked_note` matches the note it is showing.
 //
+
+// MARK: - People picker
+//
+// 2026-08-27. List-only, from `PeopleIndex` (the Notion People list mirrored
+// into the App Group by Trace and Dayflow). David: *"list only on the phone …
+// I dont want a loose string"* — a name that matches nobody links to nothing.
+// The way out when someone is missing is a button to Trace's add-person sheet,
+// not a text field.
+
+struct SatchelPeoplePickerView: View {
+    @Binding var selected: [String]
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @State private var query = ""
+    private let entries = PeopleIndex.read()
+
+    private var filtered: [PeopleIndex.Entry] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return entries }
+        return entries.filter { $0.name.localizedCaseInsensitiveContains(q) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if entries.isEmpty {
+                    Text("No people yet. Open Trace once so its People list reaches Satchel.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.satchelSecondary)
+                }
+                ForEach(filtered) { person in
+                    let isOn = selected.contains { $0.caseInsensitiveCompare(person.name) == .orderedSame }
+                    Button {
+                        if isOn { selected.removeAll { $0.caseInsensitiveCompare(person.name) == .orderedSame } }
+                        else { selected.append(person.name) }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(person.name).foregroundStyle(.primary)
+                                if let r = person.relationship, !r.isEmpty {
+                                    Text(r).font(.caption).foregroundStyle(Color.satchelSecondary)
+                                }
+                            }
+                            Spacer()
+                            if isOn { Image(systemName: "checkmark").foregroundStyle(Color.satchelAI) }
+                        }
+                    }
+                }
+                Section {
+                    Button {
+                        // `trace://addperson` is an existing Trace route. Trace
+                        // opens on its add-person sheet; the next Trace launch
+                        // refreshes the mirror and the name is here.
+                        if let url = URL(string: "trace://addperson") { openURL(url) }
+                    } label: {
+                        Label("Not here? Add in Trace", systemImage: "person.badge.plus")
+                            .foregroundStyle(Color.satchelAI)
+                    }
+                }
+            }
+            .searchable(text: $query, prompt: "Search people")
+            .navigationTitle("People")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+}
+
 // This is the prerequisite for scope §7 — Trace cannot retire its Add Document
 // flow until Satchel can create the link that flow currently creates.
 
@@ -2178,6 +2248,22 @@ struct SatchelDocumentDetailView: View {
     @State private var showIconPicker = false
     @State private var confirmingDelete = false
     @State private var isScanning = false
+    /// Optional hint for the AI, and for the on-device pass. See `rescanButton`.
+    @State private var userContext = ""
+    /// Sidecar `remind:`. See `remindField`.
+    @State private var remindOn: Date? = nil
+    /// Sidecar `people:`, list-only. See `peopleField`.
+    @State private var people: [String] = []
+    @State private var peopleAIFilled = false
+    @State private var showPeoplePicker = false
+    /// The document's own date (`created` in the sidecar, "Added" on screen
+    /// until now). The scan fills it from the printed date; see `dateField`.
+    @State private var docDate: Date = Date()
+    @State private var dateAIFilled = false
+    /// The AI set `remindOn` on the last scan; cleared the moment he edits it.
+    @State private var remindAIFilled = false
+    private enum ReminderState: Equatable { case idle, working, added, failed(String) }
+    @State private var reminderState: ReminderState = .idle
     @State private var scanError: String?
     /// Raised when the AI button is pressed on a document tagged `private`.
     @State private var showPrivatePrompt = false
@@ -2221,6 +2307,9 @@ struct SatchelDocumentDetailView: View {
                         .onChange(of: descriptionText) { _, _ in dirty = true }
                 }
                 tagField
+                peopleField
+                dateField
+                remindField
                 linksField
                 // "Filed to" sits ABOVE the typed note and Summary as of
                 // 2026-07-28. It used to be second from the bottom, next to
@@ -2382,6 +2471,229 @@ struct SatchelDocumentDetailView: View {
     ///
     /// Same shape and the same teal on the Mac panel, so the two apps show one
     /// feature rather than two.
+    // MARK: People
+
+    private var peopleField: some View {
+        field("People") {
+            VStack(alignment: .leading, spacing: 8) {
+                if !people.isEmpty {
+                    SatchelFlowLayout {
+                        ForEach(people, id: \.self) { name in
+                            Button {
+                                people.removeAll { $0 == name }
+                                peopleAIFilled = false
+                                dirty = true
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "person.fill").font(.system(size: 9))
+                                    Text(name)
+                                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                                }
+                                .font(.system(size: 12, weight: .medium))
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(Color.satchelAI.opacity(0.10), in: Capsule())
+                                .foregroundStyle(Color.satchelAI)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                HStack {
+                    Button {
+                        showPeoplePicker = true
+                    } label: {
+                        Label(people.isEmpty ? "Add a person" : "Add another", systemImage: "person.badge.plus")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.satchelAI)
+                    }
+                    .buttonStyle(.plain)
+                    if peopleAIFilled {
+                        Text("AI")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color.satchelAI.opacity(0.14), in: Capsule())
+                            .foregroundStyle(Color.satchelAI)
+                    }
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .satchelCard()
+            .sheet(isPresented: $showPeoplePicker, onDismiss: { dirty = true }) {
+                SatchelPeoplePickerView(selected: $people)
+            }
+        }
+    }
+
+    // MARK: Date
+    //
+    // The date the document is ABOUT, not when it was scanned: a meal receipt
+    // is the night of the meal. Filled by the scan (`dated`), editable here,
+    // stored as the sidecar's `created`. Distinct from Remind on purpose — a
+    // past date is not a reminder, and David agreed it should not be.
+    private var dateField: some View {
+        field("Date") {
+            HStack(spacing: 10) {
+                DatePicker("", selection: Binding(
+                    get: { docDate },
+                    set: { docDate = $0; dateAIFilled = false; dirty = true }
+                ), displayedComponents: .date)
+                .labelsHidden()
+                if dateAIFilled {
+                    Text("AI")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(Color.satchelAI.opacity(0.14), in: Capsule())
+                        .foregroundStyle(Color.satchelAI)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .satchelCard()
+        }
+    }
+
+    // MARK: Remind
+    //
+    // 2026-08-27. The CD One receipt said "Ready On: Saturday 8/15" and nothing
+    // read it. The scan now fills `remind:`; this row shows it, lets him fix
+    // or clear it, and hands it to Apple's Reminders through the same
+    // `ReminderService` Dayflow's Endeavor screen already uses (list "Trace",
+    // 9am alarm, link tracked so completing round-trips). David: *"I would like
+    // a way to surface this on my daily note of Dailyflow and ideally in a
+    // task app."* The day note half lives in `SatchelDocumentChips`.
+    private var remindField: some View {
+        field("Remind") {
+            VStack(alignment: .leading, spacing: 8) {
+                remindRow
+                // With or without a date. Undated, it lands in the Trace list
+                // with no day and no alarm — Reminders' inbox shape. David,
+                // 2026-08-27, after asking whether he had to add a date first.
+                reminderButton(for: remindOn)
+            }
+        }
+    }
+
+    /// The date itself: picker + AI badge + clear, or "Add a date".
+    private var remindRow: some View {
+        HStack(spacing: 10) {
+            if let remindOn {
+                DatePicker("", selection: Binding(
+                    get: { remindOn },
+                    set: { self.remindOn = $0; remindAIFilled = false; dirty = true }
+                ), displayedComponents: .date)
+                .labelsHidden()
+                if remindAIFilled {
+                    Text("AI")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(Color.satchelAI.opacity(0.14), in: Capsule())
+                        .foregroundStyle(Color.satchelAI)
+                }
+                Spacer()
+                Button {
+                    self.remindOn = nil
+                    remindAIFilled = false
+                    dirty = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(Color.satchelSecondary)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    remindOn = Calendar.current.startOfDay(for: Date())
+                    dirty = true
+                } label: {
+                    Label("Add a date", systemImage: "bell")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.satchelAI)
+                }
+                .buttonStyle(.plain)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .satchelCard()
+    }
+
+    /// "Add to Reminders" / "In Reminders", plus the failure line. Split out of
+    /// `remindField` so the builder stays simple enough to type-check — the
+    /// first version put the `let`s inline and the compiler gave up on it.
+    @ViewBuilder
+    private func reminderButton(for date: Date?) -> some View {
+        let key = "document|\(current.relativePath)"
+        let already = ReminderService.isLinked(key) || reminderState == .added
+        Button {
+            addToReminders(on: date, key: key)
+        } label: {
+            HStack(spacing: 7) {
+                if reminderState == .working {
+                    ProgressView().controlSize(.small)
+                    Text("Adding…")
+                } else {
+                    Image(systemName: already ? "checkmark" : "bell.badge")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(already ? "In Reminders" : (date == nil ? "Add to Reminders, no date" : "Add to Reminders"))
+                }
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 12.5, weight: .semibold))
+            .foregroundStyle(already ? Color.satchelSecondary : Color.satchelAI)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .satchelCard()
+        }
+        .buttonStyle(.plain)
+        .disabled(already || reminderState == .working)
+        if case .failed(let why) = reminderState {
+            Text(why)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 4)
+        }
+    }
+
+    /// One reminder per document, in the Trace list, due that day with the 9am
+    /// alarm `ReminderService` adds. The note carries the Satchel link so the
+    /// reminder opens the receipt. Saves first, so the date on disk is the
+    /// date in Reminders.
+    private func addToReminders(on date: Date?, key: String) {
+        save()
+        let doc = current
+        reminderState = .working
+        Task {
+            do {
+                let id = try await ReminderService.add(
+                    title: doc.title,
+                    due: date,
+                    // Built here rather than via `TraceSatchelHandoff.documentURL`,
+                    // which is Trace's and Dayflow's half of the hand-off and is
+                    // not compiled into this target. Same shape, same parser on
+                    // the receiving side (`SatchelRouter`).
+                    notes: Self.documentLink(path: doc.relativePath))
+                ReminderService.link(id, to: key)
+                reminderState = .added
+            } catch ReminderService.Failure.denied {
+                reminderState = .failed("Satchel does not have access to Reminders. Settings › Privacy › Reminders.")
+            } catch {
+                reminderState = .failed("Could not add the reminder.")
+            }
+        }
+    }
+
+    private static func documentLink(path: String) -> String? {
+        var comps = URLComponents()
+        comps.scheme = "satchel"
+        comps.host = "document"
+        comps.queryItems = [URLQueryItem(name: "path", value: path)]
+        return comps.url?.absoluteString
+    }
+
     @ViewBuilder
     private var linksField: some View {
         if !links.isEmpty {
@@ -2760,6 +3072,24 @@ struct SatchelDocumentDetailView: View {
     @ViewBuilder
     private var rescanButton: some View {
         if let store {
+            // Context hint (2026-08-26). The Mac has had this field since the
+            // AI row was rebuilt there and David asked for it here: *"I dont
+            // think i have the Context field on IOS Satchel and it is helpful
+            // on Mac."* Same contract as the Mac: the text goes into the prompt
+            // as authoritative, `#tag` markers are honoured explicitly, and the
+            // local (private) path reads it as its hint. Sits directly above
+            // the button that consumes it, which is the Mac's lesson about
+            // where the affordance belongs.
+            // Labelled "Context" like Title and Description below it — David,
+            // on the first build: *"can we call it Context like we do for the
+            // title or description?"*
+            field("Context") {
+                TextField("Hint: who, what, when. Use #tag to force a tag", text: $userContext)
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .satchelCard()
+            }
             VStack(spacing: 6) {
                 Button {
                     // **The gate, and it is a gate rather than a warning.**
@@ -2853,8 +3183,13 @@ struct SatchelDocumentDetailView: View {
         }
         scanError = nil
         Task {
-            let suggestion = await MacLocalIntelligence.suggest(text: text, hint: "")
+            let hint = userContext.trimmingCharacters(in: .whitespacesAndNewlines)
+            let suggestion = await MacLocalIntelligence.suggest(text: text, hint: hint)
             await MainActor.run {
+                for marked in MacTextExtraction.hashTags(in: hint)
+                where !tags.contains(where: { $0.caseInsensitiveCompare(marked) == .orderedSame }) {
+                    tags.append(marked)
+                }
                 if let headline = MacTextExtraction.localHeadline(from: text) {
                     title = headline.title
                     if descriptionText.isEmpty { descriptionText = headline.description }
@@ -2897,25 +3232,46 @@ struct SatchelDocumentDetailView: View {
                 doc: doc,
                 noteStore: noteStore,
                 existingTags: existing,
+                userContext: userContext.trimmingCharacters(in: .whitespacesAndNewlines),
                 filenameIsGenerated: doc.title.isEmpty
                     || doc.title.lowercased().hasPrefix("scan")
-                    || doc.title.lowercased().hasPrefix("photo")
+                    || doc.title.lowercased().hasPrefix("photo"),
+                knownPeople: PeopleIndex.read().map(\.name)
             )
+            // `#tag` in the hint is honoured whether or not the model chose to.
+            var mergedTags = result.tags.isEmpty ? doc.tags : result.tags
+            for marked in MacTextExtraction.hashTags(in: userContext)
+            where !mergedTags.contains(where: { $0.caseInsensitiveCompare(marked) == .orderedSame }) {
+                mergedTags.append(marked)
+            }
+            // Names only from the list, spelled the list's way, added to what
+            // was already there.
+            let known = PeopleIndex.known(result.people, in: PeopleIndex.read())
+            var mergedPeople = doc.people
+            for name in known where !mergedPeople.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                mergedPeople.append(name)
+            }
             try store.saveSidecar(
                 for: doc,
                 title: result.title ?? doc.title,
-                tags: result.tags.isEmpty ? doc.tags : result.tags,
+                tags: mergedTags,
                 linkedNote: doc.linkedNote,
-                people: doc.people,
+                people: mergedPeople,
                 description: result.description.isEmpty ? doc.description : result.description,
-                date: doc.created,
+                date: result.datedOn ?? doc.created,
                 icon: result.icon,
                 // Session 72: colour is the document's type, not a function
                 // of its icon. No fallback.
-                tint: result.tint
+                tint: result.tint,
+                // A stated date wins over none; a date already on the document
+                // is kept unless the scan found one (an explicit re-run).
+                remindOn: result.remindOn.map { Optional.some($0) }
             )
             await store.reload()
             loadFromDocument()
+            remindAIFilled = result.remindOn != nil
+            dateAIFilled = result.datedOn != nil
+            peopleAIFilled = !known.isEmpty
             dirty = false
         } catch {
             scanError = error.localizedDescription
@@ -2985,6 +3341,9 @@ struct SatchelDocumentDetailView: View {
         pinned = doc.pinned
         note = doc.note
         linkedNote = doc.linkedNote
+        remindOn = doc.remindOn
+        people = doc.people
+        docDate = doc.created ?? Date()
         links = MacTextExtraction.links(in: doc.extractedText)
     }
 
@@ -3022,6 +3381,9 @@ struct SatchelDocumentDetailView: View {
             && pinned == doc.pinned
             && linkedNote == doc.linkedNote
             && note == doc.note
+            && remindOn == doc.remindOn
+            && people == doc.people
+            && Calendar.current.isDate(docDate, inSameDayAs: doc.created ?? .distantPast)
         if unchanged {
             dirty = false
             return
@@ -3032,9 +3394,9 @@ struct SatchelDocumentDetailView: View {
             title: trimmed.isEmpty ? doc.title : trimmed,
             tags: tags,
             linkedNote: linkedNote,
-            people: doc.people,
+            people: people,
             description: descriptionText.trimmingCharacters(in: .whitespacesAndNewlines),
-            date: doc.created,
+            date: docDate,
             endeavor: endeavorID ?? "",
             endeavorName: endeavorName ?? "",
             pinned: pinned,
@@ -3049,7 +3411,8 @@ struct SatchelDocumentDetailView: View {
             // The note is passed explicitly; the summary is left nil so it is
             // preserved. The two never write over each other — that separation
             // is the whole reason they are different sections.
-            note: note
+            note: note,
+            remindOn: .some(remindOn)
         )
         dirty = false
         Task { await store.reload() }

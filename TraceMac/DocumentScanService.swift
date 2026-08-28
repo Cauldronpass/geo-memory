@@ -70,7 +70,8 @@ enum DocumentScanService {
         doc: TraceMacDocument,
         noteStore: NoteStore,
         existingTags: [String],
-        userContext: String = ""
+        userContext: String = "",
+        knownPeople: [String] = []
     ) async throws -> DocumentScanResult {
         // Before everything, including the key check: a private document is not
         // sent for any reason, and the cheapest possible refusal is the right
@@ -88,9 +89,9 @@ enum DocumentScanService {
         }
 
         if doc.isPDF {
-            return try await scanPDF(at: fileURL, filename: doc.filename, existingTags: existingTags, userContext: userContext)
+            return try await scanPDF(at: fileURL, filename: doc.filename, existingTags: existingTags, userContext: userContext, knownPeople: knownPeople)
         } else if doc.isImage {
-            return try await scanImage(at: fileURL, filename: doc.filename, existingTags: existingTags, userContext: userContext)
+            return try await scanImage(at: fileURL, filename: doc.filename, existingTags: existingTags, userContext: userContext, knownPeople: knownPeople)
         } else {
             throw DocumentScanError.unsupportedFormat
         }
@@ -119,7 +120,7 @@ enum DocumentScanService {
     /// so: both carry an accurate AI title and description, written by the phone
     /// through this very fallback. The bug is real but its blast radius is
     /// Mac-side capture only. Checking before asserting cost one `cat`.
-    private static func scanPDF(at url: URL, filename: String, existingTags: [String], userContext: String) async throws -> DocumentScanResult {
+    private static func scanPDF(at url: URL, filename: String, existingTags: [String], userContext: String, knownPeople: [String] = []) async throws -> DocumentScanResult {
         guard let pdf = PDFDocument(url: url) else {
             throw DocumentScanError.noContent
         }
@@ -153,11 +154,11 @@ enum DocumentScanService {
             }
             let imagePrompt = buildPrompt(content: nil, existingTags: existingTags,
                                           isText: false, filename: filename,
-                                          userContext: userContext)
+                                          userContext: userContext, knownPeople: knownPeople)
             return try await callClaude(imageData: rendered, textPrompt: imagePrompt)
         }
 
-        let prompt = buildPrompt(content: textPreview, existingTags: existingTags, isText: true, filename: filename, userContext: userContext)
+        let prompt = buildPrompt(content: textPreview, existingTags: existingTags, isText: true, filename: filename, userContext: userContext, knownPeople: knownPeople)
         return try await callClaude(textPrompt: prompt)
     }
 
@@ -179,7 +180,7 @@ enum DocumentScanService {
 
     // MARK: - Image scanning
 
-    private static func scanImage(at url: URL, filename: String, existingTags: [String], userContext: String) async throws -> DocumentScanResult {
+    private static func scanImage(at url: URL, filename: String, existingTags: [String], userContext: String, knownPeople: [String] = []) async throws -> DocumentScanResult {
         // Trigger iCloud download if the file is a cloud placeholder
         try? FileManager.default.startDownloadingUbiquitousItem(at: url)
 
@@ -191,7 +192,7 @@ enum DocumentScanService {
         // Document scanner images can easily be 4–8 MB; cap the long edge at 1600 px.
         let imageData = resizedImageData(rawData, maxDimension: 1600) ?? rawData
 
-        let prompt = buildPrompt(content: nil, existingTags: existingTags, isText: false, filename: filename, userContext: userContext)
+        let prompt = buildPrompt(content: nil, existingTags: existingTags, isText: false, filename: filename, userContext: userContext, knownPeople: knownPeople)
         return try await callClaude(imageData: imageData, textPrompt: prompt)
     }
 
@@ -238,7 +239,7 @@ enum DocumentScanService {
         return fmt.string(from: Date())
     }
 
-    private static func buildPrompt(content: String?, existingTags: [String], isText: Bool, filename: String, userContext: String = "") -> String {
+    private static func buildPrompt(content: String?, existingTags: [String], isText: Bool, filename: String, userContext: String = "", knownPeople: [String] = []) -> String {
         let tagHint = existingTags.isEmpty
             ? ""
             : "Prefer tags from this existing list when they fit: [\(existingTags.joined(separator: ", "))]. You may suggest new tags if none fit."
@@ -256,12 +257,18 @@ enum DocumentScanService {
         {
           "tags": ["tag1", "tag2", "tag3"],
           "description": "One to two sentence summary of what this document is.",
-          "title": "Short descriptive title" or null
+          "title": "Short descriptive title" or null,
+          "remind": "YYYY-MM-DD" or null,
+          "dated": "YYYY-MM-DD" or null,
+          "people": ["Exact Name From List"]
         }
 
         Rules:
         - tags: 2–5 short lowercase words or phrases. \(tagHint)
         - description: factual, concise. Include key amounts, dates, or parties if present.
+        - remind: the date the document itself says it needs attention, as "YYYY-MM-DD": a pickup or ready date, a due date, an expiry, an appointment, an RSVP-by. Use the printed date, never today's. Return null if the document states no such date. Never guess one.
+        - dated: the date printed on the document as when it was issued or when the event it records happened, as "YYYY-MM-DD" — a receipt's transaction date, a statement date, an event date. Null if none is printed.
+        - people: names from this list ONLY, exactly as spelled, of anyone the document is about, for, or from, or whom the owner's context names: [\(knownPeople.joined(separator: ", "))]. Return [] if none apply. Never return a name that is not on the list.
         - title: suggest a short human-readable title (3–6 words, title case) ONLY if the filename looks auto-generated (e.g. IMG_xxxx, CleanShot timestamp, DSC_xxxx, screenshot dates, random strings). The original filename is: \(filename). If the filename is already descriptive, return null for title. If the image has recognizable content, use that for the title. If the content is unrecognizable or too generic to name meaningfully (e.g. a plain portrait with no context, a blank or unclear photo), use the fallback title "Image \(stamp)".
         - Return valid JSON only. No other text.\(contextLine)
         \(content.map { "\n\nDocument text:\n\($0)" } ?? "")
@@ -355,7 +362,10 @@ enum DocumentScanService {
             return t.trimmingCharacters(in: .whitespacesAndNewlines)
         }()
 
-        return DocumentScanResult(tags: tags, description: description, title: title)
+        return DocumentScanResult(tags: tags, description: description, title: title,
+                                  remindOn: DocumentScanResult.parseRemind(obj["remind"]),
+                                  datedOn: DocumentScanResult.parseRemind(obj["dated"]),
+                                  people: (obj["people"] as? [String]) ?? [])
     }
 
     // MARK: - Helpers

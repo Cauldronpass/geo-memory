@@ -147,7 +147,14 @@ class iOSDocumentStore {
         tint: DocumentTint? = nil,
         kitOrder: Int? = nil,
         note: String? = nil,
-        summary: String? = nil
+        summary: String? = nil,
+        /// Three states, same shape as `updateSidecar`: `nil` preserves what is
+        /// on disk, `.some(nil)` clears, `.some(date)` sets. **Preserving is
+        /// new (2026-08-27).** Until now this method rebuilt `SidecarData`
+        /// without `remindOn`, so every full save from Satchel's editor or
+        /// capture sheet silently deleted the reminder date — the same bug the
+        /// Mac store fixed for itself and recorded at its top.
+        remindOn: Date?? = nil
     ) throws {
         let existing = parseSidecar(at: doc.sidecarPath)
         // Read the body back BEFORE rewriting. Every caller that does not know
@@ -170,6 +177,10 @@ class iOSDocumentStore {
         data.icon         = icon ?? existing?.icon
         data.tint         = tint ?? existing?.tint
         data.kitOrder     = kitOrder ?? existing?.kitOrder
+        switch remindOn {
+        case .none:            data.remindOn = existing?.remindOn ?? doc.remindOn
+        case .some(let value): data.remindOn = value
+        }
 
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
     }

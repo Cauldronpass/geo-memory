@@ -109,7 +109,7 @@ struct DayflowEventDetailView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(Color.dayflowAccent)
                 }
             }
 

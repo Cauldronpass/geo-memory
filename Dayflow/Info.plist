@@ -27,6 +27,19 @@
 	<string>Dayflow uses the camera to take photos and scan documents into your notes.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Dayflow attaches photos you choose from your library to your notes.</string>
+	<!-- Home Screen quick action, added 2026-08-28 (Session 77). Handled by
+	     DayflowQuickActions.swift. -->
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>AddTask</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Add Task</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>plus.circle</string>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

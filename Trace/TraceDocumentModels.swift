@@ -515,19 +515,53 @@ struct DocumentScanResult {
     let title: String?          // suggested title; nil if filename is already human-readable
     let icon: DocumentIcon?     // suggested icon token; nil if the model returned nothing usable
     let tint: DocumentTint?     // suggested tint token; nil falls back to icon.defaultTint
+    /// A date the document itself states as when it needs attention — ready
+    /// for pickup, due, expires, appointment. 2026-08-27, David's call: set
+    /// `remind:` from this automatically and mark it AI-filled, because *"a
+    /// receipt with a pickup date that does not remind you"* is the failure
+    /// the field exists to prevent. Appended last, per the rule on this struct.
+    let remindOn: Date?
+    /// The date the document is about — transaction, statement, event. Goes to
+    /// the document's own date (`created`), not to `remind:`. A meal receipt's
+    /// date is when it happened, and David agreed it should not remind.
+    let datedOn: Date?
+    /// Names from the caller's known-people list only; raw model output,
+    /// re-filtered by the caller through `PeopleIndex.known` before use.
+    let people: [String]
 
     init(
         tags: [String],
         description: String,
         title: String?,
         icon: DocumentIcon? = nil,
-        tint: DocumentTint? = nil
+        tint: DocumentTint? = nil,
+        remindOn: Date? = nil,
+        datedOn: Date? = nil,
+        people: [String] = []
     ) {
         self.tags = tags
         self.description = description
         self.title = title
         self.icon = icon
         self.tint = tint
+        self.remindOn = remindOn
+        self.datedOn = datedOn
+        self.people = people
+    }
+
+    /// `"2026-08-15"` → that day, local calendar. Anything else, including
+    /// `null` and prose, is nil. Shared by both scan services so the two
+    /// platforms cannot drift on the format the prompt asks for.
+    nonisolated static func parseRemind(_ raw: Any?) -> Date? {
+        guard let s = raw as? String else { return nil }
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.count == 10, t.lowercased() != "null" else { return nil }
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.date(from: t)
     }
 }
 

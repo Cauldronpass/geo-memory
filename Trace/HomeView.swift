@@ -278,7 +278,14 @@ struct HomeView: View {
                         Image(systemName: "line.3.horizontal").foregroundStyle(Color.traceInk)
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    // Search + Ask (2026-08-25). Same door as the Notes tab's
+                    // magnifier; ContentView presents the screen.
+                    Button {
+                        NotificationCenter.default.post(name: .traceOpenSearch, object: nil)
+                    } label: {
+                        Image(systemName: "magnifyingglass").foregroundStyle(Color.traceInk)
+                    }
                     Button {
                         NotificationCenter.default.post(name: .traceOpenRightDrawer, object: nil)
                     } label: {

@@ -55,21 +55,21 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
-    @State private var selectedDate: Date = DayflowRelativeDay.today.date()
-    @State private var showQuickAdd = false
-    /// Which mode `showQuickAdd`'s sheet opens into — added 2026-07-24
-    /// alongside the Dayflow widget's "+" tap target, which deep-links
-    /// straight into Event mode instead of the sheet's own Task-mode
-    /// default. The normal Agenda "+" (`onOpenQuickAdd` below) explicitly
-    /// resets this to `.task` on every open, so a stale `.event` from an
-    /// earlier widget tap can't leak into the next normal-path open.
-    @State private var quickAddInitialKind: DayflowEntryKind = .task
+    /// Session 77: lifted to DayflowRootView (the tab bar shell) so the Notes
+    /// tab shares the one real date. Was `@State private` before that.
+    @Binding var selectedDate: Date
+    /// Session 77: the Daily Note card's notes icon and the swipe-left gesture
+    /// select the Notes TAB (DayflowRootView) instead of presenting the
+    /// `showNotes` cover. The cover survives for routed project deep links and
+    /// search results, which need `initialProjectTitle` / a fresh presentation.
+    var onOpenNotesTab: () -> Void = {}
+    /// Session 77: the + is EVENT-ONLY now (dated tasks = "Add for today",
+    /// undated = the Inbox +) — DayflowEventComposer replaced
+    /// DayflowQuickAddSheet, and the Task/Event mode switch retired with it.
+    @State private var showEventComposer = false
+    /// Guards the FAB's tap action after its long-press (hold = note) fires.
+    @State private var fabLongPressed = false
     @Environment(\.scenePhase) private var scenePhase
-    // Agenda's collapse state, lifted out of DayflowAgendaSection so this
-    // screen can bind to it (DayflowAgendaSection.swift's own header comment
-    // has the history). Daily Note no longer reads this directly — its card
-    // just flexes to fill whatever space Agenda leaves, collapsed or not.
-    @State private var agendaCollapsed = false
     @State private var showNoteFullPage = false
     /// Session 38 addendum 5 — David found the home card's Daily Note
     /// didn't pick up edits made in the full-page view after dismissing
@@ -93,7 +93,7 @@ struct ContentView: View {
     /// in view. Added 2026-07-20 for Calendar write support (build order step
     /// 7) — Agenda's `dayEvents` is a local `@State` snapshot populated by its
     /// own `loadDayData()`, not a reactive read off a shared observable like
-    /// `ThingsService.shared.tasks` is, so creating an event elsewhere doesn't
+    /// `ReminderTaskStore.shared.tasks` is, so creating an event elsewhere doesn't
     /// otherwise reach it until the next natural trigger (a `date` change, or
     /// the user tapping Agenda's own refresh button). Applied as `.id(...)` on
     /// the section below — changing it recreates the view, which reruns
@@ -179,19 +179,45 @@ struct ContentView: View {
     /// whenever that finishes, which on a cold launch is routinely longer than
     /// any delay worth hard-coding — see the note on the `onChange` below.
     @State private var noteStore = NoteStore.shared
+    /// Session 77 — Things-style multi-select. The action bar moved to
+    /// DayflowRootView when Upcoming joined the selection club; this view
+    /// only observes the state to hide its floating + while selecting.
+    @State private var selection = DayflowTodaySelection.shared
     @State private var endeavorRoute: EndeavorRouteRef? = nil
     /// Set alongside `showNotes` so `DayflowNotesView` opens straight into a
     /// project instead of its browse list.
     @State private var routedProjectTitle: String? = nil
 
-    private var dateHeadlineText: String {
-        let f = DateFormatter()
-        f.dateFormat = "EEEE, d MMMM"
+    // Editorial masthead (Session 77, locked on the "Dayflow Skin" canvas).
+    // David's call, from Things: day NUMBER leads, day name beside it, and
+    // the month moves up into the kicker line. Weather joins the kicker when
+    // the home screen has a weather source (backlog); month alone until then.
+    @State private var homeWeather = DayflowHomeWeather.shared
+    private var mastheadKicker: String {
+        let f = DateFormatter(); f.dateFormat = "MMMM"
+        let month = f.string(from: selectedDate).uppercased()
+        // "AUGUST \u{00B7} 78\u{00B0} AND CLEAR" when a fetch has landed; month
+        // alone otherwise (the Simulator, usually \u{2014} no location fix there).
+        if let weather = homeWeather.kicker {
+            return month + " \u{00B7} " + weather
+        }
+        return month
+    }
+    private var mastheadDayNumber: String {
+        let f = DateFormatter(); f.dateFormat = "d"
+        return f.string(from: selectedDate)
+    }
+    private var mastheadWeekday: String {
+        let f = DateFormatter(); f.dateFormat = "EEEE"
         return f.string(from: selectedDate)
     }
 
     var body: some View {
         NavigationStack {
+            // Session 77, step (b): the content below the header is now a
+            // ScrollView ("page scrolls as one sheet", Dayflow-Tasks-Design.md
+            // § Today). The comment below describes the pre-77 fixed-viewport
+            // layout, kept as the history of why Daily Note used to flex.
             // Fixed viewport, not a ScrollView — this is what lets the Daily
             // Note card actually claim whatever room Agenda doesn't use (see
             // DayflowDailyNoteSection's header comment for why the old
@@ -221,22 +247,32 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     topBar
 
+                    // Still the one door into Calendar browsing (Session 24);
+                    // only the clothes changed for the Editorial skin.
                     Button {
                         showDateCalendar = true
                     } label: {
-                        Text(dateHeadlineText)
-                        // Skin locked 2026-07-21 (Session 29) — was
-                        // .custom("Georgia", ...); David flagged Georgia's
-                        // capital J as visibly off vs. Parchment's real
-                        // letterforms. `design: .serif` resolves to New York
-                        // on Apple platforms, which is the actual fix — see
-                        // DayflowSkin.swift.
-                            .font(.dayflowSerif(26))
-                            .padding(.top, 2)
-                            .padding(.bottom, 4)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Rectangle().fill(Color.dayflowInk).frame(height: 3)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(mastheadKicker)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .tracking(2.2)
+                                    .foregroundStyle(Color.dayflowMuted)
+                                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                    Text(mastheadDayNumber)
+                                        .font(.dayflowSerif(38, weight: .heavy))
+                                        .foregroundStyle(Color.dayflowInk)
+                                    Text(mastheadWeekday)
+                                        .font(.dayflowSerif(22, weight: .semibold))
+                                        .foregroundStyle(Color.dayflowNoteText)
+                                }
+                            }
+                            .padding(.vertical, 9)
+                            Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                        }
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.primary)
                 }
                 // `contentShape` so the gaps between the two rows drag too; a
                 // gesture you have to land on a glyph to start is a gesture
@@ -254,33 +290,85 @@ struct ContentView: View {
                         }
                 )
 
-                DayflowAgendaSection(
-                    date: selectedDate,
-                    onOpenQuickAdd: { quickAddInitialKind = .task; showQuickAdd = true },
-                    isCollapsed: $agendaCollapsed
-                )
-                .id(agendaRefreshToken)
+                // Session 77, step (b): task card first, events strip, then
+                // the Day note with a minimum height — replaces
+                // DayflowAgendaSection (file kept on disk, unused; delete in
+                // the housekeeping pass). `agendaRefreshToken` keeps its old
+                // job: saving a calendar event for the visible day recreates
+                // the section, re-running its `.task(id:)` fetch.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        DayflowTodaySection(date: selectedDate)
+                            .id(agendaRefreshToken)
 
-                DayflowDailyNoteSection(
-                    date: selectedDate,
-                    reloadToken: dailyNoteReloadToken,
-                    onExpand: { showNoteFullPage = true },
-                    onOpenNotes: {
-                        // Clear the deep-link destination first. **REGRESSION,
-                        // introduced and fixed the same day (2026-07-30):**
-                        // `routedProjectTitle` is set by
-                        // `dayflow://note?path=Notes/Projects/…` and was never
-                        // cleared, so once David had followed one such link from
-                        // Satchel, every later tap of this button re-opened Home
-                        // Bills and he had to back out of it. A one-shot route has
-                        // to be consumed, not merely acted on.
-                        routedProjectTitle = nil
-                        showNotes = true
+                        DayflowDailyNoteSection(
+                            date: selectedDate,
+                            reloadToken: dailyNoteReloadToken,
+                            onExpand: { showNoteFullPage = true },
+                            onOpenNotes: {
+                                // Session 77: Notes is a tab now — select it
+                                // rather than present the cover. (The
+                                // 2026-07-30 regression note about consuming
+                                // `routedProjectTitle` moved with the cover,
+                                // which deep-link routing still uses — see
+                                // resolveNoteRoute's Notes/Projects branch.)
+                                onOpenNotesTab()
+                            }
+                        )
+                        // A FIXED height, not minHeight — found 2026-08-28
+                        // when David opened the pinned July 22 note (which
+                        // carries chips + a Related Notes table) and Today's
+                        // note section rendered overlapped. Inside a
+                        // ScrollView the section gets no height proposal, so
+                        // its editor (built for the old bounded viewport,
+                        // maxHeight .infinity inside) collapses and its
+                        // footer rows climb over the text. A definite height
+                        // restores the bounded world the editor was designed
+                        // for; longer notes scroll inside it, and the pencil
+                        // expands to full page as always.
+                        .frame(height: 360)
+                        // Room for the floating + and the tab bar.
+                        .padding(.bottom, 56)
                     }
-                )
+                }
+                .scrollIndicators(.hidden)
+                .refreshable {
+                    await ReminderTaskStore.shared.refreshAll()
+                    agendaRefreshToken = UUID()
+                }
             }
             .padding()
             .frame(maxHeight: .infinity)
+            // Session 77, step (b): the + above the tab bar (design doc §
+            // Navigation), task mode — the same reset the old Agenda + did.
+            .overlay(alignment: .bottomTrailing) {
+                if selection.isActive { EmptyView() } else {
+                Button {
+                    if fabLongPressed { fabLongPressed = false; return }
+                    showEventComposer = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundStyle(Color.dayflowPaper)
+                        .frame(width: 50, height: 50)
+                        .background(Color.dayflowFloatingAction, in: RoundedRectangle(cornerRadius: 2))
+                        .shadow(color: .black.opacity(0.22), radius: 8, x: 0, y: 4)
+                }
+                .buttonStyle(.plain)
+                // Hold for a note: tap = event, hold = a blank note into To
+                // file — the swipe-right door's visible backup (composer
+                // round, 2026-08-28).
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                        fabLongPressed = true
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        inboxStartsInNewNote = true
+                        showNotesInbox = true
+                    }
+                )
+                .padding(.trailing, 4)
+                }
+            }
             .toolbar(.hidden, for: .navigationBar)
             // Skin fix 2026-07-21 (Session 30, round 3) — was chained onto
             // the NavigationStack itself (outside this closure). David
@@ -336,34 +424,20 @@ struct ContentView: View {
                             inboxStartsInNewNote = true
                             showNotesInbox = true
                         } else {
-                            // **`routedProjectTitle` is cleared first**, exactly
-                            // as the card's `onOpenNotes` does, and for the same
-                            // reason: it is set by
-                            // `dayflow://note?path=Notes/Projects/…` and a route
-                            // that is acted on without being consumed re-opens
-                            // the same project on every later entry. That
-                            // regression was introduced and fixed on 2026-07-30,
-                            // and the obvious one-line version of this swipe
-                            // would have reintroduced it on a second door.
-                            routedProjectTitle = nil
-                            showNotes = true
+                            // Session 77: Notes is a tab now — same call as the
+                            // card's own notes icon above.
+                            onOpenNotesTab()
                         }
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
             )
         }
-        .sheet(isPresented: $showQuickAdd) {
-            DayflowQuickAddSheet(initialKind: quickAddInitialKind) { draft in
-                saveDraft(draft)
+        .sheet(isPresented: $showEventComposer) {
+            DayflowEventComposer(initialDate: selectedDate) { savedDay in
+                if Calendar.current.isDate(savedDay, inSameDayAs: selectedDate) {
+                    agendaRefreshToken = UUID()
+                }
             }
-            // A single fixed detent, not [.medium, .large]. With more than one
-            // detent available, iOS auto-promotes the sheet to the largest one
-            // the instant a focused text field inside it would otherwise be
-            // cramped by the keyboard — found 2026-07-19 when Task mode's
-            // sheet silently jumped to near-fullscreen the moment typing
-            // started, leaving a large dead gap below the sparse Details
-            // content. One detent means there's nothing larger to promote to.
-            .presentationDetents([.medium])
         }
         .fullScreenCover(isPresented: $showNoteFullPage, onDismiss: {
             // Session 38 addendum 5 — see `dailyNoteReloadToken`'s own
@@ -442,13 +516,14 @@ struct ContentView: View {
         // Added 2026-07-20 alongside the Browse views' pull-to-refresh and
         // Agenda's new refresh button — see DayflowUpcomingView.swift's header
         // comment for the "note edited directly in Things didn't show up in
-        // Dayflow" finding. Agenda reads ThingsService.shared's arrays live
+        // Dayflow" finding. Agenda reads ReminderTaskStore.shared's arrays live
         // (no local snapshot), so this alone is enough to bring it current
         // whenever you switch back to Dayflow from Things or anywhere else —
         // no separate plumbing needed for the main screen specifically.
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                Task { await ThingsService.shared.refreshAll() }
+                Task { await ReminderTaskStore.shared.refreshAll() }
+                Task { await DayflowHomeWeather.shared.refresh() }
                 // A hand-off that arrived while the container was still settling
                 // gets another chance here rather than being lost.
                 resolveNoteRoute()
@@ -492,8 +567,9 @@ struct ContentView: View {
         // `canOpenURL(_:)`), so no Info.plist change was needed for this.
         .onOpenURL { url in
             if url.host == "addEvent" {
-                quickAddInitialKind = .event
-                showQuickAdd = true
+                // The widget's + always wanted event mode; it gets the
+                // composer directly now.
+                showEventComposer = true
             } else if url.host == "openJot" {
                 if let jotURL = URL(string: "jot://open") {
                     UIApplication.shared.open(jotURL)
@@ -551,7 +627,7 @@ struct ContentView: View {
                     browseDestination = nil
                     showNoteFullPage  = false
                     showSettings      = false
-                    showQuickAdd      = false
+                    showEventComposer = false
                     selectedDate      = DayflowRelativeDay.today.date()
                 } else {
                     let scheme: String? = {
@@ -583,6 +659,7 @@ struct ContentView: View {
         .task {
             try? await Task.sleep(for: .milliseconds(50))
             resolveNoteRoute()
+            await DayflowHomeWeather.shared.refresh()
         }
         // THE MECHANISM. `NoteStore` resolves the iCloud container on a
         // background queue and sets `hasAccess` on the main queue when it
@@ -692,7 +769,7 @@ struct ContentView: View {
     /// where clearing does more harm than the stuck route it prevents.
     private var isPresentingSomething: Bool {
         showNotes || showNoteFullPage || showNotesInbox || showSettings
-            || showQuickAdd || browseDestination != nil || endeavorRoute != nil
+            || showEventComposer || browseDestination != nil || endeavorRoute != nil
             || showSearch
     }
 
@@ -717,7 +794,7 @@ struct ContentView: View {
             showNoteFullPage = false
             showNotesInbox = false
             showSettings = false
-            showQuickAdd = false
+            showEventComposer = false
             browseDestination = nil
             endeavorRoute = nil
             showSearch = false
@@ -844,9 +921,10 @@ struct ContentView: View {
                 // Things/task-browsing family; Calendar/notes browsing has
                 // exactly one door, the date headline below, plus
                 // DayflowNoteFullPageView's own calendar icon.
-                Button { browseDestination = .upcoming } label: {
-                    Label("Upcoming", systemImage: "calendar.day.timeline.left")
-                }
+                // Session 77: Upcoming and Unfiled Tasks left this menu for
+                // the tab bar (DayflowRootView). What remains here has no tab
+                // yet; permanent homes are an open design question for the
+                // Inbox/Notes build steps.
                 Button { browseDestination = .anytime } label: {
                     Label("Anytime", systemImage: "books.vertical")
                 }
@@ -865,31 +943,31 @@ struct ContentView: View {
                 } label: {
                     Label("Inbox", systemImage: "tray")
                 }
-                Button { browseDestination = .inbox } label: {
-                    Label("Unfiled Tasks", systemImage: "checklist")
-                }
                 Button { browseDestination = .search } label: {
                     Label("Search", systemImage: "magnifyingglass")
                 }
+                Divider()
+                // Session 77: Settings moved in from its own top-bar gear —
+                // David: "why have the gear and the hamburger? ... Id like to
+                // have the top row as minimalist as I can for calm."
+                Button { showSettings = true } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
             } label: {
-                // Skin fix 2026-07-21 (Session 30, post-implementation) — was
-                // unstyled, which let `Menu`'s default label tinting render
-                // this icon in the system accent blue instead of the locked
-                // monochrome look. David caught this comparing a real build
-                // against Dayflow-Skin-Mockup.html. See DayflowSkin.swift.
-                Image(systemName: "calendar")
-                    .font(.system(size: 15))
+                // Editorial (Session 77): the hamburger — the round-1 canvas
+                // icon read as a calendar item to David. Explicit ink so
+                // Menu's accent tinting can't leak in (Session 30 bug class).
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(Color.dayflowInk)
                     .frame(width: 32, height: 32)
-                    .background(.background, in: Circle())
-                    .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
             }
             Spacer()
             dayPill
             Spacer()
-            iconButton(systemName: "gearshape") {
-                showSettings = true
-            }
+            // Session 77: the gear moved into the hamburger menu; this clear
+            // frame keeps the day pill centered.
+            Color.clear.frame(width: 32, height: 32)
         }
     }
 
@@ -915,151 +993,29 @@ struct ContentView: View {
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) { selectedDate = day.date() }
                 } label: {
-                    Text(day.label)
-                        // Skin fix 2026-07-21 (Session 30, post-implementation)
-                        // — was a solid blue capsule + white text, the
-                        // original app's pre-skin styling, never touched by
-                        // Session 29/30 since it wasn't assumed to need
-                        // fixing. Locked mockup wants a white pill + bold
-                        // near-black text for the active day, muted warm-gray
-                        // text (no fill) for the inactive days. See
-                        // DayflowSkin.swift.
-                        .font(.system(size: 13, weight: isActive(day) ? .bold : .medium))
-                        .foregroundStyle(isActive(day) ? Color.dayflowInk : Color.dayflowPillInactiveText)
-                        .padding(.horizontal, 14)
+                    // Editorial (Session 77): plain small-caps text, accent
+                    // on the active day, no pill fill — the white-capsule
+                    // treatment above this line's history was the cream skin.
+                    Text(day.label.uppercased())
+                        .font(.system(size: 11, weight: isActive(day) ? .bold : .medium))
+                        .tracking(1.2)
+                        .foregroundStyle(isActive(day) ? Color.dayflowAccent : Color.dayflowFaint)
+                        .padding(.horizontal, 8)
                         .padding(.vertical, 6)
-                        .background(isActive(day) ? Color.white : Color.clear, in: Capsule())
-                        .shadow(color: .black.opacity(isActive(day) ? 0.10 : 0), radius: 2, x: 0, y: 1)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(3)
-        .background(Color.dayflowInk.opacity(0.055), in: Capsule())
     }
 
     private func isActive(_ day: DayflowRelativeDay) -> Bool {
         Calendar.current.isDate(selectedDate, inSameDayAs: day.date())
     }
 
-    // MARK: Save routing
-
-    /// Routes a saved draft to the right backend. Task dates that land on a
-    /// real calendar day (or "Today") go through ThingsService's existing
-    /// Mac Mini bridge — already tested end-to-end per Dayflow-HANDOFF.md
-    /// Session 1. "This Evening"/"Someday" and Event mode are both flagged
-    /// open items (see Dayflow-Design-Plan.md "Open questions") — handled
-    /// conservatively here rather than silently guessed at.
-    private func saveDraft(_ draft: DayflowQuickAddDraft) {
-        switch draft.kind {
-        case .task:
-            Task {
-                let success: Bool
-                switch draft.when {
-                case .none:
-                    success = await ThingsService.shared.addTask(title: draft.title, list: draft.list, notes: draft.notes)
-                case .today:
-                    success = await ThingsService.shared.addTask(title: draft.title, toToday: true, list: draft.list, notes: draft.notes)
-                case .date(let d):
-                    success = await ThingsService.shared.addTask(title: draft.title, date: d, list: draft.list, notes: draft.notes)
-                case .thisEvening, .someday:
-                    // Open architecture question, not yet resolved: these two
-                    // Things-native buckets need the URL-scheme-direct path,
-                    // which the Mini bridge's /add endpoint can't express (it
-                    // only takes an arbitrary date). Conservative fallback so
-                    // this doesn't silently mis-schedule: lands undated in the
-                    // chosen list (or Inbox) instead of guessing a date.
-                    success = await ThingsService.shared.addTask(title: draft.title, list: draft.list, notes: draft.notes)
-                }
-                await MainActor.run {
-                    if success {
-                        log("Task: \(draft.title) — \(draft.when.label)\(draft.list.map { " · \($0)" } ?? "")")
-                    } else {
-                        log("Task creation FAILED (check Mini bridge connection in Settings): \(draft.title)")
-                        saveErrorMessage = "\"\(draft.title)\" wasn't saved to Things. Check Settings → Things Integration → Test Connection, then try again."
-                    }
-                }
-            }
-        case .event:
-            // CalendarService.createEvent (build order step 7, added
-            // 2026-07-20) does the real EventKit write. `draft.eventDate` is
-            // the day picked via the Date pill; `draft.eventStart`/`.eventEnd`
-            // are the Start/End time pickers — CalendarService combines all
-            // three itself (see that method's header comment for why they
-            // can't just be used as-is).
-            //
-            // **Buffer events added 2026-07-24** (backlog item 12, walked
-            // through via HTML mockup review first). `draft.bufferBefore`/
-            // `.bufferAfter` each add a separate 15-minute "Buffer" calendar
-            // hold immediately before/after the real event — deliberately
-            // separate EKEvents, not a widened start/end on the real event
-            // itself, so the calendar still shows the meeting's actual real
-            // time; the buffer is just travel time blocked off around it.
-            // Written as up to three sequential `createEvent` calls sharing
-            // the same target calendar, in chronological order (buffer
-            // before → real event → buffer after) purely for readable
-            // console logging — EventKit doesn't care about write order.
-            // Known gap, same as `DayflowQuickAddSheet`'s own doc comment on
-            // this feature: no rollback if an earlier call in the sequence
-            // succeeds and a later one fails (e.g. a written "Buffer" event
-            // with no matching real meeting if the main `createEvent` call
-            // then fails) — consistent with how this codebase already
-            // doesn't attempt multi-call transactional rollback elsewhere
-            // (Things task creation has the same property).
-            let calendarIdentifier = UserDefaults.standard.string(forKey: "default_calendar_identifier")
-            Task {
-                var allSucceeded = true
-
-                if draft.bufferBefore {
-                    let bufferStart = Calendar.current.date(byAdding: .minute, value: -15, to: draft.eventStart) ?? draft.eventStart
-                    let ok = await CalendarService.shared.createEvent(
-                        title: "Buffer",
-                        date: draft.eventDate,
-                        startTime: bufferStart,
-                        endTime: draft.eventStart,
-                        calendarIdentifier: calendarIdentifier
-                    )
-                    allSucceeded = allSucceeded && ok
-                }
-
-                let mainSuccess = await CalendarService.shared.createEvent(
-                    title: draft.title,
-                    date: draft.eventDate,
-                    startTime: draft.eventStart,
-                    endTime: draft.eventEnd,
-                    calendarIdentifier: calendarIdentifier
-                )
-                allSucceeded = allSucceeded && mainSuccess
-
-                if draft.bufferAfter {
-                    let bufferEnd = Calendar.current.date(byAdding: .minute, value: 15, to: draft.eventEnd) ?? draft.eventEnd
-                    let ok = await CalendarService.shared.createEvent(
-                        title: "Buffer",
-                        date: draft.eventDate,
-                        startTime: draft.eventEnd,
-                        endTime: bufferEnd,
-                        calendarIdentifier: calendarIdentifier
-                    )
-                    allSucceeded = allSucceeded && ok
-                }
-
-                await MainActor.run {
-                    if allSucceeded {
-                        log("Event created: \(draft.title)\(draft.bufferBefore || draft.bufferAfter ? " (+ buffer)" : "")")
-                    } else {
-                        log("Event creation FAILED (check Calendar access + Settings → Default Calendar): \(draft.title)")
-                        saveErrorMessage = "\"\(draft.title)\" wasn't saved to Calendar. Check Calendar access in iOS Settings and your Default Calendar in Dayflow Settings, then try again."
-                    }
-                    // Only force an Agenda refresh if the new event actually
-                    // lands on the day currently in view — no visible reason
-                    // to tear the view down otherwise.
-                    if allSucceeded && Calendar.current.isDate(draft.eventDate, inSameDayAs: selectedDate) {
-                        agendaRefreshToken = UUID()
-                    }
-                }
-            }
-        }
-    }
+    // Save routing for the old Quick Add sheet lived here until Session 77;
+    // DayflowEventComposer owns event creation (buffers included) now, and
+    // task creation lives in the Today card's Add row and the Inbox +.
 
     /// Console-only debug trace, no UI. **Downgraded from a visible on-screen
     /// strip 2026-07-20** — the old `recentLog` array rendered its last two
@@ -1075,6 +1031,6 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
+    DayflowRootView()
         .environment(NotionService.shared)
 }

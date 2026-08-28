@@ -113,6 +113,9 @@ extension Notification.Name {
     static let traceWorkoutPrompt   = Notification.Name("TraceWorkoutPrompt")
     static let traceOpenLeftDrawer  = Notification.Name("TraceOpenLeftDrawer")
     static let traceOpenRightDrawer = Notification.Name("TraceOpenRightDrawer")
+    /// Search + Ask door (2026-08-25). Posted by the magnifier on Home and on
+    /// Notes; ContentView owns the cover, same shape as the two drawers above.
+    static let traceOpenSearch      = Notification.Name("TraceOpenSearch")
     static let traceLifeDeepLink     = Notification.Name("TraceLifeDeepLink")
     static let tracePeopleVisible    = Notification.Name("TracePeopleVisible")
     static let tracePeopleHidden     = Notification.Name("TracePeopleHidden")

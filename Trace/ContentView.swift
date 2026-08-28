@@ -1,10 +1,53 @@
 import SwiftUI
 import CoreLocation
+import CoreSpotlight
 import UIKit
 
 struct ContentView: View {
     @Environment(NotionService.self) private var notion
     @Environment(\.scenePhase) private var scenePhase
+    /// For the two hand-offs a search result can make to another app:
+    /// `dayflow://` for project notes and endeavors, `satchel://` for a
+    /// document. Trace displays neither kind itself.
+    @Environment(\.openURL) private var openURL
+
+    // Search + Ask (2026-08-25). The screen is `TraceSearchView`, shared with
+    // Dayflow and built on the Mac's engine. Presented from here, not from the
+    // tab that asked for it, because a result can land on a Person or Place
+    // sheet, the Notes tab, or another app — only ContentView can reach all of
+    // those. Opened by `.traceOpenSearch`, posted by the magnifier on Home and
+    // on Notes.
+    @State private var showSearch = false
+    /// The tapped result, held until the cover has actually dismissed. A
+    /// `sheet` cannot present from under a `fullScreenCover`, so acting at the
+    /// tap would drop the Person/Place sheet on the floor. Same shape and same
+    /// reason as Dayflow's `pendingSearchDestination`.
+    @State private var pendingSearchDestination: MacSearchDestination? = nil
+    /// Observed so the Spotlight reindex below fires when the iCloud container
+    /// resolves — on a cold launch that is after this view first appears.
+    @State private var noteStore = NoteStore.shared
+
+    /// When to rewrite the Spotlight index (2026-08-25). One value, so
+    /// `.task(id:)` re-fires on any of: the container becoming readable,
+    /// People arriving, Places arriving. Each fire rewrites the whole index
+    /// (see `TraceSpotlightIndex.replaceAll`), which is under a second for a
+    /// corpus this size; a launch fires it three or four times and that is
+    /// fine.
+    private struct SpotlightKey: Hashable {
+        let hasAccess: Bool
+        let people: Int
+        let places: Int
+        /// The sidecar sweep finishing is a fourth arrival, and it is the one
+        /// that was missed: Home starts it, and an index written before it
+        /// lands has no documents (found on device 2026-08-25).
+        let documents: Int
+    }
+    private var spotlightKey: SpotlightKey {
+        SpotlightKey(hasAccess: noteStore.hasAccess,
+                     people: notion.people.count,
+                     places: notion.places.count,
+                     documents: TraceSatchelChipStore.shared.all.count)
+    }
     @State private var showingActionSheet = false
     @State private var selectedTab = 0
     @State private var showingCheckIn = false
@@ -400,6 +443,50 @@ struct ContentView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 showingWorkoutPrompt = true
             }
+        }
+        // Search + Ask door. Acted on in `onDismiss`, not at the tap — see
+        // `pendingSearchDestination`.
+        .fullScreenCover(isPresented: $showSearch, onDismiss: {
+            guard let destination = pendingSearchDestination else { return }
+            pendingSearchDestination = nil
+            openSearchDestination(destination)
+        }) {
+            TraceSearchView { destination in
+                guard canOpenFromSearch(destination) else { return false }
+                pendingSearchDestination = destination
+                showSearch = false
+                return true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .traceOpenSearch)) { _ in
+            showSearch = true
+        }
+        // Spotlight: donate the corpus (2026-08-25). The walk and the sidecar
+        // sweep are the same two `TraceSearchView.buildCorpus` does; here they
+        // run at launch so the phone's own search knows about a note before
+        // Trace's search screen has ever been opened this session.
+        .task(id: spotlightKey) {
+            guard noteStore.hasAccess, let url = noteStore.containerURL else { return }
+            let corpus = await Task.detached(priority: .utility) {
+                MacSearchCorpus.build(containerURL: url)
+            }.value
+            await TraceSatchelChipStore.shared.refresh()
+            await TraceSpotlightIndex.reindex(corpus: corpus,
+                                              documents: TraceSatchelChipStore.shared.all,
+                                              people: notion.people,
+                                              places: notion.places,
+                                              canOpen: canOpenFromSearch)
+        }
+        // A Spotlight result tapped on the home screen. The identifier is the
+        // destination, so this is the search screen's row tap without the
+        // screen. Known limit, accepted for now: if a sheet or the search
+        // cover is already up, the Person/Place sheet cannot present and the
+        // tap is dropped — the same fact `pendingSearchDestination` exists for.
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+                  let destination = TraceSpotlightIndex.destination(for: id),
+                  canOpenFromSearch(destination) else { return }
+            openSearchDestination(destination)
         }
         // Drawer buttons from child tabs
         .onReceive(NotificationCenter.default.publisher(for: .traceOpenLeftDrawer)) { _ in
@@ -940,6 +1027,93 @@ struct ContentView: View {
             await notion.fetchPlaces()
         }
         resolvePendingNoteLink()
+    }
+
+    // MARK: - Search + Ask routing (2026-08-25)
+
+    /// What Trace can show, answered before the cover closes. `false` is a
+    /// first-class answer: the row expands in place and the words stay
+    /// readable, rather than a row that navigates and does nothing.
+    ///
+    /// Trace's own screens: People and Places (detail sheets, the same ones the
+    /// `trace://note` return leg uses) and day notes (the Notes tab's Day view).
+    /// Project notes and endeavors are Dayflow's, documents are Satchel's, and
+    /// both are reached by URL — the mirror of Dayflow handing a document to
+    /// Satchel. Weekly and Inbox notes have no screen in either direction.
+    private func canOpenFromSearch(_ destination: MacSearchDestination) -> Bool {
+        switch destination {
+        case .dailyOrProjectNote(let path):
+            return path.hasPrefix("Calendar/") || path.hasPrefix("Notes/Projects/")
+        case .endeavor, .document:
+            return true
+        case .person(let id):
+            return notion.people.contains { $0.id == id }
+        case .place(let id):
+            return notion.places.contains { $0.id == id }
+        case .weeklyNote, .inboxNote, .preview:
+            return false
+        }
+    }
+
+    /// Every branch is a route that already existed. Nothing was invented to
+    /// receive a search result.
+    private func openSearchDestination(_ destination: MacSearchDestination) {
+        switch destination {
+        case .dailyOrProjectNote(let path):
+            if path.hasPrefix("Calendar/"), let date = Self.dayNoteDate(from: path) {
+                // The Notes tab's Day view, via the same notification the FAB's
+                // date picker uses. Tab first, then the post a beat later: the
+                // receiver lives on NotesView, and a tab that has never been
+                // shown may not have a listener yet.
+                selectedTab = 4
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    NotificationCenter.default.post(name: .traceNotesOpenDay,
+                                                    object: nil,
+                                                    userInfo: ["date": date])
+                }
+            } else if path.hasPrefix("Notes/Projects/") {
+                openDayflow(host: "note", item: "path", value: path)
+            }
+        case .endeavor(let id):
+            openDayflow(host: "endeavor", item: "id", value: id)
+        case .person(let id):
+            guard let person = notion.people.first(where: { $0.id == id }) else { return }
+            noteLinkPerson = person
+        case .place(let id):
+            guard let place = notion.places.first(where: { $0.id == id }) else { return }
+            noteLinkPlace = place
+        case .document(let path):
+            guard let url = TraceSatchelHandoff.documentURL(path: path) else { return }
+            openURL(url)
+        case .weeklyNote, .inboxNote, .preview:
+            // Declined by `canOpenFromSearch`, so unreachable. Exhaustive rather
+            // than `default:` so a new case has to be thought about here.
+            break
+        }
+    }
+
+    /// `dayflow://<host>?<item>=<value>`, built with `URLComponents` so an
+    /// endeavor called "Mum & Dad's 50th" survives the trip. Dayflow parses
+    /// the other end the same way.
+    private func openDayflow(host: String, item: String, value: String) {
+        var comps = URLComponents()
+        comps.scheme = "dayflow"
+        comps.host = host
+        comps.queryItems = [URLQueryItem(name: item, value: value)]
+        guard let url = comps.url else { return }
+        openURL(url)
+    }
+
+    /// `Calendar/2026-08-25.md` → that day, local calendar. Anything else is
+    /// nil, and a nil means "not a day note", never "today".
+    private static func dayNoteDate(from path: String) -> Date? {
+        let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.date(from: name)
     }
 
     private func resolvePendingNoteLink() {

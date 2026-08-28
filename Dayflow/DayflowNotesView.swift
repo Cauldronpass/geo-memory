@@ -121,6 +121,10 @@ struct DayflowNotesView: View {
     /// into a project instead of its browse list (E35, 2026-07-29). Defaulted, so
     /// every existing `DayflowNotesView(selectedDate:)` call still compiles.
     var initialProjectTitle: String? = nil
+    /// Session 77: true when hosted as the Notes tab in DayflowRootView —
+    /// hides the chevron and disables the header's swipe-right-to-dismiss
+    /// (there is no presentation to dismiss there).
+    var isTabRoot: Bool = false
     @State private var showDailyNote = false
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
 
@@ -242,6 +246,21 @@ struct DayflowNotesView: View {
     /// the scope changes and when the screen appears; see `loadTagCounts`.
     @State private var tagCounts: [(tag: String, count: Int)] = []
 
+    // Session 77 step (d) — the tab's segments (Dayflow-Tasks-Design.md,
+    // Notes tab): opens on Days; To file is the renamed notes-staging inbox
+    // and wears a dot while it has items. Search moved behind the header
+    // icon; the old scope pills survive INSIDE search mode, where
+    // Places/People scoping still earns its keep.
+    private enum NotesSegment: String, CaseIterable, Identifiable {
+        case days = "DAYS", projects = "PROJECTS", endeavors = "ENDEAVORS", toFile = "TO FILE"
+        var id: String { rawValue }
+    }
+    @State private var segment: NotesSegment = .days
+    @State private var searchActive = false
+    @State private var toFileCount = 0
+    @State private var dayNotes: [(date: Date, preview: String)] = []
+    @FocusState private var searchFocused: Bool
+
     private var sortedResults: [SearchResult] {
         switch sortOrder {
         case .newest: return results.sorted { ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
@@ -285,6 +304,7 @@ struct DayflowNotesView: View {
         // debounces its saves, so this is not per-keystroke.
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreFileDidChange)) { _ in
             loadTagCounts()
+            loadDayNotes()
         }
         .onAppear {
             loadProjectNames()
@@ -293,6 +313,11 @@ struct DayflowNotesView: View {
             // until the scope was toggled.
             loadTagCounts()
             applyRoutedProject()
+            loadDayNotes()
+            refreshToFileCount()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .noteStoreInboxDidChange)) { _ in
+            refreshToFileCount()
         }
         // **`.onAppear` alone was the whole bug, and the screenshot named it.**
         //
@@ -330,97 +355,203 @@ struct DayflowNotesView: View {
     private var mainBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            searchBar
-            scopeRow
-            scopeActionRow
-            tagFilterRow
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
-                        browseContent
-                    } else if results.isEmpty {
-                        Text("No notes match \"\(searchText)\".")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 24)
-                    } else {
-                        resultsHeader
-                        ForEach(sortedResults) { r in resultRow(r) }
+            if searchActive {
+                // Search mode: the pre-(d) machinery, intact — scope pills
+                // (incl. Places/People), tags, results. browseContent's job
+                // moved to the segments.
+                searchBar
+                scopeRow
+                scopeActionRow
+                tagFilterRow
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                            Text("Search notes, days, places, people and #tags.")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.dayflowMuted)
+                                .padding(.top, 24)
+                        } else if results.isEmpty {
+                            Text("No notes match \"\(searchText)\".")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.dayflowMuted)
+                                .padding(.top, 24)
+                        } else {
+                            resultsHeader
+                            ForEach(sortedResults) { r in resultRow(r) }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
                 }
-                // Card-width fix 2026-07-24 — `.dayflowCard()` below just
-                // backgrounds whatever size this ScrollView reports; it never
-                // forces full width itself. Projects/All/actual search results
-                // always looked full-width because some row in them (e.g.
-                // `projectNotesSection`'s header HStack Spacer) happened to push
-                // the VStack out to the full proposed width. Places, People, and
-                // Daily-with-no-pinned-days only ever show one short line of hint
-                // text with nothing pushing outward, so the VStack (and the card
-                // wrapped around it) shrank to hug just that text — the "half the
-                // screen" card David flagged, comparing a Places screenshot
-                // against a Projects one. This `.frame` makes the VStack always
-                // claim full width regardless of what's inside it; no visible
-                // change for the cases that were already full width.
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 24)
+                .scrollIndicators(.hidden)
+            } else {
+                segmentRow
+                if segment == .toFile {
+                    // Owns its own List (swipe actions need it) — not nested
+                    // in the segment ScrollView.
+                    DayflowNotesInboxView(embedded: true)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 2) {
+                            switch segment {
+                            case .days:
+                                pinnedDaysSection
+                                daysList
+                            case .projects:
+                                newProjectRow
+                                projectNotesSection
+                            case .endeavors:
+                                DayflowEndeavorListSection()
+                            case .toFile:
+                                EmptyView()
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 24)
+                    }
+                    .scrollIndicators(.hidden)
+                }
             }
-            // Skin fix 2026-07-22 (Session 31) — wraps the scrollable list
-            // in the same card treatment Agenda/Daily Note use on the main
-            // screen, so it doesn't sit as a bare list directly on the warm
-            // background below. See DayflowSkin.swift.
-            .dayflowCard()
-            .padding(.horizontal, 16)
-            .padding(.bottom, 16)
         }
-        // Skin fix 2026-07-22 (Session 31) — same warm gradient as the main
-        // screen. David flagged this whole screen (reached via Daily Note's
-        // Notes & Projects icon) as visually inconsistent with the home
-        // screen — this, the pill colors below, and the header font were
-        // the three concrete causes. See DayflowSkin.swift.
         .dayflowSkinBackground()
     }
 
-    // MARK: Header — matches DayflowAnytimeView's Browse-destination header
+    private var segmentRow: some View {
+        HStack(spacing: 18) {
+            ForEach(NotesSegment.allCases) { seg in
+                Button { segment = seg } label: {
+                    HStack(spacing: 4) {
+                        Text(seg.rawValue)
+                            .font(.system(size: 11, weight: segment == seg ? .bold : .medium))
+                            .tracking(1.2)
+                        if seg == .toFile && toFileCount > 0 {
+                            Circle().fill(Color.dayflowAccent).frame(width: 5, height: 5)
+                        }
+                    }
+                    .foregroundStyle(segment == seg ? Color.dayflowAccent : Color.dayflowFaint)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+    }
+
+    // MARK: Days segment (Session 77 step d)
+
+    private var daysList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(dayNotes, id: \.date) { entry in
+                dayNoteRow(entry.date, entry.preview)
+                Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+            }
+        }
+        .padding(.top, pinnedDays.isEmpty ? 4 : 12)
+    }
+
+    private func dayNoteRow(_ date: Date, _ preview: String) -> some View {
+        Button {
+            selectedDate = date
+            showDailyNote = true
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(dayNoteLabel(date))
+                    .font(.dayflowSerif(15, weight: .semibold))
+                    .foregroundStyle(Color.dayflowInk)
+                if !preview.isEmpty {
+                    Text(preview)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Color.dayflowMuted)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minHeight: 46)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func dayNoteLabel(_ date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "Today" }
+        if cal.isDateInYesterday(date) { return "Yesterday" }
+        let f = DateFormatter(); f.dateFormat = "EEEE d MMMM"
+        return f.string(from: date)
+    }
+
+    /// Recent day notes with a one-line preview. ~30 small local files; cheap
+    /// enough to read on entry and on every note write.
+    private func loadDayNotes() {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        let names = (try? NoteStore.shared.listFiles(in: "Calendar")) ?? []
+        let dates = names.compactMap { name -> Date? in
+            f.date(from: ((name as NSString).lastPathComponent as NSString).deletingPathExtension)
+        }.sorted(by: >).prefix(30)
+        dayNotes = dates.map { d in
+            let raw = (try? NoteStore.shared.readDailyNote(date: d)) ?? ""
+            let body = DayflowDailyNoteEditor.stripDateHeader(raw)
+            let preview = body.split(separator: "\n").map(String.init)
+                .first(where: { line in
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    return !t.isEmpty && !t.hasPrefix("#")
+                })?.trimmingCharacters(in: .whitespaces) ?? ""
+            return (d, preview)
+        }
+    }
+
+    private func refreshToFileCount() {
+        toFileCount = (try? NoteStore.shared.listFiles(in: "Notes/Inbox").count) ?? 0
+    }
+
+    // MARK: Header
 
     private var header: some View {
-        // Back by reversing the gesture that got you here: Home swipes LEFT to
-        // reach Notes, so Notes swipes RIGHT to go back. See the matching
-        // comment in `DayflowNotesInboxView`. Header-confined for the same
-        // reason, and kept identical here even though this screen has no
-        // `.swipeActions` of its own — two screens whose back-swipe works in
-        // different places would read as flakiness rather than as two rules.
-
-        HStack {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 32, height: 32)
+        // Session 77 step (d): Editorial header — serif title left, search
+        // toggle right (the design's "Search icon"). The old swipe-right-to-
+        // dismiss went with the centered-title layout; the cover route keeps
+        // its chevron.
+        HStack(alignment: .center, spacing: 8) {
+            if !isTabRoot {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+            }
+            Text("Notes")
+                .font(.dayflowSerif(30, weight: .heavy))
+                .foregroundStyle(Color.dayflowInk)
+            Spacer()
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    searchActive.toggle()
+                    if !searchActive { searchText = "" }
+                }
+                if searchActive {
+                    // The runloop-hop focus lesson from the Inbox capture.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        searchFocused = true
+                    }
+                }
+            } label: {
+                Image(systemName: searchActive ? "xmark" : "magnifyingglass")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Color.dayflowInk)
+                    .frame(width: 36, height: 36)
             }
             .buttonStyle(.plain)
-            Spacer()
-            // Skin fix 2026-07-22 (Session 31) — was .custom("Georgia", ...),
-            // the same capital-J mismatch already fixed on the home screen's
-            // date headline (Session 29/30) but never carried over here. See
-            // DayflowSkin.swift.
-            Text("Notes").font(.dayflowSerif(20))
-            Spacer()
-            Color.clear.frame(width: 32, height: 32)
         }
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 30)
-                .onEnded { value in
-                    let h = value.translation.width
-                    guard h > 50,
-                          h > abs(value.translation.height) * 1.5 else { return }
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    dismiss()
-                }
-        )
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 4)
+        .padding(.horizontal, 24)
+        .padding(.top, isTabRoot ? 22 : 8)
+        .padding(.bottom, 2)
     }
 
     private var searchBar: some View {
@@ -429,6 +560,7 @@ struct DayflowNotesView: View {
             TextField("Search notes, #tags…", text: $searchText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .focused($searchFocused)
             if !searchText.isEmpty {
                 Button { searchText = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -499,6 +631,7 @@ struct DayflowNotesView: View {
 
     @ViewBuilder
     private var scopeActionRow: some View {
+        Group {
         switch scope {
         case .projects: newProjectRow
         case .places:   traceHandoffRow(title: "Add a Place in Trace", urlHost: "addplace")
@@ -518,6 +651,8 @@ struct DayflowNotesView: View {
         // it does not need one out here as well.
         case .endeavors: EmptyView()
         }
+        }
+        .padding(.horizontal, 16)
     }
 
     private var newProjectRow: some View {
@@ -525,21 +660,27 @@ struct DayflowNotesView: View {
             newProjectName = ""
             showNewProjectAlert = true
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus.circle.fill").foregroundStyle(.blue)
+            // Editorial (Session 77, David's catch): the blue capsule was a
+            // pre-skin leftover. Every "add" in the app now speaks the same
+            // dashed-circle grammar as Add for today and New to-do — the
+            // accent stays reserved for active state and the When/Delete
+            // moments, so an add affordance never shouts.
+            HStack(spacing: 12) {
+                Circle()
+                    .strokeBorder(Color.dayflowFaint,
+                                  style: StrokeStyle(lineWidth: 1.3, dash: [3, 2.5]))
+                    .frame(width: 20, height: 20)
                 Text("New project note")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.blue)
+                    .font(.system(size: 13.5))
+                    .italic()
+                    .foregroundStyle(Color.dayflowFaint)
                 Spacer()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
-            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.blue.opacity(0.25), lineWidth: 1))
+            .frame(minHeight: 40)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
+        .padding(.bottom, 6)
     }
 
     /// Trace hand-off button — Session 25, same visual language as
@@ -555,19 +696,19 @@ struct DayflowNotesView: View {
             if let url = comps.url { openURL(url) }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "arrow.up.forward.app").foregroundStyle(.blue)
+                Image(systemName: "arrow.up.forward.app")
+                    .foregroundStyle(Color.dayflowAccent)
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(Color.dayflowInk)
                 Spacer()
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
-            .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
-            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.blue.opacity(0.25), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 11)
+                .strokeBorder(Color.dayflowHairline, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 16)
         .padding(.bottom, 10)
     }
 

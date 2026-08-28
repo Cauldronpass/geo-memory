@@ -44,17 +44,11 @@ extension View {
     /// Session 29 gradient; this is a deliberate real-device correction on
     /// top of it. If the mockup HTML is ever revisited, update it to match.
     func dayflowSkinBackground() -> some View {
-        self.background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.949, green: 0.914, blue: 0.847), // #F2E9D8
-                    Color(red: 0.918, green: 0.878, blue: 0.776), // #EAE0C6
-                    Color(red: 0.878, green: 0.827, blue: 0.686), // #E0D3AF
-                ],
-                startPoint: .top, endPoint: .bottom
-            )
-            .ignoresSafeArea()
-        )
+        // Editorial skin (Session 77, locked 2026-08-28 on the "Dayflow Skin"
+        // canvas): flat paper, no gradient — light #FBF9F4, dark #1B1916.
+        // The cream gradient above this line's history was Session 29/30;
+        // David moved off it ("I no longer like the parchment skin").
+        self.background(Color.dayflowPaper.ignoresSafeArea())
     }
 
     /// The locked card treatment — larger radius, soft warm-tinted shadow, no
@@ -74,20 +68,55 @@ extension View {
     /// done properly it is a pass over the whole token set — canvas, cards, ink,
     /// hairlines — not a material swap here.
     func dayflowCard() -> some View {
+        // Editorial skin (Session 77): the Today sheet dropped cards entirely
+        // (label + rule on paper — see DayflowTodaySection); the browse
+        // screens keep this treatment until their own rebuild rounds, now as
+        // a flat panel with a hairline instead of a floating shadow, and
+        // dynamic for dark mode.
         self
-            .background(.background, in: RoundedRectangle(cornerRadius: 22))
-            .shadow(color: Color(red: 60 / 255, green: 50 / 255, blue: 30 / 255).opacity(0.07),
-                    radius: 13, x: 0, y: 10)
+            .background(Color.dayflowPanel, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.dayflowHairline, lineWidth: 1))
     }
 }
 
 // MARK: Column label color
 
 extension Color {
-    /// "All day / no time" / "Timed" column labels — lightened from the
-    /// system `.secondary` gray David flagged as too dark, to a warm, much
-    /// lighter tone matching the mockup.
-    static let dayflowColumnLabel = Color(red: 0.827, green: 0.804, blue: 0.749) // #D3CDBF
+    /// Editorial token set (Session 77, locked 2026-08-28). Every color is
+    /// dynamic — light/dark values straight from the two locked frames on
+    /// the "Dayflow Skin" canvas — so the Settings Appearance row
+    /// (light/dark/system) finally does what it says.
+    private static func editorial(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(UIColor { traits in
+            let hex = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: CGFloat((hex >> 16) & 0xFF) / 255,
+                           green: CGFloat((hex >> 8) & 0xFF) / 255,
+                           blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+        })
+    }
+
+    /// The page. Everything sits directly on this.
+    static let dayflowPaper = editorial(0xFFFFFF, 0x1B1916)
+    /// Panels for screens still using dayflowCard(), and the note editor well.
+    static let dayflowPanel = editorial(0xF7F7F5, 0x23201B)
+    /// Secondary text — times, counts, quiet copy.
+    static let dayflowMuted = editorial(0x6E6A64, 0xA69F90)
+    /// Tertiary — gap parentheticals, folds, inactive pill days, dashes.
+    static let dayflowFaint = editorial(0xA6A29B, 0x6E6759)
+    /// Row separators.
+    static let dayflowHairline = editorial(0xE9E8E4, 0x33302A)
+    /// The one accent — active tab, TODAY pill, source chips.
+    static let dayflowAccent = editorial(0xC24D2A, 0xD0603C)
+    /// Body copy a step softer than ink (day note text, the weekday).
+    static let dayflowNoteText = editorial(0x33302A, 0xCFC8B8)
+    /// The floating + — ink square in light, ACCENT square in dark (the
+    /// locked dark frame; an inverted-ink square read as a white button,
+    /// David flagged it 2026-08-28). Glyph is dayflowPaper in both.
+    static let dayflowFloatingAction = editorial(0x1A1814, 0xD0603C)
+
+    /// Pre-Editorial name kept for existing call sites.
+    static let dayflowColumnLabel = dayflowFaint
 
     /// Near-black ink used for icons/text that should read as monochrome
     /// black in the mockup, NOT the system accent blue. Added Session 30
@@ -100,12 +129,12 @@ extension Color {
     /// default unless a `.foregroundStyle` override breaks that; a plain
     /// `Label` (like Agenda's calendar icon) does not have this problem,
     /// which is why only the Menu-based top-bar icon was affected.
-    static let dayflowInk = Color(red: 0.110, green: 0.110, blue: 0.118) // #1c1c1e
+    static let dayflowInk = editorial(0x1A1814, 0xEDE7DA)
 
     /// Inactive day-pill text color (Yesterday/Tomorrow) — muted warm gray,
     /// not `.secondary`'s cooler system gray. Added alongside `dayflowInk`,
     /// same Session 30 fix.
-    static let dayflowPillInactiveText = Color(red: 0.541, green: 0.514, blue: 0.471) // #8a8378
+    static let dayflowPillInactiveText = dayflowFaint
 }
 
 // MARK: Serif font

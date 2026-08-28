@@ -59,13 +59,16 @@ import CoreLocation
 
 @main
 struct DayflowApp: App {
+    /// Session 77 — Home Screen quick action ("Add Task"). See
+    /// DayflowQuickActions.swift.
+    @UIApplicationDelegateAdaptor(DayflowAppDelegate.self) private var appDelegate
     @State private var notionService = NotionService.shared
-    /// Defaults to **light**, not system. The Dayflow skin is a hardcoded warm
-    /// cream palette; in dark mode its adaptive cards render black on cream and
-    /// the whole screen is unreadable. With a "system" default, a phone set to
-    /// dark showed that on first launch without anyone choosing it.
-    /// Changed 2026-07-28 after David hit it. See `dayflowCard`.
-    @AppStorage("dayflow_appearance") private var appearanceRaw: String = "light"
+    /// Session 77: back to **system**. The forced-light default existed
+    /// because the cream skin had no real dark palette (see the 2026-07-28
+    /// history in git); the Editorial skin is dynamic light+dark, so the
+    /// Settings Appearance row (light/dark/system) now genuinely works and
+    /// system is the honest default. A stored explicit choice still wins.
+    @AppStorage("dayflow_appearance") private var appearanceRaw: String = "system"
     @Environment(\.scenePhase) private var scenePhase
 
     private var preferredScheme: ColorScheme? {
@@ -78,7 +81,10 @@ struct DayflowApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            // Session 77: DayflowRootView is the tab bar shell (Today / Inbox /
+            // Upcoming / Notes — Dayflow-Tasks-Design.md); ContentView is now
+            // the Today tab inside it.
+            DayflowRootView()
                 .environment(notionService)
                 .preferredColorScheme(preferredScheme)
                 .task {
@@ -116,7 +122,18 @@ struct DayflowApp: App {
                 // cannot land mid-edit: a foreground toggle has already written
                 // through to disk before the app can be backgrounded.
                 .onChange(of: scenePhase) { _, phase in
+                    // Session 77 — morning summary notifications are rewritten
+                    // from live Reminders data on BOTH transitions: .active so
+                    // a fresh look at the day corrects the week ahead, and
+                    // .background so completions and adds made during the
+                    // session land in tomorrow's 8:00 ping. See
+                    // DayflowMorningSummary.swift.
+                    if phase == .background {
+                        Task { await DayflowMorningSummary.reschedule() }
+                        return
+                    }
                     guard phase == .active else { return }
+                    Task { await DayflowMorningSummary.reschedule() }
                     DayflowFlagStore.shared.reload()
                     // D103 on the phone (Session 71). Until now these caches
                     // loaded once in the `.task` above and never again, so a

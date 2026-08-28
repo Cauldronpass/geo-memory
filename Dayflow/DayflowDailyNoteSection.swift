@@ -119,6 +119,10 @@ struct DayflowDailyNoteSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            // Editorial (Session 77): label + ink rule on paper, same
+            // furniture as TO DO / THE DAY on the Today sheet.
+            Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                .padding(.top, 6)
             DayflowDailyNoteEditor(
                 date: date,
                 reloadToken: reloadToken,
@@ -126,15 +130,15 @@ struct DayflowDailyNoteSection: View {
                 showInlineLinkAffordance: false
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(.secondarySystemBackground))
+                .background(Color.dayflowPanel)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .padding(.top, 8)
         }
-        .padding(14)
+        .padding(.vertical, 4)
         .frame(maxHeight: .infinity)
-        // Skin locked 2026-07-21 (Session 29) — was a 16pt-radius background +
-        // quaternary-stroke border; see DayflowSkin.swift's `dayflowCard()`.
-        .dayflowCard()
+        // Editorial (Session 77): the card went flat — this section reads as
+        // label + rule directly on the paper. dayflowCard() stays on the
+        // browse screens until their own rounds.
         .sheet(isPresented: $showShareSheet) {
             DayflowActivityView(activityItems: [shareText])
         }
@@ -196,30 +200,33 @@ struct DayflowDailyNoteSection: View {
                 Button(action: shareNote) {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    DayflowPencilIcon()
-                        .stroke(Color.primary, style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
-                        .frame(width: 22, height: 17.6)
-                    Text("Daily Note")
+                // Session 77 Editorial: Pin moved in from its own header
+                // button — the mock shows one icon by DAY NOTE, and David
+                // flagged the three-button row. The at-a-glance filled/
+                // outline state was the trade; the menu item names the
+                // current state instead.
+                Button {
+                    DayflowFlagStore.shared.toggleFlag(relativePath)
+                } label: {
+                    Label(isFlagged ? "Unpin this day" : "Pin this day",
+                          systemImage: isFlagged ? "pin.fill" : "pin")
                 }
-                .font(.dayflowSerif(14.5, weight: .semibold))
+            } label: {
+                // Session 77 Editorial: pencil icon removed at David's ask;
+                // the Menu hangs off the words "DAY NOTE" themselves.
+                Text("DAY NOTE")
+                    .tracking(2)
+                    .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(Color.primary)
             }
             Spacer()
             // Session 38 addendum 7 — was the Share icon; Share moved into
             // the pencil Menu above (see this file's header comment) so this
             // slot could become the Pin toggle instead. Pin needs to be its
-            // own always-visible button (not a Menu item) so its filled/
-            // outline state is visible at a glance, same as Project Note's
-            // own pin button.
-            iconButton(accessibilityLabel: isFlagged ? "Unpin this day" : "Pin this day", action: {
-                DayflowFlagStore.shared.toggleFlag(relativePath)
-            }) {
-                Image(systemName: isFlagged ? "pin.fill" : "pin")
-                    .font(.system(size: 12))
-                    .foregroundStyle(isFlagged ? Color.dayflowInk : .secondary)
-            }
+            // Session 77 Editorial: this row is down to ONE icon (expand).
+            // Pin lives in the pencil Menu above; the Notes & Projects icon
+            // was removed outright — Notes is a tab in DayflowRootView now,
+            // so the icon was a duplicate door from the pre-tab app.
             // Skin locked 2026-07-21 (Session 29) — was
             // arrow.up.left.and.arrow.down.right, which draws arrowheads, not
             // the corner-bracket look David picked in the icon-review round.
@@ -228,19 +235,6 @@ struct DayflowDailyNoteSection: View {
             iconButton(accessibilityLabel: "Expand to full page", action: onExpand) {
                 DayflowExpandIcon()
                     .stroke(Color.secondary, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
-                    .frame(width: 13, height: 13)
-            }
-            // Skin locked 2026-07-21 (Session 29) — was
-            // doc.text.magnifyingglass, flagged in this file's own prior
-            // comment as visually unconfirmed; David didn't like it once
-            // rendered in the icon-review round and picked option "D" — a
-            // custom list+magnifying-glass composite reasoned against what
-            // this button actually does (search notes, add a project
-            // note/place/person). No real SF Symbol match. See
-            // DayflowSkin.swift.
-            iconButton(accessibilityLabel: "Notes & Projects", action: onOpenNotes) {
-                DayflowNotesProjectsIcon()
-                    .stroke(Color.secondary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                     .frame(width: 13, height: 13)
             }
         }

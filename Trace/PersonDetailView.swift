@@ -792,7 +792,7 @@ struct PersonDetailView: View {
                 // zeroed because the view supplies its own padding, and when
                 // there are no documents it renders nothing, so the row must
                 // collapse to invisible rather than leave a bare separator.
-                SatchelDocumentChips(notePath: personNotePath)
+                SatchelDocumentChips(notePath: personNotePath, personName: personName)
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
                 MarkdownEditorView(

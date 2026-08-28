@@ -84,6 +84,11 @@ struct DayflowNotesInboxView: View {
     /// different intents, and a second door built to review the backlog must not
     /// silently create a note on arrival.
     var startInNewNote: Bool = false
+    /// Session 77 step (d): hosted inside the Notes tab as the "To file"
+    /// segment (the design's rename of this feature) — hides this screen's
+    /// own header; the Notes tab provides the chrome. The swipe-right
+    /// capture door on Home still presents the full screen with the header.
+    var embedded: Bool = false
 
     @Environment(\.dismiss) private var dismiss
     @State private var files: [InboxNoteFile] = []
@@ -98,7 +103,7 @@ struct DayflowNotesInboxView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
+            if !embedded { header }
             // Skin: same card treatment as DayflowInboxView.swift and the
             // other Browse screens (DayflowSkin.swift), for visual
             // consistency even though this isn't reached from that menu.
@@ -140,7 +145,7 @@ struct DayflowNotesInboxView: View {
                                     } label: {
                                         Label("File…", systemImage: "tray.and.arrow.down")
                                     }
-                                    .tint(.blue)
+                                    .tint(Color.dayflowAccent)
                                 }
                         }
                     }

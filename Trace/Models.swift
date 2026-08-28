@@ -67,6 +67,7 @@ struct Person: Identifiable, Codable {
 }
 
 
+
 // MARK: - Agenda items
 //
 // David, 2026-08-01: *"does the coming up in trace all for people agenda items

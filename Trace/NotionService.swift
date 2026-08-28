@@ -629,6 +629,12 @@ class NotionService {
         }
         peopleLoad = .loaded
         fetchedAt[.people] = Date()
+        #if os(iOS)
+        // Mirror for Satchel, which has no Notion. See `PeopleIndex`.
+        PeopleIndex.write(people.filter { !$0.isArchived }.map {
+            PeopleIndex.Entry(id: $0.id, name: $0.name, relationship: $0.relationship)
+        })
+        #endif
     }
 
     // MARK: - Workouts

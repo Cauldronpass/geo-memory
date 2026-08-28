@@ -1,237 +1,352 @@
 import SwiftUI
+import UIKit
 
 // MARK: - DayflowUpcomingView
 //
-// Browse: Upcoming — one of the three destinations off the top-bar calendar
-// icon menu (Dayflow-Design-Plan.md "Top bar & navigation"; build order
-// step 5). Ground truth: Dayflow-Mockup.html's #upcomingScrim — "Things-style
-// day-grouped scrollable list — blank days show just a date header."
+// Step (e) of the task UI build (Session 77, Dayflow-Tasks-Design.md §
+// Upcoming) — the last structural piece. Editorial rewrite of the old
+// browse screen (see git for its Things-era history):
 //
-// **Real data as of 2026-07-20 — now two real sources merged per day.**
-// Originally this was calendar-events-only (CalendarService.fetchEvents,
-// 14-day window starting tomorrow) since the Mini bridge had no future-task
-// data at all; David found the view "does not have anything yet" because his
-// work calendar isn't configured on the Mac (a separate, expected EventKit
-// account-scoping limitation — not fixable in-app) and there was no real
-// Things data to fall back on either. Fixed by adding a real `/upcoming`
-// endpoint to `things-jxa-server.py` (`things.lists.byName("Upcoming")
-// .toDos()`) and `ThingsService.upcomingTasks` / `fetchUpcoming()`. Each day
-// section now shows real EventKit events (unchanged, top of the section) plus
-// real Things tasks scheduled that day (new, below the events), each with a
-// completable checkbox and tap-to-edit on the title.
+// - Two weeks starting tomorrow (Today's card owns today). Day headings
+//   ONLY for days with something — the locked design dropped the empty
+//   headers the old mockup kept.
+// - Each day: its events (time · colour square · title, same language as
+//   Today's strip) then its tasks (ink circle completes, serif title, tap
+//   edits). A repeating task from the Trace list is almost certainly a
+//   birthday/holiday written by Trace's person-page Remind button, so its
+//   sub-label reads "from Trace · yearly" per the design; other tasks show
+//   their list.
+// - Footer, whole row tappable: "Nothing until <date>" — the next dated
+//   reminder BEYOND the two weeks (the store already looks 60 days out) —
+//   over "Open Reminders", which opens Apple's app.
 //
-// Recurring-task rows (the mockup's "↻" glyph / "5d left" badge) are still
-// left out — `ThingsTask` carries no recurrence field, and no backend source
-// for that exists. Flag if that turns out to matter enough to justify the
-// Mini-side work.
-//
-// **Event rows made tappable 2026-07-21 (Session 23).** Opens the new
-// read-only `DayflowEventDetailView` — `eventsByDay` already held the real
-// `NextCalendarEvent` per row, so this was just a tap gesture + a sheet, no
-// new data plumbing.
-//
-// **Pull-to-refresh + reactive task grouping added 2026-07-20.** David edited
-// a task's note directly in Things and found it didn't show up in Dayflow —
-// nothing here re-fetched on its own after the initial `.task { load() }`.
-// `tasksByDay` was a `@State` snapshot manually rebuilt by `regroupTasks()` at
-// specific call sites; changed to a computed property reading
-// `ThingsService.shared.upcomingTasks` directly (same reactive pattern
-// `DayflowAnytimeView`/`DayflowInboxView` already use) so any update to the
-// shared source — a pull-to-refresh here, or the new foreground auto-refresh
-// in `DayflowContentView.swift` — reflects immediately without a matching
-// call to re-derive local state. `.refreshable` added to the ScrollView for
-// the explicit "I'm on this screen, get me current data" case.
 
 struct DayflowUpcomingView: View {
     @Environment(\.dismiss) private var dismiss
+    /// Session 77: true when hosted as the Upcoming tab in DayflowRootView —
+    /// hides the chevron (there is no presentation to dismiss there).
+    var isTabRoot: Bool = false
+
     @State private var days: [Date] = []
     @State private var eventsByDay: [Date: [NextCalendarEvent]] = [:]
+    @State private var windowEnd: Date = Date()
     @State private var isLoading = true
     @State private var editingTask: ThingsTask? = nil
-    /// Added 2026-07-21 (Session 23, tap-a-calendar-event-for-details backlog
-    /// item) — see this file's `eventsByDay` above, which already holds the
-    /// real `NextCalendarEvent` per row, so no new plumbing was needed to
-    /// find the tapped event, just a place to hold it + a sheet.
     @State private var selectedEvent: NextCalendarEvent? = nil
+    /// Session 77 — the Today card's swipe treatment, verbatim (David: "i
+    /// would like the same swiping treatment as what we have in Today"):
+    /// left = multi-select (RootView shows the shared bar), right = the When
+    /// sheet with the calendar-glyph reveal.
+    @State private var selection = DayflowTodaySelection.shared
+    @State private var whenRequest: DayflowWhenRequest? = nil
+    @State private var rowDragOffsets: [String: CGFloat] = [:]
 
     private static let windowLength = 14
 
-    /// Real Things tasks scheduled in the window, grouped by day. Computed
-    /// directly off `ThingsService.shared.upcomingTasks` — see this file's
-    /// header comment (2026-07-20 addendum) for why this isn't a `@State`
-    /// snapshot anymore.
+    /// Dated tasks in the window, grouped by day — computed straight off the
+    /// live store so completions prune rows on their own.
     private var tasksByDay: [Date: [ThingsTask]] {
         let cal = Calendar.current
         var grouped: [Date: [ThingsTask]] = [:]
-        for task in ThingsService.shared.upcomingTasks {
+        for task in ReminderTaskStore.shared.upcomingTasks {
             guard let date = task.date else { continue }
-            let dayStart = cal.startOfDay(for: date)
-            grouped[dayStart, default: []].append(task)
+            grouped[cal.startOfDay(for: date), default: []].append(task)
         }
         return grouped
+    }
+
+    private var daysWithContent: [Date] {
+        days.filter { day in
+            !(eventsByDay[day] ?? []).isEmpty || !(tasksByDay[day] ?? []).isEmpty
+        }
+    }
+
+    /// The next dated reminder past the two-week window — the footer's date.
+    private var nextBeyondWindow: Date? {
+        ReminderTaskStore.shared.upcomingTasks
+            .compactMap(\.date)
+            .filter { $0 >= windowEnd }
+            .min()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            // Skin fix 2026-07-22 (Session 32) — wraps the content area in
-            // the same card treatment used on the home screen and the Notes
-            // screen, so it doesn't sit directly on the warm background
-            // below. See DayflowSkin.swift.
-            Group {
-                if isLoading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(days, id: \.self) { day in
+            if isLoading && daysWithContent.isEmpty {
+                Spacer()
+                ProgressView().frame(maxWidth: .infinity)
+                Spacer()
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if daysWithContent.isEmpty {
+                            Text("Two clear weeks ahead.")
+                                .font(.dayflowSerif(16))
+                                .foregroundStyle(Color.dayflowMuted)
+                                .padding(.top, 32)
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            ForEach(daysWithContent, id: \.self) { day in
                                 daySection(day)
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-
-                        Text("Same as Things' own Upcoming list — day-grouped, scrolls, merged with your real calendar events. Tap the calendar icon above to switch to a month grid instead.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(20)
+                        footer
                     }
-                    .refreshable { await load() }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 32)
                 }
+                .scrollIndicators(.hidden)
+                .refreshable { await load() }
             }
-            .dayflowCard()
-            .padding(.horizontal, 16)
-            .padding(.bottom, 16)
         }
-        // Skin fix 2026-07-22 (Session 32) — same warm gradient as the home
-        // screen. See DayflowSkin.swift.
         .dayflowSkinBackground()
         .task { await load() }
         .sheet(item: $editingTask) { task in
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
-                                  initialDate: task.date, initialList: task.list,
-                                  initialNotes: task.notes) {
-                Task { await ThingsService.shared.fetchUpcoming() }
+                                 initialDate: task.date, initialList: task.list,
+                                 initialNotes: task.notes) {
+                Task { await ReminderTaskStore.shared.fetchUpcoming() }
             }
         }
         .sheet(item: $selectedEvent) { event in
-            NavigationStack {
-                DayflowEventDetailView(event: event)
-            }
+            NavigationStack { DayflowEventDetailView(event: event) }
+        }
+        .sheet(item: $whenRequest) { request in
+            DayflowWhenSheet(tasks: request.tasks)
         }
     }
 
     // MARK: Header
 
     private var header: some View {
-        HStack {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 32, height: 32)
+        VStack(alignment: .leading, spacing: 2) {
+            if !isTabRoot {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-
-            Spacer()
-            // Skin fix 2026-07-22 (Session 32) — was .custom("Georgia", ...),
-            // same capital-J mismatch fixed elsewhere in the skin. See
-            // DayflowSkin.swift.
+            Text("NEXT TWO WEEKS")
+                .font(.system(size: 11, weight: .medium))
+                .tracking(2.2)
+                .foregroundStyle(Color.dayflowMuted)
             Text("Upcoming")
-                .font(.dayflowSerif(20))
-            Spacer()
-
-            // Was a "switch to Calendar" shortcut button here — removed
-            // 2026-07-21 (Session 24), same call as removing the top-bar
-            // menu's "Calendar" entry (see DayflowModels.swift's
-            // `DayflowBrowseDestination` header comment for the full
-            // reasoning). Kept as an empty placeholder, matching
-            // DayflowCalendarBrowseView.swift's own convention for a header
-            // that only sometimes has a right-side button, so the title stays
-            // visually centered either way.
-            Color.clear.frame(width: 32, height: 32)
+                .font(.dayflowSerif(30, weight: .heavy))
+                .foregroundStyle(Color.dayflowInk)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 4)
+        .padding(.horizontal, 24)
+        .padding(.top, isTabRoot ? 22 : 8)
+        .padding(.bottom, 8)
     }
 
     // MARK: Day sections
 
     private func daySection(_ day: Date) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            dayHeader(day)
-            let events = eventsByDay[day] ?? []
-            let tasks = tasksByDay[day] ?? []
-            // Blank days show just the header, per the mockup — no
-            // "Nothing scheduled" filler row.
-            ForEach(events) { ev in
-                HStack(spacing: 9) {
-                    Text(ev.startTimeString)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.71, green: 0.54, blue: 0.23))
-                        .frame(width: 62, alignment: .leading)
-                    Text(ev.title)
-                        .font(.system(size: 13.5))
-                        .lineLimit(2)
-                }
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
-                .onTapGesture { selectedEvent = ev }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(dayNumberLabel(day))
+                    .font(.dayflowSerif(20, weight: .heavy))
+                    .foregroundStyle(Color.dayflowInk)
+                Text(dayNameLabel(day))
+                    .font(.system(size: 11, weight: .medium))
+                    .tracking(1.6)
+                    .foregroundStyle(Color.dayflowFaint)
             }
-            ForEach(tasks) { task in
+            .padding(.top, 18)
+            .padding(.bottom, 5)
+            Rectangle().fill(Color.dayflowInk).frame(height: 1)
+
+            ForEach(eventsByDay[day] ?? []) { ev in
+                eventRow(ev)
+            }
+            ForEach(tasksByDay[day] ?? []) { task in
                 taskRow(task)
             }
         }
-        .padding(.bottom, 10)
+    }
+
+    private func eventRow(_ event: NextCalendarEvent) -> some View {
+        Button { selectedEvent = event } label: {
+            HStack(spacing: 12) {
+                Text(event.startTimeString)
+                    .font(.system(size: 12).monospacedDigit())
+                    .foregroundStyle(Color.dayflowMuted)
+                    .frame(width: 62, alignment: .leading)
+                Rectangle()
+                    .fill(event.color)
+                    .frame(width: 8, height: 8)
+                Text(event.title)
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(Color.dayflowInk)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 32)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func taskRow(_ task: ThingsTask) -> some View {
-        HStack(alignment: .top, spacing: 9) {
+        // The Trace list's repeating reminders are the person-page birthdays
+        // and holidays — the design marks them "from Trace · yearly".
+        let isTraceYearly = task.repeats && task.list == ReminderService.listName
+        let selected = selection.ids.contains(task.id)
+        return HStack(alignment: .center, spacing: 12) {
             Button {
-                // No local mutation needed anymore — `tasksByDay` is now a
-                // computed property over `ThingsService.shared.upcomingTasks`
-                // (see this file's 2026-07-20 header addendum), and
-                // `complete(taskID:)` already prunes that array itself
-                // (synchronously, before its network call), so the row
-                // disappears on its own once the shared source updates.
-                Task { await ThingsService.shared.complete(taskID: task.id) }
+                if selection.isActive {
+                    if selected { selection.ids.remove(task.id) }
+                    else { selection.ids.insert(task.id) }
+                } else {
+                    Task { await ReminderTaskStore.shared.complete(taskID: task.id) }
+                }
             } label: {
                 Circle()
-                    .strokeBorder(Color.gray.opacity(0.45), lineWidth: 2)
-                    .frame(width: 16, height: 16)
+                    .strokeBorder(Color.dayflowInk, lineWidth: 1.5)
+                    .frame(width: 18, height: 18)
             }
             .buttonStyle(.plain)
-            .padding(.top, 1)
             .accessibilityLabel("Complete \(task.title)")
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(task.title)
-                    .font(.system(size: 13.5))
+                    .font(.system(size: 14.5, design: .serif))
+                    .foregroundStyle(Color.dayflowInk)
                     .lineLimit(2)
-                if let list = task.list, !list.isEmpty {
+                if isTraceYearly {
+                    Text("from Trace \u{00B7} yearly")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dayflowFaint)
+                } else if let list = task.list, !list.isEmpty {
                     Text(list)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.dayflowFaint)
                 }
             }
-            .contentShape(Rectangle())
-            .onTapGesture { editingTask = task }
+            Spacer(minLength: 0)
+            if let alarm = task.alarmTimeString {
+                HStack(spacing: 3) {
+                    Image(systemName: "bell")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text(alarm)
+                        .font(.system(size: 11).monospacedDigit())
+                }
+                .foregroundStyle(Color.dayflowFaint)
+            }
+            if task.repeats && !isTraceYearly {
+                Image(systemName: "repeat")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.dayflowFaint)
+            }
+            if selection.isActive {
+                ZStack {
+                    Circle()
+                        .strokeBorder(selected ? Color.dayflowAccent : Color.dayflowFaint,
+                                      lineWidth: 1.5)
+                        .frame(width: 20, height: 20)
+                    if selected {
+                        Circle().fill(Color.dayflowAccent).frame(width: 20, height: 20)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.dayflowPaper)
+                    }
+                }
+            }
         }
-        .padding(.vertical, 3)
+        .frame(minHeight: 38)
+        .padding(.horizontal, selection.isActive ? 6 : 0)
+        .background(selected ? Color.dayflowAccent.opacity(0.10) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if selection.isActive {
+                if selected { selection.ids.remove(task.id) }
+                else { selection.ids.insert(task.id) }
+            } else {
+                editingTask = task
+            }
+        }
+        .offset(x: rowDragOffsets[task.id] ?? 0)
+        .background(alignment: .leading) {
+            let progress = min(max((rowDragOffsets[task.id] ?? 0) / 60, 0), 1)
+            if progress > 0 {
+                Image(systemName: "calendar")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.dayflowAccent)
+                    .opacity(Double(progress))
+                    .scaleEffect(0.7 + 0.3 * progress)
+                    .padding(.leading, 2)
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 28)
+                .onChanged { value in
+                    guard !selection.isActive else { return }
+                    let h = value.translation.width
+                    guard abs(h) > abs(value.translation.height) else { return }
+                    rowDragOffsets[task.id] = h > 0 ? min(h, 80) : 0
+                }
+                .onEnded { value in
+                    let h = value.translation.width
+                    withAnimation(.spring(duration: 0.3)) { rowDragOffsets[task.id] = 0 }
+                    guard !selection.isActive else { return }
+                    guard abs(h) > abs(value.translation.height) * 1.5,
+                          abs(h) > 40 else { return }
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    if h < 0 {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            selection.isActive = true
+                            selection.ids = [task.id]
+                        }
+                    } else {
+                        // A short hop before presenting: a sheet presented in
+                        // the same instant the drag ends inherits the tail of
+                        // that gesture as ITS drag — David saw the card track
+                        // the pointer downward and dismiss itself. Letting
+                        // the gesture fully settle first breaks the handoff.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                            whenRequest = DayflowWhenRequest(tasks: [task])
+                        }
+                    }
+                }
+        )
+        .animation(.easeInOut(duration: 0.15), value: selection.isActive)
     }
 
-    private func dayHeader(_ day: Date) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(dayNumberLabel(day))
-                .font(.system(size: 19, weight: .bold))
-            Text(dayNameLabel(day))
-                .font(.system(size: 11.5, weight: .medium))
-                .tracking(0.4)
-                .foregroundStyle(.secondary)
+    // MARK: Footer
+
+    private var footer: some View {
+        Button {
+            if let url = URL(string: "x-apple-reminderkit://") {
+                UIApplication.shared.open(url)
+            }
+        } label: {
+            VStack(spacing: 3) {
+                if let next = nextBeyondWindow {
+                    Text("Nothing until \(footerDateLabel(next))")
+                        .font(.dayflowSerif(15))
+                        .foregroundStyle(Color.dayflowMuted)
+                } else {
+                    Text("Nothing else on the books")
+                        .font(.dayflowSerif(15))
+                        .foregroundStyle(Color.dayflowMuted)
+                }
+                Text("Open Reminders")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.dayflowFaint)
+            }
+            .frame(maxWidth: .infinity, minHeight: 64)
+            .contentShape(Rectangle())
         }
-        .padding(.bottom, 6)
-        .overlay(Divider(), alignment: .bottom)
+        .buttonStyle(.plain)
+        .padding(.top, 26)
+    }
+
+    private func footerDateLabel(_ date: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "MMM d"
+        return f.string(from: date)
     }
 
     private func dayNumberLabel(_ day: Date) -> String {
@@ -248,24 +363,29 @@ struct DayflowUpcomingView: View {
     // MARK: Data
 
     private func load() async {
+        isLoading = true
+        defer { isLoading = false }
         let cal = Calendar.current
         let start = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: Date())) ?? Date()
         let windowDays = (0..<Self.windowLength).compactMap { cal.date(byAdding: .day, value: $0, to: start) }
         let end = cal.date(byAdding: .day, value: Self.windowLength, to: start) ?? start
 
         async let events = CalendarService.shared.fetchEvents(from: start, to: end)
-        async let taskFetch: Void = ThingsService.shared.fetchUpcoming()
+        async let taskFetch: Void = ReminderTaskStore.shared.fetchUpcoming()
         let fetchedEvents = await events
         await taskFetch
 
         var groupedEvents: [Date: [NextCalendarEvent]] = [:]
-        for ev in fetchedEvents {
+        for ev in fetchedEvents where !ev.isAllDay {
             let dayStart = cal.startOfDay(for: ev.startDate)
             groupedEvents[dayStart, default: []].append(ev)
+        }
+        for (day, list) in groupedEvents {
+            groupedEvents[day] = list.sorted { $0.startDate < $1.startDate }
         }
 
         days = windowDays
         eventsByDay = groupedEvents
-        isLoading = false
+        windowEnd = end
     }
 }

@@ -80,7 +80,15 @@ enum DayflowThingsAreas {
     /// but the chip always inserts/sends the exact real name under the hood.
     /// See Dayflow-Design-Plan.md "Open questions" — list-name normalization for
     /// freehand-typed names is still open; chip taps are unaffected by it.
-    static let displayNames = [
+    /// 2026-08-27: Reminders lists, read live. Two lists to start (Personal,
+    /// Trace), David's call — *"seven empty lists on day one are the thing that
+    /// makes a system feel abandoned."* The seven Things names below are kept
+    /// only as the fallback before Reminders has been read once.
+    static var displayNames: [String] {
+        let live = ReminderTaskStore.shared.listNames
+        return live.isEmpty ? legacyThingsAreas : live
+    }
+    static let legacyThingsAreas = [
         "Personal", "Relationships", "Finance", "Home and Household",
         "Health", "Routines", "Someday"
     ]

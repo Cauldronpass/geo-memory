@@ -16,6 +16,20 @@ struct ThingsTask: Identifiable, Codable {
     /// saveCache()/loadCache() below) doesn't fail — a missing key just
     /// decodes to nil rather than throwing.
     let notes: String?
+    /// Whether the underlying reminder has recurrence rules — drives the
+    /// repeat glyph on the Today task card (Session 77, design doc). Defaulted
+    /// and NOT in CodingKeys, so the legacy Things-bridge decode paths (and
+    /// the UserDefaults response cache) are untouched; only
+    /// ReminderTaskStore.task(from:) sets it.
+    var repeats: Bool = false
+    /// The reminder's creationDate as "yyyy-MM-dd" — the Inbox card's "Added
+    /// Tuesday" line (Session 77, step c). Defaulted and NOT in CodingKeys,
+    /// same reasoning as `repeats` above.
+    var createdDateString: String? = nil
+    /// The reminder's alarm time, localized short ("5:00 PM") — the bell on
+    /// task rows (Session 77, the When card's REMIND toggle). Defaulted and
+    /// NOT in CodingKeys, same reasoning as `repeats`.
+    var alarmTimeString: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id = "uuid"
@@ -39,6 +53,12 @@ struct ThingsTask: Identifiable, Codable {
     /// bridge sends `""` rather than omitting the key, so both are checked.
     var date: Date? {
         guard let s = scheduledDateString, !s.isEmpty else { return nil }
+        return Self.dateFormatter.date(from: s)
+    }
+
+    /// See `createdDateString`.
+    var createdDate: Date? {
+        guard let s = createdDateString, !s.isEmpty else { return nil }
         return Self.dateFormatter.date(from: s)
     }
 }

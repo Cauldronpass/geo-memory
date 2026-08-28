@@ -551,7 +551,7 @@ struct DayflowQuickAddSheet: View {
                     fieldRow(label: "Tags", value: "— (out of scope v1)", valueColor: .secondary)
                         .opacity(0.6)
 
-                    Text("Title above stays freely editable — it's just the text field. Defaults to no date (lands in Anytime once a list is set, matching Things' own behavior). List routes into Things 3. Notes are optional and go straight into the task's real Things notes. Tags intentionally not exposed.")
+                    Text("No date means it waits in the Personal list until you give it one. Notes go into the reminder's notes.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.top, 6)

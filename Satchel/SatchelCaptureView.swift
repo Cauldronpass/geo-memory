@@ -89,6 +89,17 @@ struct SatchelCaptureView: View {
     @State private var previews: [UIImage] = []
     @State private var isWriting = false
     @State private var isScanning = false
+    /// Optional hint for the AI, and for the on-device pass. See `aiRow`.
+    @State private var userContext = ""
+    /// Sidecar `remind:`. Set by the scan when the document states a date
+    /// (2026-08-27, marked AI-filled like the title), or by hand below.
+    @State private var remindOn: Date? = nil
+    /// Sidecar `people:`, list-only (see `SatchelPeoplePickerView`).
+    @State private var people: [String] = []
+    @State private var showPeoplePicker = false
+    /// The document's own date. nil until the scan finds one or he sets one;
+    /// saved as `created`, which otherwise stays the capture time.
+    @State private var docDate: Date? = nil
     /// Raised when the AI button is pressed on a private capture.
     @State private var showPrivatePrompt = false
     /// Which fields the AI actually supplied. The "AI" badge claims authorship,
@@ -291,6 +302,9 @@ struct SatchelCaptureView: View {
                         .satchelCard()
                 }
                 tagField
+                peopleField
+                dateField
+                remindField
                 fileToField
             }
             .padding(.bottom, 30)
@@ -341,6 +355,24 @@ struct SatchelCaptureView: View {
     @ViewBuilder
     private var aiRow: some View {
         if draft != nil {
+            // Context hint (2026-08-26). The Mac has had this field since the
+            // AI row was rebuilt there and David asked for it here: *"I dont
+            // think i have the Context field on IOS Satchel and it is helpful
+            // on Mac."* Same contract as the Mac: the text goes into the prompt
+            // as authoritative, `#tag` markers are honoured explicitly, and the
+            // local (private) path reads it as its hint. Sits directly above
+            // the button that consumes it, which is the Mac's lesson about
+            // where the affordance belongs.
+            // Labelled "Context" like Title and Description below it — David,
+            // on the first build: *"can we call it Context like we do for the
+            // title or description?"*
+            labelled("Context") {
+                TextField("Hint: who, what, when. Use #tag to force a tag", text: $userContext)
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .satchelCard()
+            }
             Button {
                 guard let draft else { return }
                 if isPrivateNow { showPrivatePrompt = true }
@@ -507,6 +539,125 @@ struct SatchelCaptureView: View {
     }
 
     // MARK: File to
+
+    // MARK: People
+
+    private var peopleField: some View {
+        labelled("People", aiKey: "people") {
+            VStack(alignment: .leading, spacing: 8) {
+                if !people.isEmpty {
+                    SatchelFlowLayout {
+                        ForEach(people, id: \.self) { name in
+                            Button {
+                                people.removeAll { $0 == name }
+                                aiFilled.remove("people")
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "person.fill").font(.system(size: 9))
+                                    Text(name)
+                                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                                }
+                                .font(.system(size: 12, weight: .medium))
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(Color.satchelAI.opacity(0.10), in: Capsule())
+                                .foregroundStyle(Color.satchelAI)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                Button {
+                    showPeoplePicker = true
+                } label: {
+                    Label(people.isEmpty ? "Add a person" : "Add another", systemImage: "person.badge.plus")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.satchelAI)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .satchelCard()
+            .sheet(isPresented: $showPeoplePicker) {
+                SatchelPeoplePickerView(selected: $people)
+            }
+        }
+    }
+
+    // MARK: Date
+
+    private var dateField: some View {
+        labelled("Date", aiKey: "date") {
+            HStack(spacing: 10) {
+                if let docDate {
+                    DatePicker("", selection: Binding(
+                        get: { docDate },
+                        set: { self.docDate = $0; aiFilled.remove("date") }
+                    ), displayedComponents: .date)
+                    .labelsHidden()
+                    Spacer()
+                } else {
+                    Button {
+                        docDate = Calendar.current.startOfDay(for: Date())
+                    } label: {
+                        Label("Date on the document", systemImage: "calendar")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.satchelAI)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .satchelCard()
+        }
+    }
+
+    // MARK: Remind
+    //
+    // The date the document needs attention. The CD One receipt of 2026-08-14
+    // said "Ready On: Saturday 8/15" in plain text and nothing put that
+    // anywhere a screen reads, so the day note for the 15th and Reminders both
+    // had nothing to say. David: *"I would like a way to surface this on my
+    // daily note of Dailyflow and ideally in a task app."* The scan fills it;
+    // this row shows it and lets him correct or clear it.
+    private var remindField: some View {
+        labelled("Remind", aiKey: "remind") {
+            HStack(spacing: 10) {
+                if let remindOn {
+                    DatePicker("", selection: Binding(
+                        get: { remindOn },
+                        set: { self.remindOn = $0; aiFilled.remove("remind") }
+                    ), displayedComponents: .date)
+                    .labelsHidden()
+                    Spacer()
+                    Button {
+                        self.remindOn = nil
+                        aiFilled.remove("remind")
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(Color.satchelSecondary)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button {
+                        remindOn = Calendar.current.startOfDay(for: Date())
+                    } label: {
+                        Label("Add a date", systemImage: "bell")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.satchelAI)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .satchelCard()
+        }
+    }
 
     private var fileToField: some View {
         labelled("File to") {
@@ -845,7 +996,12 @@ struct SatchelCaptureView: View {
         let text = await Task.detached { MacTextExtraction.extract(from: url) }.value ?? ""
         guard !text.isEmpty else { return }
 
-        if let suggestion = await MacLocalIntelligence.suggest(text: text, hint: "") {
+        let hint = userContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        for marked in MacTextExtraction.hashTags(in: hint)
+        where !tags.contains(where: { $0.caseInsensitiveCompare(marked) == .orderedSame }) {
+            tags.append(marked)
+        }
+        if let suggestion = await MacLocalIntelligence.suggest(text: text, hint: hint) {
             if !suggestion.summary.isEmpty, descriptionText.isEmpty {
                 descriptionText = suggestion.summary
             }
@@ -893,9 +1049,11 @@ struct SatchelCaptureView: View {
                 doc: document,
                 noteStore: noteStore,
                 existingTags: existing,
+                userContext: userContext.trimmingCharacters(in: .whitespacesAndNewlines),
                 // Every Satchel capture invents its own filename, so the model must
                 // never be asked to judge whether "scan" is descriptive. It is not.
-                filenameIsGenerated: true
+                filenameIsGenerated: true,
+                knownPeople: PeopleIndex.read().map(\.name)
             )
         } catch {
             // Was `try?` with a bare `return`. That silence is what made a
@@ -923,6 +1081,32 @@ struct SatchelCaptureView: View {
         if !result.tags.isEmpty, overwrite || tags.isEmpty {
             tags = result.tags
             aiFilled.insert("tags")
+            filledAnything = true
+        }
+        // A stated date is applied whether or not one was typed: the scan reads
+        // the document and the document is the authority. Overwritten only on
+        // an explicit re-run, like the other fields.
+        if let date = result.remindOn, overwrite || remindOn == nil {
+            remindOn = date
+            aiFilled.insert("remind")
+            filledAnything = true
+        }
+        if let date = result.datedOn, overwrite || docDate == nil {
+            docDate = date
+            aiFilled.insert("date")
+            filledAnything = true
+        }
+        let known = PeopleIndex.known(result.people, in: PeopleIndex.read())
+        for name in known where !people.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+            people.append(name)
+            aiFilled.insert("people")
+            filledAnything = true
+        }
+        // `#tag` in the hint is an instruction, not a suggestion — honoured
+        // whether or not the model chose to. Same rule as the Mac's `applyLocal`.
+        for marked in MacTextExtraction.hashTags(in: userContext)
+        where !tags.contains(where: { $0.caseInsensitiveCompare(marked) == .orderedSame }) {
+            tags.append(marked)
             filledAnything = true
         }
         if let suggestedIcon = result.icon {
@@ -972,15 +1156,16 @@ struct SatchelCaptureView: View {
                 title: finalTitle,
                 tags: tags,
                 linkedNote: linkedNote,
-                people: [],
+                people: people,
                 description: descriptionText.trimmingCharacters(in: .whitespacesAndNewlines),
-                date: draft.created,
+                date: docDate ?? draft.created,
                 endeavor: endeavorID ?? "",
                 endeavorName: endeavorName ?? "",
                 pinned: pinned,
                 icon: icon,
                 tint: tint,
-                kitOrder: pinned ? nextKitOrder() : nil
+                kitOrder: pinned ? nextKitOrder() : nil,
+                remindOn: .some(remindOn)
             )
         } catch {
             errorText = error.localizedDescription

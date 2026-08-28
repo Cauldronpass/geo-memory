@@ -197,7 +197,11 @@ class TraceMacDocumentStore {
         /// Same three-state shape as `icon`. Session 72 gave colour its own
         /// meaning (the document's TYPE), so it needs its own control and its
         /// own way to be cleared back to gray.
-        tint: DocumentTint?? = nil
+        tint: DocumentTint?? = nil,
+        /// Same three-state shape. `nil` preserves (every existing caller),
+        /// `.some(date)` sets, `.some(nil)` clears. Added 2026-08-27 so the AI
+        /// scan's stated date can be written from the Mac too.
+        remindOn: Date?? = nil
     ) throws {
         // Preserve whatever Satchel wrote. Disk wins over the in-memory doc,
         // which may be a synthetic value built by a move (see
@@ -240,7 +244,10 @@ class TraceMacDocumentStore {
         if let tint { data.tint = tint }
         else { data.tint = existing?.tint ?? doc.tint }
         data.kitOrder     = existing?.kitOrder     ?? doc.kitOrder
-        data.remindOn     = existing?.remindOn     ?? doc.remindOn
+        switch remindOn {
+        case .none:            data.remindOn = existing?.remindOn ?? doc.remindOn
+        case .some(let value): data.remindOn = value
+        }
 
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
     }

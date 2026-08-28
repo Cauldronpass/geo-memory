@@ -232,7 +232,7 @@ struct DayflowDailyNoteEditor: View {
                         // cannot spare, and a second one would repeat the
                         // mistake.
                         DayflowNoteTagBar(text: $content, onCommit: { save($0) }, attach: $attachRequest)
-                        SatchelDocumentChips(notePath: relativePath)
+                        SatchelDocumentChips(notePath: relativePath, dueOn: date)
                         if showInlineLinkAffordance {
                             SatchelAddDocumentButton(notePath: relativePath, style: .bar)
                         }

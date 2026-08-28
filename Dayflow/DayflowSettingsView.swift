@@ -38,13 +38,17 @@ import EventKit
 struct DayflowSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
-    @AppStorage("things_api_url") private var apiURL: String = ""
-    @AppStorage("things_api_token") private var apiToken: String = ""
     @AppStorage("dayflow_appearance") private var appearanceRaw: String = "light"
+    /// Session 77 — morning summary notification. Defaults mirror
+    /// DayflowMorningSummary's own reads (on, 8:00).
+    @AppStorage("morning_summary_enabled") private var morningSummaryEnabled: Bool = true
+    @State private var morningSummaryTime: Date = Calendar.current.date(
+        bySettingHour: DayflowMorningSummary.fireMinutes / 60,
+        minute: DayflowMorningSummary.fireMinutes % 60,
+        second: 0, of: Date()) ?? Date()
     @AppStorage("default_calendar_identifier") private var defaultCalendarID: String = ""
     @AppStorage("dayflow_included_calendar_ids") private var includedCalendarIDsRaw: String = ""
 
-    @State private var testState: ConnectionTestState = .idle
     @State private var availableCalendars: [EKCalendar] = []
     @State private var lastSyncedText: String = "Never"
     @State private var isSyncing = false
@@ -65,9 +69,6 @@ struct DayflowSettingsView: View {
     /// removal checklist.
     @State private var weatherDebugText: String = "(not loaded yet)"
 
-    private enum ConnectionTestState: Equatable {
-        case idle, testing, success(String), failure(String)
-    }
 
     var body: some View {
         // Skin fix 2026-07-22 (Session 34). Was `NavigationStack { Form {
@@ -85,6 +86,7 @@ struct DayflowSettingsView: View {
             Form {
                 weatherDebugSection
                 thingsSection
+                morningSummarySection
                 // MOVED UP, 2026-08-14 (Session 71). It was below the calendar
                 // sections under a bare "Sync" header, which reads as a global
                 // sync and is where David went looking for it and did not find
@@ -169,89 +171,69 @@ struct DayflowSettingsView: View {
         .padding(.bottom, 4)
     }
 
-    // MARK: Things Integration
+    // MARK: Reminders
+    //
+    // 2026-08-27. This was the Things Integration section: a Mac Mini bridge
+    // URL, a Bearer token and a Test Connection button. Tasks now come from
+    // Apple Reminders through EventKit, so the only setting is whether Dayflow
+    // is allowed to read them. `things_api_url` / `things_api_token` are left
+    // in UserDefaults untouched; nothing reads them until `ThingsService` is
+    // deleted with the export.
 
     private var thingsSection: some View {
         Section {
-            TextField("http://100.x.x.x:8000", text: $apiURL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-            SecureField("API Token", text: $apiToken)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-
-            Button {
-                Task { await testConnection() }
-            } label: {
-                HStack {
-                    Text("Test Connection")
-                    Spacer()
-                    testStatusIcon
+            HStack {
+                Text("Access")
+                Spacer()
+                switch ReminderTaskStore.shared.accessGranted {
+                case .some(true):  Text("Allowed").foregroundStyle(.secondary)
+                case .some(false): Text("Not allowed").foregroundStyle(.orange)
+                case .none:        Text("Not asked yet").foregroundStyle(.secondary)
                 }
             }
-            .disabled(apiURL.isEmpty || testState == .testing)
-
-            if case .success(let msg) = testState {
-                Text("Connected — server says \"\(msg)\".")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-            } else if case .failure(let msg) = testState {
-                Text(msg)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+            if ReminderTaskStore.shared.accessGranted == false {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+            }
+            HStack {
+                Text("Lists")
+                Spacer()
+                Text(ReminderTaskStore.shared.listNames.joined(separator: ", "))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
             }
         } header: {
-            Text("Things Integration")
+            Text("Reminders")
         } footer: {
-            Text("Your Mac Mini's things-api bridge address and Bearer token. On the Simulator this is usually http://localhost:8000 — on a real device it needs your Mac's actual network address (e.g. a Tailscale hostname), since \"localhost\" on your phone means the phone itself, not your Mac.")
+            Text("Tasks come from Apple's Reminders app. Every list is read. New tasks you type here go to the Personal list; documents and birthdays from Trace and Satchel go to the Trace list.")
         }
     }
 
-    @ViewBuilder
-    private var testStatusIcon: some View {
-        switch testState {
-        case .idle:
-            EmptyView()
-        case .testing:
-            ProgressView()
-        case .success:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .failure:
-            Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-        }
-    }
-
-    private func testConnection() async {
-        testState = .testing
-        let base = apiURL.hasSuffix("/") ? apiURL : apiURL + "/"
-        guard let url = URL(string: base + "health") else {
-            testState = .failure("That doesn't look like a valid URL.")
-            return
-        }
-        var request = URLRequest(url: url, timeoutInterval: 6)
-        if !apiToken.isEmpty {
-            request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
-        }
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                testState = .failure("Server responded with status \(code) — check the URL/token.")
-                return
+    private var morningSummarySection: some View {
+        Section {
+            Toggle("Morning summary", isOn: $morningSummaryEnabled)
+            if morningSummaryEnabled {
+                DatePicker("Time", selection: $morningSummaryTime,
+                           displayedComponents: .hourAndMinute)
             }
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let status = json["status"] as? String {
-                testState = .success(status)
-            } else {
-                testState = .success("ok")
-            }
-        } catch {
-            testState = .failure("Couldn't connect: \(error.localizedDescription)")
+        } header: {
+            Text("Notifications")
+        } footer: {
+            Text("One notification each morning listing the day's tasks. Nothing is sent on a day with no dated tasks. Tasks given their own time also ring when that time arrives.")
+        }
+        .onChange(of: morningSummaryEnabled) { _, _ in
+            Task { await DayflowMorningSummary.reschedule() }
+        }
+        .onChange(of: morningSummaryTime) { _, newValue in
+            let comps = Calendar.current.dateComponents([.hour, .minute], from: newValue)
+            UserDefaults.standard.set((comps.hour ?? 8) * 60 + (comps.minute ?? 0),
+                                      forKey: "morning_summary_minutes")
+            Task { await DayflowMorningSummary.reschedule() }
         }
     }
-
-    // MARK: Appearance
 
     private var appearanceSection: some View {
         Section("Appearance") {
@@ -363,6 +345,7 @@ struct DayflowSettingsView: View {
 
     // MARK: Sync
 
+
     private var syncSection: some View {
         Section {
             Button(isSyncing ? "Syncing…" : "Sync Now") {
@@ -374,20 +357,20 @@ struct DayflowSettingsView: View {
                     // three are browse-view sources and cost up to 60 seconds
                     // more between them. Answering after 20 rather than 80 is
                     // the difference between a slow button and a stuck one.
-                    await ThingsService.shared.fetch()
+                    await ReminderTaskStore.shared.fetch()
                     await MainActor.run {
                         isSyncing = false
                         updateLastSyncedText()
                         // `lastError` is set and cleared by `/today` alone, so
                         // it describes exactly the list the Agenda draws.
-                        if let error = ThingsService.shared.lastError {
-                            syncStatus = "Could not reach Things. \(error)"
+                        if let error = ReminderTaskStore.shared.lastError {
+                            syncStatus = "Could not read Reminders. \(error)"
                         } else {
                             syncStatus = "Up to date."
                         }
                     }
                     // Behind the answer, not in front of it.
-                    await ThingsService.shared.refreshBrowseLists()
+                    await ReminderTaskStore.shared.refreshBrowseLists()
                 }
             }
             .disabled(isSyncing)
@@ -406,20 +389,20 @@ struct DayflowSettingsView: View {
             }
             // Shown whether or not Sync Now was pressed this visit: a stale list
             // is the thing worth knowing about on arrival, not on request.
-            if syncStatus == nil, ThingsService.shared.isShowingStaleTasks {
+            if syncStatus == nil, ReminderTaskStore.shared.isShowingStaleTasks {
                 Text("The last refresh failed, so the Agenda is showing an older list.")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
         } header: {
-            Text("Things Sync")
+            Text("Refresh")
         } footer: {
-            Text("\"Last synced\" only moves when a refresh succeeds. Dayflow also refreshes automatically when you switch back to it from another app.")
+            Text("Dayflow refreshes on its own whenever Reminders changes, including from the Watch or Siri. This button is for reassurance.")
         }
     }
 
     private func updateLastSyncedText() {
-        guard let date = ThingsService.shared.lastFetched else {
+        guard let date = ReminderTaskStore.shared.lastFetched else {
             lastSyncedText = "Never"
             return
         }

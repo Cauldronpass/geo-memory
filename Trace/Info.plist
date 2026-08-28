@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Spotlight (2026-08-25). SwiftUI's onContinueUserActivity only receives
+	     activity types declared here; without this, a Spotlight result opens the
+	     app and routes nowhere. Value is CSSearchableItemActionType. -->
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>com.apple.corespotlightitem</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

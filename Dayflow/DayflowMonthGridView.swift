@@ -144,11 +144,11 @@ struct DayflowMonthGridView: View {
                         VStack(spacing: 3) {
                             Text("\(day)")
                                 .font(isToday(day) ? .body.weight(.bold) : .body)
-                                .foregroundStyle(isSelected(day) ? .white : (isToday(day) ? .blue : .primary))
+                                .foregroundStyle(isSelected(day) ? Color.dayflowPaper : (isToday(day) ? Color.dayflowAccent : Color.primary))
                                 .frame(width: 30, height: 30)
-                                .background(isSelected(day) ? Color.blue : Color.clear, in: Circle())
+                                .background(isSelected(day) ? Color.dayflowInk : Color.clear, in: Circle())
                             Circle()
-                                .fill(isPinned(day) ? Color.red : Color.secondary)
+                                .fill(isPinned(day) ? Color.dayflowAccent : Color.secondary)
                                 .frame(width: 5, height: 5)
                                 .opacity(hasNote(day) ? 1 : 0)
                         }

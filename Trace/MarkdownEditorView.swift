@@ -900,12 +900,14 @@ struct MarkdownEditorView: UIViewRepresentable {
                      image: UIImage(systemName: "checkmark.square")) { [weak coordinator] _ in
                 coordinator?.insertCheckbox()
             },
-            UIAction(title: "Send to Things",
-                     image: UIImage(systemName: "checklist")) { [weak coordinator] _ in
-                coordinator?.insertCheckboxAndSend(to: .things)
-            },
-            UIAction(title: "Send to Tweek",
-                     image: UIImage(systemName: "bird")) { [weak coordinator] _ in
+            // 2026-08-27: was Keep local / Send to Things / Send to Tweek. Things
+            // is being retired for Apple Reminders and Tweek is deprecated
+            // (David: *"tweek is no longer a thing"*). The Tweek path was
+            // already an EventKit write to a Reminders list, so it IS the
+            // send-to-Reminders path; only the list and the words changed. The
+            // `.things` case stays compiled and unreachable until the export.
+            UIAction(title: "Send to Reminders",
+                     image: UIImage(systemName: "bell")) { [weak coordinator] _ in
                 coordinator?.insertCheckboxAndSend(to: .tweek)
             },
         ])
@@ -3084,7 +3086,10 @@ struct MarkdownEditorView: UIViewRepresentable {
 
                     // Find the Reminders list Tweek is watching. Configurable via
                     // UserDefaults key "tweek_reminders_list"; falls back to default list.
-                    let listName = UserDefaults.standard.string(forKey: "tweek_reminders_list") ?? "Tweek Inbox"
+                    // The Personal list — the same one Dayflow's Quick Add writes
+                    // to (`ReminderTaskStore.personalListName`, not visible from
+                    // this target). `tweek_reminders_list` is no longer read.
+                    let listName = "Personal"
                     let lists = self.eventStore.calendars(for: .reminder)
                     reminder.calendar = lists.first(where: { $0.title == listName })
                                      ?? self.eventStore.defaultCalendarForNewReminders()

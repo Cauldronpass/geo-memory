@@ -17,6 +17,7 @@
 // `MacVisitDetailView`.
 
 import SwiftUI
+import CoreSpotlight
 import AppKit
 import UniformTypeIdentifiers
 
@@ -338,6 +339,21 @@ struct TraceMacContentView: View {
             let documentStore = TraceMacDocumentStore(noteStore: noteStore)
             await documentStore.reload()
             await documentStore.extractTextForNewArrivals()
+
+            // Spotlight (2026-08-25). After extraction, so a new PDF's text is
+            // in the index the same launch it was read. Same corpus walk the
+            // search panel does; the Mac can open every kind but `.preview`.
+            // A store reload after extraction picks up the sidecars it wrote.
+            guard let url = noteStore.containerURL else { return }
+            let corpus = await Task.detached(priority: .utility) {
+                MacSearchCorpus.build(containerURL: url)
+            }.value
+            await documentStore.reload()
+            await TraceSpotlightIndex.reindex(corpus: corpus,
+                                              documents: documentStore.documents,
+                                              people: notionService.people,
+                                              places: notionService.places,
+                                              canOpen: { $0 != .preview })
         }
     }
 

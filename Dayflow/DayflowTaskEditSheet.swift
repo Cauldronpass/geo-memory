@@ -230,7 +230,7 @@ struct DayflowTaskEditSheet: View {
         let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
 
         Task {
-            let success = await ThingsService.shared.update(
+            let success = await ReminderTaskStore.shared.update(
                 taskID: taskID, title: trimmedTitle, date: date, clearDate: clearDate,
                 list: list, notes: trimmedNotes
             )
@@ -246,9 +246,9 @@ struct DayflowTaskEditSheet: View {
                     // is still thinking. `lastWriteMismatch` is set only when
                     // the bridge reported success and the value did not take;
                     // any other failure keeps the generic line.
-                    writeMismatch = ThingsService.shared.lastWriteMismatch
-                        ?? "Things did not accept the change. The Mac Mini may be unreachable."
-                    ThingsService.shared.lastWriteMismatch = nil
+                    writeMismatch = ReminderTaskStore.shared.lastWriteMismatch
+                        ?? (ReminderTaskStore.shared.lastError ?? "Reminders did not accept the change.")
+                    ReminderTaskStore.shared.lastWriteMismatch = nil
                 }
             }
         }
