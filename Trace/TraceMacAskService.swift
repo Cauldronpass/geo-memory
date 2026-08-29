@@ -174,7 +174,8 @@ enum MacAskService {
                     documents: [TraceMacDocument],
                     people: [Person],
                     places: [Place],
-                    includeNotionRecords: Bool) async throws -> MacAskAnswer {
+                    includeNotionRecords: Bool,
+                    tasks: [ThingsTask] = []) async throws -> MacAskAnswer {
 
         guard ClaudeKeyStore.hasKey else { throw MacAskError.noKey }
 
@@ -182,7 +183,8 @@ enum MacAskService {
         let assembled = assemble(corpus: corpus,
                                  documents: documents,
                                  people: includeNotionRecords ? people : [],
-                                 places: includeNotionRecords ? places : [])
+                                 places: includeNotionRecords ? places : [],
+                                 tasks: tasks)
         guard !assembled.entries.isEmpty else { throw MacAskError.empty }
 
         // ── Prompt caching ───────────────────────────────────────────────
@@ -356,7 +358,8 @@ enum MacAskService {
     private static func assemble(corpus: MacSearchCorpus,
                                  documents: [TraceMacDocument],
                                  people: [Person],
-                                 places: [Place]) -> Assembled {
+                                 places: [Place],
+                                 tasks: [ThingsTask] = []) -> Assembled {
         var candidates: [(date: Date?, title: String, path: String,
                           destination: MacSearchDestination, kind: String,
                           meta: String, body: String, withheld: Bool)] = []
@@ -387,6 +390,26 @@ enum MacAskService {
                 .compactMap { $0 }.joined(separator: "\n")
             candidates.append((nil, person.name, "", .person(person.id),
                                "person", person.relationship ?? "", body, false))
+        }
+
+        // Tasks joined the corpus in Session 78 (Dayflow's Quick Find Ask row):
+        // open reminders, every list, with their due state spelled out so the
+        // model can answer "what is still open before X". Body is the task's
+        // notes; `.preview` because no Trace screen opens a reminder — Quick
+        // Find shows the citation title, which for a task IS the content.
+        for task in tasks {
+            let due: String
+            if let date = task.date {
+                let f = DateFormatter(); f.dateFormat = "EEE MMM d yyyy"
+                due = "due \(f.string(from: date))"
+            } else if task.list == "Someday" {
+                due = "someday"
+            } else {
+                due = "anytime, no date"
+            }
+            candidates.append((task.date, task.title, "", .preview,
+                               "task", [task.list ?? "", due].filter { !$0.isEmpty }.joined(separator: ", "),
+                               task.notes ?? "", false))
         }
 
         for place in places {

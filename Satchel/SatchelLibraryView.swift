@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - SatchelLibraryView
 //
@@ -1082,6 +1083,8 @@ struct DocumentCard: View {
     let store: iOSDocumentStore
 
     @State private var pendingDelete: TraceMacDocument?
+    /// Session 78 — live leftward slide per row, the pin-to-Kit reveal.
+    @State private var rowDragOffsets: [UUID: CGFloat] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1094,6 +1097,43 @@ struct DocumentCard: View {
                     DocumentRow(document: documents[index])
                 }
                 .buttonStyle(.plain)
+                // Session 78: LEFT-swipe pins to Kit (David's ask) — the
+                // Dayflow row-reveal pattern mirrored. These rows sit in a
+                // VStack, not a List, so `.swipeActions` is unavailable (the
+                // delete contextMenu below records that); a custom drag with
+                // the pin glyph rising at the trailing edge speaks the same
+                // language as the task rows' calendar reveal. Toggles: an
+                // already-pinned document shows pin.slash and unpins.
+                .offset(x: rowDragOffsets[documents[index].id] ?? 0)
+                .background(alignment: .trailing) {
+                    let progress = min(max(-(rowDragOffsets[documents[index].id] ?? 0) / 60, 0), 1)
+                    if progress > 0 {
+                        Image(systemName: documents[index].pinned ? "pin.slash.fill" : "pin.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.satchelPin)
+                            .opacity(Double(progress))
+                            .scaleEffect(0.7 + 0.3 * progress)
+                            .padding(.trailing, 14)
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 28)
+                        .onChanged { value in
+                            let h = value.translation.width
+                            guard abs(h) > abs(value.translation.height) else { return }
+                            rowDragOffsets[documents[index].id] = h < 0 ? max(h, -80) : 0
+                        }
+                        .onEnded { value in
+                            let h = value.translation.width
+                            withAnimation(.spring(duration: 0.3)) {
+                                rowDragOffsets[documents[index].id] = 0
+                            }
+                            guard abs(h) > abs(value.translation.height) * 1.5,
+                                  h < -40 else { return }
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            togglePin(documents[index])
+                        }
+                )
                 // Long press, not swipe. These rows sit inside a plain VStack
                 // rather than a List, so `.swipeActions` is unavailable, and a
                 // context menu is the honest alternative — it also puts the
@@ -1133,6 +1173,11 @@ struct DocumentCard: View {
 
     private func delete(_ doc: TraceMacDocument) {
         _ = try? store.deleteDocument(doc)
+        Task { await store.reload() }
+    }
+
+    private func togglePin(_ doc: TraceMacDocument) {
+        _ = try? store.setPinned(!doc.pinned, for: doc)
         Task { await store.reload() }
     }
 }
@@ -1217,10 +1262,20 @@ struct DocumentRow: View {
                 }
             }
             Spacer(minLength: 6)
-            Text(relativeDateLabel(document.created))
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.satchelTertiary)
-                .padding(.top, 3)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(relativeDateLabel(document.created))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.satchelTertiary)
+                // Session 78: a Kit member says so on the row, matching the
+                // new swipe — without this the flag was invisible outside
+                // the Kit grid.
+                if document.pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.satchelPin)
+                }
+            }
+            .padding(.top, 3)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)

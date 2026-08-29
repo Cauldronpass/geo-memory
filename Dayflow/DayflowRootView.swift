@@ -47,6 +47,15 @@ struct DayflowRootView: View {
     /// is selecting. Switching tabs exits selection.
     @State private var selection = DayflowTodaySelection.shared
     @State private var selectionWhenRequest: DayflowWhenRequest? = nil
+    @State private var showDeleteConfirm = false
+    /// Session 78, D159 — Quick Find. Pull down on any tab's header; the
+    /// card presents HERE (an overlay, so it drops from the top over
+    /// whichever tab is up — a fullScreenCover would slide in from the
+    /// bottom, the wrong direction for a pull-down).
+    @State private var quickFind = DayflowQuickFindRouter.shared
+    /// Session 78 — the delete-undo pill (DayflowUndo.swift), floating with
+    /// the selection bar in the bottom overlay.
+    @State private var undoStack = DayflowUndoStack.shared
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -68,10 +77,34 @@ struct DayflowRootView: View {
                 .tag(DayflowTab.notes)
         }
         .tint(Color.dayflowAccent)
+        .overlay {
+            if quickFind.show {
+                DayflowQuickFindView()
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        // Declared AFTER Quick Find so the bar floats above the card —
+        // left-swiping a row inside the card starts a selection whose
+        // When/Move/Delete happen right here (Session 78 round 2).
         .overlay(alignment: .bottom) {
-            if selection.isActive {
-                selectionBar
-                    .padding(.bottom, 64) // clear of the tab bar
+            VStack(spacing: 10) {
+                if undoStack.visible {
+                    DayflowUndoPill()
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                if selection.isActive {
+                    selectionBar
+                }
+            }
+            .padding(.bottom, 64) // clear of the tab bar
+        }
+        .animation(.spring(duration: 0.32), value: quickFind.show)
+        .onChange(of: quickFind.show) { _, showing in
+            // A tapped result that needs the Today screen's routing: land on
+            // that tab as the card goes; ContentView watches the router and
+            // drains the destination.
+            if !showing, quickFind.pendingDestination != nil {
+                selectedTab = .today
             }
         }
         .sheet(item: $selectionWhenRequest) { request in
@@ -114,25 +147,44 @@ extension DayflowRootView {
     /// Tasks currently selected, resolved against the live store (today's
     /// list plus the 60-day upcoming window covers both selecting surfaces).
     private var selectedTasks: [ThingsTask] {
-        (ReminderTaskStore.shared.tasks + ReminderTaskStore.shared.upcomingTasks)
+        // allTasks since Quick Find joined the selecting surfaces (Session
+        // 78) — its card selects across every list, dated or not.
+        ReminderTaskStore.shared.allTasks
             .filter { selection.ids.contains($0.id) }
     }
 
     /// Things' bottom pill, Editorial-dressed: When / Move / trash / close —
     /// no count, no Done (David's calls).
     private var selectionBar: some View {
+        // Trash at the FAR end from ✕ (Session 78 — David deleted things
+        // reaching for dismiss: "the x to dismiss the window is right next
+        // to the trash"), with clear air between it and When; bulk delete
+        // additionally confirms below. Distance + confirmation, both.
         HStack(spacing: 0) {
+            barButton("", systemImage: "trash", tint: Color.dayflowAccent) {
+                showDeleteConfirm = true
+            }
+            Color.clear.frame(width: 16, height: 44)
             barButton("When", systemImage: "calendar") {
                 selectionWhenRequest = DayflowWhenRequest(tasks: selectedTasks)
             }
             Menu {
-                ForEach(ReminderTaskStore.shared.listNames, id: \.self) { name in
+                // Someday is ALWAYS offered — it may not exist yet, and
+                // moveToSomeday creates it; a menu built from existing lists
+                // alone hid it until first use (David's catch).
+                Button {
+                    somedaySelected()
+                } label: {
+                    Label(ReminderTaskStore.somedayListName, systemImage: "archivebox")
+                }
+                Divider()
+                ForEach(ReminderTaskStore.shared.listNames.filter { $0 != ReminderTaskStore.somedayListName },
+                        id: \.self) { name in
                     Button(name) { moveSelected(to: name) }
                 }
             } label: {
                 barLabel("Move", systemImage: "arrow.right")
             }
-            barButton("", systemImage: "trash", tint: Color.dayflowAccent) { deleteSelected() }
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) { selection.exit() }
             } label: {
@@ -147,6 +199,14 @@ extension DayflowRootView {
         .frame(height: 52)
         .background(Color.dayflowInk, in: Capsule())
         .shadow(color: .black.opacity(0.25), radius: 12, x: 0, y: 6)
+        .confirmationDialog(
+            selection.ids.count == 1 ? "Delete this task?" : "Delete \(selection.ids.count) tasks?",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { deleteSelected() }
+            Button("Cancel", role: .cancel) { }
+        }
     }
 
     private func barLabel(_ label: String, systemImage: String,
@@ -175,9 +235,18 @@ extension DayflowRootView {
 
     private func deleteSelected() {
         let targets = selectedTasks
+        DayflowUndoStack.shared.record(targets)
         withAnimation { selection.exit() }
         Task {
             for t in targets { _ = await ReminderTaskStore.shared.remove(taskID: t.id) }
+        }
+    }
+
+    private func somedaySelected() {
+        let targets = selectedTasks
+        withAnimation { selection.exit() }
+        Task {
+            for t in targets { _ = await ReminderTaskStore.shared.moveToSomeday(taskID: t.id) }
         }
     }
 

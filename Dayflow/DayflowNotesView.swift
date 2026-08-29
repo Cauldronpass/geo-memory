@@ -530,28 +530,17 @@ struct DayflowNotesView: View {
                 .font(.dayflowSerif(30, weight: .heavy))
                 .foregroundStyle(Color.dayflowInk)
             Spacer()
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    searchActive.toggle()
-                    if !searchActive { searchText = "" }
-                }
-                if searchActive {
-                    // The runloop-hop focus lesson from the Inbox capture.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        searchFocused = true
-                    }
-                }
-            } label: {
-                Image(systemName: searchActive ? "xmark" : "magnifyingglass")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(Color.dayflowInk)
-                    .frame(width: 36, height: 36)
-            }
-            .buttonStyle(.plain)
+            // Session 78, D159 — the magnifier retired with the hamburger:
+            // Quick Find (pull down on this header, any header) reaches
+            // notes from anywhere. `searchActive` and its machinery stay
+            // dormant behind this header for now; #tag search is the one
+            // trick Quick Find hasn't learned yet, flagged to David.
         }
         .padding(.horizontal, 24)
         .padding(.top, isTabRoot ? 22 : 8)
         .padding(.bottom, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dayflowQuickFindPull(enabled: isTabRoot)
     }
 
     private var searchBar: some View {

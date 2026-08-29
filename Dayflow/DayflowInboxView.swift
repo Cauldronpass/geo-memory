@@ -16,8 +16,9 @@ import UIKit
 // Swiping the card sideways SKIPS: the task goes to the back of the queue,
 // nothing is written to Reminders.
 //
-// Source: undated reminders in the Personal list
-// (ReminderTaskStore.inboxTasks). Dating a task (Today/Tomorrow/Pick day),
+// Source: undated reminders in the INBOX list (option three, D158 — capture
+// has its own list; Personal is a topic again and, with the other topical
+// lists, forms the Anytime pool). Dating a task (Today/Tomorrow/Pick day),
 // completing it, deleting it, or moving it off Personal all remove it from
 // the queue naturally — the queue is a local ORDER over live store data,
 // never a copy of it.
@@ -38,11 +39,22 @@ struct DayflowInboxView: View {
     /// departed ids dropped.
     @State private var queue: [String] = []
     @State private var editingTask: ThingsTask? = nil
-    @State private var showDatePicker = false
-    @State private var pickedDate = Date()
+    @State private var whenTask: DayflowWhenRequest? = nil
+    /// A task the chooser just moved OFF the Inbox list, held in focus so a
+    /// date (or Done, or a way out) can follow in the same visit — David,
+    /// 2026-08-29: "hitting personal or trace moves it to that list without
+    /// letting me add a date." The list pick is a property edit, not an
+    /// exit; any deciding action, a skip, or promoting an Up Next row
+    /// releases the hold.
+    @State private var held: ThingsTask? = nil
     @State private var showCapture = false
     @State private var captureTitle = ""
     @State private var captureNotes = ""
+    /// Capture round three (2026-08-29, David: "improve the joy of this new
+    /// to-do window. Add is small and uninspiring"). nil = the Inbox;
+    /// 0/1 = Today/Tomorrow — a dated capture is already DECIDED, so it
+    /// skips the Inbox and lands in Personal with the date on.
+    @State private var captureWhen: Int? = nil
     @State private var cardOffset: CGFloat = 0
     /// The Home Screen "Add Task" quick action lands here since the composer
     /// round (Today's + is event-only): the root selects this tab and the
@@ -54,7 +66,7 @@ struct DayflowInboxView: View {
     private var orderedTasks: [ThingsTask] {
         queue.compactMap { id in store.inboxTasks.first { $0.id == id } }
     }
-    private var current: ThingsTask? { orderedTasks.first }
+    private var current: ThingsTask? { held ?? orderedTasks.first }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -94,11 +106,19 @@ struct DayflowInboxView: View {
                 Task { await store.fetchInbox() }
             }
         }
-        .sheet(isPresented: $showDatePicker) { datePickerSheet }
+        .sheet(item: $whenTask) { request in
+            // The SAME When card as the swipes (calendar + REMIND with lead
+            // days) — Pick day from triage can set a reminder in the same
+            // breath (David, 2026-08-29).
+            DayflowWhenSheet(tasks: request.tasks) {
+                held = nil
+                Task { await store.fetchInbox() }
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             if isTabRoot {
                 Button {
-                    captureTitle = ""; captureNotes = ""
+                    captureTitle = ""; captureNotes = ""; captureWhen = nil
                     withAnimation(.easeOut(duration: 0.15)) { showCapture = true }
                 } label: {
                     Image(systemName: "plus")
@@ -144,6 +164,8 @@ struct DayflowInboxView: View {
         .padding(.horizontal, 24)
         .padding(.top, isTabRoot ? 22 : 8)
         .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dayflowQuickFindPull(enabled: isTabRoot)
     }
 
     // MARK: The card
@@ -156,7 +178,7 @@ struct DayflowInboxView: View {
                     .tracking(0.5)
                     .foregroundStyle(Color.dayflowFaint)
                 Spacer()
-                Text("1 of \(orderedTasks.count)")
+                Text("1 of \(orderedTasks.count + (held == nil ? 0 : 1))")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dayflowFaint)
             }
@@ -184,7 +206,7 @@ struct DayflowInboxView: View {
                 .onEnded { value in
                     // Sideways past the threshold = SKIP: back of the queue,
                     // nothing written. Only meaningful with a queue to go to.
-                    if abs(value.translation.width) > 90, orderedTasks.count > 1 {
+                    if abs(value.translation.width) > 90, held != nil || orderedTasks.count > 1 {
                         let direction: CGFloat = value.translation.width > 0 ? 1 : -1
                         withAnimation(.easeIn(duration: 0.15)) { cardOffset = direction * 420 }
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -235,11 +257,12 @@ struct DayflowInboxView: View {
                 }
             }
             choiceButton("Pick day") {
-                pickedDate = Date()
-                showDatePicker = true
+                whenTask = DayflowWhenRequest(tasks: [task])
             }
             choiceButton("Delete", isDestructive: true) {
-                // Asks nothing — locked in the design review.
+                // Asks nothing — locked in the design review. The undo pill
+                // (Session 78) is the safety net that lets it stay that way.
+                DayflowUndoStack.shared.record([task])
                 decide(task) { _ = await store.remove(taskID: task.id) }
             }
         }
@@ -274,10 +297,62 @@ struct DayflowInboxView: View {
                 .foregroundStyle(Color.dayflowMuted)
             }
             .buttonStyle(.plain)
+            // Session 78, D158 — the two dateless ways out, Things' verbs:
+            // ANYTIME (active, no date — files to Personal, the generic
+            // topic; the chooser picks a specific one) and SOMEDAY (cold
+            // storage). Quiet, next to Done: "not now" costs one tap.
+            Button {
+                decide(task) { _ = await move(task, to: ReminderTaskStore.personalListName) }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "books.vertical")
+                        .font(.system(size: 12))
+                    Text("Anytime")
+                        .font(.system(size: 13))
+                }
+                .foregroundStyle(Color.dayflowMuted)
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 16)
+            Button {
+                decide(task) { _ = await store.moveToSomeday(taskID: task.id) }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "archivebox")
+                        .font(.system(size: 12))
+                    Text("Someday")
+                        .font(.system(size: 13))
+                }
+                .foregroundStyle(Color.dayflowMuted)
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 16)
             Spacer()
             Menu {
+                if !store.listNames.contains(ReminderTaskStore.somedayListName) {
+                    // Not created yet — offer it anyway; moveToSomeday makes it.
+                    Button(ReminderTaskStore.somedayListName) {
+                        decide(task) { _ = await store.moveToSomeday(taskID: task.id) }
+                    }
+                }
                 ForEach(store.listNames.filter { $0 != task.list }, id: \.self) { name in
-                    Button(name) { decide(task) { _ = await move(task, to: name) } }
+                    Button(name) {
+                        if name == ReminderTaskStore.somedayListName {
+                            decide(task) { _ = await store.moveToSomeday(taskID: task.id) }
+                        } else {
+                            // Move now but STAY focused, so a date can
+                            // follow in the same visit (David, 2026-08-29).
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            held = task
+                            Task {
+                                _ = await move(task, to: name)
+                                await store.fetchInbox()
+                                if let fresh = store.anytimeTasks.first(where: { $0.id == task.id }) {
+                                    held = fresh
+                                }
+                            }
+                        }
+                    }
                 }
             } label: {
                 HStack(spacing: 4) {
@@ -295,7 +370,7 @@ struct DayflowInboxView: View {
     // MARK: Up next
 
     private var upNext: some View {
-        let rest = Array(orderedTasks.dropFirst())
+        let rest = held == nil ? Array(orderedTasks.dropFirst()) : orderedTasks
         return VStack(alignment: .leading, spacing: 0) {
             if !rest.isEmpty {
                 Text("UP NEXT")
@@ -306,12 +381,17 @@ struct DayflowInboxView: View {
                     .padding(.bottom, 6)
                 Rectangle().fill(Color.dayflowInk).frame(height: 1)
                 ForEach(rest.prefix(6)) { task in
+                    // Tap to bring it to the front — swiping through the
+                    // queue should never be the ONLY way to reach an item
+                    // (David, 2026-08-29).
                     Text(task.title)
                         .font(.system(size: 14))
                         .foregroundStyle(Color.dayflowMuted)
                         .lineLimit(1)
                         .frame(minHeight: 36, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture { promote(task.id) }
                     Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                 }
                 if rest.count > 6 {
@@ -342,29 +422,6 @@ struct DayflowInboxView: View {
 
     // MARK: Sheets
 
-    private var datePickerSheet: some View {
-        VStack(spacing: 12) {
-            DatePicker("Day", selection: $pickedDate, displayedComponents: .date)
-                .datePickerStyle(.graphical)
-                .tint(Color.dayflowAccent)
-            Button {
-                showDatePicker = false
-                if let task = current {
-                    decide(task) { await date(task, pickedDate) }
-                }
-            } label: {
-                Text("Set day")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.dayflowPaper)
-                    .frame(maxWidth: .infinity, minHeight: 46)
-                    .background(Color.dayflowInk, in: RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(20)
-        .presentationDetents([.medium, .large])
-    }
-
     /// Things-style capture (David, 2026-08-28: "it needs to place the
     /// cursor in the field to start typing right away... Things moves this
     /// input window center screen"). A floating card in a ZStack, not a
@@ -381,39 +438,56 @@ struct DayflowInboxView: View {
                     captureFocused = false
                     withAnimation(.easeOut(duration: 0.15)) { showCapture = false }
                 }
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Circle()
-                        .strokeBorder(Color.dayflowFaint, lineWidth: 1.5)
-                        .frame(width: 20, height: 20)
+                        .strokeBorder(Color.dayflowFaint, lineWidth: 1.6)
+                        .frame(width: 22, height: 22)
+                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 3 }
                     TextField("New to-do", text: $captureTitle)
-                        .font(.dayflowSerif(19, weight: .semibold))
+                        .font(.dayflowSerif(22, weight: .semibold))
                         .focused($captureFocused)
                         .submitLabel(.done)
                         .onSubmit { commitCapture() }
                 }
                 TextField("Notes", text: $captureNotes, axis: .vertical)
                     .font(.system(size: 14))
-                    .lineLimit(1...3)
-                    .padding(.leading, 32)
-                HStack {
-                    Text("INBOX \u{00B7} PERSONAL")
-                        .font(.system(size: 10, weight: .medium))
-                        .tracking(1.5)
-                        .foregroundStyle(Color.dayflowFaint)
+                    .lineLimit(2...5)
+                    .padding(.leading, 34)
+                // The one decision worth offering at capture: WHEN, quietly.
+                // Tapping a chip means it's decided — the task lands dated
+                // in Personal instead of joining the deciding queue.
+                HStack(spacing: 8) {
+                    captureChip("TODAY", value: 0)
+                    captureChip("TOMORROW", value: 1)
+                    Spacer()
+                }
+                .padding(.leading, 34)
+                Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+                HStack(alignment: .center) {
+                    HStack(spacing: 6) {
+                        Image(systemName: captureWhen == nil ? "tray" : "sun.max")
+                            .font(.system(size: 10))
+                        Text(captureDestinationLabel)
+                            .tracking(1.5)
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.dayflowFaint)
                     Spacer()
                     Button { commitCapture() } label: {
-                        Text("Add")
+                        Text("Save")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(captureTitle.trimmingCharacters(in: .whitespaces).isEmpty
-                                             ? Color.dayflowFaint : Color.dayflowAccent)
+                            .foregroundStyle(Color.dayflowPaper)
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 9)
+                            .background(captureReady ? Color.dayflowInk : Color.dayflowFaint,
+                                        in: RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)
-                    .disabled(captureTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!captureReady)
                 }
-                .padding(.top, 2)
             }
-            .padding(18)
+            .padding(20)
             .background(Color.dayflowPaper, in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(Color.dayflowHairline, lineWidth: 1))
@@ -432,7 +506,7 @@ struct DayflowInboxView: View {
     private func consumeQuickAction() {
         guard isTabRoot, quickActions.pending == "AddTask" else { return }
         quickActions.pending = nil
-        captureTitle = ""; captureNotes = ""
+        captureTitle = ""; captureNotes = ""; captureWhen = nil
         withAnimation(.easeOut(duration: 0.15)) { showCapture = true }
     }
 
@@ -443,7 +517,19 @@ struct DayflowInboxView: View {
         queue = next
     }
 
+    /// An Up Next row was tapped: release any hold and move it to the
+    /// front of the queue with a spring.
+    private func promote(_ id: String) {
+        held = nil
+        UISelectionFeedbackGenerator().selectionChanged()
+        withAnimation(.spring(duration: 0.3)) {
+            queue.removeAll { $0 == id }
+            queue.insert(id, at: 0)
+        }
+    }
+
     private func skipCurrent() {
+        if held != nil { held = nil; return }
         guard queue.count > 1 else { return }
         let head = queue.removeFirst()
         queue.append(head)
@@ -455,6 +541,7 @@ struct DayflowInboxView: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         Task {
             await write()
+            held = nil
             await store.fetchInbox()
         }
     }
@@ -471,16 +558,60 @@ struct DayflowInboxView: View {
                            notes: task.notes)
     }
 
+    private var captureReady: Bool {
+        !captureTitle.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var captureDestinationLabel: String {
+        switch captureWhen {
+        case 0:  return "TO TODAY \u{00B7} PERSONAL"
+        case 1:  return "TO TOMORROW \u{00B7} PERSONAL"
+        default: return "TO THE INBOX"
+        }
+    }
+
+    private func captureChip(_ label: String, value: Int) -> some View {
+        let selected = captureWhen == value
+        return Button {
+            withAnimation(.easeInOut(duration: 0.12)) {
+                captureWhen = selected ? nil : value
+            }
+            UISelectionFeedbackGenerator().selectionChanged()
+        } label: {
+            Text(label)
+                .font(.system(size: 10.5, weight: selected ? .bold : .regular))
+                .tracking(1.2)
+                .foregroundStyle(selected ? Color.dayflowAccent : Color.dayflowMuted)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .overlay(RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(selected ? Color.dayflowAccent : Color.dayflowHairline,
+                                  lineWidth: selected ? 1.4 : 1))
+        }
+        .buttonStyle(.plain)
+    }
+
     private func commitCapture() {
         let title = captureTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         let notes = captureNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let when = captureWhen
         captureFocused = false
         withAnimation(.easeOut(duration: 0.15)) { showCapture = false }
+        captureWhen = nil
         Task {
-            _ = await store.addTask(title: title,
-                                    list: ReminderTaskStore.personalListName,
-                                    notes: notes.isEmpty ? nil : notes)
+            if let when {
+                let day = Calendar.current.date(byAdding: .day, value: when,
+                                                to: Calendar.current.startOfDay(for: Date()))
+                _ = await store.addTask(title: title,
+                                        date: day,
+                                        list: ReminderTaskStore.personalListName,
+                                        notes: notes.isEmpty ? nil : notes)
+            } else {
+                _ = await store.addTask(title: title,
+                                        list: ReminderTaskStore.inboxListName,
+                                        notes: notes.isEmpty ? nil : notes)
+            }
         }
     }
 }

@@ -145,12 +145,10 @@ struct ContentView: View {
     /// go through creating. The parameter for this already existed; it just had
     /// no caller passing `false`.
     @State private var inboxStartsInNewNote = true
-    /// Pull down on the header for search and Ask (Session 71).
-    @State private var showSearch = false
-    /// Where a tapped search result wants to go, acted on after the cover
-    /// closes. Same reason `pendingWikiNoteURL` exists on the Endeavor screen:
-    /// SwiftUI drops a presentation requested in the same update as a dismissal.
-    @State private var pendingSearchDestination: MacSearchDestination? = nil
+    /// Session 78, D159 — Quick Find (pull down on the header) replaced the
+    /// Session 71 search cover; observed here to drain tapped destinations
+    /// through the routing this screen already owns.
+    @State private var quickFindRouter = DayflowQuickFindRouter.shared
     /// People and Places have no Dayflow screen, but they do have the summary
     /// sheet the wikilinks already use.
     @State private var searchWikiTarget: WikiLinkTarget? = nil
@@ -285,7 +283,12 @@ struct ContentView: View {
                             let horizontal = value.translation.width
                             guard vertical > 50,
                                   vertical > abs(horizontal) * 1.5 else { return }
-                            showSearch = true
+                            // Session 78, D159 — the pull now opens Quick
+                            // Find (presented by DayflowRootView, over any
+                            // tab); TraceSearchView's cover retired with it.
+                            withAnimation(.spring(duration: 0.32)) {
+                                DayflowQuickFindRouter.shared.show = true
+                            }
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         }
                 )
@@ -474,18 +477,20 @@ struct ContentView: View {
             // door into Calendar browsing from the main screen.
             DayflowCalendarBrowseView(onSelect: { picked in selectedDate = picked })
         }
-        .fullScreenCover(isPresented: $showSearch, onDismiss: {
-            // Acted on here rather than at the tap, for the reason recorded on
-            // `pendingSearchDestination`.
-            guard let destination = pendingSearchDestination else { return }
-            pendingSearchDestination = nil
-            openSearchDestination(destination)
-        }) {
-            TraceSearchView { destination in
-                guard canOpenFromSearch(destination) else { return false }
-                pendingSearchDestination = destination
-                showSearch = false
-                return true
+        // Session 78, D159 — Quick Find replaced the TraceSearchView cover.
+        // The card lives on DayflowRootView; a tapped result that needs this
+        // screen's routing arrives through the router, and the 0.35s hop
+        // gives the overlay's exit animation room before a presentation is
+        // asked for (the same present-during-dismiss trap
+        // `pendingSearchDestination` was born from).
+        .onChange(of: quickFindRouter.pendingDestination != nil) { _, hasPending in
+            guard hasPending else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                guard let destination = quickFindRouter.pendingDestination else { return }
+                quickFindRouter.pendingDestination = nil
+                if canOpenFromSearch(destination) {
+                    openSearchDestination(destination)
+                }
             }
         }
         .sheet(item: $searchWikiTarget) { target in
@@ -770,7 +775,7 @@ struct ContentView: View {
     private var isPresentingSomething: Bool {
         showNotes || showNoteFullPage || showNotesInbox || showSettings
             || showEventComposer || browseDestination != nil || endeavorRoute != nil
-            || showSearch
+            || DayflowQuickFindRouter.shared.show
     }
 
     /// Clears whatever is open, then performs the presentation.
@@ -797,7 +802,7 @@ struct ContentView: View {
             showEventComposer = false
             browseDestination = nil
             endeavorRoute = nil
-            showSearch = false
+            DayflowQuickFindRouter.shared.show = false
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { present() }
     }
@@ -914,54 +919,15 @@ struct ContentView: View {
 
     private var topBar: some View {
         HStack {
-            Menu {
-                // "Calendar" removed from this menu 2026-07-21 (Session 24) —
-                // see DayflowModels.swift's `DayflowBrowseDestination` header
-                // comment for the full reasoning. This menu is now purely the
-                // Things/task-browsing family; Calendar/notes browsing has
-                // exactly one door, the date headline below, plus
-                // DayflowNoteFullPageView's own calendar icon.
-                // Session 77: Upcoming and Unfiled Tasks left this menu for
-                // the tab bar (DayflowRootView). What remains here has no tab
-                // yet; permanent homes are an open design question for the
-                // Inbox/Notes build steps.
-                Button { browseDestination = .anytime } label: {
-                    Label("Anytime", systemImage: "books.vertical")
-                }
-                // Renamed from "Inbox" 2026-07-24 (Session 44 addendum 10) —
-                // "Inbox" now means the notes-staging feature (evergreen
-                // notes waiting to be filed to a Project/Person/Place),
-                // reached by swiping right on the home screen, not this
-                // Things-task screen. Icon changed from "tray" to
-                // "checklist" for the same reason — "tray" is already the
-                // established icon for the notes concept (QuickAppendSheet's
-                // Inbox destination, TraceMacInboxView's empty state).
-                Button {
-                    // Review, not capture. Nothing is created by arriving here.
-                    inboxStartsInNewNote = false
-                    showNotesInbox = true
-                } label: {
-                    Label("Inbox", systemImage: "tray")
-                }
-                Button { browseDestination = .search } label: {
-                    Label("Search", systemImage: "magnifyingglass")
-                }
-                Divider()
-                // Session 77: Settings moved in from its own top-bar gear —
-                // David: "why have the gear and the hamburger? ... Id like to
-                // have the top row as minimalist as I can for calm."
-                Button { showSettings = true } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
-            } label: {
-                // Editorial (Session 77): the hamburger — the round-1 canvas
-                // icon read as a calendar item to David. Explicit ink so
-                // Menu's accent tinting can't leak in (Session 30 bug class).
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(Color.dayflowInk)
-                    .frame(width: 32, height: 32)
-            }
+            // Session 78, D159 — the hamburger is GONE. Quick Find (pull
+            // down anywhere) absorbed its whole family: Anytime and the
+            // per-list screens live under GO TO / LISTS, Settings rides at
+            // the card's foot, and search IS the card. The notes-staging
+            // Inbox stayed reachable through the Notes tab's TO FILE
+            // segment. Top row is now just the day strip — the calm David
+            // asked Session 77's "why have the gear and the hamburger?"
+            // question toward, taken to its end.
+            Color.clear.frame(width: 32, height: 32)
             Spacer()
             dayPill
             Spacer()

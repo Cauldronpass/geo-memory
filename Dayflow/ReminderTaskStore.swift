@@ -49,6 +49,16 @@ final class ReminderTaskStore {
     /// Where typed tasks go. Created on first write if missing. The Trace list
     /// (`ReminderService.listName`) is what the apps write to.
     static let personalListName = "Personal"
+    /// The Inbox's dateless way out (Session 78): "not now" without a fake
+    /// date. A real Reminders list — the only structure EventKit exposes
+    /// (tags/flags/sections are private to Apple's app) — so it reads
+    /// identically in both apps and survives sync.
+    static let somedayListName = "Someday"
+    /// Option three (D158, 2026-08-29): capture gets its OWN list. The Inbox
+    /// queue reads from here; Personal returns to being a topic, and with
+    /// the other topical lists it IS the Anytime pool (Things' model, on
+    /// Reminders' one exposed structure).
+    static let inboxListName = "Inbox"
 
     // MARK: - Published state (ThingsService-shaped)
 
@@ -64,6 +74,9 @@ final class ReminderTaskStore {
     var upcomingTasks: [ThingsTask] = []
     var isLoadingUpcoming = false
     var inboxTasks: [ThingsTask] = []
+    /// Every open task, all lists, dated or not — Quick Find's literal task
+    /// search and the per-list screens read this (Session 78).
+    private(set) var allTasks: [ThingsTask] = []
     var isLoadingInbox = false
 
     /// Kept for the edit sheet, which reads and clears it around `update`.
@@ -133,8 +146,15 @@ final class ReminderTaskStore {
         let dated = all.filter { $0.date != nil }
         tasks = dated.filter { $0.date! <= today }
         upcomingTasks = dated.filter { $0.date! > today && $0.date! <= horizon }
-        anytimeTasks = all.filter { $0.date == nil }
-        inboxTasks = anytimeTasks.filter { $0.list == Self.personalListName }
+        // Anytime = the active undated pool: every topical list, EXCLUDING
+        // the capture Inbox (undecided) and Someday (cold storage).
+        anytimeTasks = all.filter {
+            $0.date == nil
+                && $0.list != Self.inboxListName
+                && $0.list != Self.somedayListName
+        }
+        inboxTasks = all.filter { $0.date == nil && $0.list == Self.inboxListName }
+        allTasks = all
         inboxCount = inboxTasks.count
         totalCount = all.count
         lastFetched = Date()
@@ -224,7 +244,13 @@ final class ReminderTaskStore {
         let reminder = EKReminder(eventStore: store)
         reminder.title = title
         if let notes, !notes.isEmpty { reminder.notes = notes }
-        reminder.calendar = calendar(named: list) ?? personalList()
+        // Inbox and Someday are created on first use; anything else must
+        // already exist or the task falls back to Personal.
+        reminder.calendar = list.flatMap { name in
+            (name == Self.inboxListName || name == Self.somedayListName)
+                ? ensureList(named: name)
+                : calendar(named: name)
+        } ?? personalList()
         let due = toToday ? Calendar.current.startOfDay(for: Date()) : date
         if let due { reminder.dueDateComponents = Self.components(due) }
         do {
@@ -287,6 +313,37 @@ final class ReminderTaskStore {
             lastError = "Could not save the reminder. \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Moves a reminder to the Someday list, creating the list on first use.
+    /// Leaves it undated — that is the point.
+    @discardableResult
+    func moveToSomeday(taskID: String) async -> Bool {
+        guard await ensureAccess(),
+              let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder,
+              let list = ensureList(named: Self.somedayListName) else { return false }
+        reminder.calendar = list
+        do {
+            try store.save(reminder, commit: true)
+            await fetch()
+            return true
+        } catch {
+            lastError = "Could not move the reminder. \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// A named list, created if missing — same source-picking as
+    /// `personalList()`.
+    private func ensureList(named name: String) -> EKCalendar? {
+        if let existing = calendar(named: name) { return existing }
+        let cal = EKCalendar(for: .reminder, eventStore: store)
+        cal.title = name
+        cal.source = store.defaultCalendarForNewReminders()?.source
+            ?? store.sources.first { $0.sourceType == .calDAV }
+            ?? store.sources.first { $0.sourceType == .local }
+        do { try store.saveCalendar(cal, commit: true); return cal }
+        catch { return nil }
     }
 
     /// Every list's name, for pickers. Personal first, Trace second, the rest

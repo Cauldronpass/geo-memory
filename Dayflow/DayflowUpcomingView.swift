@@ -139,6 +139,8 @@ struct DayflowUpcomingView: View {
         .padding(.horizontal, 24)
         .padding(.top, isTabRoot ? 22 : 8)
         .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dayflowQuickFindPull(enabled: isTabRoot)
     }
 
     // MARK: Day sections
