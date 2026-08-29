@@ -12,5 +12,7 @@ struct DayflowWidgetBundle: WidgetBundle {
         // — see the header of `DayflowLauncherWidget.swift` for why a wrapper app
         // could not have worked.
         DayflowLauncherWidget()
+        // Session 78 — the Things task widget's replacement.
+        DayflowTasksWidget()
     }
 }

@@ -90,6 +90,11 @@ struct DayflowApp: App {
                 .task {
                     await notionService.fetchPlaces()
                     await notionService.fetchPeople()
+                    // Session 78, D165 — birthdays become tasks: a sweep
+                    // after every people load ensures each person with a
+                    // birthday has the heads-up (3 days out) and day-of
+                    // yearly reminders, created once, deletion respected.
+                    await ReminderTaskStore.shared.ensureBirthdayTasks(for: notionService.people)
                     await notionService.fetchVisits()
                     // Same sweep the Mac runs at launch. Idempotent, so
                     // whichever app opens first does the work and the other
@@ -130,10 +135,14 @@ struct DayflowApp: App {
                     // DayflowMorningSummary.swift.
                     if phase == .background {
                         Task { await DayflowMorningSummary.reschedule() }
+                        Task { await DayflowTaskAlarms.reschedule() }
                         return
                     }
                     guard phase == .active else { return }
                     Task { await DayflowMorningSummary.reschedule() }
+                    // Session 78, D168 — Dayflow rings the task alarms now
+                    // (David is switching Apple Reminders' alerts off).
+                    Task { await DayflowTaskAlarms.reschedule() }
                     DayflowFlagStore.shared.reload()
                     // D103 on the phone (Session 71). Until now these caches
                     // loaded once in the `.task` above and never again, so a

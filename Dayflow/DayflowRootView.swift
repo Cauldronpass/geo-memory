@@ -115,17 +115,25 @@ struct DayflowRootView: View {
         }
         .onChange(of: quickActions.pending) { _, type in
             if type == "AddTask" { selectedTab = .inbox }
+            if type == "AddEvent" { selectedTab = .today }
         }
         // Cold launch from the quick action: pending was set before this view
         // existed, so onChange never fires — check once on appearance.
         .task {
             if quickActions.pending == "AddTask" { selectedTab = .inbox }
+            if quickActions.pending == "AddEvent" { selectedTab = .today }
         }
         .onOpenURL { url in
             // Tab selection only — ContentView's own handler does the real
             // work (see this file's header comment).
             switch url.host {
-            case "addEvent", "note", "endeavor":
+            case "addTask":
+                // Session 78 — the tasks widget's "+": same router value the
+                // Home Screen quick action uses; DayflowInboxView consumes
+                // it and opens the capture card.
+                selectedTab = .inbox
+                quickActions.pending = "AddTask"
+            case "addEvent", "note", "endeavor", "task":
                 selectedTab = .today
             case "launch":
                 let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?

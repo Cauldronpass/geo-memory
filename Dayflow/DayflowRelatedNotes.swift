@@ -638,6 +638,19 @@ struct DayflowLinkFlowSheet: View {
             if let candidate = linkCandidate {
                 describeAndConfirmSheet(title: DayflowRelatedNotesEngine.visitDisplayLabel(forID: candidate)) {
                     onConfirm(.visit(candidate), linkDescription)
+                    // Session 78, D164 — the context flows BOTH ways for a
+                    // Visit (David: "is there a way to... automatically add
+                    // that context to the visit itself?"). The relationship
+                    // text is appended to the Visit's own Notion Notes with
+                    // a dated provenance stamp, via the same append the
+                    // enrichment flow uses. Best-effort: the day-note link
+                    // is the primary write and never waits on Notion.
+                    let text = linkDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        let f = DateFormatter(); f.dateFormat = "MMM d, yyyy"
+                        let stamp = "Linked \(f.string(from: Date())): \(text)"
+                        Task { try? await NotionService.shared.appendVisitNotes(visitID: candidate, text: stamp) }
+                    }
                 }
             } else {
                 candidatePickerSheet(title: "Link a Visit", icon: "figure.walk", candidates: DayflowRelatedNotesEngine.visitCandidates())

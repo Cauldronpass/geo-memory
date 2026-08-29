@@ -48,6 +48,9 @@ struct DayflowTodaySection: View {
     @State private var nowTick = Date()
     @State private var selection = DayflowTodaySelection.shared
     @State private var whenRequest: DayflowWhenRequest? = nil
+    /// Session 78, D166 — a [[wikilink]] chip on a task row was tapped;
+    /// presents the same person/place summary sheet the notes' wikilinks use.
+    @State private var taskWikiTarget: WikiLinkTarget? = nil
     /// Live rightward slide per row — the calendar glyph reveal.
     @State private var rowDragOffsets: [String: CGFloat] = [:]
     @FocusState private var addFieldFocused: Bool
@@ -84,6 +87,11 @@ struct DayflowTodaySection: View {
         }
         .sheet(item: $selectedEvent) { event in
             NavigationStack { DayflowEventDetailView(event: event) }
+        }
+        .sheet(item: $taskWikiTarget) { target in
+            NavigationStack {
+                DayflowWikiSummaryView(target: target, sourceNoteText: "")
+            }
         }
     }
 
@@ -222,6 +230,31 @@ struct DayflowTodaySection: View {
                         .foregroundStyle(Color.dayflowAccent)
                     }
                     .buttonStyle(.plain)
+                }
+                // Session 78, D166 — [[Name]] in the notes becomes a person/
+                // place chip ("i could even have clicked the link to his name
+                // ... and it would have brought me to his record"). Tap =
+                // the summary sheet, where Call/Text now live.
+                let chips = wikiChips(for: task)
+                if !chips.isEmpty {
+                    HStack(spacing: 10) {
+                        ForEach(chips, id: \.name) { chip in
+                            Button {
+                                taskWikiTarget = chip.target
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: chip.icon)
+                                        .font(.system(size: 9, weight: .semibold))
+                                    Text(chip.name.uppercased())
+                                        .font(.system(size: 11))
+                                        .tracking(0.8)
+                                        .lineLimit(1)
+                                }
+                                .foregroundStyle(Color.dayflowAccent)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
             }
 
@@ -434,6 +467,10 @@ struct DayflowTodaySection: View {
             sectionLabel("THE DAY")
                 .padding(.top, 16)
             inkRule
+            if !timedEvents.isEmpty {
+                dayTrack
+                    .padding(.top, 10)
+            }
             VStack(alignment: .leading, spacing: 0) {
                 if !earlierEvents.isEmpty {
                     Button {
@@ -464,6 +501,78 @@ struct DayflowTodaySection: View {
                 }
             }
             .padding(.top, 6)
+        }
+    }
+
+    // MARK: The day track (Session 78, D161)
+    //
+    // The composer's slider, read-only, on the face of the day — David's
+    // hairdresser test: "i had to do a lot of math to figure out the
+    // available time slots... It was real easy when i hit the plus sign
+    // however due to the slider." Same window (7:00–22:00), same visual
+    // vocabulary (hairline channel, dayflowNoteText blocks, 3pt radii) as
+    // DayflowEventComposer's track, plus an accent NOW tick on today and
+    // positioned hour labels. His duration-color idea was talked through
+    // and set aside: it spends the meeting-TYPE color channel he has
+    // planned, needs a legend, and still doesn't show WHERE the gap is.
+    // When meeting colors build, these blocks are where they land.
+
+    private static let trackStart = 7 * 60
+    private static let trackEnd = 22 * 60
+
+    private func minutesOfDay(_ date: Date) -> Int {
+        let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return (c.hour ?? 0) * 60 + (c.minute ?? 0)
+    }
+
+    private func clampTrack(_ minutes: Int) -> Int {
+        min(max(minutes, Self.trackStart), Self.trackEnd)
+    }
+
+    private var dayTrack: some View {
+        VStack(spacing: 0) {
+            GeometryReader { geo in
+                let width = geo.size.width
+                let span = CGFloat(Self.trackEnd - Self.trackStart)
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.dayflowHairline.opacity(0.7))
+                        .frame(height: 6)
+                        .offset(y: 5)
+                    ForEach(timedEvents, id: \.id) { ev in
+                        let start = clampTrack(minutesOfDay(ev.startDate))
+                        let end = clampTrack(minutesOfDay(ev.endDate))
+                        if end > start {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color.dayflowNoteText)
+                                .frame(width: max(4, width * CGFloat(end - start) / span), height: 6)
+                                .offset(x: width * CGFloat(start - Self.trackStart) / span, y: 5)
+                        }
+                    }
+                    if isToday {
+                        let now = clampTrack(minutesOfDay(nowTick))
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Color.dayflowAccent)
+                            .frame(width: 2, height: 12)
+                            .offset(x: width * CGFloat(now - Self.trackStart) / span - 1, y: 2)
+                    }
+                }
+            }
+            .frame(height: 16)
+            GeometryReader { geo in
+                let width = geo.size.width
+                let span = CGFloat(Self.trackEnd - Self.trackStart)
+                ZStack(alignment: .topLeading) {
+                    ForEach([7, 9, 11, 13, 15, 17, 19, 21], id: \.self) { hour in
+                        Text("\(hour > 12 ? hour - 12 : hour)")
+                            .font(.system(size: 8.5))
+                            .foregroundStyle(Color.dayflowFaint)
+                            .frame(width: 20)
+                            .offset(x: width * CGFloat(hour * 60 - Self.trackStart) / span - 10)
+                    }
+                }
+            }
+            .frame(height: 12)
         }
     }
 
@@ -574,7 +683,40 @@ struct DayflowTodaySection: View {
                       : scheme.hasPrefix("trace") ? "Open in Trace" : "Open"
             return (url, label, "doc")
         }
+        // Web addresses (Session 78 — the edit sheet's third link option):
+        // chip labeled by host, www. shorn, globe icon. App schemes above
+        // keep priority when both are present.
+        for token in notes.split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
+            guard token.hasPrefix("http://") || token.hasPrefix("https://"),
+                  let url = URL(string: String(token)), let host = url.host else { continue }
+            let label = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            return (url, label, "globe")
+        }
         return nil
+    }
+
+    /// [[Name]] tokens in the notes resolved against Notion people/places
+    /// (visit: ids excluded — those belong to the notes flow). At most two
+    /// chips so a row can't grow a shelf of them.
+    private func wikiChips(for task: ThingsTask) -> [(name: String, icon: String, target: WikiLinkTarget)] {
+        guard let notes = task.notes, notes.contains("[[") else { return [] }
+        var seen = Set<String>()
+        var out: [(String, String, WikiLinkTarget)] = []
+        var rest = Substring(notes)
+        while out.count < 2,
+              let open = rest.range(of: "[["), let close = rest.range(of: "]]"),
+              open.upperBound <= close.lowerBound {
+            let name = String(rest[open.upperBound..<close.lowerBound])
+                .trimmingCharacters(in: .whitespaces)
+            rest = rest[close.upperBound...]
+            guard !name.isEmpty, !name.hasPrefix("visit:"), seen.insert(name).inserted else { continue }
+            if let person = NotionService.shared.people.first(where: { $0.name == name }) {
+                out.append((name, "person", .person(person)))
+            } else if let place = NotionService.shared.places.first(where: { $0.name == name }) {
+                out.append((name, "mappin.and.ellipse", .place(place)))
+            }
+        }
+        return out
     }
 }
 

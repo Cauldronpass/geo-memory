@@ -1003,20 +1003,15 @@ struct DayflowWidgetView: View {
                         weatherView
                     }
 
-                    // TEMPORARY, added 2026-07-25 — moved out of weatherView's
-                    // cramped slot (single line there was getting truncated
-                    // before David could read the actual error) into its own
-                    // full-width row that can wrap across a few lines. See
-                    // DayflowWidgetEntry.weatherDebug's comment for why this
-                    // exists at all.
-                    if entry.weather == nil && !entry.weatherDebug.isEmpty {
-                        Text(entry.weatherDebug)
-                            .font(.system(size: 7, weight: .medium))
-                            .foregroundStyle(.red)
-                            .lineLimit(3)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    // The red weather-debug row that lived here (TEMPORARY,
+                    // 2026-07-25) was RETIRED 2026-08-29 per its own removal
+                    // checklist — weather has been stable for weeks, and a
+                    // transient failure was painting red diagnostics on the
+                    // Home Screen. The recording plumbing (App Group key
+                    // dayflowWidgetWeatherDebugTextFull) still writes, so a
+                    // future failure can be read from the debug key without
+                    // re-shipping UI. On failure the weather block now just
+                    // collapses, the original graceful behavior.
 
                     Group {
                         if entry.calendarUnavailable {

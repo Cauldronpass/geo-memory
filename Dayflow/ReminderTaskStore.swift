@@ -38,6 +38,7 @@
 
 import Foundation
 import EventKit
+import WidgetKit
 import Observation
 
 @MainActor
@@ -159,6 +160,9 @@ final class ReminderTaskStore {
         totalCount = all.count
         lastFetched = Date()
         lastError = nil
+        // Session 78 — the tasks widget mirrors this store; any applied
+        // change refreshes it (WidgetKit coalesces, so per-apply is cheap).
+        WidgetCenter.shared.reloadTimelines(ofKind: "DayflowTasksWidget")
     }
 
     func fetch() async {
@@ -268,8 +272,17 @@ final class ReminderTaskStore {
     /// natively, app closed or not. Clearing the date clears the alarm. A
     /// day-only redate CARRIES an existing alarm's time-of-day to the new
     /// day, so a set reminder survives a plain When change.
+    /// The reminder's alarm, for seeding the edit sheet (Session 78 — the
+    /// sheet grew a Reminder section; ThingsTask only carries the display
+    /// string).
+    func remindDate(taskID: String) -> Date? {
+        guard let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder else { return nil }
+        return reminder.alarms?.compactMap(\.absoluteDate).first
+    }
+
     func update(taskID: String, title: String, date: Date?, clearDate: Bool,
-                list: String?, notes: String? = nil, remindAt: Date? = nil) async -> Bool {
+                list: String?, notes: String? = nil, remindAt: Date? = nil,
+                clearRemind: Bool = false) async -> Bool {
         guard await ensureAccess(),
               let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder else { return false }
         reminder.title = title
@@ -291,6 +304,12 @@ final class ReminderTaskStore {
                 reminder.dueDateComponents = Self.components(date)
             }
             reminder.alarms = [EKAlarm(absoluteDate: remindAt)]
+        } else if clearRemind, let date {
+            // Session 78 — the edit sheet's Reminder toggle switched OFF:
+            // drop the alarm, keep the due day (day-only, shedding any
+            // alarm-carried time).
+            reminder.alarms = nil
+            reminder.dueDateComponents = Self.components(date)
         } else if let date {
             let cal = Calendar.current
             if let existing = reminder.alarms?.compactMap(\.absoluteDate).first,
@@ -312,6 +331,172 @@ final class ReminderTaskStore {
         } catch {
             lastError = "Could not save the reminder. \(error.localizedDescription)"
             return false
+        }
+    }
+
+    // MARK: - Repeats (Session 78 — David's Monarch case: "There is no way
+    // to add repeat to the task"; until now repeats could only be set in
+    // Apple's Reminders)
+
+    enum DayflowRepeatRule: Equatable, CaseIterable {
+        case none, daily, everyTwoDays, everyThreeDays, weekly, everyTwoWeeks, monthly, yearly
+
+        var label: String {
+            switch self {
+            case .none: return "Never"
+            case .daily: return "Daily"
+            case .everyTwoDays: return "Every 2 Days"
+            case .everyThreeDays: return "Every 3 Days"
+            case .weekly: return "Weekly"
+            case .everyTwoWeeks: return "Every 2 Weeks"
+            case .monthly: return "Monthly"
+            case .yearly: return "Yearly"
+            }
+        }
+
+        var ekRule: EKRecurrenceRule? {
+            switch self {
+            case .none: return nil
+            case .daily: return EKRecurrenceRule(recurrenceWith: .daily, interval: 1, end: nil)
+            case .everyTwoDays: return EKRecurrenceRule(recurrenceWith: .daily, interval: 2, end: nil)
+            case .everyThreeDays: return EKRecurrenceRule(recurrenceWith: .daily, interval: 3, end: nil)
+            case .weekly: return EKRecurrenceRule(recurrenceWith: .weekly, interval: 1, end: nil)
+            case .everyTwoWeeks: return EKRecurrenceRule(recurrenceWith: .weekly, interval: 2, end: nil)
+            case .monthly: return EKRecurrenceRule(recurrenceWith: .monthly, interval: 1, end: nil)
+            case .yearly: return EKRecurrenceRule(recurrenceWith: .yearly, interval: 1, end: nil)
+            }
+        }
+
+        static func from(_ rule: EKRecurrenceRule?) -> DayflowRepeatRule {
+            guard let rule else { return .none }
+            switch (rule.frequency, rule.interval) {
+            case (.daily, 1): return .daily
+            case (.daily, 2): return .everyTwoDays
+            case (.daily, 3): return .everyThreeDays
+            case (.weekly, 1): return .weekly
+            case (.weekly, 2): return .everyTwoWeeks
+            case (.monthly, 1): return .monthly
+            case (.yearly, 1): return .yearly
+            // An exotic rule set in Apple's app maps to the nearest label the
+            // menu offers; picking a menu item then REWRITES it — acceptable,
+            // the menu is the whole vocabulary Dayflow speaks.
+            case (.daily, _): return .everyThreeDays
+            case (.weekly, _): return .everyTwoWeeks
+            default: return .yearly
+            }
+        }
+    }
+
+    /// The current rule, for seeding the edit sheet.
+    func repeatRule(taskID: String) -> DayflowRepeatRule {
+        guard let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder else { return .none }
+        return DayflowRepeatRule.from(reminder.recurrenceRules?.first)
+    }
+
+    /// Replaces the reminder's recurrence with `rule`. A repeat needs a due
+    /// date to anchor to — callers gate on that.
+    func setRepeat(taskID: String, rule: DayflowRepeatRule) async -> Bool {
+        guard await ensureAccess(),
+              let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder else { return false }
+        for existing in reminder.recurrenceRules ?? [] {
+            reminder.removeRecurrenceRule(existing)
+        }
+        if let ek = rule.ekRule { reminder.addRecurrenceRule(ek) }
+        do {
+            try store.save(reminder, commit: true)
+            await fetch()
+            return true
+        } catch {
+            lastError = "Could not set the repeat. \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    // MARK: - Birthday tasks (Session 78, D165)
+    //
+    // David: "This should be added to the task by the way automatically when
+    // I add a birthday to a person record... it should land three days
+    // before and... either that or the workflow is that two tasks are
+    // created." Two tasks won: a heads-up three days ahead and the wish on
+    // the day, both yearly repeats, created ONCE per person — no
+    // completion-detection state machine, and it works even when a task is
+    // checked off in Apple's Reminders where Dayflow can't see the tap.
+    //
+    // Dedupe is two-layer: a marker line in the reminder's notes
+    // ("dayflow:birthday:<personID>:<kind>", scanned across every fetched
+    // reminder — recurring reminders stay in the incomplete predicate after
+    // completion), plus a UserDefaults ledger so a task David DELETED stays
+    // deleted rather than resurrecting on the next sweep. Notes lead with
+    // the person's [[wikilink]] — the person-chip round will render it.
+
+    static let birthdayMarkerPrefix = "dayflow:birthday:"
+    private static let birthdayLedgerKey = "dayflow_birthday_created"
+
+    func ensureBirthdayTasks(for people: [Person]) async {
+        guard !people.isEmpty, await ensureAccess() else { return }
+        let defaults = UserDefaults.standard
+        var ledger = Set(defaults.stringArray(forKey: Self.birthdayLedgerKey) ?? [])
+        let ledgerBefore = ledger
+        var markers = Set<String>()
+        for reminder in await fetchIncomplete() ?? [] {
+            guard let notes = reminder.notes else { continue }
+            for line in notes.components(separatedBy: "\n")
+            where line.hasPrefix(Self.birthdayMarkerPrefix) {
+                markers.insert(line.trimmingCharacters(in: .whitespaces))
+            }
+        }
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        var saved = false
+        for person in people where !person.isArchived {
+            guard let birthday = person.birthday else { continue }
+            let comps = cal.dateComponents([.month, .day], from: birthday)
+            guard let month = comps.month, let day = comps.day else { continue }
+            let plan: [(kind: String, title: String, offset: Int)] = [
+                ("ahead", "\(person.name)'s birthday in three days", -3),
+                ("day", "Wish \(person.name) a happy birthday", 0),
+            ]
+            for item in plan {
+                let marker = Self.birthdayMarkerPrefix + person.id + ":" + item.kind
+                let key = person.id + ":" + item.kind
+                if markers.contains(marker) || ledger.contains(key) { continue }
+                // Next FUTURE occurrence of (birthday + offset). If this
+                // year's heads-up already passed but the birthday hasn't,
+                // the heads-up starts next year — the day-of task covers
+                // this year.
+                var due: Date? = nil
+                for yearAdd in 0...1 {
+                    var c = DateComponents()
+                    c.year = cal.component(.year, from: today) + yearAdd
+                    c.month = month; c.day = day
+                    if let b = cal.date(from: c),
+                       let candidate = cal.date(byAdding: .day, value: item.offset, to: b),
+                       cal.startOfDay(for: candidate) >= today {
+                        due = cal.startOfDay(for: candidate)
+                        break
+                    }
+                }
+                guard let due else { continue }
+                let reminder = EKReminder(eventStore: store)
+                reminder.title = item.title
+                reminder.notes = "[[\(person.name)]]\n" + marker
+                reminder.calendar = personalList()
+                reminder.dueDateComponents = Self.components(due)
+                reminder.addRecurrenceRule(
+                    EKRecurrenceRule(recurrenceWith: .yearly, interval: 1, end: nil))
+                do {
+                    try store.save(reminder, commit: false)
+                    saved = true
+                    ledger.insert(key)
+                } catch { continue }
+            }
+        }
+        if saved {
+            try? store.commit()
+            await fetch()
+        }
+        if ledger != ledgerBefore {
+            defaults.set(Array(ledger).sorted(), forKey: Self.birthdayLedgerKey)
         }
     }
 

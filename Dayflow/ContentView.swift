@@ -123,7 +123,11 @@ struct ContentView: View {
     /// "Calendar" entry opening this exact same view; removed per David's
     /// call after walking the navigation fresh — see DayflowModels.swift's
     /// `DayflowBrowseDestination` header comment for the full reasoning.
-    @State private var showDateCalendar = false
+    /// Session 78 — the month unfolds IN PLACE under the masthead
+    /// (DayflowMonthUnfold.swift); the DayflowCalendarBrowseView cover this
+    /// Bool used to drive is gone from this screen. The headline is still
+    /// the one door (Session 24's rule), it just opens downward now.
+    @State private var monthUnfolded = false
     /// Added 2026-07-24 (Session 44 addendum 10) — David's Inbox concept,
     /// reached by swiping right on the home screen (see the `.gesture(...)`
     /// on this screen's root VStack below), deliberately NOT part of
@@ -149,6 +153,16 @@ struct ContentView: View {
     /// Session 71 search cover; observed here to drain tapped destinations
     /// through the routing this screen already owns.
     @State private var quickFindRouter = DayflowQuickFindRouter.shared
+    /// Session 78 — the Home Screen "Add Event" quick action lands here (the
+    /// root selects the Today tab; this screen owns the composer). Same
+    /// held-pending shape as "AddTask" on the Inbox tab.
+    @State private var quickActions = DayflowQuickActionRouter.shared
+    /// Session 78 — the tasks widget's row tap (dayflow://task?id=...). Held
+    /// until the store has the task: on a cold launch the deep link lands
+    /// before refreshAll returns, the same race every other pending-route
+    /// value in this file exists for.
+    @State private var pendingTaskLinkID: String? = nil
+    @State private var deepLinkTask: ThingsTask? = nil
     /// People and Places have no Dayflow screen, but they do have the summary
     /// sheet the wikilinks already use.
     @State private var searchWikiTarget: WikiLinkTarget? = nil
@@ -245,10 +259,12 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     topBar
 
-                    // Still the one door into Calendar browsing (Session 24);
-                    // only the clothes changed for the Editorial skin.
+                    // Still the one door into Calendar browsing (Session
+                    // 24); since Session 78 it opens DOWNWARD — the month
+                    // unfolds in place instead of a cover sliding up.
                     Button {
-                        showDateCalendar = true
+                        withAnimation(.easeInOut(duration: 0.25)) { monthUnfolded.toggle() }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     } label: {
                         VStack(alignment: .leading, spacing: 0) {
                             Rectangle().fill(Color.dayflowInk).frame(height: 3)
@@ -264,13 +280,27 @@ struct ContentView: View {
                                     Text(mastheadWeekday)
                                         .font(.dayflowSerif(22, weight: .semibold))
                                         .foregroundStyle(Color.dayflowNoteText)
+                                    Spacer()
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(Color.dayflowFaint)
+                                        .rotationEffect(monthUnfolded ? .degrees(180) : .zero)
                                 }
                             }
                             .padding(.vertical, 9)
-                            Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                            if !monthUnfolded {
+                                Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                            }
                         }
                     }
                     .buttonStyle(.plain)
+                    if monthUnfolded {
+                        DayflowMonthUnfold(selectedDate: selectedDate) { day in
+                            selectedDate = day
+                            withAnimation(.easeInOut(duration: 0.22)) { monthUnfolded = false }
+                        }
+                        .transition(.opacity)
+                    }
                 }
                 // `contentShape` so the gaps between the two rows drag too; a
                 // gesture you have to land on a glyph to start is a gesture
@@ -307,7 +337,14 @@ struct ContentView: View {
                         DayflowDailyNoteSection(
                             date: selectedDate,
                             reloadToken: dailyNoteReloadToken,
-                            onExpand: { showNoteFullPage = true },
+                            onExpand: {
+                                // Session 78, D162 — crossfade, not slide:
+                                // present with animations off, the view
+                                // fades itself in (its own `appeared`).
+                                var instant = Transaction()
+                                instant.disablesAnimations = true
+                                withTransaction(instant) { showNoteFullPage = true }
+                            },
                             onOpenNotes: {
                                 // Session 77: Notes is a tab now — select it
                                 // rather than present the cover. (The
@@ -423,14 +460,15 @@ struct ContentView: View {
                         // and they would eventually disagree.
                         guard abs(horizontal) > abs(vertical) * 1.5,
                               abs(horizontal) > 50 else { return }
-                        if horizontal > 0 {
-                            inboxStartsInNewNote = true
-                            showNotesInbox = true
-                        } else {
-                            // Session 77: Notes is a tab now — same call as the
-                            // card's own notes icon above.
-                            onOpenNotesTab()
-                        }
+                        // Session 78: the LEFT swipe (Session 71's Notes
+                        // shortcut) is RETIRED — Notes is a tab, the swipe
+                        // duplicated it, and David has reserved the
+                        // direction for a future function ("perhaps a way
+                        // into Trace when we combine apps"). Right still
+                        // files a note.
+                        guard horizontal > 0 else { return }
+                        inboxStartsInNewNote = true
+                        showNotesInbox = true
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
             )
@@ -470,12 +508,6 @@ struct ContentView: View {
             // "share the one real date" pattern as showNoteFullPage above.
             DayflowNotesView(selectedDate: $selectedDate,
                              initialProjectTitle: routedProjectTitle)
-        }
-        .fullScreenCover(isPresented: $showDateCalendar) {
-            // Session 21, 2026-07-20 — DayflowCalendarBrowseView straight off
-            // the date headline. Session 24, 2026-07-21: this is now the only
-            // door into Calendar browsing from the main screen.
-            DayflowCalendarBrowseView(onSelect: { picked in selectedDate = picked })
         }
         // Session 78, D159 — Quick Find replaced the TraceSearchView cover.
         // The card lives on DayflowRootView; a tapped result that needs this
@@ -570,8 +602,24 @@ struct ContentView: View {
         // reports success/failure without needing an `LSApplicationQueriesSchemes`
         // entry in Info.plist (that restriction only applies to
         // `canOpenURL(_:)`), so no Info.plist change was needed for this.
+        .task { consumeAddEventQuickAction() }
+        .sheet(item: $deepLinkTask) { task in
+            DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
+                                 initialDate: task.date, initialList: task.list,
+                                 initialNotes: task.notes) {
+                Task { await ReminderTaskStore.shared.refreshAll() }
+            }
+        }
+        .onChange(of: ReminderTaskStore.shared.lastFetched) { _, _ in
+            resolvePendingTaskLink()
+        }
+        .onChange(of: quickActions.pending) { _, _ in consumeAddEventQuickAction() }
         .onOpenURL { url in
-            if url.host == "addEvent" {
+            if url.host == "task" {
+                pendingTaskLinkID = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "id" })?.value
+                resolvePendingTaskLink()
+            } else if url.host == "addEvent" {
                 // The widget's + always wanted event mode; it gets the
                 // composer directly now.
                 showEventComposer = true
@@ -807,6 +855,32 @@ struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { present() }
     }
 
+    /// Session 78 — the widget row tap: opens the task's edit sheet once
+    /// the store can name the task. Leaves the id pending when it can't yet
+    /// (cold launch), cleared once presented or when the task is genuinely
+    /// gone after a completed fetch.
+    private func resolvePendingTaskLink() {
+        guard let id = pendingTaskLinkID else { return }
+        if let task = ReminderTaskStore.shared.allTasks.first(where: { $0.id == id }) {
+            pendingTaskLinkID = nil
+            route { deepLinkTask = task }
+        } else if ReminderTaskStore.shared.lastFetched != nil {
+            // The store HAS loaded and the task isn't there — completed or
+            // deleted between the widget render and the tap. Don't hold a
+            // route that can never land.
+            pendingTaskLinkID = nil
+        }
+    }
+
+    /// Session 78 — Home Screen quick action "Add Event": consume and open
+    /// the composer, clearing anything already presented (`route`, the same
+    /// door the deep link uses).
+    private func consumeAddEventQuickAction() {
+        guard quickActions.pending == "AddEvent" else { return }
+        quickActions.pending = nil
+        route { showEventComposer = true }
+    }
+
     /// Acts on `pendingNotePath` if it can, leaves it alone if it cannot.
     ///
     /// **Returns WITHOUT clearing the path when the container is unavailable**, so
@@ -844,7 +918,11 @@ struct ContentView: View {
             }
             pendingNotePath = nil
             selectedDate = date
-            route { showNoteFullPage = true }
+            route {
+                var instant = Transaction()
+                instant.disablesAnimations = true
+                withTransaction(instant) { showNoteFullPage = true }
+            }
 
         } else if path.hasPrefix("Notes/Projects/") {
             let title = ((path as NSString).lastPathComponent as NSString)

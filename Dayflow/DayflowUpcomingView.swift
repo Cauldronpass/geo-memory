@@ -29,6 +29,12 @@ struct DayflowUpcomingView: View {
 
     @State private var days: [Date] = []
     @State private var eventsByDay: [Date: [NextCalendarEvent]] = [:]
+    /// Session 78 — David's fold: "a small icon that would fold all the
+    /// meetings away... and only show tasks". ONE global toggle (a per-day
+    /// icon would be fourteen taps), persisted: a lens preference, not a
+    /// transient state. Folded days keep a faint meeting count so a full
+    /// day can't masquerade as an empty one while he's dating tasks into it.
+    @AppStorage("dayflow_upcoming_tasks_only") private var tasksOnly = false
     @State private var windowEnd: Date = Date()
     @State private var isLoading = true
     @State private var editingTask: ThingsTask? = nil
@@ -57,7 +63,8 @@ struct DayflowUpcomingView: View {
 
     private var daysWithContent: [Date] {
         days.filter { day in
-            !(eventsByDay[day] ?? []).isEmpty || !(tasksByDay[day] ?? []).isEmpty
+            if tasksOnly { return !(tasksByDay[day] ?? []).isEmpty }
+            return !(eventsByDay[day] ?? []).isEmpty || !(tasksByDay[day] ?? []).isEmpty
         }
     }
 
@@ -132,9 +139,24 @@ struct DayflowUpcomingView: View {
                 .font(.system(size: 11, weight: .medium))
                 .tracking(2.2)
                 .foregroundStyle(Color.dayflowMuted)
-            Text("Upcoming")
-                .font(.dayflowSerif(30, weight: .heavy))
-                .foregroundStyle(Color.dayflowInk)
+            HStack(alignment: .center) {
+                Text("Upcoming")
+                    .font(.dayflowSerif(30, weight: .heavy))
+                    .foregroundStyle(Color.dayflowInk)
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { tasksOnly.toggle() }
+                    UISelectionFeedbackGenerator().selectionChanged()
+                } label: {
+                    Image(systemName: tasksOnly ? "calendar.badge.minus" : "calendar")
+                        .font(.system(size: 15))
+                        .foregroundStyle(tasksOnly ? Color.dayflowAccent : Color.dayflowFaint)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tasksOnly ? "Show meetings" : "Hide meetings")
+            }
         }
         .padding(.horizontal, 24)
         .padding(.top, isTabRoot ? 22 : 8)
@@ -145,8 +167,34 @@ struct DayflowUpcomingView: View {
 
     // MARK: Day sections
 
+    /// True for the first RENDERED day of a month that isn't the first
+    /// month on screen — the crossover David asked to see (2026-08-29: "when
+    /// we have a cross over into a new month... I would expect the 1 Tuesday
+    /// September to show up"). Named like a newspaper: a month masthead
+    /// between the sections, not a longer day label.
+    private func startsNewMonth(_ day: Date) -> Bool {
+        guard let idx = daysWithContent.firstIndex(of: day), idx > 0 else { return false }
+        return !Calendar.current.isDate(day, equalTo: daysWithContent[idx - 1],
+                                        toGranularity: .month)
+    }
+
+    private func monthLabel(_ day: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "MMMM"
+        return f.string(from: day).uppercased()
+    }
+
     private func daySection(_ day: Date) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            if startsNewMonth(day) {
+                HStack(spacing: 10) {
+                    Text(monthLabel(day))
+                        .font(.system(size: 11, weight: .bold))
+                        .tracking(2.4)
+                        .foregroundStyle(Color.dayflowAccent)
+                    Rectangle().fill(Color.dayflowAccent).frame(height: 2)
+                }
+                .padding(.top, 26)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(dayNumberLabel(day))
                     .font(.dayflowSerif(20, weight: .heavy))
@@ -160,8 +208,19 @@ struct DayflowUpcomingView: View {
             .padding(.bottom, 5)
             Rectangle().fill(Color.dayflowInk).frame(height: 1)
 
-            ForEach(eventsByDay[day] ?? []) { ev in
-                eventRow(ev)
+            if tasksOnly {
+                let count = (eventsByDay[day] ?? []).count
+                if count > 0 {
+                    Text("\(count) meeting\(count == 1 ? "" : "s")")
+                        .font(.system(size: 11))
+                        .italic()
+                        .foregroundStyle(Color.dayflowFaint)
+                        .frame(minHeight: 24)
+                }
+            } else {
+                ForEach(eventsByDay[day] ?? []) { ev in
+                    eventRow(ev, in: day)
+                }
             }
             ForEach(tasksByDay[day] ?? []) { task in
                 taskRow(task)
@@ -169,7 +228,7 @@ struct DayflowUpcomingView: View {
         }
     }
 
-    private func eventRow(_ event: NextCalendarEvent) -> some View {
+    private func eventRow(_ event: NextCalendarEvent, in day: Date) -> some View {
         Button { selectedEvent = event } label: {
             HStack(spacing: 12) {
                 Text(event.startTimeString)
@@ -183,12 +242,32 @@ struct DayflowUpcomingView: View {
                     .font(.system(size: 13.5))
                     .foregroundStyle(Color.dayflowInk)
                     .lineLimit(1)
+                // Session 78 — Today's gap parenthetical, same rule (open
+                // time before the NEXT meeting, >=5 min, nothing after the
+                // last). One grammar for a day's shape, wherever a day is
+                // drawn (David: "wondering about the time available").
+                if let gap = gapLabel(after: event, in: day) {
+                    Text("(\(gap))")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.dayflowFaint)
+                }
                 Spacer(minLength: 0)
             }
             .frame(minHeight: 32)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private func gapLabel(after event: NextCalendarEvent, in day: Date) -> String? {
+        let events = eventsByDay[day] ?? []
+        guard let idx = events.firstIndex(where: { $0.id == event.id }),
+              idx + 1 < events.count else { return nil }
+        let mins = Int(events[idx + 1].startDate.timeIntervalSince(event.endDate) / 60)
+        guard mins >= 5 else { return nil }
+        if mins < 60 { return "\(mins)m" }
+        let h = mins / 60, m = mins % 60
+        return m == 0 ? "\(h)h" : "\(h)h \(m)m"
     }
 
     private func taskRow(_ task: ThingsTask) -> some View {

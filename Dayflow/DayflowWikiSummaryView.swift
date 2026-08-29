@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - DayflowWikiSummaryView
 //
@@ -731,7 +732,32 @@ struct DayflowWikiSummaryView: View {
                 if let met = detail.howWeMet, !met.isEmpty { LabeledContent("How We Met", value: met) }
             }
             if let phone = detail.phone, !phone.isEmpty {
-                Section { LabeledContent("Phone", value: phone) }
+                // Session 78, D166 — Call/Text wiring this stand-in view
+                // never had (the file's own header flagged it): David's
+                // birthday case is chip → Bryan → Text, two taps.
+                Section {
+                    LabeledContent("Phone", value: phone)
+                    HStack(spacing: 12) {
+                        Button {
+                            if let url = URL(string: "tel://\(phone.filter { $0.isNumber })") {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            Label("Call", systemImage: "phone")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        Button {
+                            if let url = URL(string: "sms://\(phone.filter { $0.isNumber })") {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            Label("Text", systemImage: "message")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
             }
             if let email = detail.email, !email.isEmpty {
                 Section { LabeledContent("Email", value: email) }

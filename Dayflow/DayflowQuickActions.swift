@@ -28,7 +28,8 @@ import UIKit
 final class DayflowQuickActionRouter {
     static let shared = DayflowQuickActionRouter()
     /// The `UIApplicationShortcutItemType` waiting to be acted on.
-    /// Currently only "AddTask". Consumed (set back to nil) by ContentView.
+    /// "AddTask" (consumed by DayflowInboxView) or, Session 78, "AddEvent"
+    /// (consumed by ContentView — the composer, on the Today tab).
     var pending: String? = nil
 }
 
