@@ -236,6 +236,19 @@ final class CalendarService {
     /// dots (Session 77, David: "i like the dot suggestion"). One ranged
     /// query over the same included calendars the day views use; all-day and
     /// canceled events skipped.
+    /// Never-attend placeholder invites, hidden from every Dayflow event
+    /// surface (Session 78 — "rehab" leaked back in when Session 77's
+    /// DayflowTodaySection rewrite didn't inherit DayflowAgendaSection's
+    /// filter, and Upcoming never had one). Keywords, substring,
+    /// case-insensitive. The widget carries its own deliberate copy
+    /// (DayflowWidget.swift) — change both.
+    static let excludedTitleKeywords = ["rehab", "bewell", "trivia", "happy hour"]
+
+    static func isExcludedPlaceholderTitle(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        return excludedTitleKeywords.contains { lower.contains($0) }
+    }
+
     func fetchMonthEventCounts(for month: Date) async -> [Int: Int] {
         guard hasAccess else { return [:] }
         let cal = Calendar.current

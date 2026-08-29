@@ -434,7 +434,13 @@ struct DayflowTodaySection: View {
     // MARK: - THE DAY
 
     private var timedEvents: [NextCalendarEvent] {
-        dayEvents.filter { !$0.isAllDay }.sorted { $0.startDate < $1.startDate }
+        dayEvents
+            .filter { !$0.isAllDay }
+            // Session 78 — the placeholder filter Session 77's rewrite lost
+            // (rehab et al.); one source, so the rows, the gaps and the day
+            // track all agree.
+            .filter { !CalendarService.isExcludedPlaceholderTitle($0.title) }
+            .sorted { $0.startDate < $1.startDate }
     }
 
     /// Meetings already over — folded behind "n earlier ▾" on today only.
@@ -665,8 +671,11 @@ struct DayflowTodaySection: View {
     /// shortcut's name and a bolt.
     private func sourceLink(for task: ThingsTask) -> (url: URL, label: String, icon: String)? {
         guard let notes = task.notes else { return nil }
+        // Case-insensitive (2026-08-29, David's Monarch task typed
+        // "Shortcuts://" and got no bolt): iOS schemes are case-insensitive,
+        // so the scanner is too.
         for scheme in ["satchel://", "trace://", "dayflow://", "shortcuts://"] {
-            guard let range = notes.range(of: scheme) else { continue }
+            guard let range = notes.range(of: scheme, options: .caseInsensitive) else { continue }
             let tail = notes[range.lowerBound...]
             let raw = tail.prefix { !$0.isWhitespace && $0 != "\n" }
             guard let url = URL(string: String(raw)) else { continue }
@@ -687,7 +696,8 @@ struct DayflowTodaySection: View {
         // chip labeled by host, www. shorn, globe icon. App schemes above
         // keep priority when both are present.
         for token in notes.split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
-            guard token.hasPrefix("http://") || token.hasPrefix("https://"),
+            let lower = token.lowercased()
+            guard lower.hasPrefix("http://") || lower.hasPrefix("https://"),
                   let url = URL(string: String(token)), let host = url.host else { continue }
             let label = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
             return (url, label, "globe")

@@ -21,6 +21,9 @@ import UIKit
 struct DayflowMonthUnfold: View {
     var selectedDate: Date
     var onPick: (Date) -> Void
+    /// The italic hint line — the masthead unfold's default; the edit
+    /// sheet's date pick passes its own (Session 78 round 3).
+    var hint: String = "tap a day to go there"
 
     @State private var cursor: Date = Date()
     @State private var datesWithNotes: Set<Date> = []
@@ -107,7 +110,7 @@ struct DayflowMonthUnfold: View {
                 .font(.system(size: 10))
                 .foregroundStyle(Color.dayflowFaint)
                 Spacer()
-                Text("tap a day to go there")
+                Text(hint)
                     .font(.system(size: 10.5))
                     .italic()
                     .foregroundStyle(Color.dayflowFaint)

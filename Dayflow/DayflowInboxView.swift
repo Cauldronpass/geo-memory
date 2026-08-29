@@ -55,6 +55,11 @@ struct DayflowInboxView: View {
     /// 0/1 = Today/Tomorrow — a dated capture is already DECIDED, so it
     /// skips the Inbox and lands in Personal with the date on.
     @State private var captureWhen: Int? = nil
+    /// Capture round four (2026-08-29, TestFlight): the destination label is
+    /// a MENU now — "i thought we had the option for me to press that inbox
+    /// text and change it directly there to one of the other lists." nil =
+    /// the default routing (Inbox; Personal when dated).
+    @State private var captureList: String? = nil
     @State private var cardOffset: CGFloat = 0
     /// The Home Screen "Add Task" quick action lands here since the composer
     /// round (Today's + is event-only): the root selects this tab and the
@@ -118,7 +123,7 @@ struct DayflowInboxView: View {
         .overlay(alignment: .bottomTrailing) {
             if isTabRoot {
                 Button {
-                    captureTitle = ""; captureNotes = ""; captureWhen = nil
+                    captureTitle = ""; captureNotes = ""; captureWhen = nil; captureList = nil
                     withAnimation(.easeOut(duration: 0.15)) { showCapture = true }
                 } label: {
                     Image(systemName: "plus")
@@ -465,14 +470,35 @@ struct DayflowInboxView: View {
                 .padding(.leading, 34)
                 Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                 HStack(alignment: .center) {
-                    HStack(spacing: 6) {
-                        Image(systemName: captureWhen == nil ? "tray" : "sun.max")
-                            .font(.system(size: 10))
-                        Text(captureDestinationLabel)
-                            .tracking(1.5)
+                    Menu {
+                        Button {
+                            captureList = nil
+                        } label: {
+                            Label(ReminderTaskStore.inboxListName, systemImage: "tray")
+                        }
+                        Divider()
+                        ForEach(store.listNames.filter { $0 != ReminderTaskStore.inboxListName },
+                                id: \.self) { name in
+                            Button(name) { captureList = name }
+                        }
+                        if !store.listNames.contains(ReminderTaskStore.somedayListName) {
+                            Button(ReminderTaskStore.somedayListName) {
+                                captureList = ReminderTaskStore.somedayListName
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: captureGlyph)
+                                .font(.system(size: 10))
+                            Text(captureDestinationLabel)
+                                .tracking(1.5)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 7, weight: .semibold))
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.dayflowFaint)
+                        .contentShape(Rectangle())
                     }
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.dayflowFaint)
                     Spacer()
                     Button { commitCapture() } label: {
                         Text("Save")
@@ -506,7 +532,7 @@ struct DayflowInboxView: View {
     private func consumeQuickAction() {
         guard isTabRoot, quickActions.pending == "AddTask" else { return }
         quickActions.pending = nil
-        captureTitle = ""; captureNotes = ""; captureWhen = nil
+        captureTitle = ""; captureNotes = ""; captureWhen = nil; captureList = nil
         withAnimation(.easeOut(duration: 0.15)) { showCapture = true }
     }
 
@@ -562,11 +588,28 @@ struct DayflowInboxView: View {
         !captureTitle.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    /// The effective destination list: an explicit pick wins; otherwise the
+    /// default routing (dated = decided = Personal; undated = the Inbox).
+    private var captureEffectiveList: String {
+        if let captureList { return captureList }
+        return captureWhen == nil
+            ? ReminderTaskStore.inboxListName
+            : ReminderTaskStore.personalListName
+    }
+
+    private var captureGlyph: String {
+        if captureWhen != nil { return "sun.max" }
+        return captureEffectiveList == ReminderTaskStore.inboxListName ? "tray" : "list.bullet"
+    }
+
     private var captureDestinationLabel: String {
+        let list = captureEffectiveList
+        let listLabel = list == ReminderTaskStore.inboxListName
+            ? "THE INBOX" : list.uppercased()
         switch captureWhen {
-        case 0:  return "TO TODAY \u{00B7} PERSONAL"
-        case 1:  return "TO TOMORROW \u{00B7} PERSONAL"
-        default: return "TO THE INBOX"
+        case 0:  return "TO TODAY \u{00B7} \(listLabel)"
+        case 1:  return "TO TOMORROW \u{00B7} \(listLabel)"
+        default: return "TO \(listLabel)"
         }
     }
 
@@ -599,17 +642,19 @@ struct DayflowInboxView: View {
         captureFocused = false
         withAnimation(.easeOut(duration: 0.15)) { showCapture = false }
         captureWhen = nil
+        let destination = captureEffectiveList
+        captureList = nil
         Task {
             if let when {
                 let day = Calendar.current.date(byAdding: .day, value: when,
                                                 to: Calendar.current.startOfDay(for: Date()))
                 _ = await store.addTask(title: title,
                                         date: day,
-                                        list: ReminderTaskStore.personalListName,
+                                        list: destination,
                                         notes: notes.isEmpty ? nil : notes)
             } else {
                 _ = await store.addTask(title: title,
-                                        list: ReminderTaskStore.inboxListName,
+                                        list: destination,
                                         notes: notes.isEmpty ? nil : notes)
             }
         }

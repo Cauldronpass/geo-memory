@@ -93,6 +93,11 @@ struct DayflowTasksProvider: AppIntentTimelineProvider {
             .compactMap { reminder -> (Date, DayflowTaskRow)? in
                 guard let comps = reminder.dueDateComponents,
                       let due = cal.date(from: comps) else { return nil }
+                // The predicate's end boundary is INCLUSIVE at midnight, so
+                // a day-only task due tomorrow (00:00 = endOfToday exactly)
+                // leaked through (David's catch, 2026-08-29). Today or
+                // earlier only — this widget's name is a promise.
+                guard cal.startOfDay(for: due) <= today else { return nil }
                 return (due, DayflowTaskRow(
                     id: reminder.calendarItemIdentifier,
                     title: reminder.title ?? "",

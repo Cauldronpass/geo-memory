@@ -263,7 +263,14 @@ struct DayflowTaskEditSheet: View {
                 }
             }
             .sheet(isPresented: $showWhenPicker) {
-                DayflowWhenPickerSheet(kind: .task, currentValue: when) { picked in
+                // Session 78 round 3 (David, off TestFlight: "Clicking the
+                // date in any task edit gives me a different experience than
+                // the nice feeling I get from the main screens. Its a week
+                // at a time and the view doesnt match") — the old week-paged
+                // DayflowWhenPickerSheet is retired from here; this is the
+                // app's own month language: Today/Tomorrow rows, then the
+                // same grid the masthead unfolds.
+                DayflowDatePickSheet(current: when) { picked in
                     when = picked
                 }
             }
@@ -493,5 +500,85 @@ struct DayflowTaskLinkPicker: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Date pick sheet (Session 78 round 3)
+//
+// The edit sheet's Date row, in the app's own calendar language:
+// Today (sun) / Tomorrow (sunrise) / Clear (slash) rows over the SAME month
+// grid the Today masthead unfolds (DayflowMonthUnfold, note and pin dots
+// included). Replaces DayflowWhenPickerSheet here — its week-at-a-time view
+// was the last date surface out of step with the skin.
+
+struct DayflowDatePickSheet: View {
+    let current: DayflowWhenValue
+    var onPick: (DayflowWhenValue) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var currentDate: Date {
+        switch current {
+        case .date(let d): return d
+        case .today: return Date()
+        default: return Date()
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("WHEN")
+                    .font(.system(size: 11, weight: .bold))
+                    .tracking(2)
+                    .foregroundStyle(Color.dayflowInk)
+                    .padding(.bottom, 6)
+                Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                quickRow("Today", systemImage: "sun.max") { pick(.today) }
+                hairline
+                quickRow("Tomorrow", systemImage: "sunrise") {
+                    let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+                    pick(.date(Calendar.current.startOfDay(for: tomorrow)))
+                }
+                hairline
+                DayflowMonthUnfold(selectedDate: currentDate, onPick: { day in
+                    pick(.date(day))
+                }, hint: "tap a day to set it")
+                quickRow("Clear date", systemImage: "slash.circle",
+                         tint: Color.dayflowAccent) { pick(.none) }
+            }
+            .padding(20)
+        }
+        .scrollIndicators(.hidden)
+        .presentationDetents([.height(600), .large])
+        .presentationBackground(Color.dayflowPaper)
+    }
+
+    private func pick(_ value: DayflowWhenValue) {
+        UISelectionFeedbackGenerator().selectionChanged()
+        onPick(value)
+        dismiss()
+    }
+
+    private var hairline: some View {
+        Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+    }
+
+    private func quickRow(_ label: String, systemImage: String,
+                          tint: Color = .dayflowInk,
+                          action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 14))
+                    .frame(width: 20)
+                Text(label)
+                    .font(.dayflowSerif(16))
+                Spacer()
+            }
+            .foregroundStyle(tint)
+            .frame(minHeight: 46)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

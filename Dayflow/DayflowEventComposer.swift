@@ -300,7 +300,7 @@ struct DayflowEventComposer: View {
     private var overlappedEvents: [NextCalendarEvent] {
         let newStart = bufferedStart
         let newEnd = bufferedEnd
-        return dayEvents.filter { !$0.isAllDay }.filter { ev in
+        return dayEvents.filter { !$0.isAllDay }.filter { !CalendarService.isExcludedPlaceholderTitle($0.title) }.filter { ev in
             minutesOfDay(ev.startDate) < newEnd && minutesOfDay(ev.endDate) > newStart
         }
     }
@@ -339,7 +339,7 @@ struct DayflowEventComposer: View {
                         .fill(Color.dayflowHairline.opacity(0.7))
                         .frame(height: 6)
                         .offset(y: 12)
-                    ForEach(dayEvents.filter { !$0.isAllDay }, id: \.id) { ev in
+                    ForEach(dayEvents.filter { !$0.isAllDay }.filter { !CalendarService.isExcludedPlaceholderTitle($0.title) }, id: \.id) { ev in
                         let s = clampToWindow(minutesOfDay(ev.startDate))
                         let e = clampToWindow(minutesOfDay(ev.endDate))
                         let hit = overlappedEvents.contains { $0.id == ev.id }

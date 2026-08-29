@@ -80,6 +80,7 @@ struct DayflowQuickFindView: View {
     @State private var whenRequest: DayflowWhenRequest? = nil
     @State private var rowDragOffsets: [String: CGFloat] = [:]
     @State private var selection = DayflowTodaySelection.shared
+    @State private var order = DayflowTaskOrder.shared
 
     private var store: ReminderTaskStore { ReminderTaskStore.shared }
 
@@ -132,11 +133,19 @@ struct DayflowQuickFindView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            Color.black.opacity(0.25)
-                .ignoresSafeArea()
-                .onTapGesture { close() }
-            card
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                Color.black.opacity(0.25)
+                    .ignoresSafeArea()
+                    .onTapGesture { close() }
+                // The cap tracks the keyboard (TestFlight, 2026-08-29: the
+                // keyboard overlapped the ASK row, and keyboard avoidance
+                // shoved the whole card up into the status bar). geo's
+                // height already excludes the keyboard's safe-area inset,
+                // so the card always fits ABOVE it — nothing left for
+                // avoidance to move, nothing left to cover.
+                card(maxHeight: min(620, geo.size.height - 8))
+            }
         }
         .task {
             await store.fetch()
@@ -164,15 +173,20 @@ struct DayflowQuickFindView: View {
 
     // MARK: The card
 
-    private var card: some View {
+    private func card(maxHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             searchField
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if !trimmedQuery.isEmpty {
-                        resultsContent
-                    } else if let place {
+                    // An open place owns the search field (Session 78 round
+                    // 3, David: "add a search menu on this screen... that
+                    // will only filter from that specific list... not just
+                    // the title but anything in the task"). Global results
+                    // only render outside a place; the breadcrumb widens.
+                    if let place {
                         placeContent(place)
+                    } else if !trimmedQuery.isEmpty {
+                        resultsContent
                     } else {
                         browseContent
                     }
@@ -181,9 +195,10 @@ struct DayflowQuickFindView: View {
                 .padding(.bottom, 8)
             }
             .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
             pullHandle
         }
-        .frame(maxHeight: 620, alignment: .top)
+        .frame(maxHeight: maxHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
         .background(
             UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18)
@@ -204,7 +219,8 @@ struct DayflowQuickFindView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.dayflowInk)
-            TextField("Find anything", text: $query)
+            TextField(place == nil ? "Find anything" : "Find in \(placeName(place!))",
+                      text: $query)
                 .font(.dayflowSerif(19, weight: .semibold))
                 .foregroundStyle(Color.dayflowInk)
                 .autocorrectionDisabled()
@@ -216,16 +232,19 @@ struct DayflowQuickFindView: View {
                     // (TraceSearchIOS's rule, kept).
                     answer = nil
                     askError = nil
-                    // Typing while browsing a list: search takes over.
-                    if !query.isEmpty { place = nil }
                 }
             if !query.isEmpty {
                 Button {
                     query = ""
                     fieldFocused = true
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    // Editorial ✕ (David, 2026-08-29: the filled system
+                    // circle read foreign next to the app's own dismissals).
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.dayflowFaint)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -354,7 +373,10 @@ struct DayflowQuickFindView: View {
         Button {
             var instant = Transaction()
             instant.disablesAnimations = true
-            withTransaction(instant) { self.place = nil }
+            withTransaction(instant) {
+                self.place = nil
+                query = ""  // the scoped filter belongs to the place it filtered
+            }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.left")
@@ -374,20 +396,30 @@ struct DayflowQuickFindView: View {
             .padding(.top, 2)
         switch place {
         case .anytime:
-            let pool = store.anytimeTasks
+            let pool = placeFiltered(order.sorted(store.anytimeTasks, key: "anytime"))
             if pool.isEmpty {
-                emptyPlace("Nothing undated outside the Inbox.")
+                emptyPlace(trimmedQuery.isEmpty
+                           ? "Nothing undated outside the Inbox."
+                           : "Nothing in Anytime matches.")
             } else {
                 sectionHeader("THE POOL")
-                ForEach(pool) { swipeableRow($0, meta: $0.list?.uppercased()) }
+                if trimmedQuery.isEmpty {
+                    reorderableRows(pool, key: "anytime") { $0.list?.uppercased() }
+                } else {
+                    ForEach(pool) { swipeableRow($0, meta: $0.list?.uppercased()) }
+                }
             }
         case .list(let list):
-            let scheduled = store.allTasks
+            let scheduled = placeFiltered(store.allTasks
                 .filter { $0.list == list && $0.date != nil }
-                .sorted { $0.date! < $1.date! }
-            let undated = store.allTasks.filter { $0.list == list && $0.date == nil }
+                .sorted { $0.date! < $1.date! })
+            let undated = placeFiltered(order.sorted(
+                store.allTasks.filter { $0.list == list && $0.date == nil },
+                key: "list-" + list))
             if scheduled.isEmpty && undated.isEmpty {
-                emptyPlace("Nothing here.")
+                emptyPlace(trimmedQuery.isEmpty
+                           ? "Nothing here."
+                           : "Nothing in \(list) matches.")
             }
             if !scheduled.isEmpty {
                 sectionHeader("SCHEDULED")
@@ -395,9 +427,53 @@ struct DayflowQuickFindView: View {
             }
             if !undated.isEmpty {
                 sectionHeader(list == ReminderTaskStore.somedayListName ? "SOMEDAY" : "ANYTIME")
-                ForEach(undated) { swipeableRow($0, meta: nil) }
+                if trimmedQuery.isEmpty {
+                    reorderableRows(undated, key: "list-" + list) { _ in nil }
+                } else {
+                    ForEach(undated) { swipeableRow($0, meta: nil) }
+                }
             }
         }
+    }
+
+    /// The scoped filter: every typed word must appear somewhere in the
+    /// task — title, notes, list name. Drag-reorder pauses while a filter
+    /// is on (a reorder of a filtered SUBSET would clobber the full order).
+    private func placeFiltered(_ tasks: [ThingsTask]) -> [ThingsTask] {
+        guard !trimmedQuery.isEmpty else { return tasks }
+        let words = trimmedQuery.lowercased()
+            .split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        return tasks.filter { task in
+            let haystack = [task.title, task.notes ?? "", task.list ?? ""]
+                .joined(separator: " ").lowercased()
+            return words.allSatisfy { haystack.contains($0) }
+        }
+    }
+
+    /// Undated rows with drag-to-reorder: long-press lifts a row (the
+    /// horizontal swipes and taps are untouched — different activations),
+    /// dropping on a row inserts before it, the tail strip drops at the end.
+    @ViewBuilder
+    private func reorderableRows(_ tasks: [ThingsTask], key: String,
+                                 meta: @escaping (ThingsTask) -> String?) -> some View {
+        let ids = tasks.map(\.id)
+        ForEach(tasks) { task in
+            swipeableRow(task, meta: meta(task))
+                .draggable(task.id)
+                .dropDestination(for: String.self) { items, _ in
+                    guard let moved = items.first else { return false }
+                    order.move(id: moved, before: task.id, key: key, current: ids)
+                    return true
+                }
+        }
+        Color.clear
+            .frame(height: 28)
+            .contentShape(Rectangle())
+            .dropDestination(for: String.self) { items, _ in
+                guard let moved = items.first else { return false }
+                order.move(id: moved, before: nil, key: key, current: ids)
+                return true
+            }
     }
 
     private func placeName(_ place: DayflowQuickFindPlace) -> String {
@@ -831,6 +907,56 @@ extension View {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
             )
+    }
+}
+
+// MARK: - Manual order (Session 78 round 3)
+//
+// David, off the TestFlight build: "Id like to be able to drag the rows to
+// reorder them and have that be persistent. Possible?" Possible with one
+// boundary fact: EventKit does not expose Reminders' manual sort order, so
+// the order lives HERE (UserDefaults id arrays per screen) and Apple's own
+// app won't mirror it. Applies to UNDATED sections only — the Anytime pool
+// and a list's ANYTIME/SOMEDAY rows; SCHEDULED stays chronological, a
+// hand-ordered date list is a lie about time.
+
+@Observable
+final class DayflowTaskOrder {
+    static let shared = DayflowTaskOrder()
+    private init() {}
+    /// Bumped on every persisted move so views re-sort.
+    private(set) var version = 0
+
+    private func storageKey(_ key: String) -> String { "dayflow_task_order_" + key }
+
+    /// Stored order first; ids the store hasn't seen keep their incoming
+    /// order, after the ordered ones — the Inbox queue's resync rule.
+    func sorted(_ tasks: [ThingsTask], key: String) -> [ThingsTask] {
+        _ = version
+        let stored = UserDefaults.standard.stringArray(forKey: storageKey(key)) ?? []
+        guard !stored.isEmpty else { return tasks }
+        var rank: [String: Int] = [:]
+        for (index, id) in stored.enumerated() { rank[id] = index }
+        return tasks.enumerated()
+            .sorted { lhs, rhs in
+                let l = rank[lhs.element.id] ?? (stored.count + lhs.offset)
+                let r = rank[rhs.element.id] ?? (stored.count + rhs.offset)
+                return l < r
+            }
+            .map(\.element)
+    }
+
+    /// Inserts `id` before `target` (nil = end) within `current`, persists.
+    func move(id: String, before target: String?, key: String, current: [String]) {
+        guard id != target else { return }
+        var ids = current.filter { $0 != id }
+        if let target, let idx = ids.firstIndex(of: target) {
+            ids.insert(id, at: idx)
+        } else {
+            ids.append(id)
+        }
+        UserDefaults.standard.set(ids, forKey: storageKey(key))
+        version += 1
     }
 }
 

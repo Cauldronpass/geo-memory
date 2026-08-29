@@ -462,7 +462,9 @@ struct DayflowUpcomingView: View {
             groupedEvents[dayStart, default: []].append(ev)
         }
         for (day, list) in groupedEvents {
-            groupedEvents[day] = list.sorted { $0.startDate < $1.startDate }
+            groupedEvents[day] = list
+                .filter { !CalendarService.isExcludedPlaceholderTitle($0.title) }
+                .sorted { $0.startDate < $1.startDate }
         }
 
         days = windowDays
