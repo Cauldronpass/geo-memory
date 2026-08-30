@@ -462,6 +462,10 @@ struct DayflowTaskLinkPicker: View {
     var onPick: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
+    /// Session 78 — David: the cursor should land in the search field so he
+    /// can just type. (His screenshot was THIS picker, not the Related Notes
+    /// one, which got the same fix separately — two pickers, two fixes.)
+    @FocusState private var searchFocused: Bool
 
     private var names: [String] {
         let all: [String]
@@ -492,11 +496,17 @@ struct DayflowTaskLinkPicker: View {
                 }
             }
             .searchable(text: $search)
+            .searchFocused($searchFocused)
             .navigationTitle(kind == .person ? "Link a Person" : "Link a Place")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                }
+            }
+            .onAppear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    searchFocused = true
                 }
             }
         }

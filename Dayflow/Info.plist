@@ -56,6 +56,8 @@
 			<string>square.and.pencil</string>
 		</dict>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Dayflow uses your location only to ring place reminders when you arrive somewhere you have flagged.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

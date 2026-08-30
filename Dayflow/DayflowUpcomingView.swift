@@ -291,8 +291,11 @@ struct DayflowUpcomingView: View {
                 .font(.system(size: 12).monospacedDigit())
                 .foregroundStyle(Color.dayflowMuted)
                 .frame(width: 62, alignment: .leading)
+            // D184: the chip speaks David's OWN color key (keyword-driven,
+            // ported from his vault reference) — the calendar-source color
+            // it replaces meant nothing. No keyword match renders plain.
             Rectangle()
-                .fill(event.color)
+                .fill(DayflowMeetingColor.classify(event.title).chip ?? Color.dayflowFaint.opacity(0.55))
                 .frame(width: 8, height: 8)
             Text(event.title)
                 .font(.system(size: 13.5))

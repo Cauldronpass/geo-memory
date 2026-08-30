@@ -668,8 +668,16 @@ struct DayflowTodaySection: View {
                         let start = clampTrack(minutesOfDay(ev.startDate))
                         let end = clampTrack(minutesOfDay(ev.endDate))
                         if end > start {
+                            // D184: the track blocks wear the plan's own
+                            // pastels — what David asked for when the track
+                            // was built ("we would lose my idea of the color
+                            // being used for the type of meeting"... not any
+                            // more). One flag reverts to ink if the color
+                            // proves distracting (his stated reservation).
                             RoundedRectangle(cornerRadius: 3)
-                                .fill(Color.dayflowNoteText)
+                                .fill(DayflowMeetingColor.tintTrackBlocks
+                                      ? (DayflowMeetingColor.classify(ev.title).block ?? Color.dayflowNoteText)
+                                      : Color.dayflowNoteText)
                                 .frame(width: max(4, width * CGFloat(end - start) / span), height: 6)
                                 .offset(x: width * CGFloat(start - Self.trackStart) / span, y: 5)
                         }
@@ -709,8 +717,11 @@ struct DayflowTodaySection: View {
                 .font(.system(size: 12).monospacedDigit())
                 .foregroundStyle(Color.dayflowMuted)
                 .frame(width: 62, alignment: .leading)
+            // D184: the chip speaks David's OWN color key (keyword-driven,
+            // ported from his vault reference) — the calendar-source color
+            // it replaces meant nothing. No keyword match renders plain.
             Rectangle()
-                .fill(event.color)
+                .fill(DayflowMeetingColor.classify(event.title).chip ?? Color.dayflowFaint.opacity(0.55))
                 .frame(width: 8, height: 8)
             Text(event.title)
                 .font(.system(size: 13.5))

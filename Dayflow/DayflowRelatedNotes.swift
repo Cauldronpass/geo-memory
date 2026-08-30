@@ -575,6 +575,10 @@ struct DayflowLinkFlowSheet: View {
     @State private var datesWithNotes: Set<Date> = []
     /// Search box on the Project/Person/Place/Visit candidate picker.
     @State private var candidateSearchText = ""
+    /// Session 78 — David: "sets the cursor in the search field
+    /// automatically so i can just type." Focused on the picker's arrival
+    /// via the 50ms hop every autofocused field in this app uses.
+    @FocusState private var candidateSearchFocused: Bool
 
     init(
         initialKind: DayflowLinkKind,
@@ -727,6 +731,7 @@ struct DayflowLinkFlowSheet: View {
                         .foregroundStyle(.secondary)
                     TextField("Search", text: $candidateSearchText)
                         .font(.system(size: 13.5))
+                        .focused($candidateSearchFocused)
                     if !candidateSearchText.isEmpty {
                         Button {
                             candidateSearchText = ""
@@ -742,6 +747,11 @@ struct DayflowLinkFlowSheet: View {
                 .background(.background, in: RoundedRectangle(cornerRadius: 9))
                 .padding(.horizontal, 16)
                 .padding(.bottom, 6)
+                .onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        candidateSearchFocused = true
+                    }
+                }
             }
             if candidates.isEmpty {
                 Text("Nothing to link yet.")

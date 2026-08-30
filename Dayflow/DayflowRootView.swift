@@ -52,6 +52,52 @@ struct DayflowRootView: View {
            path.hasPrefix("Notes/Projects/") { return .notes }
         return .today
     }
+
+    /// The Editorial tab bar: paper over one hairline, four caps wordmarks,
+    /// active in accent — the band the Notes mockups drew as their stand-in.
+    private var editorialTabBar: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+            HStack(spacing: 0) {
+                editorialTab(.today, "TODAY", "sun.max")
+                editorialTab(.inbox, "INBOX", "tray")
+                editorialTab(.upcoming, "UPCOMING", "calendar")
+                editorialTab(.notes, "NOTES", "note.text")
+            }
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+        }
+        .background(Color.dayflowPaper.ignoresSafeArea(edges: .bottom))
+    }
+
+    /// The middle ground (David's call after seeing wordmarks proposed
+    /// alone): the glyph keeps the glance-recognition the system bar had,
+    /// the caps label keeps the Editorial voice. Both wear accent when
+    /// active, faint when not.
+    private func editorialTab(_ tab: DayflowTab, _ label: String, _ icon: String) -> some View {
+        let active = selectedTab == tab
+        return Button {
+            if selectedTab != tab {
+                UISelectionFeedbackGenerator().selectionChanged()
+                selectedTab = tab
+            }
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: active ? .semibold : .regular))
+                Text(label)
+                    .font(.system(size: 9, weight: active ? .bold : .medium))
+                    .tracking(1.4)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .foregroundStyle(active ? Color.dayflowAccent : Color.dayflowFaint)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
     /// Session 77 — Things-style multi-select, shared by the Today card and
     /// the Upcoming tab; the bar lives HERE so it floats over whichever tab
     /// is selecting. Switching tabs exits selection.
@@ -68,25 +114,43 @@ struct DayflowRootView: View {
     @State private var undoStack = DayflowUndoStack.shared
 
     var body: some View {
+        // Editorial tab bar (Session 78, the polish round). The SYSTEM bar
+        // is hidden on every tab and replaced by the flat caps band below —
+        // the bar every approved Notes mockup already drew: paper, one
+        // hairline, four wordmarks, active in accent. No icons, no floating
+        // capsule. `safeAreaPadding(.bottom, 46)` on each tab stands in for
+        // the inset the system bar used to provide, so scroll content stops
+        // above the band instead of sliding under it.
         TabView(selection: $selectedTab) {
             ContentView(selectedDate: $selectedDate,
                         onOpenNotesTab: { selectedTab = .notes })
-                .tabItem { Label("Today", systemImage: "sun.max") }
+                .toolbar(.hidden, for: .tabBar)
+                .safeAreaPadding(.bottom, 60)
                 .tag(DayflowTab.today)
 
             DayflowInboxView(isTabRoot: true)
-                .tabItem { Label("Inbox", systemImage: "tray") }
+                .toolbar(.hidden, for: .tabBar)
+                .safeAreaPadding(.bottom, 60)
                 .tag(DayflowTab.inbox)
 
             DayflowUpcomingView(isTabRoot: true)
-                .tabItem { Label("Upcoming", systemImage: "calendar") }
+                .toolbar(.hidden, for: .tabBar)
+                .safeAreaPadding(.bottom, 60)
                 .tag(DayflowTab.upcoming)
 
             DayflowNotesView(selectedDate: $selectedDate, isTabRoot: true)
-                .tabItem { Label("Notes", systemImage: "note.text") }
+                .toolbar(.hidden, for: .tabBar)
+                .safeAreaPadding(.bottom, 60)
                 .tag(DayflowTab.notes)
         }
         .tint(Color.dayflowAccent)
+        // The band pins to the SCREEN bottom: it ignores the keyboard's
+        // safe area (the keyboard window simply draws over it, exactly as
+        // it did over the system bar) rather than riding up above it.
+        .overlay(alignment: .bottom) {
+            editorialTabBar
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+        }
         .overlay {
             if quickFind.show {
                 DayflowQuickFindView()
@@ -106,7 +170,7 @@ struct DayflowRootView: View {
                     selectionBar
                 }
             }
-            .padding(.bottom, 64) // clear of the tab bar
+            .padding(.bottom, 72) // clear of the Editorial band
         }
         .animation(.spring(duration: 0.32), value: quickFind.show)
         // Session 78 evening — agenda NOTE rows (Today/Upcoming) route by

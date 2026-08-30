@@ -136,6 +136,7 @@ struct DayflowApp: App {
                     if phase == .background {
                         Task { await DayflowMorningSummary.reschedule() }
                         Task { await DayflowTaskAlarms.reschedule() }
+                        Task { await DayflowPlaceAlarms.reschedule() }
                         return
                     }
                     guard phase == .active else { return }
@@ -143,6 +144,8 @@ struct DayflowApp: App {
                     // Session 78, D168 — Dayflow rings the task alarms now
                     // (David is switching Apple Reminders' alerts off).
                     Task { await DayflowTaskAlarms.reschedule() }
+                    // D183 — and the place alarms, same rewrite cadence.
+                    Task { await DayflowPlaceAlarms.reschedule() }
                     DayflowFlagStore.shared.reload()
                     // D103 on the phone (Session 71). Until now these caches
                     // loaded once in the `.task` above and never again, so a

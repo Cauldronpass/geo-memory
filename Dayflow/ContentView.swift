@@ -322,6 +322,12 @@ struct ContentView: View {
                         }
                 )
 
+                // The endeavor presence line (Session 78, D182): an active or
+                // imminent endeavor is the biggest thing happening in a
+                // stretch of life and was the most buried record in the app.
+                // One quiet caps line each, straight under the masthead.
+                DayflowEndeavorPresence { id in openEndeavorInstant(id) }
+
                 // Session 77, step (b): task card first, events strip, then
                 // the Day note with a minimum height — replaces
                 // DayflowAgendaSection (file kept on disk, unused; delete in
@@ -720,10 +726,24 @@ struct ContentView: View {
         .onChange(of: noteStore.hasAccess) { _, granted in
             if granted { resolveNoteRoute() }
         }
-        .sheet(item: $endeavorRoute) { ref in
+        // Cover, not sheet (Session 78: endeavors get the full view); the
+        // slide is killed by presenting inside a disabled-animation
+        // transaction (openEndeavorInstant) — the screen crossfades itself.
+        .fullScreenCover(item: $endeavorRoute) { ref in
             NavigationStack {
                 DayflowEndeavorView(endeavorID: ref.id)
             }
+        }
+    }
+
+    /// Present an endeavor with no slide: route() clears whatever covers the
+    /// home screen, then the state lands inside a disabled-animation
+    /// transaction and DayflowEndeavorView fades itself in (D162's pattern).
+    private func openEndeavorInstant(_ id: String) {
+        route {
+            var instant = Transaction()
+            instant.disablesAnimations = true
+            withTransaction(instant) { endeavorRoute = EndeavorRouteRef(id: id) }
         }
     }
 
@@ -912,7 +932,7 @@ struct ContentView: View {
                 return
             }
             pendingNotePath = nil
-            route { endeavorRoute = EndeavorRouteRef(id: match.id) }
+            openEndeavorInstant(match.id)
 
         } else if path.hasPrefix("Calendar/") {
             guard let date = Self.dayNoteDate(from: path) else {
@@ -979,7 +999,7 @@ struct ContentView: View {
             return
         }
         pendingEndeavorID = nil
-        route { endeavorRoute = EndeavorRouteRef(id: id) }
+        openEndeavorInstant(id)
     }
 
     private static let dayNoteFormatter: DateFormatter = {
@@ -1080,4 +1100,80 @@ struct ContentView: View {
 #Preview {
     DayflowRootView()
         .environment(NotionService.shared)
+}
+
+
+// MARK: - The endeavor presence lines (Session 78, D182)
+
+/// Active endeavors, plus upcoming ones starting within 14 days, as quiet
+/// caps rows under the Today masthead — "TEST TRIP 2 · DAY 33",
+/// "JAPAN · IN 6 DAYS" — each tapping straight to its endeavor. Renders
+/// nothing when nothing qualifies, which is most of the year. Owns its own
+/// store reload (the same self-sufficiency DayflowEndeavorListSection has),
+/// so a cold launch onto Today does not wait for the Notes tab to be
+/// visited first.
+private struct DayflowEndeavorPresence: View {
+    var onOpen: (String) -> Void
+    @State private var store = EndeavorStore.shared
+
+    private var qualifying: [Endeavor] {
+        store.endeavors.filter { e in
+            switch e.status() {
+            case .active:   return true
+            case .upcoming: return (e.daysUntilStart() ?? Int.max) <= 14
+            default:        return false
+            }
+        }
+    }
+
+    var body: some View {
+        let items = qualifying
+        VStack(spacing: 0) {
+            ForEach(items, id: \.id) { e in
+                Button {
+                    onOpen(e.id)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(label(e))
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(1.6)
+                            .foregroundStyle(Color.dayflowAccent)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 7, weight: .semibold))
+                            .foregroundStyle(Color.dayflowFaint)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 7)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+                }
+            }
+        }
+        .task { store.reload() }
+    }
+
+    private func label(_ e: Endeavor) -> String {
+        let name = e.name.uppercased()
+        switch e.status() {
+        case .active:
+            if let idx = e.dayIndex() {
+                if let total = e.totalDays {
+                    return "\(name) \u{00B7} DAY \(idx) OF \(total)"
+                }
+                return "\(name) \u{00B7} DAY \(idx)"
+            }
+            return name
+        default:
+            if let d = e.daysUntilStart() {
+                if d == 0 { return "\(name) \u{00B7} STARTS TODAY" }
+                if d == 1 { return "\(name) \u{00B7} TOMORROW" }
+                return "\(name) \u{00B7} IN \(d) DAYS"
+            }
+            return name
+        }
+    }
 }

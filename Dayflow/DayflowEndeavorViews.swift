@@ -526,36 +526,12 @@ struct DayflowEndeavorView: View {
         .onAppear {
             withAnimation(.easeInOut(duration: 0.2)) { appeared = true }
         }
-        .navigationTitle(endeavor?.name ?? "Endeavor")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            // Presented as a sheet, so it needs its own way out — there is no
-            // back chevron to fall back on.
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Done") { fadeOut() }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                // A menu rather than a second icon. Two glyphs in a row with no
-                // labels is a guessing game, and "what happened" is not something
-                // you reach for often enough to earn permanent space.
-                Menu {
-                    Button {
-                        showingDetails = true
-                    } label: {
-                        Label("Details", systemImage: "slider.horizontal.3")
-                    }
-                    if endeavor?.starts != nil && endeavor?.ends != nil {
-                        Button {
-                            showingTripLog = true
-                        } label: {
-                            Label("Add what happened…", systemImage: "text.badge.plus")
-                        }
-                    }
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                }
-            }
-        }
+        // Editorial chrome (Session 78, D181's second piece): the system
+        // nav bar (Done pill, glyph capsule) is hidden; the screen wears the
+        // day-note full page's own top row instead — kicker left, the
+        // details Menu and Done in ink on the right.
+        .toolbar(.hidden, for: .navigationBar)
+        .safeAreaInset(edge: .top, spacing: 0) { endeavorTopBar }
         .sheet(isPresented: $showingDetails) {
             DayflowEndeavorDetailsSheet(existing: endeavor)
         }
@@ -797,6 +773,54 @@ struct DayflowEndeavorView: View {
 
     // `fullScreenEditor` retired (Session 78): the inline editor is the
     // typing surface again — see the note above the editor's frame.
+
+    /// The Editorial top row — DayflowNoteFullPageView's grammar: caps
+    /// kicker, quiet menu glyph, Done as plain ink text. The menu keeps its
+    /// two residents (Details, Add what happened…) — a menu rather than two
+    /// glyphs, for the reason the old toolbar recorded: two unlabeled glyphs
+    /// in a row is a guessing game.
+    private var endeavorTopBar: some View {
+        HStack(spacing: 0) {
+            Text("ENDEAVOR")
+                .font(.system(size: 11, weight: .medium))
+                .tracking(2.2)
+                .foregroundStyle(Color.dayflowMuted)
+            Spacer()
+            Menu {
+                Button {
+                    showingDetails = true
+                } label: {
+                    Label("Details", systemImage: "slider.horizontal.3")
+                }
+                if endeavor?.starts != nil && endeavor?.ends != nil {
+                    Button {
+                        showingTripLog = true
+                    } label: {
+                        Label("Add what happened…", systemImage: "text.badge.plus")
+                    }
+                }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.dayflowMuted)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            Button { fadeOut() } label: {
+                Text("Done")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.dayflowInk)
+                    .frame(height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 8)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 4)
+        .background(Color.dayflowPaper)
+    }
 
     /// D162's crossfade out: content fades, then the cover drops with
     /// animations disabled so no slide sneaks in behind it.

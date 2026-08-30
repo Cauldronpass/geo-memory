@@ -119,6 +119,8 @@ struct DayflowWikiSummaryView: View {
     /// every open task carrying the record's [[wikilink]], so "all of
     /// Brenda's items" is her sheet, meeting or no meeting.
     @State private var linkedEditingTask: ThingsTask? = nil
+    /// D183 — the place-attached location alarm's toggle state.
+    @State private var placeAlarms = DayflowPlaceAlarmStore.shared
     @State private var isResolvingVisitPrefill = false
 
     init(target: WikiLinkTarget, sourceNoteText: String? = nil) {
@@ -373,6 +375,22 @@ struct DayflowWikiSummaryView: View {
             }
         } else {
             openTasksSection(for: place.name)
+            // D183 — ring on arrival: the place-attached location alarm.
+            // Only a pinned-on-the-map place can ring, so only those show
+            // the toggle at all.
+            if place.latitude != 0 || place.longitude != 0 {
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { placeAlarms.isEnabled(place.id) },
+                        set: { _ in placeAlarms.toggle(place.id) }
+                    )) {
+                        Label("Ring on arrival", systemImage: "bell.badge")
+                    }
+                    .tint(Color.dayflowAccent)
+                } footer: {
+                    Text("Arriving here pings you with this place's open linked tasks. Silent when there are none.")
+                }
+            }
             Section {
                 if !place.category.isEmpty { LabeledContent("Category", value: place.category) }
                 if !place.address.isEmpty { LabeledContent("Address", value: place.address) }
