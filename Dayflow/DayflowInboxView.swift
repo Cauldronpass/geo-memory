@@ -54,7 +54,13 @@ struct DayflowInboxView: View {
     /// to-do window. Add is small and uninspiring"). nil = the Inbox;
     /// 0/1 = Today/Tomorrow — a dated capture is already DECIDED, so it
     /// skips the Inbox and lands in Personal with the date on.
-    @State private var captureWhen: Int? = nil
+    /// Capture round five (2026-08-29, the task-add friction discussion):
+    /// the date is a real Date now — TODAY/TOMORROW chips set it directly,
+    /// and PICK DAY unfolds the masthead's own month grid INSIDE the card
+    /// (keyboard drops while it's open, comes back after the pick). Any
+    /// capture door can now say "August 31."
+    @State private var captureDate: Date? = nil
+    @State private var captureMonthOpen = false
     /// Capture round four (2026-08-29, TestFlight): the destination label is
     /// a MENU now — "i thought we had the option for me to press that inbox
     /// text and change it directly there to one of the other lists." nil =
@@ -123,7 +129,8 @@ struct DayflowInboxView: View {
         .overlay(alignment: .bottomTrailing) {
             if isTabRoot {
                 Button {
-                    captureTitle = ""; captureNotes = ""; captureWhen = nil; captureList = nil
+                    captureTitle = ""; captureNotes = ""; captureDate = nil
+                    captureMonthOpen = false; captureList = nil
                     withAnimation(.easeOut(duration: 0.15)) { showCapture = true }
                 } label: {
                     Image(systemName: "plus")
@@ -314,7 +321,9 @@ struct DayflowInboxView: View {
                         .font(.system(size: 12))
                     Text("Anytime")
                         .font(.system(size: 13))
+                        .lineLimit(1)
                 }
+                .fixedSize()
                 .foregroundStyle(Color.dayflowMuted)
             }
             .buttonStyle(.plain)
@@ -327,7 +336,9 @@ struct DayflowInboxView: View {
                         .font(.system(size: 12))
                     Text("Someday")
                         .font(.system(size: 13))
+                        .lineLimit(1)
                 }
+                .fixedSize()
                 .foregroundStyle(Color.dayflowMuted)
             }
             .buttonStyle(.plain)
@@ -361,7 +372,12 @@ struct DayflowInboxView: View {
                 }
             } label: {
                 HStack(spacing: 4) {
+                    // The one variable-width element on the row: IT yields
+                    // (truncates) so the fixed verbs never wrap — "Anytim e"
+                    // beside a Financial list, David's screenshot.
                     Text(task.list ?? ReminderTaskStore.personalListName)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8, weight: .semibold))
                 }
@@ -463,11 +479,23 @@ struct DayflowInboxView: View {
                 // Tapping a chip means it's decided — the task lands dated
                 // in Personal instead of joining the deciding queue.
                 HStack(spacing: 8) {
-                    captureChip("TODAY", value: 0)
-                    captureChip("TOMORROW", value: 1)
+                    captureChip("TODAY", date: Calendar.current.startOfDay(for: Date()))
+                    captureChip("TOMORROW", date: Calendar.current.date(
+                        byAdding: .day, value: 1,
+                        to: Calendar.current.startOfDay(for: Date())) ?? Date())
+                    capturePickDayChip
                     Spacer()
                 }
                 .padding(.leading, 34)
+                if captureMonthOpen {
+                    DayflowMonthUnfold(selectedDate: captureDate ?? Date(), onPick: { day in
+                        captureDate = day
+                        withAnimation(.easeInOut(duration: 0.18)) { captureMonthOpen = false }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            captureFocused = true
+                        }
+                    }, hint: "tap a day to set it")
+                }
                 Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                 HStack(alignment: .center) {
                     Menu {
@@ -532,7 +560,8 @@ struct DayflowInboxView: View {
     private func consumeQuickAction() {
         guard isTabRoot, quickActions.pending == "AddTask" else { return }
         quickActions.pending = nil
-        captureTitle = ""; captureNotes = ""; captureWhen = nil; captureList = nil
+        captureTitle = ""; captureNotes = ""; captureDate = nil
+        captureMonthOpen = false; captureList = nil
         withAnimation(.easeOut(duration: 0.15)) { showCapture = true }
     }
 
@@ -592,13 +621,13 @@ struct DayflowInboxView: View {
     /// default routing (dated = decided = Personal; undated = the Inbox).
     private var captureEffectiveList: String {
         if let captureList { return captureList }
-        return captureWhen == nil
+        return captureDate == nil
             ? ReminderTaskStore.inboxListName
             : ReminderTaskStore.personalListName
     }
 
     private var captureGlyph: String {
-        if captureWhen != nil { return "sun.max" }
+        if captureDate != nil { return "sun.max" }
         return captureEffectiveList == ReminderTaskStore.inboxListName ? "tray" : "list.bullet"
     }
 
@@ -606,57 +635,79 @@ struct DayflowInboxView: View {
         let list = captureEffectiveList
         let listLabel = list == ReminderTaskStore.inboxListName
             ? "THE INBOX" : list.uppercased()
-        switch captureWhen {
-        case 0:  return "TO TODAY \u{00B7} \(listLabel)"
-        case 1:  return "TO TOMORROW \u{00B7} \(listLabel)"
-        default: return "TO \(listLabel)"
-        }
+        guard let date = captureDate else { return "TO \(listLabel)" }
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "TO TODAY \u{00B7} \(listLabel)" }
+        if cal.isDateInTomorrow(date) { return "TO TOMORROW \u{00B7} \(listLabel)" }
+        let f = DateFormatter(); f.dateFormat = "EEE MMM d"
+        return "TO \(f.string(from: date).uppercased()) \u{00B7} \(listLabel)"
     }
 
-    private func captureChip(_ label: String, value: Int) -> some View {
-        let selected = captureWhen == value
+    private func captureChip(_ label: String, date: Date) -> some View {
+        let selected = captureDate.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false
         return Button {
             withAnimation(.easeInOut(duration: 0.12)) {
-                captureWhen = selected ? nil : value
+                captureDate = selected ? nil : date
+                captureMonthOpen = false
             }
             UISelectionFeedbackGenerator().selectionChanged()
         } label: {
-            Text(label)
-                .font(.system(size: 10.5, weight: selected ? .bold : .regular))
-                .tracking(1.2)
-                .foregroundStyle(selected ? Color.dayflowAccent : Color.dayflowMuted)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .overlay(RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(selected ? Color.dayflowAccent : Color.dayflowHairline,
-                                  lineWidth: selected ? 1.4 : 1))
+            captureChipLabel(label, selected: selected)
         }
         .buttonStyle(.plain)
+    }
+
+    /// PICK DAY: unfolds the month in the card (the keyboard steps aside —
+    /// picking a date is not typing); once a day beyond today/tomorrow is
+    /// chosen the chip wears it ("AUG 31").
+    private var capturePickDayChip: some View {
+        let cal = Calendar.current
+        let arbitrary = captureDate.map {
+            !cal.isDateInToday($0) && !cal.isDateInTomorrow($0)
+        } ?? false
+        let label: String
+        if arbitrary, let date = captureDate {
+            let f = DateFormatter(); f.dateFormat = "MMM d"
+            label = f.string(from: date).uppercased()
+        } else {
+            label = "PICK DAY"
+        }
+        return Button {
+            withAnimation(.easeInOut(duration: 0.18)) { captureMonthOpen.toggle() }
+            if captureMonthOpen { captureFocused = false }
+            UISelectionFeedbackGenerator().selectionChanged()
+        } label: {
+            captureChipLabel(label, selected: arbitrary || captureMonthOpen)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func captureChipLabel(_ label: String, selected: Bool) -> some View {
+        Text(label)
+            .font(.system(size: 10.5, weight: selected ? .bold : .regular))
+            .tracking(1.2)
+            .foregroundStyle(selected ? Color.dayflowAccent : Color.dayflowMuted)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .overlay(RoundedRectangle(cornerRadius: 7)
+                .strokeBorder(selected ? Color.dayflowAccent : Color.dayflowHairline,
+                              lineWidth: selected ? 1.4 : 1))
     }
 
     private func commitCapture() {
         let title = captureTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         let notes = captureNotes.trimmingCharacters(in: .whitespacesAndNewlines)
-        let when = captureWhen
+        let day = captureDate
+        let destination = captureEffectiveList
         captureFocused = false
         withAnimation(.easeOut(duration: 0.15)) { showCapture = false }
-        captureWhen = nil
-        let destination = captureEffectiveList
-        captureList = nil
+        captureDate = nil; captureMonthOpen = false; captureList = nil
         Task {
-            if let when {
-                let day = Calendar.current.date(byAdding: .day, value: when,
-                                                to: Calendar.current.startOfDay(for: Date()))
-                _ = await store.addTask(title: title,
-                                        date: day,
-                                        list: destination,
-                                        notes: notes.isEmpty ? nil : notes)
-            } else {
-                _ = await store.addTask(title: title,
-                                        list: destination,
-                                        notes: notes.isEmpty ? nil : notes)
-            }
+            _ = await store.addTask(title: title,
+                                    date: day,
+                                    list: destination,
+                                    notes: notes.isEmpty ? nil : notes)
         }
     }
 }

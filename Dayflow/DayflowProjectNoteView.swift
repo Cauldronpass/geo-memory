@@ -122,6 +122,11 @@ struct DayflowProjectNoteView: View {
     /// the existing, lightweight `DayflowVisitDetailView` (Session 20), same
     /// as Person/Place's own Visits/Activity tabs already do.
     @State private var activeVisit: Visit? = nil
+    /// An OPEN TASKS row being edited (Session 78).
+    @State private var editingTask: ThingsTask? = nil
+    /// The add-a-task sheet (Session 78 round two) — from the OPEN TASKS
+    /// header's plus or the top-bar Menu's "Add a task".
+    @State private var addingTask = false
 
     /// Presents DayflowLinkFlowSheet (DayflowRelatedNotes.swift) fresh each
     /// time — its own @State resets for free on each presentation, no
@@ -146,7 +151,13 @@ struct DayflowProjectNoteView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(endeavors, id: \.id) { e in
-                            Button { openEndeavorID = e.id } label: {
+                            Button {
+                                // No slide — same disabled-animation present
+                                // as the Endeavors list (round three).
+                                var instant = Transaction()
+                                instant.disablesAnimations = true
+                                withTransaction(instant) { openEndeavorID = e.id }
+                            } label: {
                                 HStack(spacing: 7) {
                                     Image(systemName: "suitcase.fill")
                                         .font(.system(size: 11, weight: .semibold))
@@ -168,7 +179,9 @@ struct DayflowProjectNoteView: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
-            .sheet(item: Binding(
+            // Cover, not sheet (Session 78, same rule as the Endeavors
+            // list): destinations get the full view.
+            .fullScreenCover(item: Binding(
                 get: { openEndeavorID.map(ProjectNoteEndeavorRef.init) },
                 set: { openEndeavorID = $0?.id }
             )) { ref in
@@ -214,18 +227,22 @@ struct DayflowProjectNoteView: View {
                                 // declaration order (onCaptureTap is declared after
                                 // checklistSendEnabled/onPinSucceeded/onPinFailed).
                                 onCaptureTap: { id in tappedCaptureID = id },
-                                attachTrigger: $attachRequest
+                                attachTrigger: $attachRequest,
+                                // Checkbox → task (Session 78): right swipe on
+                                // a ☐ line files a real task linked to this
+                                // note's agenda anchor — it appears in OPEN
+                                // TASKS below AND on the meeting's AGENDA
+                                // line. Undated, Inbox: the agenda is its
+                                // home (the D175 workflow rules).
+                                onPromoteTask: { line, done in
+                                    promoteChecklistLine(line, completion: done)
+                                },
+                                onCompletePromoted: { line in
+                                    completePromotedTask(titled: line)
+                                }
                             )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                            // E-CHIP, 2026-07-28. Same render-time sidecar query
-                            // as the day note and as Trace's Place and Person
-                            // notes. The bar shows unconditionally here: this is
-                            // a full screen, not a card competing for room.
-                            // Tags above the document chips: tags say what the
-                            // note is about, documents are things attached to it,
-                            // and the first is closer to the note itself.
-                            DayflowNoteTagBar(text: $content, onCommit: { save($0) }, attach: $attachRequest)
                             // ENDEAVORS, Session 72. The reverse of the Endeavor
                             // screen's own Notes chip row: that one asks "which
                             // notes does this endeavor link", this asks "which
@@ -241,7 +258,15 @@ struct DayflowProjectNoteView: View {
                             // endeavor and a permanent empty row is furniture.
                             endeavorChips
                             SatchelDocumentChips(notePath: relativePath)
-                            SatchelAddDocumentButton(notePath: relativePath, style: .bar)
+
+                            // OPEN TASKS (Session 78) — every open task linked
+                            // [[agendaAnchor]]: the full-ability home of a
+                            // promoted checkbox, and the same set the
+                            // meeting's AGENDA line shows. Real rows — the
+                            // circle completes, tapping the title opens the
+                            // standard edit sheet, person/place chips ride
+                            // under the title.
+                            openTasksSection
 
                             DayflowRelatedNotesSection(
                                 relatedNotes: relatedNotes,
@@ -255,17 +280,16 @@ struct DayflowProjectNoteView: View {
                                 onOpen: { kind in open(kind) },
                                 onRemove: { row in removeRelatedNote(row) }
                             )
+
+                            addBand
                         }
                     }
                 }
             }
-            // Skin fix 2026-07-22 (Session 37) — this screen only ever got the
-            // font fix in Session 32 ("no background/card added" — logged at
-            // the time as a known, not-forgotten gap). David hit this
-            // directly while testing the Related Notes feature; fixed now.
-            .dayflowCard()
-            .padding(.horizontal, 16)
-            .padding(.bottom, 16)
+            // Redesign (Session 78, approved mockup): the floating card is
+            // retired — full-bleed paper, like the day-note full page. The
+            // Session 37 card fix served until the screen earned its real
+            // Editorial dress.
         }
         .dayflowSkinBackground()
         .task { await load() }
@@ -324,41 +348,38 @@ struct DayflowProjectNoteView: View {
                 DayflowVisitDetailView(visit: visit)
             }
         }
+        .sheet(isPresented: $addingTask) {
+            DayflowNoteTaskSheet(anchor: agendaAnchor)
+        }
+        .sheet(item: $editingTask) { task in
+            // An OPEN TASKS row taps into the standard edit sheet, same as
+            // the person/place records (D172); the store refresh redraws the
+            // section on return.
+            DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
+                                 initialDate: task.date, initialList: task.list,
+                                 initialNotes: task.notes) {
+                Task { await ReminderTaskStore.shared.refreshAll() }
+            }
+        }
     }
 
     // MARK: Header — back chevron / centered serif title / trailing "link a
     // note" Menu + pin toggle (Session 37 — used to be an invisible spacer).
 
     private var header: some View {
-        HStack {
-            Button(action: onBack) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 32, height: 32)
-            }
-            .buttonStyle(.plain)
-            Spacer()
-            Text(title)
-                .font(.dayflowSerif(18))
-                .lineLimit(1)
-                .padding(.horizontal, 8)
-            Spacer()
-            HStack(spacing: 6) {
-                Menu {
-                    dayflowLinkKindMenuItems { kind in activeLinkFlow = kind }
-                } label: {
-                    // Explicit ink color — Menu's label tinting defaults to
-                    // the system accent (blue) otherwise, same bug class
-                    // Session 30 already found and fixed on ContentView's own
-                    // top-bar Menu icon.
-                    Image(systemName: "link.badge.plus")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.dayflowInk)
-                        .frame(width: 28, height: 28)
-                        .background(.quaternary.opacity(0.6), in: Circle())
+        // Redesign (Session 78, approved mockup): Editorial masthead —
+        // chevron and pin up top, PROJECT kicker in accent, serif title,
+        // one ink rule. The link Menu moved into the bottom band's LINK
+        // (David's unify call: two doors both meaning "add something").
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 32, height: 32)
                 }
-                .accessibilityLabel("Link a note")
-
+                .buttonStyle(.plain)
+                Spacer()
                 Button {
                     DayflowFlagStore.shared.toggleFlag(relativePath)
                 } label: {
@@ -371,10 +392,60 @@ struct DayflowProjectNoteView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(isFlagged ? "Unpin this project" : "Pin this project")
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("PROJECT")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(2.2)
+                    .foregroundStyle(Color.dayflowAccent)
+                Text(title)
+                    .font(.dayflowSerif(26, weight: .heavy))
+                    .foregroundStyle(Color.dayflowInk)
+                    .lineLimit(2)
+                Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                    .padding(.top, 8)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 2)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
+        .padding(.bottom, 2)
+    }
+
+    /// The one quiet band (Session 78, David's unify call): everything you
+    /// can ADD to this note. LINK leads in accent (the old top-right menu),
+    /// then TASK, then the tag/attach controls (DayflowNoteTagBar in its
+    /// editorial dress), then DOCUMENT.
+    private var addBand: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+            HStack(spacing: 17) {
+                Menu {
+                    dayflowLinkKindMenuItems { kind in activeLinkFlow = kind }
+                } label: {
+                    Text("LINK")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(1.4)
+                        .foregroundStyle(Color.dayflowAccent)
+                        .contentShape(Rectangle())
+                }
+                Button { addingTask = true } label: {
+                    Text("TASK")
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(1.4)
+                        .foregroundStyle(Color.dayflowFaint)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                DayflowNoteTagBar(text: $content, onCommit: { save($0) },
+                                  attach: $attachRequest, editorial: true)
+                SatchelAddDocumentButton(notePath: relativePath, style: .caps)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+        }
     }
 
     // MARK: Load / save — same "# <title>" header strip/re-add pattern
@@ -406,6 +477,118 @@ struct DayflowProjectNoteView: View {
             lines.removeFirst()
         }
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: Checkbox → task (Session 78) + the OPEN TASKS section
+
+    /// One anchor for this note everywhere: the matched person/place when the
+    /// title names one, else the title itself — the exact name the meeting's
+    /// AGENDA line filters by, so this section and that line always agree.
+    private var agendaAnchor: String { DayflowAgendaMatch.agendaAnchor(forTitle: title) }
+
+    /// Checking a dimmed ↗ line completes the task it spawned (round two).
+    /// Resolved by exact title among this note's linked open tasks — the
+    /// same set OPEN TASKS shows — so a renamed task is simply not found.
+    private func completePromotedTask(titled taskTitle: String) {
+        guard let task = linkedOpenTasks.first(where: { $0.title == taskTitle }) else { return }
+        Task { await ReminderTaskStore.shared.complete(taskID: task.id) }
+    }
+
+    private func promoteChecklistLine(_ line: String, completion: @escaping (Bool) -> Void) {
+        Task {
+            let ok = await ReminderTaskStore.shared.addTask(
+                title: line,
+                list: ReminderTaskStore.inboxListName,
+                notes: "[[\(agendaAnchor)]]\n")
+            completion(ok)
+        }
+    }
+
+    private var linkedOpenTasks: [ThingsTask] {
+        ReminderTaskStore.shared.allTasks.filter {
+            ($0.notes ?? "").contains("[[\(agendaAnchor)]]")
+        }
+    }
+
+    @ViewBuilder
+    private var openTasksSection: some View {
+        let tasks = linkedOpenTasks
+        // The header (and its plus) draws even with ZERO tasks — David:
+        // "I dont see the plus to add a fresh one," after completing the
+        // only task collapsed the whole section and took the add door with
+        // it. This screen already keeps Add Document visible
+        // unconditionally, so a one-line band is its established density,
+        // not new furniture.
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("OPEN TASKS")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(1.8)
+                        .foregroundStyle(Color.dayflowFaint)
+                    Spacer()
+                    Button { addingTask = true } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.dayflowFaint)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Add a task")
+                }
+                .padding(.bottom, 4)
+                Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                ForEach(tasks) { task in
+                    HStack(spacing: 12) {
+                        Button {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            Task { await ReminderTaskStore.shared.complete(taskID: task.id) }
+                        } label: {
+                            Circle()
+                                .strokeBorder(Color.secondary, lineWidth: 1.4)
+                                .frame(width: 18, height: 18)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Button { editingTask = task } label: {
+                                Text(task.title)
+                                    .font(.dayflowSerif(15))
+                                    .foregroundStyle(Color.dayflowInk)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            DayflowTaskWikiChips(task: task) { target in
+                                wikiLinkTarget = target
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        Text(openTaskWhenLabel(task).uppercased())
+                            .font(.system(size: 10, weight: .medium))
+                            .tracking(1.0)
+                            .foregroundStyle(task.date == nil ? Color.dayflowFaint : Color.dayflowAccent)
+                    }
+                    .padding(.vertical, 7)
+                    .overlay(alignment: .bottom) {
+                        Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
+    }
+
+    private func openTaskWhenLabel(_ task: ThingsTask) -> String {
+        guard let date = task.date else {
+            return task.list == ReminderTaskStore.somedayListName ? "Someday" : "Anytime"
+        }
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "Today" }
+        if cal.isDateInTomorrow(date) { return "Tomorrow" }
+        let f = DateFormatter(); f.dateFormat = "EEE MMM d"
+        return f.string(from: date)
     }
 
     private func save(_ text: String) {
@@ -470,7 +653,9 @@ struct DayflowProjectNoteView: View {
 
     private func addRelatedNote(kind: RelatedNoteRow.Kind, description: String) {
         let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        // Empty is ALLOWED (Session 78 round three) — Person/Place/Day links
+        // may carry no relationship text; the link sheet still requires it
+        // for Project and Visit, where the reason is the content.
         // Newest at top, per David's ask — the table's row order IS the
         // display order (no hidden timestamp field), so inserting at 0 here
         // is also what keeps the persisted file's top row the most recent
@@ -504,6 +689,109 @@ struct DayflowProjectNoteView: View {
             }
         case .unknown:
             break
+        }
+    }
+}
+
+
+// MARK: - Add a task linked to this note (Session 78 round two)
+
+/// Compact capture pre-linked to the note's agenda anchor — the same sheet
+/// shape as DayflowMeetingTaskSheet (D175), minus the event: undated, Inbox
+/// by default, notes carry [[anchor]] so the task lands in OPEN TASKS above
+/// and on the meeting's AGENDA line at once.
+struct DayflowNoteTaskSheet: View {
+    let anchor: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var armed = false
+    @State private var list: String = ReminderTaskStore.inboxListName
+    @FocusState private var focused: Bool
+
+    private var listOptions: [String] {
+        var out = [ReminderTaskStore.inboxListName]
+        out += ReminderTaskStore.shared.listNames.filter { $0 != ReminderTaskStore.inboxListName }
+        if !out.contains(ReminderTaskStore.somedayListName) {
+            out.append(ReminderTaskStore.somedayListName)
+        }
+        return out
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("TASK FOR")
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(1.8)
+                .foregroundStyle(Color.dayflowFaint)
+            Text(anchor)
+                .font(.dayflowSerif(20, weight: .heavy))
+                .foregroundStyle(Color.dayflowInk)
+                .lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Circle()
+                    .strokeBorder(Color.dayflowFaint, lineWidth: 1.6)
+                    .frame(width: 20, height: 20)
+                TextField("New to-do", text: $title)
+                    .font(.dayflowSerif(19, weight: .semibold))
+                    .focused($focused)
+                    .submitLabel(.done)
+                    .onSubmit { save() }
+            }
+            Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+            HStack {
+                Menu {
+                    ForEach(listOptions, id: \.self) { name in
+                        Button(name) { list = name }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("LINKED TO \(anchor.uppercased()) \u{00B7} \(list.uppercased())")
+                            .tracking(1.5)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .semibold))
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.dayflowFaint)
+                    .contentShape(Rectangle())
+                }
+                Spacer()
+                Button { save() } label: {
+                    Text("Save")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.dayflowPaper)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 9)
+                        .background(title.trimmingCharacters(in: .whitespaces).isEmpty
+                                    ? Color.dayflowFaint : Color.dayflowInk,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+        .presentationDetents([.height(230)])
+        .presentationBackground(Color.dayflowPaper)
+        .interactiveDismissDisabled(!armed)
+        .onAppear {
+            // The armed/focus timing pair every gesture-presented sheet in
+            // this app uses (D175's sheet documents why).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { armed = true }
+        }
+    }
+
+    private func save() {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let destination = list
+        let link = anchor
+        focused = false
+        dismiss()
+        Task {
+            _ = await ReminderTaskStore.shared.addTask(
+                title: trimmed, list: destination, notes: "[[\(link)]]")
         }
     }
 }

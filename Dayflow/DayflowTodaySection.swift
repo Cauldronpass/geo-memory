@@ -51,6 +51,17 @@ struct DayflowTodaySection: View {
     /// Session 78, D166 — a [[wikilink]] chip on a task row was tapped;
     /// presents the same person/place summary sheet the notes' wikilinks use.
     @State private var taskWikiTarget: WikiLinkTarget? = nil
+    /// Session 78, D171 — 1:1 agendas: meeting rows whose AGENDA line is
+    /// expanded (event ids). Nothing persisted; the day is re-matched on
+    /// every draw.
+    @State private var expandedAgendas: Set<String> = []
+    /// Session 78 evening — notes mentioning the agenda's person/place,
+    /// keyed by event id, scanned lazily on first expansion.
+    @State private var agendaNotes: [String: [NoteMention]] = [:]
+    /// Session 78, D175 — meeting-row swipes: right = a task for the
+    /// meeting (pre-linked), left = the meeting's running project note.
+    @State private var eventDragOffsets: [String: CGFloat] = [:]
+    @State private var meetingTaskEvent: NextCalendarEvent? = nil
     /// Live rightward slide per row — the calendar glyph reveal.
     @State private var rowDragOffsets: [String: CGFloat] = [:]
     @FocusState private var addFieldFocused: Bool
@@ -77,6 +88,9 @@ struct DayflowTodaySection: View {
         .onChange(of: dayKey) { _, _ in selection.exit() }
         .sheet(item: $whenRequest) { request in
             DayflowWhenSheet(tasks: request.tasks)
+        }
+        .sheet(item: $meetingTaskEvent) { event in
+            DayflowMeetingTaskSheet(event: event)
         }
         .sheet(item: $editingTask) { task in
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
@@ -166,7 +180,121 @@ struct DayflowTodaySection: View {
         .padding(.vertical, 10)
     }
 
-    private func taskRow(_ task: ThingsTask) -> some View {
+    // MARK: 1:1 agendas (Session 78, D171)
+    //
+    // The day view as the prep sheet: a meeting whose TITLE names a person
+    // from the People records grows a quiet AGENDA · N line when that
+    // person has open linked tasks; tapping expands them inline — the same
+    // taskRow as TO DO, swipes and all. Matching is at draw time, in
+    // memory, against the calendar David already keeps: full name first,
+    // then a bare first name ONLY when exactly one person carries it (two
+    // Brendas = no match rather than the wrong agenda — his question,
+    // answered by design). Nothing is ever written to the event.
+
+    private func agendaName(for event: NextCalendarEvent) -> String? {
+        // D175 round two: every meeting anchors an agenda — the matched
+        // person/place when there is one, its own title when not (the
+        // Brewers @Cubs case).
+        DayflowAgendaMatch.agendaAnchor(forTitle: event.title)
+    }
+
+    private func agendaTasks(linkedTo name: String) -> [ThingsTask] {
+        DayflowAgendaMatch.tasks(linkedTo: name)
+    }
+
+    @ViewBuilder
+    private func agendaLine(for event: NextCalendarEvent) -> some View {
+        if let name = agendaName(for: event) {
+            let tasks = agendaTasks(linkedTo: name)
+            // A task-less meeting whose running note exists still gets the
+            // line — the note IS agenda (Session 78, the Sarah catch-up).
+            let notePath = DayflowAgendaMatch.meetingNotePath(forTitle: event.title)
+            if !tasks.isEmpty || notePath != nil {
+                let expanded = expandedAgendas.contains(event.id)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        if expanded { expandedAgendas.remove(event.id) }
+                        else { expandedAgendas.insert(event.id) }
+                    }
+                    UISelectionFeedbackGenerator().selectionChanged()
+                } label: {
+                    HStack(spacing: 6) {
+                        Spacer().frame(width: 78)
+                        Text("AGENDA \u{00B7} \(tasks.count + (notePath == nil ? 0 : 1))")
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(1.4)
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 7, weight: .semibold))
+                        Spacer()
+                    }
+                    .foregroundStyle(Color.dayflowFaint)
+                    .frame(minHeight: 20)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if expanded {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(tasks) { task in
+                            taskRow(task, agendaDay: event.startDate)
+                        }
+                        agendaNoteRows(for: event.id, title: event.title)
+                    }
+                    .padding(.leading, 32)
+                    .task { loadAgendaNotes(eventID: event.id, name: name) }
+                }
+            }
+        }
+    }
+
+    /// Notes mentioning the person/place, under the tasks with their own
+    /// glyph (David: "notes tagged with Bryan... could have a different icon
+    /// within agenda"). Same scan as Backlinks/Mentioned In, run once per
+    /// expansion. Day and project notes tap through to their screens.
+    @ViewBuilder
+    private func agendaNoteRows(for eventID: String, title: String) -> some View {
+        let mentions = DayflowAgendaMatch.displayNotes(cached: agendaNotes[eventID], forTitle: title)
+        if !mentions.isEmpty {
+            ForEach(mentions.prefix(4)) { mention in
+                let openable = mention.relativePath.hasPrefix("Calendar/")
+                    || mention.relativePath.hasPrefix("Notes/Projects/")
+                Button {
+                    guard openable else { return }
+                    DayflowQuickFindRouter.shared.pendingDestination =
+                        .dailyOrProjectNote(mention.relativePath)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.dayflowFaint)
+                            .frame(width: 20)
+                        Text(mention.title)
+                            .font(.system(size: 13))
+                            .foregroundStyle(openable ? Color.dayflowMuted : Color.dayflowFaint)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func loadAgendaNotes(eventID: String, name: String) {
+        guard agendaNotes[eventID] == nil else { return }
+        Task {
+            // Backlinks' own call, same lazy once-per-open intent.
+            agendaNotes[eventID] = NoteStore.shared.findWikilinkMentions(of: name)
+        }
+    }
+
+    private static func shortDay(_ date: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "MMM d"
+        return f.string(from: date).uppercased()
+    }
+
+    private func taskRow(_ task: ThingsTask, agendaDay: Date? = nil) -> some View {
         let completing = completingIDs.contains(task.id)
         let selected = selection.ids.contains(task.id)
         // Carried over from an earlier day (still open, dated before today).
@@ -231,35 +359,24 @@ struct DayflowTodaySection: View {
                     }
                     .buttonStyle(.plain)
                 }
-                // Session 78, D166 — [[Name]] in the notes becomes a person/
-                // place chip ("i could even have clicked the link to his name
-                // ... and it would have brought me to his record"). Tap =
-                // the summary sheet, where Call/Text now live.
-                let chips = wikiChips(for: task)
-                if !chips.isEmpty {
-                    HStack(spacing: 10) {
-                        ForEach(chips, id: \.name) { chip in
-                            Button {
-                                taskWikiTarget = chip.target
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: chip.icon)
-                                        .font(.system(size: 9, weight: .semibold))
-                                    Text(chip.name.uppercased())
-                                        .font(.system(size: 11))
-                                        .tracking(0.8)
-                                        .lineLimit(1)
-                                }
-                                .foregroundStyle(Color.dayflowAccent)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
+                // Session 78, D166 — [[Name]] chips (shared view since the
+                // Upcoming rows joined, round 2026-08-29 evening).
+                DayflowTaskWikiChips(task: task) { taskWikiTarget = $0 }
             }
 
             Spacer(minLength: 0)
 
+            // Agenda context (Session 78 evening, David: the Sep 4 task
+            // under an Aug 31 meeting should SAY so): the task's own day,
+            // accent when it lands AFTER the meeting.
+            if let agendaDay, let due = task.date {
+                let after = Calendar.current.startOfDay(for: due)
+                    > Calendar.current.startOfDay(for: agendaDay)
+                Text(Self.shortDay(due))
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .tracking(0.6)
+                    .foregroundStyle(after ? Color.dayflowAccent : Color.dayflowFaint)
+            }
             if let alarm = task.alarmTimeString {
                 HStack(spacing: 3) {
                     Image(systemName: "bell")
@@ -499,11 +616,13 @@ struct DayflowTodaySection: View {
                     if showEarlier {
                         ForEach(earlierEvents) { event in
                             eventRow(event, faded: true)
+                            agendaLine(for: event)
                         }
                     }
                 }
                 ForEach(remainingEvents) { event in
                     eventRow(event, faded: false)
+                    agendaLine(for: event)
                 }
             }
             .padding(.top, 6)
@@ -583,31 +702,34 @@ struct DayflowTodaySection: View {
     }
 
     private func eventRow(_ event: NextCalendarEvent, faded: Bool) -> some View {
-        Button { selectedEvent = event } label: {
-            HStack(spacing: 12) {
-                Text(event.startTimeString)
-                    .font(.system(size: 12).monospacedDigit())
-                    .foregroundStyle(Color.dayflowMuted)
-                    .frame(width: 62, alignment: .leading)
-                Rectangle()
-                    .fill(event.color)
-                    .frame(width: 8, height: 8)
-                Text(event.title)
-                    .font(.system(size: 13.5))
-                    .foregroundStyle(Color.dayflowInk)
-                    .lineLimit(1)
-                if let gap = gapLabel(after: event) {
-                    Text("(\(gap))")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.dayflowFaint)
-                }
-                Spacer(minLength: 0)
+        // NOT a Button (the swipe rule): tap = detail, swipe right = a task
+        // for this meeting, swipe left = its running project note (D175).
+        HStack(spacing: 12) {
+            Text(event.startTimeString)
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundStyle(Color.dayflowMuted)
+                .frame(width: 62, alignment: .leading)
+            Rectangle()
+                .fill(event.color)
+                .frame(width: 8, height: 8)
+            Text(event.title)
+                .font(.system(size: 13.5))
+                .foregroundStyle(Color.dayflowInk)
+                .lineLimit(1)
+            if let gap = gapLabel(after: event) {
+                Text("(\(gap))")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.dayflowFaint)
             }
-            .opacity(faded ? 0.5 : 1)
-            .frame(minHeight: 30)
-            .contentShape(Rectangle())
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
+        .opacity(faded ? 0.5 : 1)
+        .frame(minHeight: 30)
+        .contentShape(Rectangle())
+        .onTapGesture { selectedEvent = event }
+        .dayflowMeetingSwipes(event: event,
+                              offsets: $eventDragOffsets,
+                              onTask: { meetingTaskEvent = event })
     }
 
     // MARK: - Actions
@@ -705,10 +827,318 @@ struct DayflowTodaySection: View {
         return nil
     }
 
-    /// [[Name]] tokens in the notes resolved against Notion people/places
-    /// (visit: ids excluded — those belong to the notes flow). At most two
-    /// chips so a row can't grow a shelf of them.
-    private func wikiChips(for task: ThingsTask) -> [(name: String, icon: String, target: WikiLinkTarget)] {
+}
+
+// MARK: - Agenda matching (Session 78, D171/D172/D173)
+//
+// ONE matcher for every surface that grows an AGENDA line (Today and, since
+// D173, Upcoming) — extracted so the two can never drift. Draw-time, in
+// memory, never written anywhere. People: full multi-word name first, then a
+// bare first name only while unique. Places: every word of the name present,
+// unambiguous. Person wins over place.
+
+enum DayflowAgendaMatch {
+
+    static func titleWords(_ title: String) -> Set<String> {
+        Set(title.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
+    }
+
+    static func name(forTitle title: String) -> String? {
+        let words = titleWords(title)
+        guard !words.isEmpty else { return nil }
+        let people = NotionService.shared.people.filter { !$0.isArchived }
+        if let full = people.first(where: { person in
+            let nameWords = person.name.lowercased()
+                .split(whereSeparator: { !$0.isLetter }).map(String.init)
+            return nameWords.count > 1 && Set(nameWords).isSubset(of: words)
+        }) { return full.name }
+        let firstMatches = people.filter { person in
+            guard let first = person.name.lowercased()
+                .split(whereSeparator: { !$0.isLetter }).first else { return false }
+            return words.contains(String(first))
+        }
+        if firstMatches.count == 1 { return firstMatches[0].name }
+        guard firstMatches.isEmpty else { return nil }
+        let placeMatches = NotionService.shared.places.filter { place in
+            let nameWords = place.name.lowercased()
+                .split(whereSeparator: { !$0.isLetter }).map(String.init)
+            return !nameWords.isEmpty && Set(nameWords).isSubset(of: words)
+        }
+        return placeMatches.count == 1 ? placeMatches[0].name : nil
+    }
+
+    static func tasks(linkedTo name: String) -> [ThingsTask] {
+        ReminderTaskStore.shared.allTasks.filter {
+            ($0.notes ?? "").contains("[[\(name)]]")
+        }
+    }
+
+    /// The agenda anchor for ANY meeting: the matched person/place, else the
+    /// meeting's own title (D175 round two — "Brewers @Cubs" matches nobody,
+    /// but a ticket task linked [[Brewers @Cubs]] still belongs under it).
+    static func agendaAnchor(forTitle title: String) -> String {
+        name(forTitle: title) ?? title.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The meeting's own running note ("Notes/Projects/<stem>.md"), when the
+    /// file exists. Found by PATH, not wikilink — an unmatched meeting's note
+    /// carries no [[anchor]] mention of itself ("Sarah <> David Catch up"
+    /// matches nobody when Sarah and David are both people, two candidates =
+    /// no match), so the wikilink scan alone left it off the agenda entirely.
+    /// David, Session 78: "I added a project note for Sarah and it never made
+    /// it to the agenda."
+    static func meetingNotePath(forTitle title: String) -> String? {
+        let stem = DayflowMeetingActions.noteStem(title)
+        guard !stem.isEmpty, let root = NoteStore.shared.containerURL else { return nil }
+        let path = "Notes/Projects/\(stem).md"
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path)
+        else { return nil }
+        return path
+    }
+
+    /// The note rows an expanded agenda shows: the meeting's own running note
+    /// first (by path, per meetingNotePath above), then the cached wikilink
+    /// mentions, deduped against it. Draw-time, so a note created seconds ago
+    /// by the left swipe shows without invalidating the once-per-open
+    /// mention cache.
+    static func displayNotes(cached: [NoteMention]?, forTitle title: String) -> [NoteMention] {
+        var out = cached ?? []
+        if let path = meetingNotePath(forTitle: title) {
+            out.removeAll { $0.relativePath == path }
+            out.insert(NoteMention(relativePath: path,
+                                   title: title.trimmingCharacters(in: .whitespaces),
+                                   modified: nil), at: 0)
+        }
+        return out
+    }
+}
+
+// MARK: - Meeting swipes (Session 78, D175)
+//
+// Right = a task FOR the meeting (a compact capture sheet, pre-linked to the
+// matched person/place, undated when linked — the agenda line is its home;
+// dated to the meeting's day when nothing matches). Left = the meeting's
+// RUNNING PROJECT NOTE — David's call over per-day sections: "a 1:1 with
+// Bryan" is an installment in a relationship, so one note per meeting title
+// accumulates dated headings, carries the person's [[wikilink]] (backlinks,
+// the record's mentions, and the agenda note rows all get it for free), and
+// the day page grows nothing. Same modifier on Today and Upcoming.
+
+extension View {
+    func dayflowMeetingSwipes(event: NextCalendarEvent,
+                              offsets: Binding<[String: CGFloat]>,
+                              onTask: @escaping () -> Void) -> some View {
+        let offset = offsets.wrappedValue[event.id] ?? 0
+        return self
+            .offset(x: offset)
+            .background(alignment: .leading) {
+                if offset > 8 {
+                    Image(systemName: "circle")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.dayflowAccent)
+                        .opacity(Double(min(offset / 60, 1)))
+                        .padding(.leading, 2)
+                }
+            }
+            .background(alignment: .trailing) {
+                if offset < -8 {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.dayflowAccent)
+                        .opacity(Double(min(-offset / 60, 1)))
+                        .padding(.trailing, 2)
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 25)
+                    .onChanged { value in
+                        let h = value.translation.width
+                        guard abs(h) > abs(value.translation.height) else { return }
+                        offsets.wrappedValue[event.id] = max(-80, min(h, 80))
+                    }
+                    .onEnded { value in
+                        let h = value.translation.width
+                        withAnimation(.spring(duration: 0.3)) {
+                            offsets.wrappedValue[event.id] = 0
+                        }
+                        guard abs(h) > abs(value.translation.height) * 1.5,
+                              abs(h) > 40 else { return }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        if h > 0 {
+                            // The settled-gesture hop, as ever.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                                onTask()
+                            }
+                        } else {
+                            DayflowMeetingActions.openMeetingNote(for: event)
+                        }
+                    }
+            )
+    }
+}
+
+enum DayflowMeetingActions {
+    /// Filesystem-safe stem for "Notes/Projects/<title>.md".
+    static func noteStem(_ title: String) -> String {
+        title
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: " -")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Opens (creating on first use) the meeting's running note and appends
+    /// this occurrence's dated heading; routing rides the same pending-
+    /// destination pipe the agenda note rows use.
+    static func openMeetingNote(for event: NextCalendarEvent) {
+        let stem = noteStem(event.title)
+        guard !stem.isEmpty else { return }
+        let path = "Notes/Projects/\(stem).md"
+        let f = DateFormatter(); f.dateFormat = "EEE, MMM d yyyy"
+        let heading = "## \(f.string(from: event.startDate))"
+        if let existing = try? NoteStore.shared.readFile(path) {
+            if !existing.contains(heading) {
+                let grown = existing.hasSuffix("\n")
+                    ? existing + "\n\(heading)\n\n"
+                    : existing + "\n\n\(heading)\n\n"
+                try? NoteStore.shared.writeFile(path, content: grown)
+            }
+        } else {
+            var body = "# \(event.title)\n"
+            if let name = DayflowAgendaMatch.name(forTitle: event.title) {
+                body += "\n[[\(name)]]\n"
+            }
+            body += "\n\(heading)\n\n"
+            try? NoteStore.shared.writeFile(path, content: body)
+        }
+        DayflowQuickFindRouter.shared.pendingDestination = .dailyOrProjectNote(path)
+    }
+}
+
+// MARK: - The meeting task sheet (D175's right swipe)
+
+struct DayflowMeetingTaskSheet: View {
+    let event: NextCalendarEvent
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var armed = false
+    /// D175 round two — David: "It did not let me change the list away from
+    /// Personal (is that a bug?)". It was a gap; the label is a menu now.
+    @State private var list: String = ReminderTaskStore.personalListName
+    @FocusState private var focused: Bool
+
+    private var matchedName: String? {
+        DayflowAgendaMatch.name(forTitle: event.title)
+    }
+
+    /// Unmatched meetings link the task to the MEETING TITLE itself, so the
+    /// Brewers game gets an agenda too (round two). Matched ones link the
+    /// person/place as before.
+    private var linkName: String {
+        matchedName ?? event.title.trimmingCharacters(in: .whitespaces)
+    }
+
+    private var destinationLabel: String {
+        if matchedName != nil {
+            return "LINKED TO \(linkName.uppercased()) \u{00B7} \(list.uppercased())"
+        }
+        let f = DateFormatter(); f.dateFormat = "EEE MMM d"
+        return "LINKED \u{00B7} \(f.string(from: event.startDate).uppercased()) \u{00B7} \(list.uppercased())"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("TASK FOR")
+                .font(.system(size: 11, weight: .medium))
+                .tracking(2.2)
+                .foregroundStyle(Color.dayflowMuted)
+            Text(event.title)
+                .font(.dayflowSerif(20, weight: .heavy))
+                .foregroundStyle(Color.dayflowInk)
+                .lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Circle()
+                    .strokeBorder(Color.dayflowFaint, lineWidth: 1.6)
+                    .frame(width: 20, height: 20)
+                TextField("New to-do", text: $title)
+                    .font(.dayflowSerif(19, weight: .semibold))
+                    .focused($focused)
+                    .submitLabel(.done)
+                    .onSubmit { save() }
+            }
+            Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+            HStack {
+                Menu {
+                    ForEach(ReminderTaskStore.shared.listNames.filter {
+                        $0 != ReminderTaskStore.inboxListName
+                    }, id: \.self) { name in
+                        Button(name) { list = name }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(destinationLabel)
+                            .tracking(1.5)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .semibold))
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.dayflowFaint)
+                    .contentShape(Rectangle())
+                }
+                Spacer()
+                Button { save() } label: {
+                    Text("Save")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.dayflowPaper)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 9)
+                        .background(title.trimmingCharacters(in: .whitespaces).isEmpty
+                                    ? Color.dayflowFaint : Color.dayflowInk,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+        .presentationDetents([.height(230)])
+        .presentationBackground(Color.dayflowPaper)
+        .interactiveDismissDisabled(!armed)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { armed = true }
+        }
+    }
+
+    private func save() {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let matched = matchedName != nil
+        let link = linkName
+        let destination = list
+        focused = false
+        dismiss()
+        Task {
+            // Matched → undated (the agenda line is its home, it follows the
+            // person). Unmatched → dated to the meeting's day AND linked to
+            // the title, so it sits under the meeting AND in the day's list —
+            // the double appearance is the design: commitment + context.
+            _ = await ReminderTaskStore.shared.addTask(
+                title: trimmed,
+                date: matched ? nil : Calendar.current.startOfDay(for: event.startDate),
+                list: destination,
+                notes: "[[\(link)]]")
+        }
+    }
+}
+
+// MARK: - Wiki chips (Session 78, D166; shared since Upcoming joined)
+
+struct DayflowTaskWikiChips: View {
+    let task: ThingsTask
+    var onOpen: (WikiLinkTarget) -> Void
+
+    private var chips: [(name: String, icon: String, target: WikiLinkTarget)] {
         guard let notes = task.notes, notes.contains("[[") else { return [] }
         var seen = Set<String>()
         var out: [(String, String, WikiLinkTarget)] = []
@@ -727,6 +1157,30 @@ struct DayflowTodaySection: View {
             }
         }
         return out
+    }
+
+    var body: some View {
+        let items = chips
+        if !items.isEmpty {
+            HStack(spacing: 10) {
+                ForEach(items, id: \.name) { chip in
+                    Button {
+                        onOpen(chip.target)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: chip.icon)
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(chip.name.uppercased())
+                                .font(.system(size: 11))
+                                .tracking(0.8)
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Color.dayflowAccent)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
     }
 }
 

@@ -67,16 +67,24 @@ extension View {
     /// The app now defaults to light, so this is inert. If dark mode is ever
     /// done properly it is a pass over the whole token set — canvas, cards, ink,
     /// hairlines — not a material swap here.
-    func dayflowCard() -> some View {
+    @ViewBuilder
+    func dayflowCard(enabled: Bool = true) -> some View {
         // Editorial skin (Session 77): the Today sheet dropped cards entirely
         // (label + rule on paper — see DayflowTodaySection); the browse
         // screens keep this treatment until their own rebuild rounds, now as
         // a flat panel with a hairline instead of a floating shadow, and
-        // dynamic for dark mode.
-        self
-            .background(Color.dayflowPanel, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color.dayflowHairline, lineWidth: 1))
+        // dynamic for dark mode. `enabled: false` (Session 78, Notes
+        // redesign) lets a screen that is EMBEDDED in an already-Editorial
+        // host (To File inside the Notes tab) drop the panel without
+        // forking its body.
+        if enabled {
+            self
+                .background(Color.dayflowPanel, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.dayflowHairline, lineWidth: 1))
+        } else {
+            self
+        }
     }
 }
 

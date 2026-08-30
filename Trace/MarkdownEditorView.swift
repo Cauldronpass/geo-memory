@@ -383,6 +383,19 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// end of the document when it does not, which is already the right answer
     /// for a note you have not been typing in.
     var attachTrigger: Binding<MarkdownAttachKind?>? = nil
+    /// Checkbox → real task (Session 78). A right swipe on an unchecked "☐ "
+    /// line hands the line's text to the host, which creates the actual task
+    /// (Dayflow: ReminderTaskStore; Trace hosts leave this nil and the swipe
+    /// does nothing). Call the completion with success: the line then grows a
+    /// trailing " ↗" (" ⚠️↗" on failure) and the styling pass dims it —
+    /// promoted, not done. Declared after attachTrigger for the same
+    /// append-only reason attachTrigger documents.
+    var onPromoteTask: ((String, @escaping (Bool) -> Void) -> Void)? = nil
+    /// Companion to onPromoteTask (Session 78 round two): fired when the user
+    /// CHECKS a promoted (" ↗") line — the host completes the real task it
+    /// spawned, resolved by title. Unchecking fires nothing (un-completing a
+    /// task from prose would be spooky action at a distance).
+    var onCompletePromoted: ((String) -> Void)? = nil
 
     // MARK: Make
 
@@ -434,6 +447,18 @@ struct MarkdownEditorView: UIViewRepresentable {
         longPress.minimumPressDuration = 0.5
         longPress.delegate = context.coordinator
         tv.addGestureRecognizer(longPress)
+
+        // Checkbox → task (Session 78). Right swipe only — matches the
+        // meeting rows' "right = task" direction. Coexists with the scroll
+        // pan (the delegate allows simultaneous recognition); the handler
+        // no-ops unless the touch began on an unchecked "☐ " line and a
+        // host wired onPromoteTask.
+        let promoteSwipe = UISwipeGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handlePromoteSwipe(_:)))
+        promoteSwipe.direction = .right
+        promoteSwipe.delegate = context.coordinator
+        tv.addGestureRecognizer(promoteSwipe)
 
         addPlaceholder(to: tv, text: placeholder)
 
@@ -533,7 +558,16 @@ struct MarkdownEditorView: UIViewRepresentable {
 
         // Only overwrite when text diverged externally (avoid cursor jumps on every keystroke)
         guard tv.text != text else {
+            context.coordinator.pendingPushedText = nil
             updatePlaceholderVisibility(tv)
+            return
+        }
+        // Typing-reversal guard: the binding still carries a value OLDER than
+        // what the text view already pushed (a stale struct delivered
+        // mid-typing). Clobbering now removes the just-typed character and
+        // displaces the caret. Skip — the push lands on the next update, and
+        // the 0.8s debounced save is the backstop if it ever doesn't.
+        if let pending = context.coordinator.pendingPushedText, pending == tv.text {
             return
         }
         let saved = tv.selectedRange
@@ -549,6 +583,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         tv.layoutIfNeeded()
         let newLen = tv.textStorage.length
         tv.selectedRange = NSRange(location: min(saved.location, newLen), length: 0)
+        context.coordinator.pendingPushedText = nil
         updatePlaceholderVisibility(tv)
         let extCoord = context.coordinator
         DispatchQueue.main.async {
@@ -982,6 +1017,18 @@ struct MarkdownEditorView: UIViewRepresentable {
         var onCaptureTap: ((String) -> Void)?
         weak var textView: UITextView?
         private var saveWork: DispatchWorkItem?
+        /// The last text this coordinator pushed toward the SwiftUI binding.
+        ///
+        /// Typing-reversal guard (2026-08-29, Dayflow Session 78). SwiftUI can
+        /// call `updateUIView` with a struct whose `text` was captured BEFORE
+        /// the most recent keystroke — the coordinator's binding write lands a
+        /// beat later. Without this, that stale value clobbers the text view
+        /// (removing the just-typed character), the real value then restores
+        /// it with the caret clamped one short, and the next character lands
+        /// BEFORE the previous one ("This" types as "hisT"). Observed only on
+        /// hosts that wrap the editor in a GeometryReader (project notes),
+        /// whose per-keystroke layout pass is what interleaves the updates.
+        var pendingPushedText: String?
         var lastTimestampTrigger: Date?
         /// True between an attach request being seen in `updateUIView` and the
         /// binding being cleared. See the call site for why this is a flag and
@@ -1386,11 +1433,24 @@ struct MarkdownEditorView: UIViewRepresentable {
             return true
         }
 
+        // Migrated off the deprecated shouldInteractWith/UITextItemInteraction
+        // delegate to the iOS 17 primary-action API (warning pass,
+        // 2026-08-29). Same behavior: every tapped link is ours — capture://
+        // opens the in-app sheet, everything else hands off externally. The
+        // old `interaction == .invokeDefaultAction` guard is implicit here:
+        // primaryActionFor IS the tap; menus/previews go through
+        // menuConfigurationFor, which we don't implement, so they keep
+        // system behavior.
         func textView(_ tv: UITextView,
-                      shouldInteractWith url: URL,
-                      in characterRange: NSRange,
-                      interaction: UITextItemInteraction) -> Bool {
-            guard interaction == .invokeDefaultAction else { return true }
+                      primaryActionFor textItem: UITextItem,
+                      defaultAction: UIAction) -> UIAction? {
+            guard case .link(let url) = textItem.content else { return defaultAction }
+            return UIAction { [weak self] _ in
+                self?.handleLinkTap(url)
+            }
+        }
+
+        private func handleLinkTap(_ url: URL) {
             // Capture-marker tap — Session 45 addendum 6. dropPin() writes
             // `[label](capture://open?id=pageID)`, which applyMarkdownLinks()
             // renders through the same hidden-bracket machinery as any other
@@ -1415,15 +1475,18 @@ struct MarkdownEditorView: UIViewRepresentable {
                 // Never falls through to the external-open below, parsed or
                 // not — nothing is registered to handle "capture:" outside
                 // this app, so an external open would only ever no-op.
-                return false
+                return
             }
             UIApplication.shared.open(url)
-            return false
         }
 
         // MARK: Auto-save — 0.8 s debounce
 
         private func scheduleSave(_ content: String) {
+            // Every binding-write site calls scheduleSave with the same string
+            // it just pushed, so recording it here covers them all — see
+            // `pendingPushedText`.
+            pendingPushedText = content
             saveWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
                 self?.onSave?(content)
@@ -1447,7 +1510,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         /// Used before retrying a failed send so the old badge is replaced cleanly.
         private func stripBadges(from line: String) -> String {
             var s = line.trimmingCharacters(in: .newlines)
-            for badge in [" ⚠️🔵", " ⚠️🪶", " 🔵", " 🪶"] {
+            for badge in [" ⚠️🔵", " ⚠️🪶", " ⚠️↗", " 🔵", " 🪶", " ↗"] {
                 if s.hasSuffix(badge) {
                     s = String(s.dropLast(badge.count))
                     break
@@ -1811,7 +1874,6 @@ struct MarkdownEditorView: UIViewRepresentable {
             let cursorRange = tv.selectedRange
             let ns = tv.textStorage.string as NSString
             let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
-            let before = ns.substring(with: lineRange)
             tv.textStorage.replaceCharacters(
                 in: NSRange(location: lineRange.location, length: 0), with: "  ")
             tv.selectedRange = NSRange(location: cursorRange.location + 2, length: 0)
@@ -2225,7 +2287,10 @@ struct MarkdownEditorView: UIViewRepresentable {
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.dateFormat = "yyyy-MM-dd-HHmmss"
             let filename = "\(formatter.string(from: now)).jpg"
-            Task {
+            // @MainActor: writePhoto is main-actor-isolated (project
+            // default) and a bare Task in this non-isolated context doesn't
+            // inherit it — the Swift-6 error-to-be from the warning pass.
+            Task { @MainActor in
                 do {
                     let path = try NoteStore.shared.writePhoto(
                         data, category: "\(year)/\(month)", filename: filename
@@ -2384,6 +2449,16 @@ struct MarkdownEditorView: UIViewRepresentable {
                 if line.hasPrefix("☐ ") {
                     tv.textStorage.replaceCharacters(in: lineRange,
                                                      with: "☑ " + String(line.dropFirst(2)))
+                    // Promoted line (Session 78 round two): checking the ↗
+                    // pointer also completes the task it spawned — one
+                    // gesture, both copies. The host resolves by title; a
+                    // since-renamed task simply isn't found and the check
+                    // stays local to the note.
+                    if line.contains(" ↗"), let complete = parentView?.onCompletePromoted {
+                        let content = String(stripBadges(from: line).dropFirst(2))
+                            .trimmingCharacters(in: .whitespaces)
+                        if !content.isEmpty { complete(content) }
+                    }
                 } else if line.hasPrefix("☑ ") {
                     tv.textStorage.replaceCharacters(in: lineRange,
                                                      with: "☐ " + String(line.dropFirst(2)))
@@ -3013,9 +3088,10 @@ struct MarkdownEditorView: UIViewRepresentable {
                                    lineLocation: Int,
                                    lineLength: Int,
                                    in tv: UITextView) {
-#if targetEnvironment(simulator)
-            return
-#endif
+            // Sim builds skip the send entirely; the #if !simulator wrap
+            // replaced a bare early-return that made everything below it
+            // 'unreachable' on simulator builds (warning pass, 2026-08-29).
+#if !targetEnvironment(simulator)
             // Build things:///add URL. URLComponents percent-encodes query values automatically.
             var components = URLComponents(string: "things:///add")!
             var queryItems = [
@@ -3040,6 +3116,7 @@ struct MarkdownEditorView: UIViewRepresentable {
                                      lineLocation: lineLocation, lineLength: lineLength, in: tv)
                 }
             }
+        #endif
         }
 
         // Requests Reminders write access, respecting iOS 17 writeOnly vs older .authorized.
@@ -3070,9 +3147,10 @@ struct MarkdownEditorView: UIViewRepresentable {
                                   lineLocation: Int,
                                   lineLength: Int,
                                   in tv: UITextView) {
-#if targetEnvironment(simulator)
-            return
-#endif
+            // Sim builds skip the send entirely; the #if !simulator wrap
+            // replaced a bare early-return that made everything below it
+            // 'unreachable' on simulator builds (warning pass, 2026-08-29).
+#if !targetEnvironment(simulator)
             requestRemindersAccess { [weak self, weak tv] granted in
                 DispatchQueue.main.async {
                     guard let self, let tv else { return }
@@ -3112,11 +3190,51 @@ struct MarkdownEditorView: UIViewRepresentable {
                     }
                 }
             }
+        #endif
         }
 
         /// Appends a badge string to the task line, stripping any prior badge first.
         /// Shifts the cursor forward by the length delta so it stays on the correct line
         /// when the Return-key flow has already moved it to the line below.
+        // MARK: - Checkbox → task (Session 78)
+
+        /// Right swipe on an unchecked checkbox line: hand the line's text to
+        /// the host's `onPromoteTask`, then badge the line " ↗" on success
+        /// (" ⚠️↗" on failure) through the same append machinery the
+        /// Things/Tweek sends use. Guards: unchecked "☐ " lines only, never a
+        /// line already carrying " ↗" (no double tasks), never an empty line.
+        @objc func handlePromoteSwipe(_ g: UISwipeGestureRecognizer) {
+            guard g.state == .ended,
+                  let tv = textView,
+                  let promote = parentView?.onPromoteTask else { return }
+            var p = g.location(in: tv)
+            p.x -= tv.textContainerInset.left
+            p.y -= tv.textContainerInset.top
+            let ns = tv.textStorage.string as NSString
+            guard ns.length > 0 else { return }
+            let idx = tv.layoutManager.characterIndex(
+                for: p, in: tv.textContainer,
+                fractionOfDistanceBetweenInsertionPoints: nil)
+            guard idx < ns.length else { return }
+            let lineRange = ns.lineRange(for: NSRange(location: idx, length: 0))
+            let line = ns.substring(with: lineRange)
+            guard line.hasPrefix("☐ "), !line.contains(" ↗") else { return }
+            let content = String(stripBadges(from: line).dropFirst(2))
+                .trimmingCharacters(in: .whitespaces)
+            guard !content.isEmpty else { return }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            let capturedLoc = lineRange.location
+            let capturedLen = lineRange.length
+            promote(content) { [weak self, weak tv] success in
+                DispatchQueue.main.async {
+                    guard let self, let tv else { return }
+                    self.appendBadge(success ? " ↗" : " ⚠️↗",
+                                     lineLocation: capturedLoc,
+                                     lineLength: capturedLen, in: tv)
+                }
+            }
+        }
+
         private func appendBadge(_ badge: String, lineLocation: Int, lineLength: Int, in tv: UITextView) {
             let ns = tv.textStorage.string as NSString
             let safeLen = min(lineLength, ns.length - lineLocation)
@@ -3522,7 +3640,7 @@ struct MarkdownEditorView: UIViewRepresentable {
                     formatter.dateFormat = "yyyy-MM-dd-HHmmss"
                     let filename = "\(formatter.string(from: now)).jpg"
                     let jpegData = UIImage(data: data).flatMap { $0.jpegData(compressionQuality: 0.85) } ?? data
-                    Task {
+                    Task { @MainActor in
                         do {
                             let path = try NoteStore.shared.writePhoto(jpegData, category: "\(year)/\(month)", filename: filename)
                             await MainActor.run {

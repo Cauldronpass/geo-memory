@@ -47,6 +47,14 @@
 			<key>UIApplicationShortcutItemIconSymbolName</key>
 			<string>calendar.badge.plus</string>
 		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>NewNote</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>New Note</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>square.and.pencil</string>
+		</dict>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>

@@ -48,29 +48,7 @@ enum DayflowWhenValue: Equatable {
     }
 }
 
-/// The result handed back from DayflowQuickAddSheet on Save. The sheet itself
-/// only builds this — actually persisting it (ThingsService.addTask / a future
-/// EventKit write) is the caller's job, so the sheet stays reusable.
-struct DayflowQuickAddDraft {
-    var kind: DayflowEntryKind
-    var title: String
-    var when: DayflowWhenValue
-    var list: String?          // Things area/project name, exact match, Task only
-    var notes: String?         // Freeform notes/description, Task only. Added 2026-07-20.
-    var eventDate: Date        // Event mode only
-    var eventStart: Date       // Event mode only
-    var eventEnd: Date         // Event mode only
-    /// Adds a separate 15-min "Buffer" calendar event ending exactly when
-    /// this event starts / starting exactly when this event ends — Event
-    /// mode only. Added 2026-07-24, backlog item 12 (walked through via HTML
-    /// mockup review first) — David wanted travel time blocked off around a
-    /// meeting without changing the meeting's own real start/end time, so
-    /// these are separate holds, not a widened `eventStart`/`eventEnd`. See
-    /// `ContentView.saveDraft(_:)`'s `.event` case for where they're
-    /// actually written.
-    var bufferBefore: Bool = false
-    var bufferAfter: Bool = false
-}
+// DayflowQuickAddDraft deleted with DayflowQuickAddSheet (housekeeping 2026-08-29).
 
 // MARK: - Things areas (quick-insert chip row)
 
@@ -197,45 +175,9 @@ struct DayflowAgendaItem: Identifiable {
     // starts surfacing due dates.
 }
 
-// MARK: - Browse views (Upcoming / Anytime / Inbox / Search)
-//
-// Added 2026-07-20, Dayflow-Design-Plan.md "Top bar & navigation" (build
-// order step 5) — the destinations off the top-bar calendar icon's menu.
-// `Identifiable` so ContentView.swift can drive a single
-// `.fullScreenCover(item:)` off one optional value instead of separate Bool
-// flags. See DayflowUpcomingView.swift, DayflowAnytimeView.swift for two of
-// the original three destinations.
-//
-// `.inbox` added 2026-07-20 (step 5b, new scope requested same day as the
-// original three) — see DayflowInboxView.swift.
-//
-// `.search` added 2026-07-20 (Session 11, same day as DayflowNotesView) —
-// David's design call: notes/#tag search lives on Daily Note's own icon
-// (DayflowNotesView), but searching Things tasks/calendar events is a
-// different kind of search entirely, and belongs with the other "ways to see
-// tasks/events beyond today's Agenda" destinations already in this menu,
-// not behind the Settings gear (which stays single-purpose). See
-// DayflowAgendaSearchView.swift.
-//
-// **`.calendar` removed 2026-07-21 (Session 24).** This top-bar menu used to
-// have a "Calendar" entry too, opening the exact same `DayflowCalendarBrowseView`
-// the date-headline tap (ContentView's own `showDateCalendar`) already opens
-// directly. David's call, after walking the navigation fresh: Calendar/notes
-// browsing should have exactly one door (the big date headline), and this
-// menu should read as purely "things you're looking at from a task/Things
-// angle" (Upcoming/Anytime/Inbox/Search) — a second, faster-but-redundant
-// path into Calendar undercut that clean split. Browse: Upcoming's own
-// "switch to Calendar" shortcut button (`onSwitchToCalendar`,
-// DayflowUpcomingView.swift) was removed in the same pass, for the identical
-// reason — it was the other place this same redundant door existed. Calendar
-// browsing itself wasn't removed, just this second/third way of reaching it;
-// see `DayflowCalendarBrowseView.swift`'s own header comment for its two
-// remaining entry points (the date headline, and DayflowNoteFullPageView's
-// own calendar icon).
-enum DayflowBrowseDestination: String, Identifiable {
-    case upcoming, anytime, inbox, search
-    var id: String { rawValue }
-}
+// DayflowBrowseDestination DELETED in the Session 78 housekeeping pass
+// (2026-08-29): the top-bar Browse menu it served died with the hamburger
+// (D159), and its last cover left ContentView the same day.
 
 // MARK: - Note sort order (search results + backlinks)
 //

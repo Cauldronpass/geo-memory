@@ -212,7 +212,30 @@ struct DayflowDailyNoteEditor: View {
                             // declaration order (onCaptureTap is declared after
                             // checklistSendEnabled/onPinSucceeded/onPinFailed).
                             onCaptureTap: { id in tappedCaptureID = id },
-                            attachTrigger: $attachRequest
+                            attachTrigger: $attachRequest,
+                            // Checkbox → task (Session 78): right swipe on a
+                            // ☐ line files a real task dated to THIS day —
+                            // its full-ability home is the day's own TO DO.
+                            // Dated → Personal, the capture card's routing.
+                            onPromoteTask: { line, done in
+                                Task {
+                                    let ok = await ReminderTaskStore.shared.addTask(
+                                        title: line, date: date)
+                                    done(ok)
+                                }
+                            },
+                            // Round two: checking the dimmed ↗ line completes
+                            // the task it spawned — resolved by title among
+                            // tasks dated to THIS day.
+                            onCompletePromoted: { line in
+                                let cal = Calendar.current
+                                if let task = ReminderTaskStore.shared.allTasks.first(where: {
+                                    $0.title == line &&
+                                    ($0.date.map { cal.isDate($0, inSameDayAs: date) } ?? false)
+                                }) {
+                                    Task { await ReminderTaskStore.shared.complete(taskID: task.id) }
+                                }
+                            }
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -496,7 +519,9 @@ struct DayflowDailyNoteEditor: View {
 
     private func addRelatedNote(kind: RelatedNoteRow.Kind, description: String) {
         let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        // Empty is ALLOWED (Session 78 round three) — Person/Place/Day links
+        // may carry no relationship text; the link sheet still requires it
+        // for Project and Visit, where the reason is the content.
         relatedNotes.insert(RelatedNoteRow(kind: kind, description: trimmed), at: 0)
         persistFullNote(prose: content)
     }

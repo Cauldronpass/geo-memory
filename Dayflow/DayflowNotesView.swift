@@ -221,7 +221,8 @@ struct DayflowNotesView: View {
     /// `.name` matches what the list already looked like before this existed
     /// (`listFiles` returns alphabetical), so turning this on doesn't silently
     /// reorder anyone's list on first launch.
-    @State private var projectSortOrder: DayflowNoteSortOrder = .name
+    /// Redesign default: RECENT is by last touch (Name still in the menu).
+    @State private var projectSortOrder: DayflowNoteSortOrder = .newest
     /// Projects moved to `Notes/Projects/Archive/`.
     @State private var archivedProjectNames: [String] = []
     /// Starts closed. It is history, not a second list.
@@ -257,7 +258,12 @@ struct DayflowNotesView: View {
     }
     @State private var segment: NotesSegment = .days
     @State private var searchActive = false
+    /// Session 78 evening — the project-delete confirmation's subject.
+    @State private var projectPendingDelete: String? = nil
     @State private var toFileCount = 0
+    /// Session 78, Notes redesign — routed PROJECT notes land on this tab
+    /// (in place, tab bar visible) instead of ContentView's cover.
+    @State private var quickFindRouter = DayflowQuickFindRouter.shared
     @State private var dayNotes: [(date: Date, preview: String)] = []
     @FocusState private var searchFocused: Bool
 
@@ -315,6 +321,10 @@ struct DayflowNotesView: View {
             applyRoutedProject()
             loadDayNotes()
             refreshToFileCount()
+            drainRoutedProjectNote()
+        }
+        .onChange(of: quickFindRouter.pendingDestination != nil) { _, hasPending in
+            if hasPending { drainRoutedProjectNote() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreInboxDidChange)) { _ in
             refreshToFileCount()
@@ -422,14 +432,28 @@ struct DayflowNotesView: View {
         HStack(spacing: 18) {
             ForEach(NotesSegment.allCases) { seg in
                 Button { segment = seg } label: {
-                    HStack(spacing: 4) {
-                        Text(seg.rawValue)
-                            .font(.system(size: 11, weight: segment == seg ? .bold : .medium))
-                            .tracking(1.2)
-                        if seg == .toFile && toFileCount > 0 {
-                            Circle().fill(Color.dayflowAccent).frame(width: 5, height: 5)
+                    // Redesign: the active section wears a short accent
+                    // underline, newspaper-section style, not color alone.
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 4) {
+                            Text(seg.rawValue)
+                                .font(.system(size: 11, weight: segment == seg ? .bold : .medium))
+                                .tracking(1.2)
+                                .lineLimit(1)
+                            if seg == .toFile && toFileCount > 0 {
+                                Circle().fill(Color.dayflowAccent).frame(width: 5, height: 5)
+                            }
                         }
+                        Rectangle()
+                            .fill(segment == seg ? Color.dayflowAccent : Color.clear)
+                            .frame(height: 2)
                     }
+                    // fixedSize: the underline Rectangle otherwise accepts
+                    // every width offered, widening the stack until the
+                    // LABELS wrap mid-word ("PROJECT S" — David's screenshot,
+                    // first device build). Sized to the text, the rule hugs
+                    // the word it belongs to.
+                    .fixedSize()
                     .foregroundStyle(segment == seg ? Color.dayflowAccent : Color.dayflowFaint)
                     .contentShape(Rectangle())
                 }
@@ -445,7 +469,14 @@ struct DayflowNotesView: View {
 
     private var daysList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(dayNotes, id: \.date) { entry in
+            ForEach(Array(dayNotes.enumerated()), id: \.element.date) { index, entry in
+                // Month masthead on crossover (redesign) — the same move
+                // Upcoming makes at a month boundary, scrolling back in time.
+                if index > 0,
+                   !Calendar.current.isDate(entry.date, equalTo: dayNotes[index - 1].date,
+                                            toGranularity: .month) {
+                    monthMasthead(entry.date)
+                }
                 dayNoteRow(entry.date, entry.preview)
                 Rectangle().fill(Color.dayflowHairline).frame(height: 1)
             }
@@ -453,19 +484,48 @@ struct DayflowNotesView: View {
         .padding(.top, pinnedDays.isEmpty ? 4 : 12)
     }
 
+    private func monthMasthead(_ date: Date) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            let f = DateFormatter()
+            Text({ f.dateFormat = "MMMM"; return f.string(from: date).uppercased() }())
+                .font(.system(size: 12, weight: .heavy))
+                .tracking(2.6)
+                .foregroundStyle(Color.dayflowAccent)
+            Rectangle().fill(Color.dayflowInk).frame(height: 2)
+        }
+        .padding(.top, 18)
+        .padding(.bottom, 6)
+    }
+
     private func dayNoteRow(_ date: Date, _ preview: String) -> some View {
-        Button {
+        let cal = Calendar.current
+        let isToday = cal.isDateInToday(date)
+        // Redesign: Today leads bigger with an accent date tag, Yesterday a
+        // faint one; previews are FAINT, not muted — "the preview is a good
+        // signal but lighter... is the right approach" (David, mockup round).
+        return Button {
             selectedDate = date
             showDailyNote = true
         } label: {
             VStack(alignment: .leading, spacing: 3) {
-                Text(dayNoteLabel(date))
-                    .font(.dayflowSerif(15, weight: .semibold))
-                    .foregroundStyle(Color.dayflowInk)
+                HStack(alignment: .firstTextBaseline) {
+                    Text(dayNoteLabel(date))
+                        .font(.dayflowSerif(isToday ? 18 : 15.5,
+                                            weight: isToday ? .bold : .semibold))
+                        .foregroundStyle(Color.dayflowInk)
+                    Spacer()
+                    if isToday || cal.isDateInYesterday(date) {
+                        let f = DateFormatter()
+                        Text({ f.dateFormat = "EEE d"; return f.string(from: date).uppercased() }())
+                            .font(.system(size: 10, weight: .medium))
+                            .tracking(1.2)
+                            .foregroundStyle(isToday ? Color.dayflowAccent : Color.dayflowFaint)
+                    }
+                }
                 if !preview.isEmpty {
                     Text(preview)
                         .font(.system(size: 12.5))
-                        .foregroundStyle(Color.dayflowMuted)
+                        .foregroundStyle(Color.dayflowFaint)
                         .lineLimit(1)
                 }
             }
@@ -513,32 +573,35 @@ struct DayflowNotesView: View {
     // MARK: Header
 
     private var header: some View {
-        // Session 77 step (d): Editorial header — serif title left, search
-        // toggle right (the design's "Search icon"). The old swipe-right-to-
-        // dismiss went with the centered-title layout; the cover route keeps
-        // its chevron.
-        HStack(alignment: .center, spacing: 8) {
-            if !isTabRoot {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 32, height: 32)
+        // Session 78, Notes redesign — the Today masthead family: triple
+        // rule (3pt over, 1pt under), serif title, a quiet count on the
+        // right. The magnifier stayed retired (D159, Quick Find reaches
+        // notes from anywhere); `searchActive`'s machinery stays dormant.
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(Color.dayflowInk).frame(height: 3)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if !isTabRoot {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+                Text("Notes")
+                    .font(.dayflowSerif(30, weight: .heavy))
+                    .foregroundStyle(Color.dayflowInk)
+                Spacer()
+                Text("\(dayNotes.count) DAYS \u{00B7} \(projectNames.count) PROJECTS")
+                    .font(.system(size: 10, weight: .medium))
+                    .tracking(1.4)
+                    .foregroundStyle(Color.dayflowFaint)
             }
-            Text("Notes")
-                .font(.dayflowSerif(30, weight: .heavy))
-                .foregroundStyle(Color.dayflowInk)
-            Spacer()
-            // Session 78, D159 — the magnifier retired with the hamburger:
-            // Quick Find (pull down on this header, any header) reaches
-            // notes from anywhere. `searchActive` and its machinery stay
-            // dormant behind this header for now; #tag search is the one
-            // trick Quick Find hasn't learned yet, flagged to David.
+            .padding(.vertical, 10)
+            Rectangle().fill(Color.dayflowInk).frame(height: 1)
         }
         .padding(.horizontal, 24)
         .padding(.top, isTabRoot ? 22 : 8)
-        .padding(.bottom, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .dayflowQuickFindPull(enabled: isTabRoot)
     }
@@ -569,6 +632,23 @@ struct DayflowNotesView: View {
     /// Called from both `.onAppear` and `.onChange(of: initialProjectTitle)`:
     /// a route can arrive either before this screen exists or while it is already
     /// on screen, and only one of those produces an appearance.
+    /// Session 78, Notes redesign: project-note destinations are drained
+    /// HERE, on the tab root, so the note opens in place with the tab bar
+    /// still standing — Today is one tap from any note (David's ask).
+    /// ContentView deliberately leaves these values alone; RootView has
+    /// already switched to this tab. The in-place swap is not a
+    /// presentation, so no dismiss-hop is needed.
+    private func drainRoutedProjectNote() {
+        guard isTabRoot,
+              case .dailyOrProjectNote(let path)? = quickFindRouter.pendingDestination,
+              path.hasPrefix("Notes/Projects/") else { return }
+        quickFindRouter.pendingDestination = nil
+        let title = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        guard !title.isEmpty else { return }
+        segment = .projects
+        selectedProjectTitle = title
+    }
+
     private func applyRoutedProject() {
         guard let initialProjectTitle, initialProjectTitle != consumedInitialProject else { return }
         consumedInitialProject = initialProjectTitle
@@ -649,27 +729,22 @@ struct DayflowNotesView: View {
             newProjectName = ""
             showNewProjectAlert = true
         } label: {
-            // Editorial (Session 77, David's catch): the blue capsule was a
-            // pre-skin leftover. Every "add" in the app now speaks the same
-            // dashed-circle grammar as Add for today and New to-do — the
-            // accent stays reserved for active state and the When/Delete
-            // moments, so an add affordance never shouts.
-            HStack(spacing: 12) {
-                Circle()
-                    .strokeBorder(Color.dayflowFaint,
-                                  style: StrokeStyle(lineWidth: 1.3, dash: [3, 2.5]))
-                    .frame(width: 20, height: 20)
-                Text("New project note")
-                    .font(.system(size: 13.5))
-                    .italic()
-                    .foregroundStyle(Color.dayflowFaint)
+            // Redesign (Session 78): the quiet caps row from the approved
+            // mockup — an add affordance that never shouts.
+            HStack(spacing: 8) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("NEW PROJECT")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .tracking(1.6)
                 Spacer()
             }
+            .foregroundStyle(Color.dayflowFaint)
             .frame(minHeight: 40)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.bottom, 6)
+        .padding(.bottom, 2)
     }
 
     /// Trace hand-off button — Session 25, same visual language as
@@ -787,11 +862,11 @@ struct DayflowNotesView: View {
     @ViewBuilder
     private var pinnedDaysSection: some View {
         if !pinnedDays.isEmpty {
-            Text("PINNED DAYS")
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(0.4)
-                .foregroundStyle(.secondary)
-                .padding(.top, 6)
+            Text("PINNED")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.8)
+                .foregroundStyle(Color.dayflowFaint)
+                .padding(.top, 10)
                 .padding(.bottom, 4)
             ForEach(pinnedDays) { day in
                 pinnedDayRow(day)
@@ -805,15 +880,21 @@ struct DayflowNotesView: View {
     /// always the filled state and tapping it only ever unpins.
     @ViewBuilder
     private func pinnedDayRow(_ day: PinnedDay) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
+            // Redesign: the accent square marks a pinned row; the chevron
+            // is gone (Editorial rows do not wear one anywhere else).
+            Rectangle().fill(Color.dayflowAccent).frame(width: 6, height: 6)
             Button {
                 selectedDate = day.date
                 showDailyNote = true
             } label: {
                 HStack {
-                    Text(pinnedDayLabel(day.date)).font(.system(size: 13.5)).foregroundStyle(.primary)
+                    Text(pinnedDayLabel(day.date))
+                        .font(.dayflowSerif(15, weight: .semibold))
+                        .foregroundStyle(Color.dayflowInk)
                     Spacer()
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             Button {
@@ -825,46 +906,66 @@ struct DayflowNotesView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Unpin \(pinnedDayLabel(day.date))")
-            Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 9)
-        Divider()
+        .padding(.vertical, 8)
+        Rectangle().fill(Color.dayflowHairline).frame(height: 1)
     }
 
     @ViewBuilder
     private var projectNotesSection: some View {
+        // Redesign (Session 78, approved mockup): PINNED first with the
+        // accent square, then RECENT by last touch, each group under its own
+        // caps header + ink rule. The sort menu rides the RECENT header.
         if !projectNames.isEmpty {
-            HStack {
-                Text("PROJECT NOTES")
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(0.4)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Menu {
-                    ForEach(DayflowNoteSortOrder.allCases) { order in
-                        Button {
-                            projectSortOrder = order
-                        } label: {
-                            if projectSortOrder == order {
-                                Label(order.rawValue, systemImage: "checkmark")
-                            } else {
-                                Text(order.rawValue)
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 3) {
-                        Text(projectSortOrder.rawValue)
-                        Image(systemName: "chevron.up.chevron.down")
-                    }
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+            let store = DayflowFlagStore.shared
+            let pinned = applyProjectSort(projectNames.filter { store.isFlagged(projectNotePath($0)) })
+            let recent = applyProjectSort(projectNames.filter { !store.isFlagged(projectNotePath($0)) })
+            if !pinned.isEmpty {
+                Text("PINNED")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.8)
+                    .foregroundStyle(Color.dayflowFaint)
+                    .padding(.top, 10)
+                    .padding(.bottom, 4)
+                Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                ForEach(pinned, id: \.self) { name in
+                    projectRow(name, pinned: true)
                 }
             }
-            .padding(.top, 6)
-            .padding(.bottom, 4)
-            ForEach(sortedProjectNames, id: \.self) { name in
-                projectRow(name)
+            if !recent.isEmpty {
+                HStack {
+                    Text("RECENT")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(1.8)
+                        .foregroundStyle(Color.dayflowFaint)
+                    Spacer()
+                    Menu {
+                        ForEach(DayflowNoteSortOrder.allCases) { order in
+                            Button {
+                                projectSortOrder = order
+                            } label: {
+                                if projectSortOrder == order {
+                                    Label(order.rawValue, systemImage: "checkmark")
+                                } else {
+                                    Text(order.rawValue)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(projectSortOrder.rawValue)
+                            Image(systemName: "chevron.up.chevron.down")
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.dayflowFaint)
+                    }
+                }
+                .padding(.top, pinned.isEmpty ? 10 : 16)
+                .padding(.bottom, 4)
+                Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                ForEach(recent, id: \.self) { name in
+                    projectRow(name, pinned: false)
+                }
             }
             archivedProjectsSection
         } else {
@@ -1036,34 +1137,37 @@ struct DayflowNotesView: View {
     }
 
     @ViewBuilder
-    private func projectRow(_ name: String) -> some View {
-        // Pin toggle is a separate tap target from the row's own navigation
-        // button, not nested inside it — nesting two Buttons is the class of
-        // bug DayflowAgendaSection's row already worked around (separate
-        // checkbox Button beside a `.onTapGesture` title, not one Button
-        // wrapping another) — same pattern here.
+    private func projectRow(_ name: String, pinned: Bool = false) -> some View {
+        // Redesign (Session 78): serif title over a meta line of real data —
+        // open linked tasks (the OPEN TASKS machinery) and last touch. The
+        // pin toggle moved into the context menu; the chevron died with the
+        // rest of them. The accent square marks the pinned group.
         let path = projectNotePath(name)
         let flagged = DayflowFlagStore.shared.isFlagged(path)
-        HStack(spacing: 8) {
+        let meta = projectMetaLabel(name)
+        HStack(spacing: 10) {
+            if pinned {
+                Rectangle().fill(Color.dayflowAccent).frame(width: 6, height: 6)
+            }
             Button { selectedProjectTitle = name } label: {
-                HStack {
-                    Text(name).font(.system(size: 13.5)).foregroundStyle(.primary)
-                    Spacer()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.dayflowSerif(16, weight: .semibold))
+                        .foregroundStyle(Color.dayflowInk)
+                        .lineLimit(1)
+                    if !meta.isEmpty {
+                        Text(meta)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .tracking(0.8)
+                            .foregroundStyle(Color.dayflowFaint)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Button {
-                DayflowFlagStore.shared.toggleFlag(path)
-            } label: {
-                Image(systemName: flagged ? "pin.fill" : "pin")
-                    .font(.system(size: 12))
-                    .foregroundStyle(flagged ? Color.dayflowInk : Color.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(flagged ? "Unpin \(name)" : "Pin \(name)")
-            Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 9)
+        .padding(.vertical, 8)
         // LONG PRESS, NOT SWIPE. This list is a VStack inside a ScrollView, not a
         // `List`, so `.swipeActions` does not apply — the same situation that made
         // Trace's people list need a hand-rolled gesture. That one is justified
@@ -1072,12 +1176,66 @@ struct DayflowNotesView: View {
         // needs no gesture arbitration, and cannot swallow the row's own tap.
         .contextMenu {
             Button {
+                DayflowFlagStore.shared.toggleFlag(path)
+            } label: {
+                Label(flagged ? "Unpin" : "Pin", systemImage: flagged ? "pin.slash" : "pin")
+            }
+            Button {
                 if noteStore.archiveProject(name: name) { loadProjectNames() }
             } label: {
                 Label("Archive Project", systemImage: "archivebox")
             }
+            // Session 78 evening — David: "i have no way of deleting project
+            // notes." Destructive + confirmed (file removal is permanent;
+            // archive above is the recoverable path and stays first).
+            Button(role: .destructive) {
+                projectPendingDelete = name
+            } label: {
+                Label("Delete Project", systemImage: "trash")
+            }
         }
-        Divider()
+        .confirmationDialog(
+            "Delete \u{201C}\(projectPendingDelete ?? name)\u{201D}? The note file is removed permanently — Archive is the recoverable option.",
+            isPresented: Binding(
+                get: { projectPendingDelete == name },
+                set: { if !$0 { projectPendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                try? NoteStore.shared.deleteFile(projectNotePath(name))
+                projectPendingDelete = nil
+                loadProjectNames()
+            }
+            Button("Cancel", role: .cancel) { projectPendingDelete = nil }
+        }
+        Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+    }
+
+    /// The row's meta line, from real data: open tasks linked to this
+    /// note's agenda anchor (the same set its OPEN TASKS section and the
+    /// meeting AGENDA line show) and the file's last touch. "TODAY" in
+    /// accent context comes free from RECENT sorting; empty when a project
+    /// has neither.
+    private func projectMetaLabel(_ name: String) -> String {
+        let anchor = DayflowAgendaMatch.agendaAnchor(forTitle: name)
+        let open = ReminderTaskStore.shared.allTasks.filter {
+            ($0.notes ?? "").contains("[[\(anchor)]]")
+        }.count
+        let touched = projectModifiedDate(name)
+        let cal = Calendar.current
+        var parts: [String] = []
+        if open == 1 { parts.append("1 OPEN TASK") }
+        else if open > 1 { parts.append("\(open) OPEN TASKS") }
+        if touched != .distantPast {
+            if cal.isDateInToday(touched) { parts.append("TODAY") }
+            else if cal.isDateInYesterday(touched) { parts.append("YESTERDAY") }
+            else {
+                let f = DateFormatter(); f.dateFormat = "MMM d"
+                parts.append(f.string(from: touched).uppercased())
+            }
+        }
+        return parts.joined(separator: " \u{00B7} ")
     }
 
     // MARK: Archived projects
@@ -1094,15 +1252,15 @@ struct DayflowNotesView: View {
                 withAnimation(.snappy(duration: 0.2)) { showArchivedProjects.toggle() }
             } label: {
                 HStack(spacing: 6) {
+                    Text("ARCHIVED \u{00B7} \(archivedProjectNames.count)")
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(1.6)
                     Image(systemName: showArchivedProjects ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text("Archived").font(.system(size: 11, weight: .medium))
-                    Text("\(archivedProjectNames.count)")
-                        .font(.system(size: 11)).foregroundStyle(.tertiary)
+                        .font(.system(size: 8, weight: .semibold))
                     Spacer()
                 }
-                .foregroundStyle(.secondary)
-                .padding(.top, 14)
+                .foregroundStyle(Color.dayflowFaint)
+                .padding(.top, 18)
                 .padding(.bottom, 4)
                 .contentShape(Rectangle())
             }

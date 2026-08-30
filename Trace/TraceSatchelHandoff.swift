@@ -560,6 +560,10 @@ struct SatchelAddDocumentButton: View {
     enum Style {
         case row
         case bar
+        /// Session 78, Dayflow's Notes redesign: a bare small-caps word for
+        /// the project note's unified bottom band — same hand-off menu, no
+        /// bar of its own.
+        case caps
     }
 
     /// Container-relative path of the note the new document should be filed to.
@@ -584,6 +588,17 @@ struct SatchelAddDocumentButton: View {
         case .row:
             handoffMenu {
                 Label("Add Document in Satchel", systemImage: "arrow.up.forward.app")
+            }
+        case .caps:
+            handoffMenu {
+                // Color(.systemGray2), not Color.dayflowFaint: this file is
+                // shared beyond the Dayflow target, where the skin tokens
+                // don't exist.
+                Text("DOCUMENT")
+                    .font(.system(size: 10, weight: .medium))
+                    .tracking(1.4)
+                    .foregroundStyle(Color(.systemGray2))
+                    .contentShape(Rectangle())
             }
         case .bar:
             HStack(spacing: 0) {

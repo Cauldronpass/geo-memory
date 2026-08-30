@@ -159,6 +159,13 @@ struct DayflowNoteTagBar: View {
     /// Add Document bar off the home card. Optional so a host without a
     /// `MarkdownEditorView` to drive can leave it out; nil draws nothing.
     var attach: Binding<MarkdownAttachKind?>? = nil
+    /// Session 78, Notes redesign: the project note's unified bottom band
+    /// renders this bar inline in small caps — no pills (the #tag line is
+    /// visible in the prose itself), no capsules, no own padding or Spacer,
+    /// so the host band lays it out with its siblings. Same menus, same
+    /// logic; only the clothes change. Declared after `attach` so every
+    /// existing call site compiles unchanged.
+    var editorial: Bool = false
 
     @State private var showingAdd = false
     @State private var draft = ""
@@ -177,8 +184,8 @@ struct DayflowNoteTagBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
-            ForEach(tags, id: \.self) { tag in
+        HStack(spacing: editorial ? 17 : 6) {
+            ForEach(editorial ? [] : tags, id: \.self) { tag in
                 // `.systemPurple`, matching `MarkdownTextStorage.styleTag` exactly
                 // (line ~610) rather than SwiftUI's `Color.purple`, which is a
                 // different hue. A tag should not change colour depending on
@@ -235,22 +242,30 @@ struct DayflowNoteTagBar: View {
                 // beside it are not tappable (they are state, the button is the
                 // action — the same split as the Kit chip in Satchel's viewer), so
                 // if this does not read as a control there is no way in at all.
-                HStack(spacing: 3) {
-                    Image(systemName: "number")
-                        .font(.system(size: 10, weight: .bold))
-                    Text(tags.isEmpty ? "Tag" : "Edit")
-                        .font(.system(size: 11.5, weight: .semibold))
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 7, weight: .bold))
-                        .opacity(0.7)
+                if editorial {
+                    Text("# TAG")
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(1.4)
+                        .foregroundStyle(Color.dayflowFaint)
+                        .contentShape(Rectangle())
+                } else {
+                    HStack(spacing: 3) {
+                        Image(systemName: "number")
+                            .font(.system(size: 10, weight: .bold))
+                        Text(tags.isEmpty ? "Tag" : "Edit")
+                            .font(.system(size: 11.5, weight: .semibold))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .bold))
+                            .opacity(0.7)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.10), in: Capsule())
                 }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.secondary.opacity(0.10), in: Capsule())
             }
 
-            Spacer(minLength: 0)
+            if !editorial { Spacer(minLength: 0) }
 
             // Trailing edge, opposite the tag controls: state and "what is this
             // note about" on the left, "put something into it" on the right.
@@ -274,24 +289,32 @@ struct DayflowNoteTagBar: View {
                         attach.wrappedValue = .pdf
                     } label: { Label("PDF from Files", systemImage: "doc.badge.plus") }
                 } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "paperclip")
-                            .font(.system(size: 10, weight: .bold))
-                        Text("Attach")
-                            .font(.system(size: 11.5, weight: .semibold))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 7, weight: .bold))
-                            .opacity(0.7)
+                    if editorial {
+                        Text("ATTACH")
+                            .font(.system(size: 10, weight: .medium))
+                            .tracking(1.4)
+                            .foregroundStyle(Color.dayflowFaint)
+                            .contentShape(Rectangle())
+                    } else {
+                        HStack(spacing: 3) {
+                            Image(systemName: "paperclip")
+                                .font(.system(size: 10, weight: .bold))
+                            Text("Attach")
+                                .font(.system(size: 11.5, weight: .semibold))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 7, weight: .bold))
+                                .opacity(0.7)
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.10), in: Capsule())
                     }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.10), in: Capsule())
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
+        .padding(.horizontal, editorial ? 0 : 16)
+        .padding(.bottom, editorial ? 0 : 8)
         .alert("Add a tag", isPresented: $showingAdd) {
             TextField("travel", text: $draft)
                 .textInputAutocapitalization(.never)

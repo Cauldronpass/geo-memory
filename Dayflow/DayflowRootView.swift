@@ -42,6 +42,16 @@ struct DayflowRootView: View {
     /// card (the + went event-only in the composer round). Observed here for
     /// the tab switch; DayflowInboxView consumes the pending value.
     @State private var quickActions = DayflowQuickActionRouter.shared
+
+    /// Which tab owns a routed destination (Session 78, Notes redesign):
+    /// PROJECT notes open in place on the Notes tab so the tab bar stays —
+    /// one tap to Today from any note. Everything else keeps Today's
+    /// routing machinery.
+    private func tabForPendingDestination() -> DayflowTab {
+        if case .dailyOrProjectNote(let path)? = quickFind.pendingDestination,
+           path.hasPrefix("Notes/Projects/") { return .notes }
+        return .today
+    }
     /// Session 77 — Things-style multi-select, shared by the Today card and
     /// the Upcoming tab; the bar lives HERE so it floats over whichever tab
     /// is selecting. Switching tabs exits selection.
@@ -99,12 +109,18 @@ struct DayflowRootView: View {
             .padding(.bottom, 64) // clear of the tab bar
         }
         .animation(.spring(duration: 0.32), value: quickFind.show)
+        // Session 78 evening — agenda NOTE rows (Today/Upcoming) route by
+        // setting pendingDestination directly with Quick Find closed; land
+        // on the tab that owns the note machinery.
+        .onChange(of: quickFind.pendingDestination != nil) { _, hasPending in
+            if hasPending, !quickFind.show { selectedTab = tabForPendingDestination() }
+        }
         .onChange(of: quickFind.show) { _, showing in
             // A tapped result that needs the Today screen's routing: land on
             // that tab as the card goes; ContentView watches the router and
             // drains the destination.
             if !showing, quickFind.pendingDestination != nil {
-                selectedTab = .today
+                selectedTab = tabForPendingDestination()
             }
         }
         .sheet(item: $selectionWhenRequest) { request in
@@ -115,13 +131,14 @@ struct DayflowRootView: View {
         }
         .onChange(of: quickActions.pending) { _, type in
             if type == "AddTask" { selectedTab = .inbox }
-            if type == "AddEvent" { selectedTab = .today }
+            if type == "AddEvent" || type == "NewNote" { selectedTab = .today }
         }
         // Cold launch from the quick action: pending was set before this view
         // existed, so onChange never fires — check once on appearance.
         .task {
             if quickActions.pending == "AddTask" { selectedTab = .inbox }
-            if quickActions.pending == "AddEvent" { selectedTab = .today }
+            if quickActions.pending == "AddEvent"
+                || quickActions.pending == "NewNote" { selectedTab = .today }
         }
         .onOpenURL { url in
             // Tab selection only — ContentView's own handler does the real

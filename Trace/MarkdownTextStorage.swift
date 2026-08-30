@@ -586,6 +586,12 @@ final class MarkdownTextStorage: NSTextStorage {
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
                 .strikethroughColor: Self.dimColor
             ], range: textRange)
+        } else if line.trimmingCharacters(in: .newlines).hasSuffix("↗") {
+            // Promoted (Session 78): this checkbox became a real Reminders
+            // task — the trailing " ↗" badge the editor's promote swipe
+            // appends. Dim, NO strikethrough: it is not done, it lives
+            // elsewhere now (the day's TO DO, or the note's OPEN TASKS).
+            backing.addAttribute(.foregroundColor, value: Self.dimColor, range: textRange)
         }
 
         // INLINE MARKUP INSIDE A CHECKBOX LINE. Added 2026-08-03.

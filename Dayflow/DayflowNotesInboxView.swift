@@ -154,9 +154,12 @@ struct DayflowNotesInboxView: View {
                     .refreshable { await loadFiles() }
                 }
             }
-            .dayflowCard()
-            .padding(.horizontal, 16)
-            .padding(.bottom, 16)
+            // Embedded in the Notes tab (Session 78 redesign) the panel and
+            // its insets drop away — the tab is already Editorial paper; the
+            // standalone cover (New Note quick action, FAB hold) keeps them.
+            .dayflowCard(enabled: !embedded)
+            .padding(.horizontal, embedded ? 0 : 16)
+            .padding(.bottom, embedded ? 0 : 16)
         }
         .dayflowSkinBackground()
         .task {
@@ -260,19 +263,31 @@ struct DayflowNotesInboxView: View {
     // MARK: Row
 
     private func row(_ file: InboxNoteFile) -> some View {
+        // Redesign (Session 78): serif title over a faint caps date — the
+        // same row anatomy as the tab's Days and Projects lists.
         VStack(alignment: .leading, spacing: 2) {
             Text(file.title)
-                .font(.system(size: 13.5))
+                .font(.dayflowSerif(15, weight: .semibold))
+                .foregroundStyle(Color.dayflowInk)
                 .lineLimit(2)
             if let created = file.created {
-                Text(created, style: .date)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Text(dayflowToFileDate(created))
+                    .font(.system(size: 10.5, weight: .medium))
+                    .tracking(0.8)
+                    .foregroundStyle(Color.dayflowFaint)
             }
         }
         .padding(.vertical, 5)
         .contentShape(Rectangle())
         .onTapGesture { editingTarget = file }
+    }
+
+    private func dayflowToFileDate(_ created: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(created) { return "TODAY" }
+        if cal.isDateInYesterday(created) { return "YESTERDAY" }
+        let f = DateFormatter(); f.dateFormat = "MMM d"
+        return f.string(from: created).uppercased()
     }
 
     // MARK: - Loading

@@ -142,9 +142,11 @@ final class CalendarService {
     }
 
     private var hasAccess: Bool {
-        let status = EKEventStore.authorizationStatus(for: .event)
-        if #available(iOS 17, *) { return status == .fullAccess }
-        return status == .authorized
+        // Housekeeping 2026-08-29: the deployment target is past iOS 17
+        // everywhere this compiles (the widgets check .fullAccess
+        // unguarded), so the deprecated .authorized fallback — and its
+        // warning — retired with the availability dance.
+        EKEventStore.authorizationStatus(for: .event) == .fullAccess
     }
 
     func requestAndFetch() async {

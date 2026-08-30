@@ -35,6 +35,22 @@ struct DayflowUpcomingView: View {
     /// transient state. Folded days keep a faint meeting count so a full
     /// day can't masquerade as an empty one while he's dating tasks into it.
     @AppStorage("dayflow_upcoming_tasks_only") private var tasksOnly = false
+    /// Session 78, D173 — future-meeting prep: Upcoming's meeting rows grow
+    /// the same AGENDA line Today's have (shared DayflowAgendaMatch).
+    /// Folded away with the meetings under the tasks-only lens.
+    @State private var expandedAgendas: Set<String> = []
+    @State private var agendaNotes: [String: [NoteMention]] = [:]
+    @State private var taskWikiTarget: WikiLinkTarget? = nil
+    /// Session 78 evening — the FAB Upcoming never had (David: "shouldnt
+    /// upcoming have a plus button for events like Today? and... no way to
+    /// add a task"). Tap = the event composer; HOLD = the task capture card
+    /// (routes through the quick-action pipe — the Inbox tab opens with the
+    /// cursor ready, the hop automated away).
+    @State private var showEventComposer = false
+    @State private var fabLongPressed = false
+    /// Session 78, D175 — meeting-row swipes, Today's exact pair.
+    @State private var eventDragOffsets: [String: CGFloat] = [:]
+    @State private var meetingTaskEvent: NextCalendarEvent? = nil
     @State private var windowEnd: Date = Date()
     @State private var isLoading = true
     @State private var editingTask: ThingsTask? = nil
@@ -107,6 +123,44 @@ struct DayflowUpcomingView: View {
             }
         }
         .dayflowSkinBackground()
+        .overlay(alignment: .bottomTrailing) {
+            if isTabRoot {
+                Button {
+                    if fabLongPressed { fabLongPressed = false; return }
+                    showEventComposer = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundStyle(Color.dayflowPaper)
+                        .frame(width: 50, height: 50)
+                        .background(Color.dayflowFloatingAction, in: RoundedRectangle(cornerRadius: 2))
+                        .shadow(color: .black.opacity(0.22), radius: 8, x: 0, y: 4)
+                }
+                .buttonStyle(.plain)
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                        fabLongPressed = true
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        DayflowQuickActionRouter.shared.pending = "AddTask"
+                    }
+                )
+                .padding(.trailing, 20)
+                .padding(.bottom, 8)
+            }
+        }
+        .sheet(isPresented: $showEventComposer) {
+            DayflowEventComposer(initialDate: Date()) { _ in
+                Task { await load() }
+            }
+        }
+        .sheet(item: $taskWikiTarget) { target in
+            NavigationStack {
+                DayflowWikiSummaryView(target: target, sourceNoteText: "")
+            }
+        }
+        .sheet(item: $meetingTaskEvent) { event in
+            DayflowMeetingTaskSheet(event: event)
+        }
         .task { await load() }
         .sheet(item: $editingTask) { task in
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
@@ -220,6 +274,7 @@ struct DayflowUpcomingView: View {
             } else {
                 ForEach(eventsByDay[day] ?? []) { ev in
                     eventRow(ev, in: day)
+                    agendaLine(for: ev)
                 }
             }
             ForEach(tasksByDay[day] ?? []) { task in
@@ -229,34 +284,125 @@ struct DayflowUpcomingView: View {
     }
 
     private func eventRow(_ event: NextCalendarEvent, in day: Date) -> some View {
-        Button { selectedEvent = event } label: {
-            HStack(spacing: 12) {
-                Text(event.startTimeString)
-                    .font(.system(size: 12).monospacedDigit())
-                    .foregroundStyle(Color.dayflowMuted)
-                    .frame(width: 62, alignment: .leading)
-                Rectangle()
-                    .fill(event.color)
-                    .frame(width: 8, height: 8)
-                Text(event.title)
-                    .font(.system(size: 13.5))
-                    .foregroundStyle(Color.dayflowInk)
-                    .lineLimit(1)
-                // Session 78 — Today's gap parenthetical, same rule (open
-                // time before the NEXT meeting, >=5 min, nothing after the
-                // last). One grammar for a day's shape, wherever a day is
-                // drawn (David: "wondering about the time available").
-                if let gap = gapLabel(after: event, in: day) {
-                    Text("(\(gap))")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.dayflowFaint)
-                }
-                Spacer(minLength: 0)
+        // NOT a Button (the swipe rule, D175): tap = detail, right = a task
+        // for the meeting, left = its running project note.
+        HStack(spacing: 12) {
+            Text(event.startTimeString)
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundStyle(Color.dayflowMuted)
+                .frame(width: 62, alignment: .leading)
+            Rectangle()
+                .fill(event.color)
+                .frame(width: 8, height: 8)
+            Text(event.title)
+                .font(.system(size: 13.5))
+                .foregroundStyle(Color.dayflowInk)
+                .lineLimit(1)
+            // Session 78 — Today's gap parenthetical, same rule (open
+            // time before the NEXT meeting, >=5 min, nothing after the
+            // last). One grammar for a day's shape, wherever a day is
+            // drawn (David: "wondering about the time available").
+            if let gap = gapLabel(after: event, in: day) {
+                Text("(\(gap))")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.dayflowFaint)
             }
-            .frame(minHeight: 32)
-            .contentShape(Rectangle())
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
+        .frame(minHeight: 32)
+        .contentShape(Rectangle())
+        .onTapGesture { selectedEvent = event }
+        .dayflowMeetingSwipes(event: event,
+                              offsets: $eventDragOffsets,
+                              onTask: { meetingTaskEvent = event })
+    }
+
+    /// Session 78, D173 — the prep line. Same matcher, same look as Today's;
+    /// expanded tasks are this screen's own taskRows (swipes, selection).
+    @ViewBuilder
+    private func agendaLine(for event: NextCalendarEvent) -> some View {
+        // D175 round two: title-anchored fallback, same as Today.
+        let anchorName = DayflowAgendaMatch.agendaAnchor(forTitle: event.title)
+        if let name = Optional(anchorName), !name.isEmpty {
+            let tasks = DayflowAgendaMatch.tasks(linkedTo: name)
+            // A task-less meeting whose running note exists still gets the
+            // line — the note IS agenda (Session 78, the Sarah catch-up).
+            let notePath = DayflowAgendaMatch.meetingNotePath(forTitle: event.title)
+            if !tasks.isEmpty || notePath != nil {
+                let expanded = expandedAgendas.contains(event.id)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        if expanded { expandedAgendas.remove(event.id) }
+                        else { expandedAgendas.insert(event.id) }
+                    }
+                    UISelectionFeedbackGenerator().selectionChanged()
+                } label: {
+                    HStack(spacing: 6) {
+                        Spacer().frame(width: 74)
+                        Text("AGENDA \u{00B7} \(tasks.count + (notePath == nil ? 0 : 1))")
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(1.4)
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 7, weight: .semibold))
+                        Spacer()
+                    }
+                    .foregroundStyle(Color.dayflowFaint)
+                    .frame(minHeight: 20)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if expanded {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(tasks) { task in
+                            taskRow(task, agendaDay: event.startDate)
+                        }
+                        agendaNoteRows(for: event.id, title: event.title)
+                    }
+                    .padding(.leading, 28)
+                    .task {
+                        if agendaNotes[event.id] == nil {
+                            agendaNotes[event.id] = NoteStore.shared.findWikilinkMentions(of: name)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func agendaNoteRows(for eventID: String, title: String) -> some View {
+        let mentions = DayflowAgendaMatch.displayNotes(cached: agendaNotes[eventID], forTitle: title)
+        if !mentions.isEmpty {
+            ForEach(mentions.prefix(4)) { mention in
+                let openable = mention.relativePath.hasPrefix("Calendar/")
+                    || mention.relativePath.hasPrefix("Notes/Projects/")
+                Button {
+                    guard openable else { return }
+                    DayflowQuickFindRouter.shared.pendingDestination =
+                        .dailyOrProjectNote(mention.relativePath)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.dayflowFaint)
+                            .frame(width: 20)
+                        Text(mention.title)
+                            .font(.system(size: 13))
+                            .foregroundStyle(openable ? Color.dayflowMuted : Color.dayflowFaint)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private static func agendaShortDay(_ date: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "MMM d"
+        return f.string(from: date).uppercased()
     }
 
     private func gapLabel(after event: NextCalendarEvent, in day: Date) -> String? {
@@ -270,7 +416,7 @@ struct DayflowUpcomingView: View {
         return m == 0 ? "\(h)h" : "\(h)h \(m)m"
     }
 
-    private func taskRow(_ task: ThingsTask) -> some View {
+    private func taskRow(_ task: ThingsTask, agendaDay: Date? = nil) -> some View {
         // The Trace list's repeating reminders are the person-page birthdays
         // and holidays — the design marks them "from Trace · yearly".
         let isTraceYearly = task.repeats && task.list == ReminderService.listName
@@ -305,8 +451,17 @@ struct DayflowUpcomingView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dayflowFaint)
                 }
+                DayflowTaskWikiChips(task: task) { taskWikiTarget = $0 }
             }
             Spacer(minLength: 0)
+            if let agendaDay, let due = task.date {
+                let after = Calendar.current.startOfDay(for: due)
+                    > Calendar.current.startOfDay(for: agendaDay)
+                Text(Self.agendaShortDay(due))
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .tracking(0.6)
+                    .foregroundStyle(after ? Color.dayflowAccent : Color.dayflowFaint)
+            }
             if let alarm = task.alarmTimeString {
                 HStack(spacing: 3) {
                     Image(systemName: "bell")

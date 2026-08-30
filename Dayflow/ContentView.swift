@@ -84,7 +84,6 @@ struct ContentView: View {
     // Browse menu destination (Upcoming/Calendar/Anytime) — one optional
     // value driving a single .fullScreenCover(item:) rather than three Bool
     // flags. See DayflowModels.swift's "Browse views" section.
-    @State private var browseDestination: DayflowBrowseDestination? = nil
     /// Settings (build order step 6) — added 2026-07-20. See
     /// DayflowSettingsView.swift's header comment for why this became urgent.
     @State private var showSettings = false
@@ -450,28 +449,13 @@ struct ContentView: View {
             // working gesture rather than a new one to re-validate. The small
             // icon on the Daily Note card stays; a gesture is a shortcut, not a
             // replacement for a control you can see.
-            .gesture(
-                DragGesture(minimumDistance: 30)
-                    .onEnded { value in
-                        let horizontal = value.translation.width
-                        let vertical = value.translation.height
-                        // One gate for both directions, deliberately. Written as
-                        // two guards it would be two thresholds to keep in step,
-                        // and they would eventually disagree.
-                        guard abs(horizontal) > abs(vertical) * 1.5,
-                              abs(horizontal) > 50 else { return }
-                        // Session 78: the LEFT swipe (Session 71's Notes
-                        // shortcut) is RETIRED — Notes is a tab, the swipe
-                        // duplicated it, and David has reserved the
-                        // direction for a future function ("perhaps a way
-                        // into Trace when we combine apps"). Right still
-                        // files a note.
-                        guard horizontal > 0 else { return }
-                        inboxStartsInNewNote = true
-                        showNotesInbox = true
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    }
-            )
+            // Session 78, Notes redesign: BOTH horizontal swipes on this
+            // screen are now retired — left went earlier this session
+            // (Notes is a tab), right (file a note) goes with David's own
+            // call: "get rid of the right swipe." Its two visible
+            // replacements: the FAB hold (a blank To File note) and the
+            // "New Note" Home Screen quick action added alongside. Left
+            // stays RESERVED for the future Trace door.
         }
         .sheet(isPresented: $showEventComposer) {
             DayflowEventComposer(initialDate: selectedDate) { savedDay in
@@ -519,6 +503,14 @@ struct ContentView: View {
             guard hasPending else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 guard let destination = quickFindRouter.pendingDestination else { return }
+                // Session 78, Notes redesign: PROJECT notes are the Notes
+                // tab's to open now (in place, tab bar visible — David:
+                // going Today from a note "requires that i hit that and it
+                // goes to the project page then i hit today"). Leave the
+                // value for DayflowNotesView to drain; RootView already
+                // switched the tab.
+                if case .dailyOrProjectNote(let path) = destination,
+                   path.hasPrefix("Notes/Projects/") { return }
                 quickFindRouter.pendingDestination = nil
                 if canOpenFromSearch(destination) {
                     openSearchDestination(destination)
@@ -537,18 +529,6 @@ struct ContentView: View {
             // The swipe lands in a blank note; the Browse menu lands on the
             // list. See that view's own comment on the parameter.
             DayflowNotesInboxView(startInNewNote: inboxStartsInNewNote)
-        }
-        .fullScreenCover(item: $browseDestination) { destination in
-            switch destination {
-            case .upcoming:
-                DayflowUpcomingView()
-            case .anytime:
-                DayflowAnytimeView()
-            case .inbox:
-                DayflowInboxView()
-            case .search:
-                DayflowAgendaSearchView()
-            }
         }
         // Added 2026-07-20 alongside the Browse views' pull-to-refresh and
         // Agenda's new refresh button — see DayflowUpcomingView.swift's header
@@ -613,7 +593,21 @@ struct ContentView: View {
         .onChange(of: ReminderTaskStore.shared.lastFetched) { _, _ in
             resolvePendingTaskLink()
         }
-        .onChange(of: quickActions.pending) { _, _ in consumeAddEventQuickAction() }
+        .onChange(of: quickActions.pending) { old, new in
+            // "AddTask" quick action: the Inbox capture card lives UNDER this
+            // view's fullScreenCovers, so with a note open the card presented
+            // BEHIND it (David, 2026-08-29: long-pressed the app icon while
+            // the Sarah note was up and had to close the note to see the
+            // dialog). Clear the covers; `pending` stays the Inbox's to
+            // consume. Checked on BOTH edges — the set, and the consume that
+            // may already have happened in the Inbox's own onChange first
+            // (delivery order across views is undefined).
+            if new == "AddTask" || (old == "AddTask" && new == nil),
+               isPresentingSomething {
+                route {}
+            }
+            consumeAddEventQuickAction()
+        }
         .onOpenURL { url in
             if url.host == "task" {
                 pendingTaskLinkID = URLComponents(url: url, resolvingAgainstBaseURL: false)?
@@ -677,7 +671,6 @@ struct ContentView: View {
                 let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                     .queryItems?.first(where: { $0.name == "target" })?.value
                 if target == "today" {
-                    browseDestination = nil
                     showNoteFullPage  = false
                     showSettings      = false
                     showEventComposer = false
@@ -822,7 +815,7 @@ struct ContentView: View {
     /// where clearing does more harm than the stuck route it prevents.
     private var isPresentingSomething: Bool {
         showNotes || showNoteFullPage || showNotesInbox || showSettings
-            || showEventComposer || browseDestination != nil || endeavorRoute != nil
+            || showEventComposer || endeavorRoute != nil
             || DayflowQuickFindRouter.shared.show
     }
 
@@ -848,7 +841,6 @@ struct ContentView: View {
             showNotesInbox = false
             showSettings = false
             showEventComposer = false
-            browseDestination = nil
             endeavorRoute = nil
             DayflowQuickFindRouter.shared.show = false
         }
@@ -876,6 +868,17 @@ struct ContentView: View {
     /// the composer, clearing anything already presented (`route`, the same
     /// door the deep link uses).
     private func consumeAddEventQuickAction() {
+        // Session 78, Notes redesign — "New Note" rides the same door: the
+        // right-swipe's replacement for quick homeless capture, next to the
+        // FAB hold.
+        if quickActions.pending == "NewNote" {
+            quickActions.pending = nil
+            route {
+                inboxStartsInNewNote = true
+                showNotesInbox = true
+            }
+            return
+        }
         guard quickActions.pending == "AddEvent" else { return }
         quickActions.pending = nil
         route { showEventComposer = true }

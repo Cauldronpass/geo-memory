@@ -234,29 +234,27 @@ struct DayflowEndeavorListSection: View {
             } label: {
                 // Editorial (Session 77): the shared dashed-circle add
                 // grammar — see DayflowNotesView.newProjectRow.
-                HStack(spacing: 12) {
-                    Circle()
-                        .strokeBorder(Color.dayflowFaint,
-                                      style: StrokeStyle(lineWidth: 1.3, dash: [3, 2.5]))
-                        .frame(width: 20, height: 20)
-                    Text("New Endeavor")
-                        .font(.system(size: 13.5))
-                        .italic()
-                        .foregroundStyle(Color.dayflowFaint)
+                // Redesign (Session 78): the quiet caps grammar the Notes
+                // tab's NEW PROJECT row set.
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("NEW ENDEAVOR")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .tracking(1.6)
                     Spacer()
                 }
+                .foregroundStyle(Color.dayflowFaint)
                 .frame(minHeight: 40)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 14)
+            .padding(.bottom, 6)
 
             if store.endeavors.isEmpty {
                 Text("Nothing yet. A trip, a renovation, anything with a start and an end.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
                     .padding(.top, 8)
             } else {
                 group(current)
@@ -272,14 +270,14 @@ struct DayflowEndeavorListSection: View {
                         withAnimation(.easeInOut(duration: 0.18)) { showFinished.toggle() }
                     } label: {
                         HStack(spacing: 6) {
+                            Text("FINISHED \u{00B7} \(finished.count)")
+                                .font(.system(size: 10, weight: .medium))
+                                .tracking(1.6)
                             Image(systemName: showFinished ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 11, weight: .semibold))
-                            Text("Finished · \(finished.count)")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.system(size: 8, weight: .semibold))
                             Spacer()
                         }
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 20)
+                        .foregroundStyle(Color.dayflowFaint)
                         .padding(.top, 18)
                         .padding(.bottom, showFinished ? 8 : 0)
                         .contentShape(Rectangle())
@@ -302,9 +300,13 @@ struct DayflowEndeavorListSection: View {
         .sheet(isPresented: $showingCreate, onDismiss: { store.reload() }) {
             DayflowEndeavorDetailsSheet(existing: nil)
         }
-        // `item:` keyed on the slug, so the sheet is rebuilt per Endeavor
-        // rather than reusing one screen's state for the next.
-        .sheet(item: Binding(
+        // `item:` keyed on the slug, so the screen is rebuilt per Endeavor
+        // rather than reusing one screen's state for the next. A COVER, not a
+        // sheet — David, Session 78: "the test trip 2 slides up which we
+        // decided we didnt want in this app... more joy to have full view."
+        // The screen's own Done button is the way back (dismiss works the
+        // same under a cover).
+        .fullScreenCover(item: Binding(
             get: { openEndeavorID.map { EndeavorRef(id: $0) } },
             set: { openEndeavorID = $0?.id }
         )) { ref in
@@ -341,19 +343,24 @@ struct DayflowEndeavorListSection: View {
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, endeavor in
                     Button {
-                        openEndeavorID = endeavor.id
+                        // No slide (Session 78 round three): the cover
+                        // presents with animations disabled and the screen
+                        // crossfades itself in — D162's pattern.
+                        var instant = Transaction()
+                        instant.disablesAnimations = true
+                        withTransaction(instant) { openEndeavorID = endeavor.id }
                     } label: {
                         row(endeavor)
                     }
                     .buttonStyle(.plain)
 
                     if index < items.count - 1 {
-                        Divider().padding(.leading, 70)
+                        Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                     }
                 }
             }
-            .dayflowCard()
-            .padding(.horizontal, 16)
+            // Redesign (Session 78): the card panel died with the rest of
+            // the Notes tab's cards — open rows on paper, hairline rules.
         }
     }
 
@@ -375,12 +382,13 @@ struct DayflowEndeavorListSection: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(e.name)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.dayflowSerif(16, weight: .semibold))
                     .foregroundStyle(Color.dayflowInk)
                     .lineLimit(1)
-                Text("\(e.type) · \(endeavorDateLabel(e))")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(.secondary)
+                Text("\(e.type) \u{00B7} \(endeavorDateLabel(e))".uppercased())
+                    .font(.system(size: 10.5, weight: .medium))
+                    .tracking(0.8)
+                    .foregroundStyle(Color.dayflowFaint)
                     .lineLimit(1)
             }
 
@@ -466,22 +474,13 @@ struct DayflowEndeavorView: View {
     /// Notes is genuinely where he now is. Nothing was broken; the wrong verb
     /// was used.
     @State private var pushedNoteTitle: String? = nil
-    /// Set when the push has to wait for the full-screen editor to close, for
-    /// the same reason `pendingWikiNoteURL` exists.
-    @State private var pendingPushNoteTitle: String? = nil
     /// Which attach picker is open, if any. One enum and one sheet rather than
     /// two of each — two `.sheet` modifiers on one view is a coin flip and the
     /// later one wins silently (the Mac's D36, and this view already carries
     /// three sheets).
     @State private var attaching: AttachKind? = nil
-    /// True while the note is open full screen. See `fullScreenEditor`.
-    @State private var fullScreenEditing = false
     /// Used to open a linked note through the app's own `dayflow://note` route.
     @Environment(\.openURL) private var openURL
-    /// Held while the full-screen editor is still dismissing. See
-    /// `resolveWikiLink` — opening the route in the same turn as the dismissal
-    /// puts two presentations in flight and the second one loses.
-    @State private var pendingWikiNoteURL: URL? = nil
 
     private enum AttachKind: String, Identifiable {
         case place, person
@@ -490,6 +489,16 @@ struct DayflowEndeavorView: View {
     /// True while the note editor holds the keyboard. Collapses the header, so
     /// the thing being typed into is not the smallest thing on screen.
     @State private var editorFocused = false
+    /// Session 78 round two — tasks on the endeavor (David: "it wont go
+    /// unused"): the OPEN TASKS band's edit/add sheets, and the clutter fix
+    /// (the three chip rows + documents fold behind one ATTACHED row).
+    @State private var editingTask: ThingsTask? = nil
+    @State private var addingTask = false
+    @State private var attachedExpanded = false
+    /// Crossfade in/out (Session 78 round three) — the cover presents with
+    /// animations disabled (no slide, David's call), so the screen fades
+    /// itself. Copied from DayflowNoteFullPageView (D162).
+    @State private var appeared = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
 
@@ -513,13 +522,17 @@ struct DayflowEndeavorView: View {
             }
         }
         .dayflowSkinBackground()
+        .opacity(appeared ? 1 : 0)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.2)) { appeared = true }
+        }
         .navigationTitle(endeavor?.name ?? "Endeavor")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             // Presented as a sheet, so it needs its own way out — there is no
             // back chevron to fall back on.
             ToolbarItem(placement: .cancellationAction) {
-                Button("Done") { dismiss() }
+                Button("Done") { fadeOut() }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 // A menu rather than a second icon. Two glyphs in a row with no
@@ -665,15 +678,41 @@ struct DayflowEndeavorView: View {
             // line, its pills are the note's own subject, and its Attach button is
             // useful mid-sentence.
             if !editorFocused {
-                // Destinations and People, ported from the Mac rail (D59, D69).
-                // **Chips, not rows.** David on the Mac, about documents: *"It is
-                // just added as a pill I believe."* The phone's idiom for
-                // "records attached to this note" is already the chip row
-                // directly below, and a second visual language two rows apart
-                // would be drift rather than variety.
-                attachedChips(e)
-                SatchelDocumentChips(notePath: e.relativePath, endeavorID: e.id, grouped: true)
-                SatchelAddDocumentButton(notePath: e.relativePath, style: .bar)
+                // OPEN TASKS (Session 78 round two): every open task linked
+                // [[endeavor name]] — same anchor machinery as project notes,
+                // so a promoted checkbox, the plus here, and the compact
+                // sheet all land in one place. Real rows: circle completes,
+                // title opens the standard edit sheet.
+                openTasksSection(e)
+
+                // The clutter fix (David: "destinations, people, notes...
+                // there has to be a better way" on iOS). The three chip rows
+                // and the documents fold behind ONE quiet row, collapsed by
+                // default with the count on the label — the same move
+                // FINISHED and RELATED NOTES already make. The Mac keeps its
+                // rail; a phone screen is for the note and the tasks.
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { attachedExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("ATTACHED \u{00B7} \(attachedCount(e))")
+                            .font(.system(size: 10, weight: .medium))
+                            .tracking(1.6)
+                        Image(systemName: attachedExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                        Spacer()
+                    }
+                    .foregroundStyle(Color.dayflowFaint)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if attachedExpanded {
+                    attachedChips(e)
+                    SatchelDocumentChips(notePath: e.relativePath, endeavorID: e.id, grouped: true)
+                    SatchelAddDocumentButton(notePath: e.relativePath, style: .bar)
+                }
             }
 
             // D4: the editor gets prose only. `body_` is what the store split
@@ -704,7 +743,13 @@ struct DayflowEndeavorView: View {
                 onWikiTap: { name in resolveWikiLink(name) },
                 wikiSuggestions: { query in wikiSuggestions(for: query) },
                 checklistSendEnabled: false,
-                attachTrigger: $attachRequest
+                attachTrigger: $attachRequest,
+                // Checkbox → task (Session 78): swipe right on a ☐ line in
+                // the endeavor's note files a real task linked [[name]] —
+                // it lands in OPEN TASKS above. Checking the dimmed ↗ line
+                // completes it.
+                onPromoteTask: { line, done in promoteEndeavorTask(line, e, done) },
+                onCompletePromoted: { line in completeEndeavorTask(titled: line, e) }
             )
             // **A floor under the preview, Session 72.** David: *"the various
             // notes and documents are great but they start to crowd out the note
@@ -724,161 +769,213 @@ struct DayflowEndeavorView: View {
             // buckets above, which is where the space actually went, the note is
             // a readable preview again rather than a sliver.
             .frame(maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
-            // **The inline editor is a preview, not a typing surface.**
+            // **The inline editor IS the typing surface again (Session 78).**
             //
-            // David: *"When I am clicking the note in an Endeavor, the screen
-            // itself goes up 3/4 of the way from the bottom, but it's really
-            // difficult to navigate in that note. What I'd rather have is the
-            // note moved to full screen with full swiping up and down navigation
-            // and then a way to get back."*
-            //
-            // The collapsing header (2026-07-31) bought back about 240pt and was
-            // the right fix for what it was aimed at, but it was still dividing a
-            // screen between a page and a document. Writing wants the whole
-            // screen; the endeavor page wants to show what is attached to the
-            // note. Those are two screens.
-            //
-            // A transparent tap catcher rather than reacting to `onFocusChange`,
-            // which was the obvious version: focus-then-present shows the
-            // keyboard sliding up under the page for a frame before the cover
-            // arrives over it. Catching the tap first means the inline editor is
-            // never first responder at all and there is nothing to flash.
-            //
-            // Cost, stated: wikilinks and capture markers are no longer tappable
-            // inline. They are tappable full screen, which is where you are one
-            // tap later.
-            .overlay {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { fullScreenEditing = true }
-            }
+            // The full-screen editor cover (Session 72's answer) earned its
+            // keep when the fixed chrome ate ~400pt and typing inline left two
+            // lines. That chrome is gone: the header collapses to one serif
+            // line while focused, and the chip rows now fold behind ATTACHED.
+            // David, on the two-hop that remained: "when i tap the note I get
+            // another upward screen to the full note to type in." Tap, type,
+            // done — and wikilinks and capture markers are tappable inline
+            // again, which the old tap-catcher had traded away.
         }
         .animation(.easeInOut(duration: 0.2), value: editorFocused)
-        .fullScreenCover(isPresented: $fullScreenEditing, onDismiss: {
-            if let title = pendingPushNoteTitle {
-                pendingPushNoteTitle = nil
-                pushedNoteTitle = title
-                return
+        .sheet(item: $editingTask) { task in
+            DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
+                                 initialDate: task.date, initialList: task.list,
+                                 initialNotes: task.notes) {
+                Task { await ReminderTaskStore.shared.refreshAll() }
             }
-            guard let url = pendingWikiNoteURL else { return }
-            pendingWikiNoteURL = nil
-            openURL(url)
-        }) {
-            fullScreenEditor(e)
+        }
+        .sheet(isPresented: $addingTask) {
+            if let e = endeavor {
+                DayflowNoteTaskSheet(anchor: e.name)
+            }
         }
     }
 
-    /// The note on its own, which is what writing in it needs.
-    ///
-    /// `fullScreenCover` rather than a `sheet`: a sheet dismisses on a downward
-    /// drag, and this is a document you scroll down through. The way back is a
-    /// button, deliberately — it cannot fire by accident mid-paragraph.
-    ///
-    /// The same editor with the same closures. **Nothing is passed differently**,
-    /// so a feature that works on one cannot quietly be missing from the other —
-    /// which is exactly how Endeavor notes went without wikilink suggestions for
-    /// three sessions.
-    private func fullScreenEditor(_ e: Endeavor) -> some View {
-        NavigationStack {
-            MarkdownEditorView(
-                text: $body_,
-                onSave: { newBody in save(newBody, into: e) },
-                placeholder: "Summary, plan, open items…",
-                relativePath: e.relativePath,
-                onWikiTap: { name in resolveWikiLink(name) },
-                wikiSuggestions: { query in wikiSuggestions(for: query) },
-                checklistSendEnabled: false,
-                attachTrigger: $attachRequest
-            )
-            .navigationTitle(e.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        fullScreenEditing = false
-                    } label: {
-                        Label("Back", systemImage: "chevron.left")
-                    }
-                }
-            }
-            // Its own copy, on its own host. The one on the page below cannot
-            // present while this is covering it, and a wikilink that opens
-            // nothing is worse than one that is not tappable (D36 is about two
-            // sheets on ONE view; these are two views).
-            .sheet(item: $wikiLinkTarget) { target in
-                NavigationStack {
-                    DayflowWikiSummaryView(target: target, sourceNoteText: body_)
-                }
-            }
+    // `fullScreenEditor` retired (Session 78): the inline editor is the
+    // typing surface again — see the note above the editor's frame.
+
+    /// D162's crossfade out: content fades, then the cover drops with
+    /// animations disabled so no slide sneaks in behind it.
+    private func fadeOut() {
+        withAnimation(.easeInOut(duration: 0.16)) { appeared = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.17) {
+            var instant = Transaction()
+            instant.disablesAnimations = true
+            withTransaction(instant) { dismiss() }
         }
     }
 
     /// The header while the keyboard is up: the name, and nothing else.
     private func compactHeader(_ e: Endeavor) -> some View {
-        Text(e.name)
-            .font(.system(size: 17, weight: .semibold, design: .serif))
-            .foregroundStyle(Color.dayflowInk)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 17)
-            .padding(.vertical, 10)
-            .dayflowCard()
-            .padding(.horizontal, 16)
-            .padding(.bottom, 10)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(e.name)
+                .font(.dayflowSerif(17, weight: .semibold))
+                .foregroundStyle(Color.dayflowInk)
+                .lineLimit(1)
+            Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 24)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
     }
 
     private func header(_ e: Endeavor) -> some View {
         let status = e.status()
+        // Redesign (Session 78): Editorial masthead — cover full-bleed, then
+        // a caps kicker line (TYPE in its tint, STATUS in its own), serif
+        // name, caps date + DAY N, one ink rule. The card panel and capsule
+        // pills retired with the rest of the Notes world's.
         return VStack(alignment: .leading, spacing: 0) {
-            // Above the name on white, as in the approved mockup — not behind it
-            // with a scrim. Text over a photograph is legible only as long as the
-            // photograph cooperates, and a cover David chose himself will not
-            // always.
             if let cover = e.cover {
                 EndeavorCoverImage(path: cover, height: 132, offset: e.coverOffset)
-                    .padding(.horizontal, -17)
-                    .padding(.top, -15)
-                    .padding(.bottom, 15)
+                    .padding(.bottom, 14)
             }
 
-            Text(e.name)
-                .font(.system(size: 27, weight: .semibold, design: .serif))
-                .foregroundStyle(Color.dayflowInk)
-                .padding(.bottom, 9)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 10) {
+                    Text(e.type.uppercased())
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(2.2)
+                        .foregroundStyle(e.typeTint)
+                    Text(status.label.uppercased())
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(2.2)
+                        .foregroundStyle(status.tint)
+                }
+                .padding(.bottom, 5)
 
-            HStack(spacing: 7) {
-                pill(e.type, tint: e.typeTint)
-                pill(status.label, tint: status.tint)
+                Text(e.name)
+                    .font(.dayflowSerif(26, weight: .heavy))
+                    .foregroundStyle(Color.dayflowInk)
+                    .padding(.bottom, 7)
+
+                HStack(spacing: 10) {
+                    Text(endeavorDateLabel(e).uppercased())
+                        .font(.system(size: 10.5, weight: .medium))
+                        .tracking(1.0)
+                        .foregroundStyle(Color.dayflowMuted)
+                    if let countdown = endeavorCountdownLabel(e) {
+                        Text(countdown.uppercased())
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .tracking(1.0)
+                            .foregroundStyle(Color.dayflowAccent)
+                    }
+                }
+
+                Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                    .padding(.top, 10)
             }
-            .padding(.bottom, 11)
-
-            Text(endeavorDateLabel(e))
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(Color.dayflowInk)
-
-            if let countdown = endeavorCountdownLabel(e) {
-                Text(countdown)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-            }
+            .padding(.horizontal, 24)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 17)
-        .padding(.top, 15)
-        .padding(.bottom, 16)
-        .dayflowCard()
-        .padding(.horizontal, 16)
         .padding(.bottom, 13)
     }
 
-    private func pill(_ text: String, tint: Color) -> some View {
-        Text(text)
-            .font(.system(size: 11.5, weight: .semibold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(tint.opacity(0.12), in: Capsule())
+    // `pill(_:tint:)` retired with the header's capsules (Session 78
+    // redesign) — the kicker line carries type and status as caps now.
+
+    // MARK: Tasks on the endeavor (Session 78 round two)
+
+    private func linkedOpenTasks(_ e: Endeavor) -> [ThingsTask] {
+        ReminderTaskStore.shared.allTasks.filter {
+            ($0.notes ?? "").contains("[[\(e.name)]]")
+        }
+    }
+
+    private func attachedCount(_ e: Endeavor) -> Int {
+        e.places.count + unionedPeople(e).count + linkedNotes(e).count
+    }
+
+    private func promoteEndeavorTask(_ line: String, _ e: Endeavor,
+                                     _ completion: @escaping (Bool) -> Void) {
+        Task {
+            let ok = await ReminderTaskStore.shared.addTask(
+                title: line,
+                list: ReminderTaskStore.inboxListName,
+                notes: "[[\(e.name)]]\n")
+            completion(ok)
+        }
+    }
+
+    private func completeEndeavorTask(titled taskTitle: String, _ e: Endeavor) {
+        guard let task = linkedOpenTasks(e).first(where: { $0.title == taskTitle }) else { return }
+        Task { await ReminderTaskStore.shared.complete(taskID: task.id) }
+    }
+
+    @ViewBuilder
+    private func openTasksSection(_ e: Endeavor) -> some View {
+        let tasks = linkedOpenTasks(e)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("OPEN TASKS")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.8)
+                    .foregroundStyle(Color.dayflowFaint)
+                Spacer()
+                Button { addingTask = true } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.dayflowFaint)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add a task")
+            }
+            .padding(.bottom, 4)
+            Rectangle().fill(Color.dayflowInk).frame(height: 1)
+            ForEach(tasks) { task in
+                HStack(spacing: 12) {
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task { await ReminderTaskStore.shared.complete(taskID: task.id) }
+                    } label: {
+                        Circle()
+                            .strokeBorder(Color.dayflowInk, lineWidth: 1.6)
+                            .frame(width: 18, height: 18)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    Button { editingTask = task } label: {
+                        Text(task.title)
+                            .font(.dayflowSerif(15))
+                            .foregroundStyle(Color.dayflowInk)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Spacer(minLength: 0)
+                    Text(endeavorTaskWhenLabel(task))
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(1.0)
+                        .foregroundStyle(task.date == nil ? Color.dayflowFaint : Color.dayflowAccent)
+                }
+                .padding(.vertical, 7)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+                }
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
+    }
+
+    private func endeavorTaskWhenLabel(_ task: ThingsTask) -> String {
+        guard let date = task.date else {
+            return task.list == ReminderTaskStore.somedayListName ? "SOMEDAY" : "ANYTIME"
+        }
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "TODAY" }
+        if cal.isDateInTomorrow(date) { return "TOMORROW" }
+        let f = DateFormatter(); f.dateFormat = "EEE MMM d"
+        return f.string(from: date).uppercased()
     }
 
     /// Places first, then people, deduped, capped at 8 — identical to
@@ -1029,12 +1126,7 @@ struct DayflowEndeavorView: View {
             let title = String(relativePath
                 .dropFirst(projects.count + 1)
                 .dropLast(3))
-            if fullScreenEditing {
-                pendingPushNoteTitle = title
-                fullScreenEditing = false
-            } else {
-                pushedNoteTitle = title
-            }
+            pushedNoteTitle = title
             return
         }
 
@@ -1043,12 +1135,7 @@ struct DayflowEndeavorView: View {
         comps.host   = "note"
         comps.queryItems = [URLQueryItem(name: "path", value: relativePath)]
         guard let url = comps.url else { return }
-        if fullScreenEditing {
-            pendingWikiNoteURL = url
-            fullScreenEditing = false
-        } else {
-            openURL(url)
-        }
+        openURL(url)
     }
 
     /// The notes this endeavor's body links to, in the order it names them.
@@ -1118,7 +1205,7 @@ struct DayflowEndeavorView: View {
                         }) { openNote(n.relativePath) }
                     })
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 24)
         .padding(.bottom, 8)
     }
 
@@ -1162,18 +1249,19 @@ struct DayflowEndeavorView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Text(title.uppercased())
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.8)
+                    .foregroundStyle(Color.dayflowFaint)
                 Spacer()
                 if let onAdd {
                     Button(action: onAdd) {
                         Image(systemName: "plus")
-                            .font(.caption.weight(.semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.dayflowFaint)
                 }
             }
             if names.isEmpty {

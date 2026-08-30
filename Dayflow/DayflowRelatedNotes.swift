@@ -507,10 +507,11 @@ struct DayflowDailyNotePeekSheet: View {
                 Text(DayflowRelatedNotesEngine.dailyNoteHeadline(date)).font(.dayflowSerif(17))
                 Spacer()
                 if confirming, let onLink {
+                    // Day links: description optional (Session 78 round
+                    // three) — no disabled state.
                     Button("Link", action: onLink)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.dayflowInk)
-                        .disabled((linkDescription?.wrappedValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } else {
                     Color.clear.frame(width: 32, height: 32)
                 }
@@ -526,7 +527,7 @@ struct DayflowDailyNotePeekSheet: View {
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(0.4)
                         .foregroundStyle(Color.dayflowColumnLabel)
-                    TextField("Why is this related?", text: linkDescription, axis: .vertical)
+                    TextField("Why is this related? (optional)", text: linkDescription, axis: .vertical)
                         .font(.system(size: 13))
                         .lineLimit(2...4)
                         .padding(10)
@@ -620,7 +621,7 @@ struct DayflowLinkFlowSheet: View {
             }
         case .person:
             if let candidate = linkCandidate {
-                describeAndConfirmSheet(title: candidate) {
+                describeAndConfirmSheet(title: candidate, optionalDescription: true) {
                     onConfirm(.person(candidate), linkDescription)
                 }
             } else {
@@ -628,7 +629,7 @@ struct DayflowLinkFlowSheet: View {
             }
         case .place:
             if let candidate = linkCandidate {
-                describeAndConfirmSheet(title: candidate) {
+                describeAndConfirmSheet(title: candidate, optionalDescription: true) {
                     onConfirm(.place(candidate), linkDescription)
                 }
             } else {
@@ -783,7 +784,13 @@ struct DayflowLinkFlowSheet: View {
         .dayflowSkinBackground()
     }
 
-    private func describeAndConfirmSheet(title: String, onLink: @escaping () -> Void) -> some View {
+    /// `optionalDescription` (Session 78 round three, David's call): Person,
+    /// Place and Day links may land with no relationship text — "Sarah is in
+    /// this project, the end" needs no sentence. Project and Visit keep the
+    /// requirement; there the reason IS the content (a Visit even writes it
+    /// back to Notion).
+    private func describeAndConfirmSheet(title: String, optionalDescription: Bool = false,
+                                         onLink: @escaping () -> Void) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Button("Back") { linkCandidate = nil }
@@ -798,14 +805,17 @@ struct DayflowLinkFlowSheet: View {
                 }
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.dayflowInk)
-                .disabled(linkDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!optionalDescription
+                          && linkDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
             .padding(.bottom, 4)
             Form {
                 Section {
-                    TextField("Why is this related?", text: $linkDescription, axis: .vertical)
+                    TextField(optionalDescription ? "Why is this related? (optional)"
+                                                  : "Why is this related?",
+                              text: $linkDescription, axis: .vertical)
                         .lineLimit(3...6)
                 } header: {
                     Text("Relationship")

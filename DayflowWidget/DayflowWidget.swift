@@ -476,9 +476,9 @@ struct DayflowProvider: AppIntentTimelineProvider {
     /// granted, so this is the only way to tell those two apart for the
     /// "Calendar unavailable" vs. "Nothing on your calendar" empty states.
     private static var hasCalendarAccess: Bool {
-        let status = EKEventStore.authorizationStatus(for: .event)
-        if #available(iOS 17, *) { return status == .fullAccess }
-        return status == .authorized
+        // Housekeeping 2026-08-29: same retirement as CalendarService's —
+        // the deployment target is past iOS 17, .fullAccess only.
+        EKEventStore.authorizationStatus(for: .event) == .fullAccess
     }
 
     // MARK: Weather (see file header for the full strategy + manual setup)

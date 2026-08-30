@@ -115,6 +115,10 @@ struct DayflowWikiSummaryView: View {
     /// to a spinner for the (usually sub-second, occasionally a couple
     /// seconds) Claude round trip so the tap doesn't look unresponsive.
     @State private var isResolvingLogInteractionPrefill = false
+    /// Session 78, D172 — the mirror of the 1:1 agenda: this sheet shows
+    /// every open task carrying the record's [[wikilink]], so "all of
+    /// Brenda's items" is her sheet, meeting or no meeting.
+    @State private var linkedEditingTask: ThingsTask? = nil
     @State private var isResolvingVisitPrefill = false
 
     init(target: WikiLinkTarget, sourceNoteText: String? = nil) {
@@ -241,6 +245,15 @@ struct DayflowWikiSummaryView: View {
                 DayflowWikiSummaryView(target: nested)
             }
         }
+        .sheet(item: $linkedEditingTask) { task in
+            // Session 78, D172 — an Open Tasks row taps into the standard
+            // edit sheet; the store refresh redraws the section on return.
+            DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
+                                 initialDate: task.date, initialList: task.list,
+                                 initialNotes: task.notes) {
+                Task { await ReminderTaskStore.shared.refreshAll() }
+            }
+        }
         .sheet(isPresented: Binding(
             get: { tappedCaptureID != nil },
             set: { if !$0 { tappedCaptureID = nil } }
@@ -359,6 +372,7 @@ struct DayflowWikiSummaryView: View {
                 Section { Text(err).foregroundStyle(.red).font(.caption) }
             }
         } else {
+            openTasksSection(for: place.name)
             Section {
                 if !place.category.isEmpty { LabeledContent("Category", value: place.category) }
                 if !place.address.isEmpty { LabeledContent("Address", value: place.address) }
@@ -731,6 +745,7 @@ struct DayflowWikiSummaryView: View {
                 }
                 if let met = detail.howWeMet, !met.isEmpty { LabeledContent("How We Met", value: met) }
             }
+            openTasksSection(for: detail.name)
             if let phone = detail.phone, !phone.isEmpty {
                 // Session 78, D166 — Call/Text wiring this stand-in view
                 // never had (the file's own header flagged it): David's
@@ -769,6 +784,53 @@ struct DayflowWikiSummaryView: View {
                 Section("Tags") { Text(detail.tags.joined(separator: ", ")) }
             }
         }
+    }
+
+    // MARK: Open tasks (Session 78, D172)
+
+    private func linkedOpenTasks(for name: String) -> [ThingsTask] {
+        ReminderTaskStore.shared.allTasks.filter {
+            ($0.notes ?? "").contains("[[\(name)]]")
+        }
+    }
+
+    @ViewBuilder
+    private func openTasksSection(for name: String) -> some View {
+        let tasks = linkedOpenTasks(for: name)
+        if !tasks.isEmpty {
+            Section("Open Tasks") {
+                ForEach(tasks) { task in
+                    Button {
+                        linkedEditingTask = task
+                    } label: {
+                        HStack(spacing: 10) {
+                            Circle()
+                                .strokeBorder(Color.secondary, lineWidth: 1.4)
+                                .frame(width: 16, height: 16)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(task.title)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Text(taskWhenLabel(task))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func taskWhenLabel(_ task: ThingsTask) -> String {
+        guard let date = task.date else {
+            return task.list == ReminderTaskStore.somedayListName ? "Someday" : "Anytime"
+        }
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "Today" }
+        if cal.isDateInTomorrow(date) { return "Tomorrow" }
+        let f = DateFormatter(); f.dateFormat = "EEE MMM d"
+        return f.string(from: date)
     }
 
     @ViewBuilder
