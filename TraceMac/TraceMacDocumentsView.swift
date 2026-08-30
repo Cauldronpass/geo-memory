@@ -3168,14 +3168,21 @@ struct DocDateFilterPopover: View {
                 Text("Year").font(.caption2).foregroundStyle(.tertiary)
                 HStack(spacing: 6) {
                     ForEach(availableYears, id: \.self) { year in
+                        // Same hoist as the month grid below, applied to its twin
+                        // before it tips over too — identical construct, and it was
+                        // sitting on the same headroom.
+                        let isOn: Bool = (selectedYear == year)
+                        let fill: Color = isOn ? Color.accentColor.opacity(0.15)
+                                               : Color.secondary.opacity(0.09)
+                        let tint: Color = isOn ? Color.accentColor : Color.secondary
                         Button(String(year)) {
-                            if selectedYear == year { selectedYear = nil }
+                            if isOn { selectedYear = nil }
                             else { selectedYear = year; selectedMonth = nil }
                         }
                         .font(.caption)
                         .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(selectedYear == year ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.09))
-                        .foregroundStyle(selectedYear == year ? Color.accentColor : Color.secondary)
+                        .background(fill)
+                        .foregroundStyle(tint)
                         .clipShape(Capsule())
                         .buttonStyle(.plain)
                     }
@@ -3187,14 +3194,24 @@ struct DocDateFilterPopover: View {
                 Text("Month").font(.caption2).foregroundStyle(.tertiary)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 6) {
                     ForEach(availableMonths, id: \.self) { month in
+                        // Session 79: the two inline colour ternaries below used to
+                        // live in `.background(...)` / `.foregroundStyle(...)`, and
+                        // this expression type-checked only just inside the budget.
+                        // Hoisting them to typed lets is what the compiler asks for
+                        // when it says "break the expression into distinct
+                        // sub-expressions" — nothing about the rendering changes.
+                        let isOn: Bool = (selectedMonth == month)
+                        let fill: Color = isOn ? Color.accentColor.opacity(0.15)
+                                               : Color.secondary.opacity(0.09)
+                        let tint: Color = isOn ? Color.accentColor : Color.secondary
                         Button(monthNames[month - 1]) {
-                            selectedMonth = selectedMonth == month ? nil : month
+                            selectedMonth = isOn ? nil : month
                         }
                         .font(.caption)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
-                        .background(selectedMonth == month ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.09))
-                        .foregroundStyle(selectedMonth == month ? Color.accentColor : Color.secondary)
+                        .background(fill)
+                        .foregroundStyle(tint)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .buttonStyle(.plain)
                     }

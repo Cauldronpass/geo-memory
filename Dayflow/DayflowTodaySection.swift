@@ -676,7 +676,8 @@ struct DayflowTodaySection: View {
                             // proves distracting (his stated reservation).
                             RoundedRectangle(cornerRadius: 3)
                                 .fill(DayflowMeetingColor.tintTrackBlocks
-                                      ? (DayflowMeetingColor.classify(ev.title).block ?? Color.dayflowNoteText)
+                                      ? (DayflowMeetingColor.classify(ev.title, organizer: ev.organizerName).block
+                                         ?? Color.dayflowNoteText)
                                       : Color.dayflowNoteText)
                                 .frame(width: max(4, width * CGFloat(end - start) / span), height: 6)
                                 .offset(x: width * CGFloat(start - Self.trackStart) / span, y: 5)
@@ -721,7 +722,8 @@ struct DayflowTodaySection: View {
             // ported from his vault reference) — the calendar-source color
             // it replaces meant nothing. No keyword match renders plain.
             Rectangle()
-                .fill(DayflowMeetingColor.classify(event.title).chip ?? Color.dayflowFaint.opacity(0.55))
+                .fill(DayflowMeetingColor.classify(event.title, organizer: event.organizerName).chip
+                      ?? Color.dayflowFaint.opacity(0.55))
                 .frame(width: 8, height: 8)
             Text(event.title)
                 .font(.system(size: 13.5))

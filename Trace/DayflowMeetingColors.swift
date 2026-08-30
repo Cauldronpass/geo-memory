@@ -64,7 +64,13 @@ enum DayflowMeetingColor {
 
     // MARK: Classification
 
+    // "usbank" (squashed) catches email-shaped organizers like
+    // invites@usbank.com; the dotted and Bancorp forms are how invites
+    // write the name (David, 2026-08-29). Word-boundary matching keeps the
+    // short forms honest.
     private static let banks = ["boa", "hsbc", "citi", "bnp", "bmo", "us bank",
+                                "u.s. bank", "u.s. bancorp", "us bancorp",
+                                "bancorp", "usbank",
                                 "associated bank", "jpmorgan", "wells fargo", "chase"]
     private static let social = ["catch up", "catch-up", "1:1", "1 on 1", "check-in",
                                  "check in", "touch base", "lunch", "dinner", "happy hour"]
@@ -79,7 +85,7 @@ enum DayflowMeetingColor {
                                  "sgot", "ignite", "sustainability", "ev8",
                                  "transformation studio", "prokura", "kos", "perl",
                                  "foresight", "innovation & ventures", "silicon foundry",
-                                 "hoptek"]
+                                 "sif", "hoptek"]
     private static let tealKeywords = ["performance review", "annual review", "interview",
                                "hiring", "onboarding", "recruiting", "hr", "candidate"]
     private static let blueKeywords = ["forecast", "3+9", "6+6", "9+3", "12+0"]
@@ -88,7 +94,36 @@ enum DayflowMeetingColor {
     private static let orangeKeywords = ["commute", "drive", "uber", "flight", "airport",
                                  "train", "transit"]
 
-    static func classify(_ title: String) -> DayflowMeetingColor {
+    // PERFORMANCE (2026-08-29 night — David: "the slow aspect of this app
+    // now is the worst part"). classify() compiled up to ~85
+    // NSRegularExpressions PER TITLE PER RENDER; Today and Upcoming call it
+    // for every row and every track block, and a tab switch re-evaluates
+    // both, so every switch paid thousands of regex compiles. Two layers
+    // now: each keyword's regex compiles exactly once for the app's life
+    // (patternCache), and each title's verdict is memoized (verdictCache).
+    // Both are touched only from SwiftUI body evaluation — main thread —
+    // hence nonisolated(unsafe) with no lock. verdictCache is capped
+    // defensively; a personal calendar holds hundreds of distinct titles,
+    // not tens of thousands.
+    nonisolated(unsafe) private static var patternCache: [String: NSRegularExpression] = [:]
+    nonisolated(unsafe) private static var verdictCache: [String: DayflowMeetingColor] = [:]
+
+    static func classify(_ title: String, organizer: String? = nil) -> DayflowMeetingColor {
+        let key = organizer.map { title + "\u{1F}" + $0 } ?? title
+        if let cached = verdictCache[key] { return cached }
+        let verdict = classifyUncached(title, organizer: organizer)
+        if verdictCache.count > 2000 { verdictCache.removeAll(keepingCapacity: true) }
+        verdictCache[key] = verdict
+        return verdict
+    }
+
+    private static func classifyUncached(_ title: String, organizer: String?) -> DayflowMeetingColor {
+        // Bank ORGANIZER rule (2026-08-29, David: "Brewers vs Cubs is a bank
+        // sponsored event since US Bank is the invitor... should be mint").
+        // The invitor is the signal a title keyword can't carry — a title
+        // rule would tint his personal Brewers games too. Written into the
+        // vault color key the same day.
+        if let organizer, matches(organizer, banks) { return .mint }
         // Bank pre-check (doc, 2026-05-03): an institution name always wins —
         // even over yellow's separator patterns.
         if matches(title, banks) { return .mint }
@@ -118,11 +153,18 @@ enum DayflowMeetingColor {
     /// also handles "f&a" and "3+9" cleanly.
     private static func matches(_ title: String, _ keywords: [String]) -> Bool {
         keywords.contains { kw in
-            guard let regex = try? NSRegularExpression(
-                pattern: "(?<![\\p{L}\\p{N}])"
-                    + NSRegularExpression.escapedPattern(for: kw)
-                    + "(?![\\p{L}\\p{N}])",
-                options: [.caseInsensitive]) else { return false }
+            let regex: NSRegularExpression
+            if let cached = patternCache[kw] {
+                regex = cached
+            } else {
+                guard let built = try? NSRegularExpression(
+                    pattern: "(?<![\\p{L}\\p{N}])"
+                        + NSRegularExpression.escapedPattern(for: kw)
+                        + "(?![\\p{L}\\p{N}])",
+                    options: [.caseInsensitive]) else { return false }
+                patternCache[kw] = built
+                regex = built
+            }
             return regex.firstMatch(in: title,
                                     range: NSRange(title.startIndex..., in: title)) != nil
         }

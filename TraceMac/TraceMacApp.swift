@@ -8,7 +8,7 @@ import SwiftUI
 struct TraceMacApp: App {
     @State private var noteStore = NoteStore.shared
     @State private var notionService = NotionService()
-    @State private var selectedSection: MacSection? = .notes
+    @State private var selectedSection: MacSection? = .today
     /// Held here only so the Go menu can print the current shortcut in its
     /// title. Registration happens in `TraceMacContentView`'s launch task; the
     /// Carbon hot key is app-wide and outlives the window, so closing the window

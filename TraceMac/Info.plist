@@ -2,32 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Spotlight (2026-08-25). SwiftUI's onContinueUserActivity only receives
-	     activity types declared here; without this, a Spotlight result opens the
-	     app and routes nowhere. Value is CSSearchableItemActionType. -->
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>com.apple.corespotlightitem</string>
 	</array>
-	<!--
-	  Deliberately empty. Everything else comes from GENERATE_INFOPLIST_FILE and
-	  the INFOPLIST_KEY_ build settings; this file exists only as a place for
-	  keys those settings cannot express.
-
-	  It briefly held two, both added 2026-08-10 and both removed the next day:
-
-	  - CFBundleDocumentTypes, so files could be dropped on the Dock icon.
-	  - NSServices, for an "Add to Satchel" item in Finder's Services menu.
-
-	  Neither worked, across eight attempts — see Dayflow-HANDOFF.md, Session 69
-	  addenda 9 and 10. Both were removed rather than left in place, and the
-	  reason is the same for each: a declared type makes the Dock icon HIGHLIGHT
-	  on drag and then do nothing, and a registered service puts a menu item in
-	  Finder that does nothing. Each is a control that advertises an action it
-	  cannot perform, which is worse than the absence it replaced.
-
-	  Files reach Satchel through the window drop (TraceMacDocumentsView) or the
-	  two Dropzone actions. Do not re-add either key without new information.
-	-->
 </dict>
 </plist>

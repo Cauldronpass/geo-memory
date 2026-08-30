@@ -24,6 +24,13 @@ import UniformTypeIdentifiers
 // MARK: - Sidebar sections
 
 enum MacSection: String, CaseIterable, Identifiable {
+    // Session 79, D186. THE DAY group: the Mac mimics the iOS app's shape
+    // rather than inventing one, so Today and Upcoming are destinations of
+    // their own and Tasks is a third, all above the RECORDS sections that
+    // were here before.
+    case today     = "Today"
+    case upcoming  = "Upcoming"
+    case tasks     = "Tasks"
     /// One destination covering Daily, Weekly and Projects. The tab lives in
     /// `TraceMacNotesView`'s own `@State` — see the note there for why.
     case notes     = "Notes"
@@ -42,13 +49,24 @@ enum MacSection: String, CaseIterable, Identifiable {
     /// documents, a place's documents) also stay "Documents", because there they
     /// describe the contents rather than name the app.
     case documents = "Satchel"
-    case inbox     = "Inbox"
+    /// Session 79, D186. Was "Inbox". This row is NOTE captures from the menu
+    /// bar and the phone (`Notes/Inbox/`) — the identical folder the iOS Notes
+    /// tab's TO FILE segment reads, so the word is not new, only newly
+    /// consistent. The rename frees "Inbox" for the Reminders task pool inside
+    /// TASKS: two piles, two doors, no collision. The CASE stays `inbox`
+    /// because nothing persists or reconstructs a `MacSection` from its
+    /// rawValue (checked) and renaming it would churn every call site for a
+    /// label change.
+    case inbox     = "To File"
     case archive   = "Archive"
 
     var id: String { rawValue }
 
     var icon: String {
         switch self {
+        case .today:     return "sun.max"
+        case .upcoming:  return "calendar"
+        case .tasks:     return "list.bullet"
         case .notes:     return "book.pages"
         case .endeavors: return "flag"
         case .directory: return "person.2"
@@ -59,21 +77,13 @@ enum MacSection: String, CaseIterable, Identifiable {
         }
     }
 
-    var iconColor: Color {
-        switch self {
-        case .notes:     return .traceOrange
-        case .endeavors: return .indigo
-        case .directory: return .indigo
-        // Session 64: these four were frozen hex while `.directory` and
-        // `.inbox` two lines away used SwiftUI system colours and adapted
-        // correctly. Two rows right, five wrong, in one switch. See
-        // MacColor.swift.
-        case .activity:  return MacPalette.green
-        case .documents: return MacPalette.blue        // satchelBlue
-        case .inbox:     return .gray
-        case .archive:   return MacPalette.brown
-        }
-    }
+    // `iconColor` retired, Session 79 (D186). It painted seven sidebar rows in
+    // six different colours — orange, indigo, indigo, green, blue, gray,
+    // brown — against a design language with exactly ONE accent, which is why
+    // the Editorial sidebar could not use it and why nothing else ever did
+    // (its only caller was `row(_:)`, retired in the same change). The Session
+    // 64 audit that fixed two of those seven for contrast is preserved in
+    // MacColor.swift's header; this is the rest of that finding, applied.
 }
 
 // MARK: - Root view
@@ -105,6 +115,11 @@ struct TraceMacContentView: View {
     // Not a new idea: `pendingHorizonsFile` above has worked this way all along.
     // It was the one deep link with no timing hack in it, and it was the model
     // for these three.
+    /// The day Today is showing. Held HERE rather than inside
+    /// `TraceMacTodayView` so the arrow-key monitor installed by this view can
+    /// move it, and so the day survives a trip to Satchel and back.
+    @State private var dayInView: Date = Calendar.current.startOfDay(for: Date())
+
     @State private var pendingPersonID: String? = nil
     @State private var pendingPlaceID: String? = nil
     @State private var pendingDocumentPath: String? = nil
@@ -247,7 +262,7 @@ struct TraceMacContentView: View {
         // at by replay is not, and `MacNavigator.record` drops the second by
         // equality rather than by a flag.
         .onChange(of: selectedSection) { _, new in
-            navigator.record(.section(new ?? .notes))
+            navigator.record(.section(new ?? .today))
         }
         // Session 73. Satchel's filter-pane shortcut, user-settable in Settings.
         //
@@ -277,6 +292,24 @@ struct TraceMacContentView: View {
             }
         }
         .onDisappear { MacSatchelFilterShortcut.shared.uninstall() }
+        // Session 79. Arrow keys, restoring what `List(selection:)` gave for
+        // free before the Editorial sidebar replaced it — and giving the day a
+        // keyboard it never had. Capturing `self` in an escaping closure is
+        // safe for the same reason the block above says it is: this is the root
+        // view, its `@State`/`@Binding` storage outlives any closure it hands
+        // out, and `install` replaces its handler rather than stacking
+        // monitors. Do not copy the pattern into a view that comes and goes.
+        .onAppear {
+            MacEditorialArrowKeys.shared.install { direction in
+                switch direction {
+                case .up:    moveSection(-1)
+                case .down:  moveSection(1)
+                case .left:  stepDay(-1)
+                case .right: stepDay(1)
+                }
+            }
+        }
+        .onDisappear { MacEditorialArrowKeys.shared.uninstall() }
         // The header arrows, consumed here because this is the view that holds
         // the pending-link state a move is made of.
         .onChange(of: navigator.pendingReplay) { _, place in
@@ -470,36 +503,106 @@ struct TraceMacContentView: View {
     /// `selectedSection` is bound **directly**. The derived group binding went
     /// with the tabs — it was the newest and least proven thing in the change,
     /// and none of this needs it.
+    /// Session 79, D186. The system `List(selection:)` sidebar is retired for
+    /// the same reason the iOS tab bar was (D181): a floating system control
+    /// speaking macOS's visual language, at the edge of a page speaking
+    /// Editorial's. This is that tab bar stood on its end — paper panel, one
+    /// hairline, small-caps wordmarks, monochrome glyphs, and the ONE accent
+    /// used for exactly one thing: where you are.
+    ///
+    /// **What this costs.** `List(selection:)` gave arrow-key navigation and
+    /// system focus rings for free, and a hand-built column does not. Clicking
+    /// works, the hot key still works, and the Go menu still works — but if
+    /// keyboard traversal of the sidebar turns out to matter, the answer is to
+    /// add a focusable/`onMoveCommand` layer here, not to go back to `List`.
     private var sidebar: some View {
-        List(selection: $selectedSection) {
-            // Session 64: `row(.home)` removed. See the detail switch below.
-            row(.notes).tag(MacSection.notes)
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Trace")
+                .font(.system(size: 21, weight: .heavy, design: .serif))
+                .foregroundStyle(MacEditorialColor.ink)
+                .padding(.horizontal, 20)
+                .padding(.top, 22)
+                .padding(.bottom, 11)
+            MacEditorialRule.ink
+                .padding(.horizontal, 20)
 
-            row(.endeavors).tag(MacSection.endeavors)
+            groupLabel("The day")
+            navRow(.today)
+            navRow(.upcoming)
+            navRow(.tasks)
 
-            row(.directory).tag(MacSection.directory)
+            groupLabel("Records")
+            navRow(.notes)
+            navRow(.endeavors)
+            navRow(.directory)
+            navRow(.activity)
+            navRow(.documents)
+            navRow(.inbox)
+            navRow(.archive)
 
-            row(.activity).tag(MacSection.activity)
-
-            // No group headers left: every group became a row of its own, which
-            // is what made the column shorter rather than merely rearranged.
-            Section {
-                row(.documents).tag(MacSection.documents)
-                row(.inbox).tag(MacSection.inbox)
-                row(.archive).tag(MacSection.archive)
-            }
+            Spacer(minLength: 0)
         }
-        .listStyle(.sidebar)
-        .frame(width: 200)
+        .frame(width: MacEditorialLayout.sidebarWidth, alignment: .leading)
+        .frame(maxHeight: .infinity)
+        .background(MacEditorialColor.panel)
     }
 
-    private func row(_ section: MacSection) -> some View {
-        Label {
-            Text(section.rawValue)
-        } icon: {
+    /// Up/down through the sidebar in the order it is drawn, which is
+    /// `MacSection.allCases` — the enum's case order IS the sidebar's order, and
+    /// keeping it that way is cheaper than a second list to fall out of step.
+    /// Clamped rather than wrapped: arriving back at Today by pressing down
+    /// eleven times is a surprise, and nothing else in this app wraps.
+    private func moveSection(_ delta: Int) {
+        let all = MacSection.allCases
+        let current: MacSection = selectedSection ?? .today
+        guard let index = all.firstIndex(of: current) else { return }
+        let next: Int = min(max(index + delta, 0), all.count - 1)
+        guard next != index else { return }
+        selectedSection = all[next]
+    }
+
+    /// Left/right step the day, but only while Today is the section showing —
+    /// on Satchel or Directory an arrow should do nothing rather than silently
+    /// move a day you cannot see.
+    private func stepDay(_ delta: Int) {
+        guard (selectedSection ?? .today) == .today else { return }
+        let cal = Calendar.current
+        guard let moved = cal.date(byAdding: .day, value: delta, to: dayInView) else { return }
+        dayInView = cal.startOfDay(for: moved)
+    }
+
+    private func groupLabel(_ text: String) -> some View {
+        Text(text)
+            .editorialGroupLabel()
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 7)
+    }
+
+    private func navRow(_ section: MacSection) -> some View {
+        // Every conditional resolved to a typed `let` before it reaches a
+        // modifier — see the header note in TraceMacTodayView.swift for the
+        // build this rule was bought with.
+        let active: Bool = (selectedSection ?? .today) == section
+        let tint: Color = active ? MacEditorialColor.accent : MacEditorialColor.faint
+        return HStack(spacing: 10) {
             Image(systemName: section.icon)
-                .foregroundStyle(section.iconColor)
+                .font(.system(size: 12))
+                .foregroundStyle(tint)
+                .frame(width: 16)
+            Text(section.rawValue)
+                .editorialNavLabel(active: active)
+            Spacer(minLength: 0)
         }
+        // Session 79: the accent left bar is retired at David's call. The
+        // accent on the label is already the whole signal, and a second mark
+        // saying the same thing is the kind of belt-and-braces this design
+        // spent D181 removing.
+        .padding(.leading, 20)
+        .padding(.trailing, 20)
+        .frame(height: 30)
+        .contentShape(Rectangle())
+        .onTapGesture { selectedSection = section }
     }
 
     // MARK: - Detail
@@ -524,7 +627,21 @@ struct TraceMacContentView: View {
         //
         // `nil` (deselecting in the sidebar List) now lands on Notes, which is
         // the same place launching lands.
-        case .notes, nil:
+        // Session 79, D186. `nil` (and launch) lands on Today, not Notes — the
+        // day is what the app is opened for. Notes keeps its own case below.
+        case .today, nil:
+            TraceMacTodayView(date: $dayInView)
+                .environment(noteStore)
+                .environment(notionService)
+        case .upcoming:
+            MacEditorialSoon(kicker: "Next two weeks",
+                             title: "Upcoming",
+                             line: "The two-week spread lands next.")
+        case .tasks:
+            MacEditorialSoon(kicker: "Reminders",
+                             title: "Tasks",
+                             line: "Inbox, Anytime, Someday and the rail land next.")
+        case .notes:
             TraceMacNotesView(deepLinkFile: $pendingHorizonsFile,
                               deepLinkNotePath: $pendingNotePath)
                 .environment(noteStore)

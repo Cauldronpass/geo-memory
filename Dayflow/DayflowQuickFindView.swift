@@ -514,9 +514,21 @@ struct DayflowQuickFindView: View {
                     .font(.system(size: 16))
                     .foregroundStyle(selected ? Color.dayflowAccent : Color.dayflowFaint)
             } else {
+                // Tappable (2026-08-29 night — David: "Anytime list doesnt
+                // allow me to check anything off"): the circle was
+                // decoration. Its own onTapGesture wins over the row's
+                // (innermost first), so tapping it completes rather than
+                // opening the edit sheet.
                 Circle()
                     .strokeBorder(Color.dayflowInk, lineWidth: 1.5)
                     .frame(width: 16, height: 16)
+                    .padding(6)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task { await ReminderTaskStore.shared.complete(taskID: task.id) }
+                    }
+                    .padding(-6)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(task.title)
