@@ -44,7 +44,7 @@ struct MacMeetingRow: View {
 
     @Environment(NotionService.self) private var notion
     @State private var picking = false
-    /// Bumped when a link is made, so the WHERE row re-reads it. `MacPlaceLink`
+    /// Bumped when a link is made, so the WHERE row re-reads it. `PlaceLink`
     /// stores in `UserDefaults`, which SwiftUI does not observe.
     @State private var linkToken = 0
     /// When YOUR next meeting starts after this one ends — nil if this is the
@@ -274,7 +274,7 @@ struct MacMeetingRow: View {
     @ViewBuilder
     private func whereValue(_ location: String) -> some View {
         let _ = linkToken
-        let linked: Place? = MacPlaceLink.place(for: location, in: notion.places)
+        let linked: Place? = PlaceLink.place(for: location, in: notion.places)
 
         VStack(alignment: .leading, spacing: 3) {
             if let linked {
@@ -310,7 +310,7 @@ struct MacMeetingRow: View {
                 }
 
                 // Kept only when it says something the record does not.
-                if MacPlaceLink.normalise(location) != MacPlaceLink.normalise(linked.name) {
+                if PlaceLink.normalise(location) != PlaceLink.normalise(linked.name) {
                     Text(location)
                         .font(MacEditorialType.meta)
                         .foregroundStyle(MacEditorialColor.faint)
@@ -332,7 +332,7 @@ struct MacMeetingRow: View {
         }
         .sheet(isPresented: $picking) {
             MacPlacePicker(location: location) { placeID in
-                MacPlaceLink.link(location, to: placeID)
+                PlaceLink.link(location, to: placeID)
                 linkToken += 1
             }
             .environment(notion)

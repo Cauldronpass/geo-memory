@@ -52,6 +52,11 @@ struct DayflowUpcomingView: View {
     @State private var eventDragOffsets: [String: CGFloat] = [:]
     @State private var meetingTaskEvent: NextCalendarEvent? = nil
     @State private var windowEnd: Date = Date()
+    /// Session 81 (D240, D195's port) — the fortnight's anchor. nil = now
+    /// (start tomorrow); set by the masthead's month grid. The spread is
+    /// always fourteen days; only where it STARTS moves.
+    @State private var anchor: Date? = nil
+    @State private var monthOpen = false
     @State private var isLoading = true
     @State private var editingTask: ThingsTask? = nil
     @State private var selectedEvent: NextCalendarEvent? = nil
@@ -65,12 +70,28 @@ struct DayflowUpcomingView: View {
 
     private static let windowLength = 14
 
+    private var defaultStart: Date {
+        let cal = Calendar.current
+        return cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: Date())) ?? Date()
+    }
+
+    private var kickerText: String {
+        guard let anchor else { return "NEXT TWO WEEKS" }
+        let f = DateFormatter(); f.dateFormat = "MMMM d"
+        return "TWO WEEKS FROM \(f.string(from: anchor).uppercased())"
+    }
+
     /// Dated tasks in the window, grouped by day — computed straight off the
     /// live store so completions prune rows on their own.
     private var tasksByDay: [Date: [ThingsTask]] {
         let cal = Calendar.current
         var grouped: [Date: [ThingsTask]] = [:]
-        for task in ReminderTaskStore.shared.upcomingTasks {
+        // `allTasks`, not `upcomingTasks` (Session 81, D240): the store's
+        // upcoming pool stops 60 days out (its own window), and an anchored
+        // fortnight past that line would show the day's events and silently
+        // NO tasks — a screen quietly lying about what September holds. The
+        // full pool is already in memory; `daysWithContent` bounds rendering.
+        for task in ReminderTaskStore.shared.allTasks {
             guard let date = task.date else { continue }
             grouped[cal.startOfDay(for: date), default: []].append(task)
         }
@@ -86,7 +107,7 @@ struct DayflowUpcomingView: View {
 
     /// The next dated reminder past the two-week window — the footer's date.
     private var nextBeyondWindow: Date? {
-        ReminderTaskStore.shared.upcomingTasks
+        ReminderTaskStore.shared.allTasks
             .compactMap(\.date)
             .filter { $0 >= windowEnd }
             .min()
@@ -189,14 +210,52 @@ struct DayflowUpcomingView: View {
                 }
                 .buttonStyle(.plain)
             }
-            Text("NEXT TWO WEEKS")
-                .font(.system(size: 11, weight: .medium))
-                .tracking(2.2)
-                .foregroundStyle(Color.dayflowMuted)
+            // D195's port (Session 81, D240): the kicker never silently
+            // lies about what the screen shows — "NEXT TWO WEEKS" at rest,
+            // "TWO WEEKS FROM <day>" while anchored, with a quiet accent way
+            // home beside it.
+            HStack(spacing: 10) {
+                Text(kickerText)
+                    .font(.system(size: 11, weight: .medium))
+                    .tracking(2.2)
+                    .foregroundStyle(Color.dayflowMuted)
+                if anchor != nil {
+                    Button {
+                        anchor = nil
+                        withAnimation(.easeInOut(duration: 0.18)) { monthOpen = false }
+                        UISelectionFeedbackGenerator().selectionChanged()
+                        Task { await load() }
+                    } label: {
+                        Text("BACK TO NOW")
+                            .font(.system(size: 11, weight: .semibold))
+                            .tracking(2.2)
+                            .foregroundStyle(Color.dayflowAccent)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
             HStack(alignment: .center) {
-                Text("Upcoming")
-                    .font(.dayflowSerif(30, weight: .heavy))
-                    .foregroundStyle(Color.dayflowInk)
+                // The title is the door (Today's month-unfold grammar): tap
+                // unfolds the same grid, and picking a day ANCHORS the
+                // fortnight to start there — two weeks stays two weeks, the
+                // window travels. D195: the only answer that changes nothing
+                // about the screen.
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { monthOpen.toggle() }
+                    UISelectionFeedbackGenerator().selectionChanged()
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("Upcoming")
+                            .font(.dayflowSerif(30, weight: .heavy))
+                            .foregroundStyle(Color.dayflowInk)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.dayflowFaint)
+                            .rotationEffect(.degrees(monthOpen ? 180 : 0))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 Spacer()
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { tasksOnly.toggle() }
@@ -210,6 +269,15 @@ struct DayflowUpcomingView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(tasksOnly ? "Show meetings" : "Hide meetings")
+            }
+            if monthOpen {
+                DayflowMonthUnfold(selectedDate: anchor ?? defaultStart, onPick: { day in
+                    anchor = Calendar.current.startOfDay(for: day)
+                    withAnimation(.easeInOut(duration: 0.18)) { monthOpen = false }
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    Task { await load() }
+                }, hint: "tap a day to anchor the fortnight")
+                .padding(.top, 6)
             }
         }
         .padding(.horizontal, 24)
@@ -437,6 +505,8 @@ struct DayflowUpcomingView: View {
                 Circle()
                     .strokeBorder(Color.dayflowInk, lineWidth: 1.5)
                     .frame(width: 18, height: 18)
+                    // D205's latent twin — see the Today row's note.
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Complete \(task.title)")
@@ -454,6 +524,25 @@ struct DayflowUpcomingView: View {
                     Text(list)
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dayflowFaint)
+                }
+                // Session 81 (D239) — Today's provenance chip, same scanner
+                // (`ThingsTask.dayflowSource`): a shortcut runs from the row
+                // face, a satchel/trace link opens its app.
+                if let source = task.dayflowSource {
+                    Button {
+                        UIApplication.shared.open(source.url)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: source.icon)
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(source.label.uppercased())
+                                .font(.system(size: 11))
+                                .tracking(0.8)
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Color.dayflowAccent)
+                    }
+                    .buttonStyle(.plain)
                 }
                 DayflowTaskWikiChips(task: task) { taskWikiTarget = $0 }
             }
@@ -480,6 +569,12 @@ struct DayflowUpcomingView: View {
             if task.hasNoteProse {
                 Image(systemName: "text.alignleft")
                     .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.dayflowAccent)
+            }
+            // D229's link mark — see the note in DayflowTodaySection.
+            if task.hasFollowableLink {
+                Image(systemName: "link")
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.dayflowAccent)
             }
             if task.repeats && !isTraceYearly {
@@ -613,7 +708,10 @@ struct DayflowUpcomingView: View {
         isLoading = true
         defer { isLoading = false }
         let cal = Calendar.current
-        let start = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: Date())) ?? Date()
+        // Anchored, the fortnight starts where he pointed; at rest, tomorrow
+        // (Today's card owns today) — D195's default, right ninety-nine
+        // mornings in a hundred.
+        let start = anchor ?? defaultStart
         let windowDays = (0..<Self.windowLength).compactMap { cal.date(byAdding: .day, value: $0, to: start) }
         let end = cal.date(byAdding: .day, value: Self.windowLength, to: start) ?? start
 

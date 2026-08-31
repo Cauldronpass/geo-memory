@@ -2366,6 +2366,7 @@ struct SatchelDocumentDetailView: View {
                 dateField
                 remindField
                 linksField
+                tasksField
                 // "Filed to" sits ABOVE the typed note and Summary as of
                 // 2026-07-28. It used to be second from the bottom, next to
                 // Delete, which meant anyone looking for "how do I link this to
@@ -2791,6 +2792,15 @@ struct SatchelDocumentDetailView: View {
             return "\(host)/\(last)"
         }
         return host
+    }
+
+    // MARK: Tasks (Session 81, D234 — the iOS half of D230)
+
+    /// Between Links and Filed-to: the band is about what the document NEEDS,
+    /// not where it lives. Reads `current`, so a rescan or retitle underneath
+    /// does not strand it on a stale path. Reasoning in SatchelDocTasksPanel.
+    private var tasksField: some View {
+        SatchelDocTasksPanel(document: current)
     }
 
     // MARK: Note

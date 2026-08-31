@@ -776,19 +776,21 @@ struct ContentView: View {
             return NotionService.shared.people.contains { $0.id == id }
         case .place(let id):
             return NotionService.shared.places.contains { $0.id == id }
-        // **`.task` is declined here for now, and this is the one place in the
-        // project where that is a placeholder rather than a decision.**
+        // **`.task` is declined here as a DECISION now (Session 81, D238),
+        // not a placeholder.** The phone already finds tasks in Quick Find:
+        // `DayflowQuickFindView.taskMatches` filters `store.allTasks` (title
+        // + notes, every word, the engine's own contract) and renders LIVE
+        // task rows — swipe, complete, tap to edit in place — which is
+        // strictly more than a routed search result could offer. Passing
+        // `allTasks` into `MacSearchEngine.run` as well would list every
+        // matching task TWICE in one card, so the engine's `tasks:` parameter
+        // stays un-passed on iOS, `.task` never arrives, and this arm stays
+        // declined — for a reason now rather than for the lack of one.
         //
-        // Dayflow OWNS the task screens, so unlike Trace — which has no tasks UI
-        // and declines permanently — this app is the one that should route a
-        // task. It cannot yet: `DayflowQuickFindView` passes no tasks into
-        // `MacSearchEngine.run`, so `.task` never arrives, and building half a
-        // route for a destination nothing produces is how dead branches get
-        // written and then trusted.
-        //
-        // Both halves are in Trace-Backlog.md as one item, deliberately: pass
-        // the store's `allTasks` in AND give this switch a real arm, in the same
-        // change, or neither.
+        // If a second producer of `.task` destinations ever appears on the
+        // phone, route it the way the widget's dayflow://task deep link
+        // already does (`pendingTaskLinkID` / `resolvePendingTaskLink`) —
+        // nothing new needs inventing.
         case .weeklyNote, .task, .preview:
             return false
         }

@@ -139,7 +139,7 @@
 				NoteStore.swift,
 				NotionService.swift,
 				ReminderTaskStore.swift,
-				TaskDateParser.swift,
+				TaskLineParser.swift,
 				ThingsService.swift,
 				TraceDocumentModels.swift,
 				TraceMacAskService.swift,
@@ -225,6 +225,8 @@
 				IOSDocumentStore.swift,
 				MacLocalIntelligence.swift,
 				NoteStore.swift,
+				ReminderTaskStore.swift,
+				ThingsService.swift,
 				TraceDocumentModels.swift,
 				TraceMacTextExtraction.swift,
 			);
@@ -279,7 +281,7 @@
 				OTScanService.swift,
 				PlaceHelpers.swift,
 				ReminderTaskStore.swift,
-				TaskDateParser.swift,
+				TaskLineParser.swift,
 				ThingsService.swift,
 				TraceDocumentModels.swift,
 				TraceMacAskService.swift,
@@ -1235,6 +1237,7 @@
 				INFOPLIST_FILE = Satchel/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Satchel uses the camera to scan documents and take photos";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Satchel imports photos you choose from your library";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Satchel shows and creates tasks for the documents you keep.";
 				INFOPLIST_KEY_NSRemindersUsageDescription = "Satchel adds reminders for documents that need action by a date.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -1272,6 +1275,7 @@
 				INFOPLIST_FILE = Satchel/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Satchel uses the camera to scan documents and take photos";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Satchel imports photos you choose from your library";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Satchel shows and creates tasks for the documents you keep.";
 				INFOPLIST_KEY_NSRemindersUsageDescription = "Satchel adds reminders for documents that need action by a date.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

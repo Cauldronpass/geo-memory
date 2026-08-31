@@ -543,6 +543,35 @@ struct DayflowQuickFindView: View {
                 }
             }
             Spacer()
+            // The Mac row's bolt (D239): a shortcut fires in passing — the
+            // Button takes the tap before the row's own gesture, so running
+            // it does not also open the task.
+            if let source = task.dayflowSource, source.icon == "bolt" {
+                Button {
+                    UIApplication.shared.open(source.url)
+                } label: {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.dayflowAccent)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            // D229 marks (Session 81): these pool rows are the phone's list
+            // rail, and a row that says nothing about its note or its link is
+            // the failure D229 was written against. Same glyphs, same accent
+            // as Today's rows.
+            if task.hasNoteProse {
+                Image(systemName: "text.alignleft")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.dayflowAccent)
+            }
+            if task.hasFollowableLink {
+                Image(systemName: "link")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.dayflowAccent)
+            }
             if task.repeats {
                 Image(systemName: "repeat")
                     .font(.system(size: 10))

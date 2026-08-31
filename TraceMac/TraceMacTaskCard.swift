@@ -1270,10 +1270,20 @@ struct MacTaskRow: View {
     /// ANYTIME: to the Personal list, undated. Straight from
     /// `DayflowInboxView`'s own verb — this is not a Mac invention.
     private func moveToAnytime() {
+        // D226's verb rule, fixed Session 81 (D243): ANYTIME means "remove
+        // the date", not "remove the list". Personal was hard-coded here, so
+        // pressing Anytime on a FINANCE task stripped the date AND moved it
+        // out of Finance — losing a where-decision the task had already
+        // made. `listRefusesDates` is exactly the right test and not a
+        // coincidence: the two lists that cannot hold a date are the same
+        // two that carry no where-decision, and only they get a home.
+        let destination = ReminderTaskStore.listRefusesDates(task.list)
+            ? ReminderTaskStore.personalListName
+            : (task.list ?? ReminderTaskStore.personalListName)
         Task {
             _ = await store.update(taskID: task.id, title: task.title, date: nil,
                                    clearDate: true,
-                                   list: ReminderTaskStore.personalListName,
+                                   list: destination,
                                    notes: task.notes)
             onChanged()
         }

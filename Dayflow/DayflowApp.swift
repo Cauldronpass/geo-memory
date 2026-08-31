@@ -94,7 +94,12 @@ struct DayflowApp: App {
                     // after every people load ensures each person with a
                     // birthday has the heads-up (3 days out) and day-of
                     // yearly reminders, created once, deletion respected.
-                    await ReminderTaskStore.shared.ensureBirthdayTasks(for: notionService.people)
+                    await ReminderTaskStore.shared.ensureBirthdayTasks(
+                        for: notionService.people.map {
+                            ReminderTaskStore.BirthdayPerson(
+                                id: $0.id, name: $0.name,
+                                birthday: $0.birthday, isArchived: $0.isArchived)
+                        })
                     await notionService.fetchVisits()
                     // Same sweep the Mac runs at launch. Idempotent, so
                     // whichever app opens first does the work and the other

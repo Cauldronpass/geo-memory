@@ -60,6 +60,9 @@ struct DayflowInboxView: View {
     /// (keyboard drops while it's open, comes back after the pick). Any
     /// capture door can now say "August 31."
     @State private var captureDate: Date? = nil
+    /// Session 81 (D235) — the declined-parse memory for the capture card;
+    /// keyed on ParsedTaskLine.signature so editing the words re-arms it.
+    @State private var captureDeclinedSignature: String? = nil
     @State private var captureMonthOpen = false
     /// Capture round four (2026-08-29, TestFlight): the destination label is
     /// a MENU now — "i thought we had the option for me to press that inbox
@@ -129,7 +132,7 @@ struct DayflowInboxView: View {
         .overlay(alignment: .bottomTrailing) {
             if isTabRoot {
                 Button {
-                    captureTitle = ""; captureNotes = ""; captureDate = nil
+                    captureTitle = ""; captureNotes = ""; captureDate = nil; captureDeclinedSignature = nil
                     captureMonthOpen = false; captureList = nil
                     withAnimation(.easeOut(duration: 0.15)) { showCapture = true }
                 } label: {
@@ -314,7 +317,15 @@ struct DayflowInboxView: View {
             // topic; the chooser picks a specific one) and SOMEDAY (cold
             // storage). Quiet, next to Done: "not now" costs one tap.
             Button {
-                decide(task) { _ = await move(task, to: ReminderTaskStore.personalListName) }
+                // D226's verb rule (Session 81, D243), same breath as the
+                // Mac's fix. The queue's tasks are Inbox-born, so Personal
+                // is usually the answer — but a HELD task the list chooser
+                // just moved to a topical list has made a where-decision,
+                // and Anytime must not quietly take it back.
+                let destination = ReminderTaskStore.listRefusesDates(task.list)
+                    ? ReminderTaskStore.personalListName
+                    : (task.list ?? ReminderTaskStore.personalListName)
+                decide(task) { _ = await move(task, to: destination) }
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "books.vertical")
@@ -471,6 +482,24 @@ struct DayflowInboxView: View {
                         .submitLabel(.done)
                         .onSubmit { commitCapture() }
                 }
+                // Session 81 (D235): the parse feedback line. A typed date
+                // becomes a chip (tap declines); until either half parses,
+                // the hint teaches the grammar — hidden once there is a
+                // result, which is strictly better information than the
+                // instruction. An explicit chip pick below overrides the
+                // typed date, so the chip stands down when one is set.
+                if captureDate == nil, let label = captureParsed.dateLabel {
+                    DayflowParsedDateChip(label: label) {
+                        captureDeclinedSignature = captureParsedRaw.signature
+                    }
+                    .padding(.leading, 34)
+                } else if !captureParsed.hasDate && !captureParsed.hasNote {
+                    Text(DayflowCaptureParse.hint)
+                        .font(.system(size: 11))
+                        .italic()
+                        .foregroundStyle(Color.dayflowFaint)
+                        .padding(.leading, 34)
+                }
                 TextField("Notes", text: $captureNotes, axis: .vertical)
                     .font(.system(size: 14))
                     .lineLimit(2...5)
@@ -560,7 +589,7 @@ struct DayflowInboxView: View {
     private func consumeQuickAction() {
         guard isTabRoot, quickActions.pending == "AddTask" else { return }
         quickActions.pending = nil
-        captureTitle = ""; captureNotes = ""; captureDate = nil
+        captureTitle = ""; captureNotes = ""; captureDate = nil; captureDeclinedSignature = nil
         captureMonthOpen = false; captureList = nil
         withAnimation(.easeOut(duration: 0.15)) { showCapture = true }
     }
@@ -617,17 +646,29 @@ struct DayflowInboxView: View {
         !captureTitle.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    // Session 81 (D235) — the capture-line parse and its precedence.
+    private var captureParsedRaw: ParsedTaskLine { TaskLineParser.parse(captureTitle) }
+    private var captureParsed: ParsedTaskLine {
+        captureDeclinedSignature == captureParsedRaw.signature
+            ? captureParsedRaw.withoutDate() : captureParsedRaw
+    }
+    /// A day you POINTED AT beats a day you typed — the Mac composer's rule,
+    /// for the same reason: a chip tap is more explicit than any parser.
+    private var captureEffectiveDate: Date? { captureDate ?? captureParsed.date }
+
     /// The effective destination list: an explicit pick wins; otherwise the
     /// default routing (dated = decided = Personal; undated = the Inbox).
     private var captureEffectiveList: String {
         if let captureList { return captureList }
-        return captureDate == nil
+        // Effective, not explicit: a TYPED "friday" is a when-decision too,
+        // and a decided task belongs in Personal, not the deciding queue.
+        return captureEffectiveDate == nil
             ? ReminderTaskStore.inboxListName
             : ReminderTaskStore.personalListName
     }
 
     private var captureGlyph: String {
-        if captureDate != nil { return "sun.max" }
+        if captureEffectiveDate != nil { return "sun.max" }
         return captureEffectiveList == ReminderTaskStore.inboxListName ? "tray" : "list.bullet"
     }
 
@@ -635,7 +676,7 @@ struct DayflowInboxView: View {
         let list = captureEffectiveList
         let listLabel = list == ReminderTaskStore.inboxListName
             ? "THE INBOX" : list.uppercased()
-        guard let date = captureDate else { return "TO \(listLabel)" }
+        guard let date = captureEffectiveDate else { return "TO \(listLabel)" }
         let cal = Calendar.current
         if cal.isDateInToday(date) { return "TO TODAY \u{00B7} \(listLabel)" }
         if cal.isDateInTomorrow(date) { return "TO TOMORROW \u{00B7} \(listLabel)" }
@@ -695,19 +736,29 @@ struct DayflowInboxView: View {
     }
 
     private func commitCapture() {
-        let title = captureTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = captureParsed
+        let title = parsed.title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
-        let notes = captureNotes.trimmingCharacters(in: .whitespacesAndNewlines)
-        let day = captureDate
+        // The `//` note and the Notes field are one field arriving two ways;
+        // the line's half leads because it was part of the sentence.
+        let typed = captureNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let notes = [parsed.note ?? "", typed].filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        let day = captureDate ?? parsed.date
+        // A time only ever comes from the words, and an explicit day pick
+        // overrules the whole phrase, hour included (the composer's rule).
+        let remind = captureDate == nil ? parsed.remindAt : nil
         let destination = captureEffectiveList
         captureFocused = false
         withAnimation(.easeOut(duration: 0.15)) { showCapture = false }
         captureDate = nil; captureMonthOpen = false; captureList = nil
+        captureDeclinedSignature = nil
         Task {
             _ = await store.addTask(title: title,
                                     date: day,
                                     list: destination,
-                                    notes: notes.isEmpty ? nil : notes)
+                                    notes: notes.isEmpty ? nil : notes,
+                                    remindAt: remind)
         }
     }
 }

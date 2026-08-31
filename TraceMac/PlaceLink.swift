@@ -1,5 +1,10 @@
-// MacPlaceLink.swift
-// Ties a meeting's WHERE text to a record in Places. Mac-only.
+// PlaceLink.swift
+// Ties a meeting's WHERE text to a record in Places.
+// (Renamed from MacPlaceLink.swift, Session 81, D241 — the store went to
+// iCloud, so it stopped being Mac anything. The file still lives in
+// TraceMac/ because only the Mac reads it today; it moves to Trace/ with a
+// membershipExceptions entry at the next Xcode-closed window, when the iOS
+// picker is built.)
 //
 // Session 80 (2026-08-31). David: "it could have a button that i would press
 // whenever a Where is filled in. when we press it it would look up the places in
@@ -35,22 +40,48 @@
 // Normalised on the way in — trimmed, case-folded, whitespace collapsed — so
 // "Wrigley Field " and "wrigley field" are one key rather than two.
 //
-// ── Local, and for weaker reasons than MacTaskOrder ─────────────────────
+// ── iCloud KVS, not the app group (Session 81, D241) ────────────────────
 //
-// `UserDefaults`, this Mac only. Unlike the task order (D221) there is no
-// principled argument that this SHOULD be local — a link is a durable fact, not
-// a fact about a morning, and the phone would benefit from it.
+// The backlog said "app group, so the phone inherits every match already made
+// on the Mac". An app group cannot deliver that promise: it shares storage
+// between apps on ONE device, and the Mac's group container never reaches the
+// phone. `NSUbiquitousKeyValueStore` does — both apps carry the same
+// `ubiquity-kvstore-identifier` entitlement, so a match made here is already
+// on the phone when the iOS picker is eventually built. A link is a durable
+// fact, not a fact about a morning, which is exactly the argument D221 could
+// NOT make for the task order.
 //
-// It is local because the meeting card is Mac-only today, so there is nothing
-// on iOS to share it with yet. When Dayflow grows the same row, this is a
-// candidate for the app group or iCloud rather than a thing to duplicate. The
-// seam is the same shape as `MacTaskOrder`'s: two functions, one key format.
+// Existing links migrate themselves: the first touch of this type sweeps the
+// old `UserDefaults.standard` keys into KVS (copy, not move — the old values
+// stay behind as a harmless fallback record). Quota is 1MB / 1024 keys;
+// one key per distinct WHERE text will not threaten it for years.
+//
+// The key PREFIX stays `tracemac.placeLink.` although the type is no longer
+// Mac anything — the keys already exist under it on David's Mac, and renaming
+// the prefix would orphan every match the migration exists to keep.
 
 import Foundation
 
-enum MacPlaceLink {
+enum PlaceLink {
 
     private static let prefix = "tracemac.placeLink."
+
+    private static var store: NSUbiquitousKeyValueStore { .default }
+
+    /// One-time sweep of the pre-D241 `UserDefaults` keys into KVS. A static
+    /// `let` so it runs once per process, on first use of this type — no app
+    /// startup code to remember, which is how a migration gets forgotten by
+    /// the next target that compiles this file.
+    private static let migrated: Void = {
+        let defaults = UserDefaults.standard
+        for (key, value) in defaults.dictionaryRepresentation()
+        where key.hasPrefix(prefix) {
+            if let id = value as? String, store.string(forKey: key) == nil {
+                store.set(id, forKey: key)
+            }
+        }
+        store.synchronize()
+    }()
 
     /// Trimmed, case-folded, inner whitespace collapsed.
     ///
@@ -74,9 +105,10 @@ enum MacPlaceLink {
 
     /// The Notion page id this WHERE text points at, if it has been matched.
     static func placeID(for location: String) -> String? {
+        _ = migrated
         let name = normalise(location)
         guard !name.isEmpty else { return nil }
-        return UserDefaults.standard.string(forKey: prefix + name)
+        return store.string(forKey: prefix + name)
     }
 
     /// The `Place` itself, or nil if it was never matched — or was matched and
@@ -93,13 +125,20 @@ enum MacPlaceLink {
     // MARK: - Writing
 
     static func link(_ location: String, to placeID: String) {
+        _ = migrated
         let name = normalise(location)
         guard !name.isEmpty else { return }
-        UserDefaults.standard.set(placeID, forKey: prefix + name)
+        store.set(placeID, forKey: prefix + name)
+        // A hint to upload soon, not a guarantee — KVS syncs on its own
+        // schedule. Cheap, and a match made minutes before a device switch
+        // is exactly the one worth hurrying.
+        store.synchronize()
     }
 
     static func unlink(_ location: String) {
-        UserDefaults.standard.removeObject(forKey: key(location))
+        _ = migrated
+        store.removeObject(forKey: key(location))
+        store.synchronize()
     }
 
     // MARK: - Suggesting

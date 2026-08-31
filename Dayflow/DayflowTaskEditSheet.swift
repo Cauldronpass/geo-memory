@@ -66,6 +66,15 @@ struct DayflowTaskEditSheet: View {
     @State private var remindAt = Date()
     @State private var initialRemindAt: Date? = nil
     @State private var webLinkText = ""
+    /// Session 81 (D227's iOS half) — document links. Parsed off the live
+    /// `notes` text, resolved against the shared chip store the way the
+    /// person/place chips resolve against Notion. No cached titles.
+    @State private var chipStore = TraceSatchelChipStore.shared
+    @State private var showDocPicker = false
+    @State private var satchelUnavailable = false
+    /// Session 81 (D239) — the SHORTCUT row's rename/add entry.
+    @State private var showShortcutEntry = false
+    @State private var shortcutText = ""
 
     /// Repeats need a date to anchor to.
     private var dateless: Bool {
@@ -180,6 +189,70 @@ struct DayflowTaskEditSheet: View {
                             .buttonStyle(.plain)
                         }
                     }
+                    // Session 81 — the D227 document links, resolved live
+                    // against the document store. A path the store cannot
+                    // resolve renders "(missing)", refuses to navigate, and
+                    // still offers removal — same contract as the Mac chip.
+                    ForEach(linkedDocumentPaths, id: \.self) { docPath in
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc.text")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            Button {
+                                openDocument(docPath)
+                            } label: {
+                                Text(documentTitle(for: docPath))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.plain)
+                            Spacer()
+                            Button {
+                                removeDocumentLink(docPath)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    // Session 81 (D239) — the SHORTCUT row: the decoded name,
+                    // never the raw URL (the name is the only part carrying
+                    // information; the rest is boilerplate). Tap runs it;
+                    // Change renames it KEEPING every other query item
+                    // (rewrittenShortcutURL); the xmark removes it.
+                    if shortcutURL != nil {
+                        HStack(spacing: 8) {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            Button {
+                                if let url = shortcutURL { UIApplication.shared.open(url) }
+                            } label: {
+                                Text(shortcutName ?? "Run shortcut")
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.plain)
+                            Spacer()
+                            Button("Change") {
+                                shortcutText = shortcutName ?? ""
+                                showShortcutEntry = true
+                            }
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .buttonStyle(.plain)
+                            Button {
+                                removeShortcut()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                     Menu {
                         Button { linkPicker = .person } label: {
                             Label("Person", systemImage: "person")
@@ -192,8 +265,24 @@ struct DayflowTaskEditSheet: View {
                         Button { showWebLinkEntry = true } label: {
                             Label("Web address", systemImage: "globe")
                         }
+                        // Session 81 — the fourth kind (D227): a Satchel
+                        // document, linked by PATH via a marker line.
+                        Button { showDocPicker = true } label: {
+                            Label("Document", systemImage: "doc.text")
+                        }
+                        // Offered only when there is none — a task carries at
+                        // most one shortcut, and the row's Change is the door
+                        // once it exists (the Mac card's rule).
+                        if shortcutURL == nil {
+                            Button {
+                                shortcutText = ""
+                                showShortcutEntry = true
+                            } label: {
+                                Label("Shortcut", systemImage: "bolt")
+                            }
+                        }
                     } label: {
-                        Label("Link a person, place or web address", systemImage: "link")
+                        Label("Link a person, place, document or web address", systemImage: "link")
                             .font(.system(size: 14))
                     }
                 }
@@ -279,6 +368,16 @@ struct DayflowTaskEditSheet: View {
                     appendLink(name)
                 }
             }
+            .sheet(isPresented: $showDocPicker) {
+                DayflowTaskDocumentPicker { docPath in
+                    appendDocumentLink(docPath)
+                }
+            }
+            .alert("Satchel isn't installed", isPresented: $satchelUnavailable) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("This document lives in Satchel, the documents app. Install it on this device to open it.")
+            }
             .alert("Web address", isPresented: $showWebLinkEntry) {
                 TextField("example.com/page", text: $webLinkText)
                     .textInputAutocapitalization(.never)
@@ -298,6 +397,16 @@ struct DayflowTaskEditSheet: View {
                 }
                 Button("Cancel", role: .cancel) { webLinkText = "" }
             }
+            .alert("Shortcut", isPresented: $showShortcutEntry) {
+                TextField("Shortcut name", text: $shortcutText)
+                Button("Save") {
+                    applyShortcutName(shortcutText)
+                    shortcutText = ""
+                }
+                Button("Cancel", role: .cancel) { shortcutText = "" }
+            } message: {
+                Text("The shortcut's name, as it appears in the Shortcuts app. Leave empty to remove it from this task.")
+            }
             .task {
                 let current = ReminderTaskStore.shared.repeatRule(taskID: taskID)
                 repeatRule = current
@@ -312,6 +421,11 @@ struct DayflowTaskEditSheet: View {
                     remindAt = Calendar.current.date(
                         bySettingHour: 9, minute: 0, second: 0, of: due) ?? due
                 }
+                // Session 81 — after the synchronous seeding, so the repeat
+                // and reminder rows never wait on a sidecar sweep. Loaded
+                // here so a task opened before any note screen has populated
+                // the store still resolves titles rather than "(missing)".
+                await chipStore.loadIfNeeded()
             }
         }
     }
@@ -355,6 +469,126 @@ struct DayflowTaskEditSheet: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    // MARK: Linked documents (Session 81, D227's iOS half)
+
+    /// The `satchel:doc:` marker lines in the notes text, in order, deduped.
+    /// Parsed off `notes` (the live edit), not the task, so a document added
+    /// in this visit shows its row before Save.
+    private var linkedDocumentPaths: [String] {
+        var seen = Set<String>()
+        return notes.split(separator: "\n").compactMap { line -> String? in
+            let s = line.trimmingCharacters(in: .whitespaces)
+            guard s.hasPrefix(ThingsTask.documentMarkerPrefix) else { return nil }
+            let docPath = String(s.dropFirst(ThingsTask.documentMarkerPrefix.count))
+            guard !docPath.isEmpty, seen.insert(docPath).inserted else { return nil }
+            return docPath
+        }
+    }
+
+    /// Live resolution, no cached title — the D227 rule: a chip displaying
+    /// one name while pointing at another is worse than one that briefly
+    /// says nothing.
+    private func documentTitle(for docPath: String) -> String {
+        chipStore.all.first { $0.relativePath == docPath }?.title ?? "(missing)"
+    }
+
+    private func openDocument(_ docPath: String) {
+        guard chipStore.all.contains(where: { $0.relativePath == docPath }),
+              let url = TraceSatchelHandoff.documentURL(path: docPath) else { return }
+        UIApplication.shared.open(url, options: [:]) { accepted in
+            if !accepted { satchelUnavailable = true }
+        }
+    }
+
+    /// Appended at the end, after whatever prose is there — the composer's
+    /// prose-before-machinery order, kept by hand here because this sheet
+    /// edits the raw notes text.
+    private func appendDocumentLink(_ docPath: String) {
+        let marker = ThingsTask.documentMarkerPrefix + docPath
+        guard !notes.contains(marker) else { return }
+        notes = notes.isEmpty ? marker : notes + "\n" + marker
+    }
+
+    private func removeDocumentLink(_ docPath: String) {
+        let marker = ThingsTask.documentMarkerPrefix + docPath
+        notes = notes
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { $0.trimmingCharacters(in: .whitespaces) != marker }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: Shortcut (Session 81, D239 — the Mac card's treatment)
+
+    /// The shortcut token's range in the live notes text — from the scheme
+    /// (any case; RFC 3986, and David's own note reads `Shortcuts://`) to the
+    /// first whitespace. The token may share a line with prose, so edits
+    /// replace the TOKEN, never the line.
+    private var shortcutTokenRange: Range<String.Index>? {
+        guard let start = notes.range(of: ThingsTask.shortcutScheme, options: .caseInsensitive)
+        else { return nil }
+        let token = notes[start.lowerBound...].prefix { !$0.isWhitespace && $0 != "\"" }
+        return start.lowerBound..<token.endIndex
+    }
+
+    private var shortcutURL: URL? {
+        guard let r = shortcutTokenRange else { return nil }
+        let raw = notes[r]
+        // Lowercase the scheme before building the URL — `URL` keeps whatever
+        // case it is given, and not every opener is as forgiving as the spec.
+        let normalised = ThingsTask.shortcutScheme + raw.dropFirst(ThingsTask.shortcutScheme.count)
+        return URL(string: String(normalised))
+    }
+
+    private var shortcutName: String? {
+        guard let url = shortcutURL,
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        else { return nil }
+        return items.first(where: { $0.name == "name" })?.value
+    }
+
+    /// Renaming KEEPS every other query item (`&input=`, `&text=`) — the Mac
+    /// card's rewrittenShortcutURL, same reasoning: a Shortcuts URL can carry
+    /// more than a name, and rebuilding from the name alone silently drops it
+    /// the first time such a shortcut is renamed.
+    private func rewrittenShortcutURL(name: String) -> String {
+        let encodedFallback = name.addingPercentEncoding(
+            withAllowedCharacters: .urlQueryAllowed) ?? name
+        let plain = "\(ThingsTask.shortcutScheme)run-shortcut?name=\(encodedFallback)"
+        guard let url = shortcutURL,
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return plain }
+        var items = (parts.queryItems ?? []).filter { $0.name != "name" }
+        items.insert(URLQueryItem(name: "name", value: name), at: 0)
+        parts.queryItems = items
+        return parts.string ?? plain
+    }
+
+    /// Empty name removes; otherwise the token is rewritten in place, or
+    /// appended after the prose when there is none.
+    private func applyShortcutName(_ raw: String) {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            removeShortcut()
+            return
+        }
+        let rewritten = rewrittenShortcutURL(name: name)
+        if let r = shortcutTokenRange {
+            notes.replaceSubrange(r, with: rewritten)
+        } else {
+            notes = notes.isEmpty ? rewritten : notes + "\n" + rewritten
+        }
+    }
+
+    private func removeShortcut() {
+        guard let r = shortcutTokenRange else { return }
+        notes.removeSubrange(r)
+        notes = notes
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .joined(separator: "\n")
+    }
+
     // MARK: Link detection
 
     /// Every distinct `scheme://...` token in `notes`, in the order they
@@ -370,6 +604,10 @@ struct DayflowTaskEditSheet: View {
         var seen = Set<String>()
         var links: [URL] = []
         for token in notes.split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
+            // The shortcut is the SHORTCUT row's job (Session 81, D239): its
+            // name shows and runs there, and a second row spelling the raw
+            // URL is the redundancy that row exists to remove.
+            guard !ThingsTask.isShortcutLine(token) else { continue }
             guard token.contains("://"),
                   let url = URL(string: String(token)),
                   let scheme = url.scheme, !scheme.isEmpty
@@ -590,5 +828,62 @@ struct DayflowDatePickSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+
+// MARK: - Document picker (Session 81, D227's iOS half)
+
+/// Satchel documents, newest first — the linking case is nearly always a
+/// document scanned minutes ago, so the one he wants is already on top and
+/// the common path needs no search at all (which is also why the search
+/// field does NOT autofocus here, unlike the person/place picker: raising
+/// the keyboard would cover the list the common path never types into).
+/// Single-pick, like the pickers beside it; reopen to add another.
+struct DayflowTaskDocumentPicker: View {
+    var onPick: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    @State private var chipStore = TraceSatchelChipStore.shared
+
+    private var documents: [TraceMacDocument] {
+        let sorted = chipStore.all.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+        guard !search.isEmpty else { return sorted }
+        return sorted.filter { $0.title.localizedCaseInsensitiveContains(search) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(documents, id: \.relativePath) { doc in
+                Button {
+                    onPick(doc.relativePath)
+                    dismiss()
+                } label: {
+                    HStack {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Text(doc.title)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer()
+                        if let created = doc.created {
+                            Text(created, format: .dateTime.month(.abbreviated).day())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .searchable(text: $search)
+            .navigationTitle("Link a Document")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .task { await chipStore.loadIfNeeded() }
+        }
     }
 }

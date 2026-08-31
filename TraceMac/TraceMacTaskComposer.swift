@@ -84,7 +84,7 @@ struct MacTaskComposer: View {
 
     private var store: ReminderTaskStore { ReminderTaskStore.shared }
 
-    private var parsed: ParsedTaskLine { TaskDateParser.parse(text) }
+    private var parsed: ParsedTaskLine { TaskLineParser.parse(text) }
 
     /// Precedence, most explicit first: a day you POINTED AT beats a day you
     /// typed, which beats the day the screen is about. Clearing beats all

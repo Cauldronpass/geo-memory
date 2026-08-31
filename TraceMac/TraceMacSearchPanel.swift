@@ -1063,7 +1063,7 @@ struct TraceMacSearchPanel: View {
     /// What the line says on its own terms, before the user's refusal is
     /// applied. The backspace handler needs this one, because it has to see the
     /// parse in order to decline it.
-    private var rawParse: ParsedTaskLine { TaskDateParser.parse(query) }
+    private var rawParse: ParsedTaskLine { TaskLineParser.parse(query) }
 
     /// What ⇧⏎ and the New task pill will actually create. Recomputed rather
     /// than cached: it is one `NSDataDetector` pass over a short string against
@@ -1139,7 +1139,11 @@ struct TraceMacSearchPanel: View {
                 // The date is repeated back. A parser's one real failure mode
                 // is landing the right words on the wrong day, and the notice
                 // is the last moment that is cheap to catch.
-                var said = "Added to Inbox"
+                // The destination is repeated back too (Session 81): a
+                // dated capture graduates to Personal at birth (addTask's
+                // D225 rule), and a notice claiming the Inbox for it would be
+                // the lie that hid this path's dropped-date bug for a session.
+                var said = line.date == nil ? "Added to Inbox" : "Added to Personal"
                 if let stamp { said += " \u{00b7} \(stamp)" }
                 if hadNote { said += " \u{00b7} + note" }
                 addNotice = said

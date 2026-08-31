@@ -1,4 +1,7 @@
-// TaskDateParser.swift
+// TaskLineParser.swift
+// (Renamed from TaskDateParser.swift, Session 81 — the D198-queued rename: it
+// parses the whole capture line, the trailing date, the `//` note split and
+// the title clean-up, and the old name said only the first of the three.)
 // "Ask Bryan about Q4 friday // check the Monarch numbers" -> a task called
 // "Ask Bryan about Q4", due Friday, with a note.
 // Shared: Trace (iOS), Dayflow, TraceMac. Pure Foundation, no UI.
@@ -143,7 +146,7 @@ struct ParsedTaskLine {
 
 // MARK: - Parser
 
-enum TaskDateParser {
+enum TaskLineParser {
 
     /// What starts a note. Two slashes because one is a date separator ("9/15")
     /// and would collide immediately.

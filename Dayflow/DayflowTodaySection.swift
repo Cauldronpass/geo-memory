@@ -42,6 +42,9 @@ struct DayflowTodaySection: View {
     @State private var showDone = false
     @State private var showEarlier = false
     @State private var addingTitle: String? = nil
+    /// Session 81 (D235) — remembers "this exact parse was declined" by its
+    /// signature, so editing the words re-arms the parse on its own.
+    @State private var addDeclinedSignature: String? = nil
     /// "Now" as of the last load — drives the earlier-meetings fold. Not a
     /// ticking clock; refreshed by load(), which reruns on date change and
     /// on every scene activation (ContentView refreshes the store then).
@@ -327,6 +330,12 @@ struct DayflowTodaySection: View {
                             .foregroundStyle(Color.dayflowPaper)
                     }
                 }
+                // D205's latent twin (Session 81): `strokeBorder` hit-tests
+                // only its 1.6pt ring, so a tap in the MIDDLE fell through to
+                // the row and opened the card instead of completing. A finger
+                // is forgiving enough that it may never have surfaced — same
+                // bug the Mac's cursor found in one click.
+                .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(completing ? "Undo complete" : "Complete")
@@ -343,7 +352,7 @@ struct DayflowTodaySection: View {
                             .foregroundStyle(Color.dayflowFaint)
                     }
                 }
-                if let source = sourceLink(for: task) {
+                if let source = task.dayflowSource {
                     Button {
                         UIApplication.shared.open(source.url)
                     } label: {
@@ -403,6 +412,17 @@ struct DayflowTodaySection: View {
                 // more here" should not be more visible on one device.
                 Image(systemName: "text.alignleft")
                     .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.dayflowAccent)
+            }
+            // D229's second mark (Session 81): the task points at something
+            // openable — a web URL or a Satchel document. Accent for the same
+            // reason as the note mark beside it: a mark cannot win attention
+            // by being quieter than the furniture next to it. One glyph for
+            // both kinds; the Mac's tooltip tells them apart, and here the
+            // tap that opens the card answers the same question.
+            if task.hasFollowableLink {
+                Image(systemName: "link")
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.dayflowAccent)
             }
             if task.repeats {
@@ -499,28 +519,61 @@ struct DayflowTodaySection: View {
         .animation(.easeInOut(duration: 0.15), value: selection.isActive)
     }
 
+    // Session 81 (D235): the add row understands the capture line — a
+    // trailing date, "tomorrow at 3pm", `// note` — with the hint and the
+    // parsed-date chip beneath the field. See DayflowCaptureParse.
+    private var addParsed: ParsedTaskLine { TaskLineParser.parse(addingTitle ?? "") }
+    private var addParsedEffective: ParsedTaskLine {
+        addDeclinedSignature == addParsed.signature ? addParsed.withoutDate() : addParsed
+    }
+
     private var addRow: some View {
-        HStack(spacing: 14) {
-            Circle()
-                .strokeBorder(Color.dayflowFaint,
-                              style: StrokeStyle(lineWidth: 1.3, dash: [3, 2.5]))
-                .frame(width: 20, height: 20)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 14) {
+                Circle()
+                    .strokeBorder(Color.dayflowFaint,
+                                  style: StrokeStyle(lineWidth: 1.3, dash: [3, 2.5]))
+                    .frame(width: 20, height: 20)
+                if addingTitle != nil {
+                    TextField(isToday ? "Add for today" : "Add for this day",
+                              text: Binding(get: { addingTitle ?? "" },
+                                            set: { addingTitle = $0 }))
+                        .font(.system(size: 14))
+                        .focused($addFieldFocused)
+                        .submitLabel(.done)
+                        .onSubmit { commitAdd() }
+                } else {
+                    Text(isToday ? "Add for today" : "Add for this day")
+                        .font(.system(size: 13.5))
+                        .italic()
+                        .foregroundStyle(Color.dayflowFaint)
+                }
+            }
+            .frame(minHeight: 40)
             if addingTitle != nil {
-                TextField(isToday ? "Add for today" : "Add for this day",
-                          text: Binding(get: { addingTitle ?? "" },
-                                        set: { addingTitle = $0 }))
-                    .font(.system(size: 14))
-                    .focused($addFieldFocused)
-                    .submitLabel(.done)
-                    .onSubmit { commitAdd() }
-            } else {
-                Text(isToday ? "Add for today" : "Add for this day")
-                    .font(.system(size: 13.5))
-                    .italic()
-                    .foregroundStyle(Color.dayflowFaint)
+                HStack(spacing: 8) {
+                    if let label = addParsedEffective.dateLabel {
+                        DayflowParsedDateChip(label: label) {
+                            addDeclinedSignature = addParsed.signature
+                        }
+                    }
+                    if let note = addParsedEffective.note, !note.isEmpty {
+                        Text("// \(note)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.dayflowFaint)
+                            .lineLimit(1)
+                    }
+                    if !addParsedEffective.hasDate && !addParsedEffective.hasNote {
+                        Text(DayflowCaptureParse.hint)
+                            .font(.system(size: 11))
+                            .italic()
+                            .foregroundStyle(Color.dayflowFaint)
+                    }
+                }
+                .padding(.leading, 34)
+                .padding(.bottom, 8)
             }
         }
-        .frame(minHeight: 40)
         .contentShape(Rectangle())
         .onTapGesture {
             if addingTitle == nil { addingTitle = "" }
@@ -793,15 +846,29 @@ struct DayflowTodaySection: View {
     }
 
     private func commitAdd() {
-        let title = (addingTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = addParsedEffective
+        let title = parsed.title.trimmingCharacters(in: .whitespacesAndNewlines)
         addingTitle = nil
+        addDeclinedSignature = nil
         addFieldFocused = false
         guard !title.isEmpty else { return }
         Task {
-            _ = await ReminderTaskStore.shared.addTask(
-                title: title,
-                toToday: isToday,
-                date: isToday ? nil : date)
+            if let day = parsed.date {
+                // A typed day beats the row's own day — the composer's
+                // precedence (D208 family): words are more explicit than the
+                // screen's context. The chip said so before the submit.
+                _ = await ReminderTaskStore.shared.addTask(
+                    title: title,
+                    date: day,
+                    notes: parsed.note,
+                    remindAt: parsed.remindAt)
+            } else {
+                _ = await ReminderTaskStore.shared.addTask(
+                    title: title,
+                    toToday: isToday,
+                    date: isToday ? nil : date,
+                    notes: parsed.note)
+            }
         }
     }
 
@@ -816,48 +883,9 @@ struct DayflowTodaySection: View {
     }
 
     // MARK: - Provenance
-
-    /// First satchel://, trace://, dayflow:// or shortcuts:// link in the
-    /// reminder's notes, plus a short label and an icon. The app links come
-    /// from ReminderService and the Satchel/Trace hand-offs (label = the
-    /// path's filename stem); shortcuts:// links are David's own — he keeps
-    /// Shortcuts runners in task notes (Session 77) — labelled with the
-    /// shortcut's name and a bolt.
-    private func sourceLink(for task: ThingsTask) -> (url: URL, label: String, icon: String)? {
-        guard let notes = task.notes else { return nil }
-        // Case-insensitive (2026-08-29, David's Monarch task typed
-        // "Shortcuts://" and got no bolt): iOS schemes are case-insensitive,
-        // so the scanner is too.
-        for scheme in ["satchel://", "trace://", "dayflow://", "shortcuts://"] {
-            guard let range = notes.range(of: scheme, options: .caseInsensitive) else { continue }
-            let tail = notes[range.lowerBound...]
-            let raw = tail.prefix { !$0.isWhitespace && $0 != "\n" }
-            guard let url = URL(string: String(raw)) else { continue }
-            let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            if scheme == "shortcuts://" {
-                let name = comps?.queryItems?.first(where: { $0.name == "name" })?.value
-                return (url, name ?? "Run shortcut", "bolt")
-            }
-            if let path = comps?.queryItems?.first(where: { $0.name == "path" })?.value {
-                let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-                return (url, stem, "doc")
-            }
-            let label = scheme.hasPrefix("satchel") ? "Open in Satchel"
-                      : scheme.hasPrefix("trace") ? "Open in Trace" : "Open"
-            return (url, label, "doc")
-        }
-        // Web addresses (Session 78 — the edit sheet's third link option):
-        // chip labeled by host, www. shorn, globe icon. App schemes above
-        // keep priority when both are present.
-        for token in notes.split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
-            let lower = token.lowercased()
-            guard lower.hasPrefix("http://") || lower.hasPrefix("https://"),
-                  let url = URL(string: String(token)), let host = url.host else { continue }
-            let label = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-            return (url, label, "globe")
-        }
-        return nil
-    }
+    // `sourceLink(for:)` moved to `ThingsTask.dayflowSource` in
+    // DayflowModels.swift (Session 81, D239), so Upcoming and the pool rows
+    // could stop being the surfaces where a shortcut task says nothing.
 
 }
 

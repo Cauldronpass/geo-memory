@@ -974,6 +974,30 @@ struct DayflowEndeavorView: View {
                     }
                     .buttonStyle(.plain)
                     Spacer(minLength: 0)
+                    // The Mac row's bolt (D239) — runs without opening.
+                    if let source = task.dayflowSource, source.icon == "bolt" {
+                        Button {
+                            UIApplication.shared.open(source.url)
+                        } label: {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Color.dayflowAccent)
+                                .frame(width: 18, height: 18)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    // D229 marks (Session 81) — same pair as Today's rows.
+                    if task.hasNoteProse {
+                        Image(systemName: "text.alignleft")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(Color.dayflowAccent)
+                    }
+                    if task.hasFollowableLink {
+                        Image(systemName: "link")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.dayflowAccent)
+                    }
                     Text(endeavorTaskWhenLabel(task))
                         .font(.system(size: 10, weight: .medium))
                         .tracking(1.0)

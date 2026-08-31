@@ -152,14 +152,14 @@ struct MacPlacePicker: View {
     // MARK: - Your places
 
     private var matches: [Place] {
-        let base = MacPlaceLink.suggestions(for: query, in: notion.places)
+        let base = PlaceLink.suggestions(for: query, in: notion.places)
         // A typed query that matches nothing structurally still deserves the
         // plain substring answer — he is searching now, not being suggested to.
         guard base.isEmpty else { return base }
-        let needle = MacPlaceLink.normalise(query)
+        let needle = PlaceLink.normalise(query)
         guard needle.count >= 2 else { return [] }
         return notion.places
-            .filter { MacPlaceLink.normalise($0.name).contains(needle) }
+            .filter { PlaceLink.normalise($0.name).contains(needle) }
             .prefix(6)
             .map { $0 }
     }

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 // MARK: - Dayflow Quick-Add Models
 //
@@ -194,4 +195,97 @@ enum DayflowNoteSortOrder: String, CaseIterable, Identifiable {
     case oldest = "Oldest"
     case name = "Name"
     var id: String { rawValue }
+}
+
+
+// MARK: - Capture line parsing (Session 81, D235)
+
+/// The one hint, shared by every capture field that understands the line
+/// grammar. D208's rule: the hint is half the feature — a shorthand
+/// advertised in one field and not its neighbour teaches a rule and then
+/// appears to break it. One constant so the fields cannot drift apart.
+enum DayflowCaptureParse {
+    static let hint = "try \u{201c}friday\u{201d} or // note"
+}
+
+/// The parsed date as a tappable chip — the phone's answer to the Mac quick
+/// panel's backspace-to-decline. The keystroke exists on the Mac because one
+/// panel row has nowhere to put a control; a phone has room, so the decline
+/// is a visible target instead of a convention you have to know. Tapping
+/// declines THIS parse; editing the words re-arms it
+/// (ParsedTaskLine.signature's contract).
+///
+/// Dressed exactly like the Inbox capture card's selected date chip — it is
+/// the same statement ("this task will land on that day"), differing only in
+/// who said it, which is what the xmark is for.
+struct DayflowParsedDateChip: View {
+    let label: String
+    var onDecline: () -> Void
+
+    var body: some View {
+        Button(action: onDecline) {
+            HStack(spacing: 5) {
+                Text(label)
+                    .font(.system(size: 10.5, weight: .bold))
+                    .tracking(1.2)
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .foregroundStyle(Color.dayflowAccent)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .overlay(RoundedRectangle(cornerRadius: 7)
+                .strokeBorder(Color.dayflowAccent, lineWidth: 1.4))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Remove the parsed date \(label)")
+    }
+}
+
+
+// MARK: - Task provenance (Session 81, D239)
+
+extension ThingsTask {
+    /// First satchel://, trace://, dayflow:// or shortcuts:// link in the
+    /// reminder's notes, plus a short label and an icon; web addresses as the
+    /// fallback. Moved here from DayflowTodaySection (Session 81, D239) so
+    /// Upcoming and the pool rows could stop being the surfaces where a
+    /// shortcut task says nothing — one scanner, every row face.
+    ///
+    /// Case-insensitive (2026-08-29, David's Monarch task typed
+    /// "Shortcuts://" and got no bolt): iOS schemes are case-insensitive,
+    /// so the scanner is too.
+    var dayflowSource: (url: URL, label: String, icon: String)? {
+        guard let notes else { return nil }
+        for scheme in ["satchel://", "trace://", "dayflow://", "shortcuts://"] {
+            guard let range = notes.range(of: scheme, options: .caseInsensitive) else { continue }
+            let tail = notes[range.lowerBound...]
+            let raw = tail.prefix { !$0.isWhitespace && $0 != "\n" }
+            guard let url = URL(string: String(raw)) else { continue }
+            let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            if scheme == "shortcuts://" {
+                let name = comps?.queryItems?.first(where: { $0.name == "name" })?.value
+                return (url, name ?? "Run shortcut", "bolt")
+            }
+            if let path = comps?.queryItems?.first(where: { $0.name == "path" })?.value {
+                let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+                return (url, stem, "doc")
+            }
+            let label = scheme.hasPrefix("satchel") ? "Open in Satchel"
+                      : scheme.hasPrefix("trace") ? "Open in Trace" : "Open"
+            return (url, label, "doc")
+        }
+        // Web addresses (Session 78 — the edit sheet's third link option):
+        // chip labeled by host, www. shorn, globe icon. App schemes above
+        // keep priority when both are present.
+        for token in notes.split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
+            let lower = token.lowercased()
+            guard lower.hasPrefix("http://") || lower.hasPrefix("https://"),
+                  let url = URL(string: String(token)), let host = url.host else { continue }
+            let label = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            return (url, label, "globe")
+        }
+        return nil
+    }
 }

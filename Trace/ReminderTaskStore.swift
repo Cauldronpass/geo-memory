@@ -143,7 +143,10 @@ final class ReminderTaskStore {
             }
         }
         accessGranted = granted
-        if !granted { lastError = "Dayflow does not have access to Reminders. Settings › Privacy › Reminders." }
+        // App-neutral since Session 81 — this store now compiles into
+        // Dayflow, TraceMac AND Satchel, and an error naming the wrong app
+        // sends him to the wrong Settings row.
+        if !granted { lastError = "Reminders access is off. Settings › Privacy › Reminders." }
         return granted
     }
 
@@ -440,14 +443,26 @@ final class ReminderTaskStore {
         if let notes, !notes.isEmpty { reminder.notes = notes }
         // Inbox and Someday are created on first use; anything else must
         // already exist or the task falls back to Personal.
-        reminder.calendar = list.flatMap { name in
+        var destination = list.flatMap { name in
             (name == Self.inboxListName || name == Self.somedayListName)
                 ? ensureList(named: name)
                 : calendar(named: name)
         } ?? personalList()
-        // Capture can name both a list and a date — the composer has a list
-        // menu and the parser reads "friday" off the end of the line — so this
-        // is the fourth path that could mint an incoherent record.
+        // D225's graduation, at birth (Session 81). A capture carrying BOTH a
+        // refusing list and a real date is two statements, and at creation the
+        // date is always the USER'S (typed in the line) while the list is the
+        // caller's default — the Mac quick panel passes Inbox as its house
+        // rule and "friday" came from David's own words. This method used to
+        // refuse: the date was silently dropped while the panel's notice
+        // repeated it back as kept. Same two-intents answer `update` gives —
+        // the date is the choice, so the task is born in Personal WITH its
+        // date. A dateless capture still lands in the refusing list untouched.
+        if Self.listRefusesDates(destination?.title), toToday || date != nil {
+            destination = personalList()
+        }
+        reminder.calendar = destination
+        // Belt and braces for the case where Personal itself could not be
+        // resolved: a refusing calendar still never takes a date (D210).
         let refuses = Self.listRefusesDates(reminder.calendar?.title)
         let due = refuses ? nil : (toToday ? Calendar.current.startOfDay(for: Date()) : date)
         let remindAt = refuses ? nil : remindAt
@@ -719,7 +734,19 @@ final class ReminderTaskStore {
     static let birthdayMarkerPrefix = "dayflow:birthday:"
     private static let birthdayLedgerKey = "dayflow_birthday_created"
 
-    func ensureBirthdayTasks(for people: [Person]) async {
+    /// The four facts the sweep reads, and nothing else. Session 81: taking
+    /// `[Person]` bound this store to `Models.swift`, which broke the moment
+    /// the store gained a third target (Satchel, D234) — the Notion model has
+    /// no business being a compile-time dependency of the reminders store.
+    /// The one caller (DayflowApp's people sweep) maps into this.
+    struct BirthdayPerson {
+        let id: String
+        let name: String
+        let birthday: Date?
+        let isArchived: Bool
+    }
+
+    func ensureBirthdayTasks(for people: [BirthdayPerson]) async {
         guard !people.isEmpty, await ensureAccess() else { return }
         let defaults = UserDefaults.standard
         var ledger = Set(defaults.stringArray(forKey: Self.birthdayLedgerKey) ?? [])
