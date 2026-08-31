@@ -46,6 +46,9 @@ struct TraceMacUpcomingView: View {
     @State private var openTaskID: String? = nil
     @State private var openEventID: String? = nil
     @State private var loadToken: Int = 0
+    /// The day key currently under a drag, so its heading can shade. `nil`
+    /// when nothing is being dragged over this spread.
+    @State private var dropTarget: String? = nil
 
     /// Where the spread starts. Nil means tomorrow, which is the answer
     /// ninety-nine mornings in a hundred.
@@ -103,8 +106,30 @@ struct TraceMacUpcomingView: View {
                                  },
                                  unfolded: monthUnfolded)
             if monthUnfolded {
-                MacEditorialMonthGrid(selected: anchorBinding)
-                    .frame(maxWidth: 320, alignment: .leading)
+                // **Two months, and a drop target on every day.**
+                //
+                // David: "we have room for two months calendar side by side i
+                // think when i click the upcoming word title. that would make
+                // this idea of dragging to a month date even more of a plus."
+                //
+                // Both halves of that are right, and the second is why the
+                // first matters. A one-month grid can only re-date inside the
+                // month you are looking at, which for a fortnight spread is
+                // often the wrong one — drop something on the 3rd and you meant
+                // NEXT month half the time. Two months makes the gesture reach
+                // the range the screen is actually about.
+                //
+                // Opt-in on both counts: `months` defaults to 1 and
+                // `onDropTask` to nil, because this same grid is the task
+                // card's Pick day and the composer's When picker, and neither
+                // has the width for two months or anything to drag.
+                MacEditorialMonthGrid(selected: anchorBinding,
+                                      months: 2,
+                                      onDropTask: { id, day in
+                                          move(taskID: id, to: day)
+                                          return true
+                                      })
+                    .frame(maxWidth: 660, alignment: .leading)
                     .padding(.top, 12)
                     .transition(.opacity)
             }
@@ -227,9 +252,93 @@ struct TraceMacUpcomingView: View {
                            isOpen: openTaskID == task.id,
                            onToggle: { toggle(task) },
                            onChanged: { reload() })
+                    // **The payload is the task id, a plain `String`.** A
+                    // custom `Transferable` would be the tidy answer and buys
+                    // nothing here: the drag never leaves this window, and the
+                    // drop looks the task up in the store anyway because the
+                    // row it started from may be stale by the time it lands.
+                    .draggable(task.id) { dragPreview(task) }
             }
+            Spacer(minLength: 0)
         }
         .padding(.bottom, occupied ? 15 : 12)
+        // The WHOLE day accepts the drop, not just the heading. Aiming at a
+        // 20pt strip is a game; aiming at a column is a gesture. An empty day
+        // is the common target and has nothing but its heading, which is why
+        // the `Spacer` above exists — it gives the empty ones a body to hit.
+        .contentShape(Rectangle())
+        .dropDestination(for: String.self) { ids, _ in
+            guard let id = ids.first else { return false }
+            move(taskID: id, to: day)
+            return true
+        } isTargeted: { targeted in
+            dropTarget = targeted ? key : nil
+        }
+        .background {
+            if dropTarget == key {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(MacEditorialColor.accent.opacity(0.10))
+                    .padding(.horizontal, -8)
+            }
+        }
+    }
+
+    /// What travels with the cursor.
+    ///
+    /// David: "Id like the row itself to slightly shade so i know that it is
+    /// selected then the entire shaded section moves with the mouse cursor to
+    /// where i place it."
+    ///
+    /// The shaded row IS the preview — AppKit lifts this off the page and
+    /// carries it, so there is one object in flight rather than a highlight in
+    /// one place and a ghost in another. `.draggable` gives no "this row is
+    /// being dragged" flag to shade the original with, and inventing one would
+    /// mean two things shaded for one gesture.
+    private func dragPreview(_ task: ThingsTask) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .strokeBorder(MacEditorialColor.faint, lineWidth: 1.5)
+                .frame(width: 16, height: 16)
+            Text(task.title)
+                .font(MacEditorialType.taskTitle)
+                .foregroundStyle(MacEditorialColor.ink)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(MacEditorialColor.accent.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 7))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7)
+                .strokeBorder(MacEditorialColor.accent.opacity(0.45), lineWidth: 1)
+        }
+    }
+
+    /// Re-dates a task by dropping it on a day.
+    ///
+    /// Looks the task up in the store rather than carrying it in the payload:
+    /// a drag can outlive the row it began on (the spread reloads, the task is
+    /// completed elsewhere), and acting on a stale copy would write back the
+    /// title and list as they were when the drag started.
+    ///
+    /// **No Inbox/Someday conflict here, and that is worth stating.** D210 says
+    /// those two lists refuse dates — but Upcoming only ever shows DATED tasks,
+    /// which by that same rule are never in either list. The case cannot arise
+    /// on this screen. It would on Today, and that is a reason to think before
+    /// copying this gesture there.
+    private func move(taskID: String, to day: Date) {
+        guard let task = store.allTasks.first(where: { $0.id == taskID }) else { return }
+        let target = cal.startOfDay(for: day)
+        guard task.date.map({ !cal.isDate($0, inSameDayAs: target) }) ?? true else { return }
+        Task {
+            _ = await store.update(taskID: task.id,
+                                   title: task.title,
+                                   date: target,
+                                   clearDate: false,
+                                   list: task.list,
+                                   notes: task.notes)
+            reload()
+        }
     }
 
     /// A day with something on it wears an ink numeral over a 1pt ink rule; an

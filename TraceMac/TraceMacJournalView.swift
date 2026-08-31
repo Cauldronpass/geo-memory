@@ -2362,7 +2362,38 @@ enum MacEditorCommand: Equatable {
 /// Intercepts mouseDown to toggle ☐/☑ when the user clicks the checkbox glyph.
 /// Also rejects file-URL drags so they propagate up to the Documents drop zone
 /// instead of being pasted as text paths.
-private final class MarkdownNSTextView: NSTextView {
+/// Internal rather than private since Session 80, and not by preference.
+///
+/// `MacTextEditor` became internal so the day note could use it, which makes its
+/// nested `Coordinator` internal too — and the coordinator stores a
+/// `MarkdownNSTextView?`. Swift refuses an internal property whose type is
+/// private, so the visibility had to follow. Nothing outside this file
+/// references it, and nothing should.
+final class MarkdownNSTextView: NSTextView {
+
+    /// Fired when this view takes or loses first responder.
+    ///
+    /// **SwiftUI's `@FocusState` cannot see inside an `NSViewRepresentable`**,
+    /// and the day note needs to know: its accent rule, its Escape handler and
+    /// its collapse-the-open-card behaviour all hang off focus (D206). This is
+    /// the AppKit fact those three were already using indirectly, reported
+    /// directly instead of inferred.
+    ///
+    /// Same lesson as the arrows and the click-outside collapse: stop trying to
+    /// make SwiftUI observe the event, and hand it the fact AppKit already has.
+    var onFocusChange: ((Bool) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { onFocusChange?(true) }
+        return ok
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if ok { onFocusChange?(false) }
+        return ok
+    }
 
     /// Fired when the view's WIDTH changes, so thumbnail overlays can be
     /// re-laid out. Session 65.
@@ -2466,6 +2497,68 @@ private final class MarkdownNSTextView: NSTextView {
     }
 }
 
+extension MacTextEditor.Coordinator {
+
+    /// Turns `- [ ] ` into `☐ ` as you type it, and `- [x] ` into `☑ `.
+    ///
+    /// **Why this exists.** The app's stored checkbox is the literal glyph —
+    /// `MacMarkdownTextStorage` matches `hasPrefix("☐ ")` and the click-to-toggle
+    /// handler rewrites the same two characters. That is a fine format on disk
+    /// and an impossible one to type: there is no key for ☐. In the journal a
+    /// toolbar button inserts it, so the gap never showed. The day note has no
+    /// toolbar, and David hit it immediately: he typed the markdown everyone
+    /// types and got a bullet reading "[ ] test".
+    ///
+    /// **Converting on input rather than teaching the renderer `- [ ]`.** The
+    /// second option is tempting — it keeps standard markdown on disk — but it
+    /// would mean two checkbox formats in one app: the glyph that iOS writes,
+    /// the toolbar inserts and the toggle produces, plus a second one only the
+    /// Mac understands. Every reader would then need both, and the one that
+    /// forgot would be a silent bug. One format, reachable two ways.
+    ///
+    /// Fires only on the completing space, and is self-limiting: after the
+    /// swap the line starts with the glyph and can never match again.
+    ///
+    /// `shouldChangeText`/`didChangeText` rather than a bare
+    /// `replaceCharacters`, so ⌘Z undoes the substitution as one step instead
+    /// of leaving a glyph nothing can remove.
+    static func convertTypedCheckbox(in tv: NSTextView) {
+        let ns = tv.string as NSString
+        let caret = tv.selectedRange().location
+        guard caret <= ns.length else { return }
+        let lineRange = ns.lineRange(for: NSRange(location: caret, length: 0))
+        let line = ns.substring(with: lineRange)
+
+        // **The bullet forms are the ones that actually fire.** Typing `-` then
+        // space at line start already converts the dash to `\u{2022}` (see the rule in
+        // `shouldChangeTextIn` above), so `- [ ] ` is UNREACHABLE by typing —
+        // you always end up at `\u{2022} [ ] `. The first version of this table knew
+        // only the dash forms and therefore never matched anything David could
+        // produce.
+        //
+        // The dash forms stay for pasted text, which never passes through that
+        // rule. The bare-bracket forms are the shorthand that skips the dance
+        // entirely: `[] ` at the start of a line is a checkbox. Safe against
+        // markdown links, which are `[text](url)` and never start with an empty
+        // pair.
+        let swaps: [(String, String)] = [
+            ("\u{2022} [ ] ", "\u{2610} "), ("\u{2022} [x] ", "\u{2611} "), ("\u{2022} [X] ", "\u{2611} "),
+            ("- [ ] ",  "\u{2610} "), ("- [x] ",  "\u{2611} "), ("- [X] ",  "\u{2611} "),
+            ("[ ] ",    "\u{2610} "), ("[] ",     "\u{2610} "),
+            ("[x] ",    "\u{2611} "), ("[X] ",    "\u{2611} ")]
+        for (typed, glyph) in swaps where line.hasPrefix(typed) {
+            let prefix = NSRange(location: lineRange.location, length: (typed as NSString).length)
+            guard tv.shouldChangeText(in: prefix, replacementString: glyph) else { return }
+            tv.textStorage?.replaceCharacters(in: prefix, with: glyph)
+            tv.didChangeText()
+            // The line lost four characters; put the caret where the typing was.
+            let shift = (typed as NSString).length - (glyph as NSString).length
+            tv.setSelectedRange(NSRange(location: max(0, caret - shift), length: 0))
+            return
+        }
+    }
+}
+
 // MARK: - MacEditorActions (direct command channel — bypasses SwiftUI binding timing)
 
 /// Shared by TraceMacNoteEditor and MacTextEditor. Toolbar buttons call execute(_:) directly;
@@ -2494,9 +2587,21 @@ final class MacEditorActions {
 // MARK: - MacTextEditor (NSViewRepresentable)
 
 /// NSTextView backed by MacMarkdownTextStorage with live markdown rendering.
-private struct MacTextEditor: NSViewRepresentable {
+/// **No longer `private`** (Session 80). The day note on the Today screen uses
+/// it too, and a second markdown editor written beside this one is the exact
+/// drift this project has paid for twice — the iOS and Mac renderers, and the
+/// note-prose test that lived privately inside `MacTaskRow`.
+///
+/// `MarkdownNSTextView` and the coordinator stay private: the day note needs the
+/// representable, not its internals. Moving the whole cluster into a file of its
+/// own is the right end state and is in Trace-Backlog.md — it is ~400 lines with
+/// three types, and lifting it blind mid-session is how a working editor breaks.
+struct MacTextEditor: NSViewRepresentable {
     @Binding var text: String
     let actions: MacEditorActions
+    /// Reports first-responder changes to a SwiftUI owner. See
+    /// `MarkdownNSTextView.onFocusChange`.
+    var onFocusChange: ((Bool) -> Void)? = nil
     /// Called when the cursor enters/exits a [[...]] span. Receives the partial name or nil.
     var onWikilinkQuery: ((String?) -> Void)? = nil
     /// Called when the user presses Return while a wikilink session is open.
@@ -2633,6 +2738,7 @@ private struct MacTextEditor: NSViewRepresentable {
         actions.onMoveRequest  = onMoveRequest
         guard let tv = scrollView.documentView as? MarkdownNSTextView else { return }
         tv.onPasteImage = onPasteImage
+        tv.onFocusChange = onFocusChange
         // Before the text guard below, deliberately. The set changes when a new
         // project note appears while the text has not changed at all, and the
         // guard would skip the restyle and leave the link the wrong colour.
@@ -2712,6 +2818,9 @@ private struct MacTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
+            // Before styling and before the binding: the substitution changes
+            // the text, and both of those want the final version.
+            Self.convertTypedCheckbox(in: tv)
             // Reset typing attributes so new text never inherits markdown styles (bold, color, etc.)
             tv.typingAttributes = [
                 NSAttributedString.Key.font:            MacMarkdownTextStorage.bodyFont,

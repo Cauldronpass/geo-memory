@@ -53,8 +53,54 @@ final class MacMarkdownTextStorage: NSTextStorage {
     /// card, a note link opens a document — and one colour for both made the
     /// destination unguessable until you clicked.
     static let noteLinkColor = NSColor.systemPurple
-    static let checkGreen    = NSColor.systemGreen
-    static let uncheckOrange = NSColor(red: 0.9, green: 0.5, blue: 0.1, alpha: 1)
+    /// **The Editorial palette, not system colours** (Session 80). David, on
+    /// seeing the checkbox in the day note: *"I dont like the orange which does
+    /// not match the theme of Trace anylonger."*
+    ///
+    /// Right, and the orange predates the theme — it was chosen when this
+    /// editor lived only in the journal, before the Editorial language existed.
+    /// A green tick and a traffic-cone orange box are a different app's
+    /// vocabulary sitting inside this one.
+    ///
+    /// Unchecked is `muted`: it reads as ink, as furniture, as something still
+    /// to do — not as a warning. Checked is `accent`, which is exactly what a
+    /// completed task circle uses on the task rows, so the two surfaces agree
+    /// about what "done" looks like. The tick stays small because the text
+    /// beside it is already dimmed and struck through; the colour is a
+    /// confirmation, not an announcement.
+    ///
+    /// Hex values match `MacEditorialColor` rather than referencing it: that
+    /// type is `Color` (SwiftUI) and this file draws with `NSColor`. The bridge
+    /// exists (`NSColor.macDynamic`) but the palette itself does not, and
+    /// duplicating two pairs of hex is better than a cross-layer dependency for
+    /// two constants. **If the palette moves, these move with it** — that is the
+    /// cost, and it is written down here so the next person pays it knowingly.
+    /// **Checking dims; it does not recolour** (Session 80, second pass).
+    /// David, holding Bear beside this: *"when it is checked the color doesnt
+    /// change but instead it is just dimmed."*
+    ///
+    /// He is right and my first pass was still doing the old thing in new
+    /// paint. Orange-to-green was a state change announced by hue, and swapping
+    /// the hues for muted-to-accent kept the announcement while changing its
+    /// accent. But a ticked box is not a NEW state that wants attention — it is
+    /// the same box, finished. Finished things recede.
+    ///
+    /// So both are the same colour and the checked one is simply lighter, which
+    /// is also what the text beside it already does (dimmed and struck). One
+    /// idea, three places, no third colour to learn.
+    static let checkboxOpen = NSColor.macDynamic(light: "6E6A64", dark: "A69F90")
+    static let checkboxDone = NSColor.macDynamic(light: "A6A29B", dark: "6E6759")
+
+    /// Bigger than the body text. Bear's box is noticeably larger than its
+    /// words and it is the thing that makes that list scannable — the boxes
+    /// form a column your eye follows, which they cannot do at body size.
+    ///
+    /// Not rounded, and that is a real gap rather than a choice: `\u{2610}` is a
+    /// square glyph in this font and rounding it needs an SF Symbol, which
+    /// means an `NSTextAttachment` in place of a character. See the note in
+    /// `styleThumbnail` for why attachments are avoided in this storage, and
+    /// Trace-Backlog.md for what doing it properly would cost.
+    static let checkboxFont = NSFont.systemFont(ofSize: 18, weight: .light)
 
     static var baseParagraphStyle: NSParagraphStyle {
         let p = NSMutableParagraphStyle()
@@ -332,7 +378,10 @@ final class MacMarkdownTextStorage: NSTextStorage {
     private func styleCheckbox(checked: Bool, line: String, in range: NSRange) {
         guard range.length >= 2 else { return }
         // Hanging indent: checkbox glyph + space = ~22pt, continuation lines align with text
-        let checkboxIndent: CGFloat = 22
+        // Widened with the glyph — an 18pt box needs more room than the 15pt
+        // one this number was measured against, or continuation lines tuck
+        // under it.
+        let checkboxIndent: CGFloat = 26
         let para = NSMutableParagraphStyle()
         para.lineHeightMultiple = 1.4
         para.firstLineHeadIndent = 0
@@ -340,7 +389,8 @@ final class MacMarkdownTextStorage: NSTextStorage {
         backing.addAttribute(.paragraphStyle, value: para, range: range)
         // Color the ☐/☑ glyph and tag it for click detection
         backing.addAttributes([
-            .foregroundColor: checked ? Self.checkGreen : Self.uncheckOrange,
+            .font: Self.checkboxFont,
+            .foregroundColor: checked ? Self.checkboxDone : Self.checkboxOpen,
             .macCheckboxState: checked
         ], range: NSRange(location: range.location, length: 1))
         guard range.length > 2 else { return }

@@ -343,6 +343,22 @@ final class MacEditorialArrowKeys {
     }
 }
 
+// MARK: - The formatting bar's switch
+
+/// Whether the day note's formatting bar is showing. ⇧⌘Y toggles it.
+///
+/// `@AppStorage` on a shared key rather than a trigger object, because the menu
+/// command lives on the `App` and the bar lives in a view — and unlike ⌘N, this
+/// is a piece of STATE both sides want to read, not an event one side sends.
+/// Two `@AppStorage` properties on one key are the same value, so the menu
+/// toggles it and the pane observes it with nothing in between.
+///
+/// Persisted, and that is the point of a toggle rather than a focus rule: Bear
+/// remembers, so a bar you turned on last week is on this morning.
+enum MacNoteToolbarSetting {
+    static let key = "tracemac.dayNote.toolbar"
+}
+
 // MARK: - Inbox count
 
 /// The two settings that decide who gets told about an un-triaged Inbox.
@@ -507,6 +523,16 @@ extension View {
 struct MacEditorialMonthGrid: View {
 
     @Binding var selected: Date
+    /// How many months to draw side by side. **One by default, and that default
+    /// is load-bearing**: this grid is also the task card's Pick day and the
+    /// composer's When picker, both of which live inside a card roughly one
+    /// month wide. Two months is Upcoming's call, made where there is room for
+    /// it.
+    var months: Int = 1
+    /// Accepts a dragged task id on a day cell and returns whether it took it.
+    /// `nil` — the default — means the cells are not drop targets at all, which
+    /// is right everywhere a task cannot be dragged from.
+    var onDropTask: ((String, Date) -> Bool)? = nil
     /// Days that should wear a dot: notes, or anything the host wants marked.
     var marked: Set<String> = []
 
@@ -534,8 +560,43 @@ struct MacEditorialMonthGrid: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             MacEditorialRule.accent
-            weekdayRow
-            grid
+            // One header and one rule across the whole spread, then N months
+            // beneath it. The alternative — a full header per month — would put
+            // two sets of chevrons on screen that page the same anchor, which
+            // is two controls for one job.
+            HStack(alignment: .top, spacing: 22) {
+                ForEach(0..<max(1, months), id: \.self) { offset in
+                    // A hairline between months, David's call after using it:
+                    // the whitespace alone was doing the separating and doing
+                    // it weakly, because six columns of numbers next to seven
+                    // more read as one thirteen-column grid until something
+                    // says otherwise.
+                    //
+                    // **An overlay on the column, not a sibling of it.**
+                    //
+                    // The first version put a `Rectangle` between the columns
+                    // and reasoned that it would take its height from them. It
+                    // does not: a Rectangle in an HStack accepts whatever
+                    // height is OFFERED, and the offer here is the whole pane.
+                    // So the rule grew to the full height and dragged the stack
+                    // with it, pushing the day columns down the page — exactly
+                    // what David saw.
+                    //
+                    // An overlay is sized by the view it is on, so this is the
+                    // column's height by construction rather than by argument.
+                    // Negative leading padding walks it back into the gap the
+                    // stack's spacing opens.
+                    monthColumn(offset: offset)
+                        .overlay(alignment: .leading) {
+                            if offset > 0 {
+                                Rectangle()
+                                    .fill(MacEditorialColor.hairline)
+                                    .frame(width: 1)
+                                    .padding(.leading, -11)
+                            }
+                        }
+                }
+            }
         }
         .onHover { inside in
             if inside { installScroll() } else { removeScroll() }
@@ -592,10 +653,32 @@ struct MacEditorialMonthGrid: View {
         .buttonStyle(.plain)
     }
 
+    /// Names what is actually on screen. With two months up, a header reading
+    /// "AUGUST 2026" over an August and a September block is a small lie, and
+    /// small lies in a header are the ones nobody notices and everybody
+    /// half-believes.
+    ///
+    /// The per-column captions carry the month names; this carries the span and
+    /// the year, which is the fact neither column states.
     private var monthTitle: String {
         let f = DateFormatter()
-        f.dateFormat = "MMMM yyyy"
-        return f.string(from: month)
+        guard months > 1,
+              let last = cal.date(byAdding: .month, value: months - 1, to: month) else {
+            f.dateFormat = "MMMM yyyy"
+            return f.string(from: month)
+        }
+        // Same year: "AUGUST – SEPTEMBER 2026". Across a boundary both years
+        // are named, because "DECEMBER – JANUARY 2027" would date December
+        // wrongly by a year.
+        f.dateFormat = "yyyy"
+        let startYear = f.string(from: month)
+        let endYear = f.string(from: last)
+        f.dateFormat = "MMMM"
+        let head = f.string(from: month)
+        let tail = f.string(from: last)
+        return startYear == endYear
+            ? "\(head) \u{2013} \(tail) \(endYear)"
+            : "\(head) \(startYear) \u{2013} \(tail) \(endYear)"
     }
 
     private func step(_ months: Int) {
@@ -626,22 +709,44 @@ struct MacEditorialMonthGrid: View {
         return Array(symbols[1...6]) + [symbols[0]]
     }
 
-    private var grid: some View {
-        VStack(spacing: 1) {
-            ForEach(Array(weeks.enumerated()), id: \.offset) { week in
-                HStack(spacing: 1) {
-                    ForEach(Array(week.element.enumerated()), id: \.offset) { cell in
-                        dayCell(cell.element)
+    /// One month's worth: its own name when there is more than one, the
+    /// weekday letters, and the grid.
+    ///
+    /// The second month gets a caption because without one a six-week block of
+    /// numbers beside another six-week block is genuinely ambiguous — the eye
+    /// cannot tell September from October by shape.
+    private func monthColumn(offset: Int) -> some View {
+        let base: Date = cal.date(byAdding: .month, value: offset, to: month) ?? month
+        return VStack(alignment: .leading, spacing: 0) {
+            if months > 1 {
+                Text(Self.monthName(base))
+                    .editorialGroupLabel()
+                    .padding(.top, 7)
+                    .padding(.bottom, 1)
+            }
+            weekdayRow
+            VStack(spacing: 1) {
+                ForEach(Array(weeks(of: base).enumerated()), id: \.offset) { week in
+                    HStack(spacing: 1) {
+                        ForEach(Array(week.element.enumerated()), id: \.offset) { cell in
+                            dayCell(cell.element, in: base)
+                        }
                     }
                 }
             }
+            .padding(.top, 4)
         }
-        .padding(.top, 4)
     }
 
-    private func dayCell(_ day: Date) -> some View {
+    private static func monthName(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MMMM"
+        return f.string(from: d)
+    }
+
+    private func dayCell(_ day: Date, in displayedMonth: Date) -> some View {
         // Typed lets before any modifier — see the file header.
-        let inMonth: Bool = cal.isDate(day, equalTo: month, toGranularity: .month)
+        let inMonth: Bool = cal.isDate(day, equalTo: displayedMonth, toGranularity: .month)
         let isSelected: Bool = cal.isDate(day, inSameDayAs: selected)
         let isToday: Bool = cal.isDateInToday(day)
         let hasMark: Bool = marked.contains(Self.key(day))
@@ -675,6 +780,17 @@ struct MacEditorialMonthGrid: View {
         .contentShape(Rectangle())
         .onHover { inside in hoveredKey = inside ? key : (hoveredKey == key ? nil : hoveredKey) }
         .onTapGesture { selected = cal.startOfDay(for: day) }
+        // **The drop reuses the hover state**, so a day under a dragged task
+        // shades exactly as a day under the pointer does. One appearance for
+        // "this is the one you are about to pick", whichever way you are
+        // picking it.
+        .dropDestination(for: String.self) { ids, _ in
+            guard let onDropTask, let id = ids.first else { return false }
+            return onDropTask(id, cal.startOfDay(for: day))
+        } isTargeted: { over in
+            guard onDropTask != nil else { return }
+            hoveredKey = over ? key : (hoveredKey == key ? nil : hoveredKey)
+        }
     }
 
     // MARK: Month maths
@@ -685,8 +801,13 @@ struct MacEditorialMonthGrid: View {
 
     /// Six rows always. A month that fits in five still gets six, because a grid
     /// that changes height as you page months makes everything under it jump.
-    private var weeks: [[Date]] {
-        let first = startOfMonth(month)
+    ///
+    /// Takes the month rather than reading the anchor, so a two-month spread can
+    /// ask for the second one. Six rows matters more here than it did with one
+    /// month: two columns of different heights would sit unevenly beside each
+    /// other, which is a worse artefact than the empty row it costs.
+    private func weeks(of displayedMonth: Date) -> [[Date]] {
+        let first = startOfMonth(displayedMonth)
         let weekday = cal.component(.weekday, from: first)
         // ISO: Monday == 2 in the Gregorian numbering Calendar reports.
         let leading = (weekday - cal.firstWeekday + 7) % 7

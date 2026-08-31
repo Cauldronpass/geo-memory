@@ -99,11 +99,29 @@ final class MacQuickPanelController: NSObject, NSWindowDelegate {
 
     func toggle() {
         guard !debounced() else { return }
-        isVisible ? hide() : show()
+        isVisible ? hide() : present()
     }
 
     func show() {
         guard !debounced() else { return }
+        present()
+    }
+
+    /// The actual presentation, with no guard on it.
+    ///
+    /// **Splitting this out is the fix for a bug I shipped one turn earlier.**
+    /// The debounce went on both `toggle()` and `show()`, and `toggle()` calls
+    /// `show()` — so the hot key consumed its own guard: `toggle()` stamped
+    /// `lastRequest`, then `show()` saw a request microseconds old and returned
+    /// immediately. The panel never opened. ⌘K still worked because it enters
+    /// through `show()` alone, which is exactly why David reported the global
+    /// shortcut broken and not the menu.
+    ///
+    /// The rule the first version broke: **a debounce belongs at the entry
+    /// points only, never on a path another entry point calls through.** One
+    /// public method calling another with the same guard on both is a guard
+    /// that fires against itself.
+    private func present() {
         guard let noteStore, let notionService else { return }
 
         let panel = self.panel ?? makePanel(noteStore: noteStore, notionService: notionService)

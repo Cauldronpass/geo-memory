@@ -6,6 +6,9 @@ import SwiftUI
 
 @main
 struct TraceMacApp: App {
+
+    /// Shared by key with the day note pane — see `MacNoteToolbarSetting`.
+    @AppStorage(MacNoteToolbarSetting.key) private var showNoteToolbar = false
     @State private var noteStore = NoteStore.shared
     @State private var notionService = NotionService()
     @State private var selectedSection: MacSection? = .today
@@ -55,6 +58,12 @@ struct TraceMacApp: App {
             // this app knew what "new" meant. The composer does — it is the one
             // thing you make here — and it is reachable from every screen, so
             // it has earned the standard key.
+            CommandGroup(after: .toolbar) {
+                Button(showNoteToolbar ? "Hide Formatting Bar" : "Show Formatting Bar") {
+                    showNoteToolbar.toggle()
+                }
+                .keyboardShortcut("y", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Task") { MacComposeTrigger.shared.requests += 1 }
                     .keyboardShortcut("n", modifiers: .command)

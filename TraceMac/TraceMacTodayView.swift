@@ -68,9 +68,44 @@ struct TraceMacTodayView: View {
     @State private var movedTo: Date? = nil
     @State private var movedClearTask: Task<Void, Never>? = nil
     @FocusState private var addFieldFocused: Bool
-    /// Focus on the day note is what actually tells us the click landed over
-    /// there. See `noteColumn`.
-    @FocusState private var noteFocused: Bool
+    /// Focus on the day note.
+    ///
+    /// **A plain `Bool`, not `@FocusState`** (Session 80). The day note is an
+    /// `NSTextView` now, and `@FocusState` cannot see inside an
+    /// `NSViewRepresentable` — it would simply never become true. The flag is
+    /// fed by `MacTextEditor.onFocusChange`, which reports the AppKit fact
+    /// directly instead of asking SwiftUI to infer it.
+    ///
+    /// Everything hanging off it is unchanged: the accent rule, the Escape
+    /// handler, and collapsing an open card when attention moves here (D206).
+    @State private var noteFocused = false
+    /// The editor's command channel. The day note has no toolbar, but
+    /// `MacTextEditor` requires one, and an unused instance is cheaper than a
+    /// second initialiser on a shared component.
+    @State private var noteActions = MacEditorActions()
+    /// ⇧⌘Y. Off by default; the same key the menu command writes.
+    @AppStorage(MacNoteToolbarSetting.key) private var showNoteToolbar = false
+    @State private var showNoteInfo = false
+    /// The task being dragged. Set when the drag STARTS, which is why the rows
+    /// use `.onDrag` rather than `.draggable`: the newer modifier has no
+    /// start callback, and without knowing what is in flight a row cannot say
+    /// "make room for it".
+    @State private var draggingID: String? = nil
+    /// The row list's width, so the drag preview can be the same width as the
+    /// row it came from. David: "the width of the row should not change as it
+    /// moves and it currently shrinks in width."
+    @State private var rowWidth: CGFloat = 0
+    /// Bumped after a reorder. `tasksForDay` reads `UserDefaults`, which
+    /// SwiftUI does not observe, so without this the list would not redraw
+    /// until something else happened to invalidate it.
+    ///
+    /// **Mutating it is the whole mechanism** — no `.id()` on the view. The
+    /// first version added one, which would have rebuilt the entire Today
+    /// screen on every drag and taken the day note editor's focus and caret
+    /// with it. Any `@State` write already invalidates the body, and
+    /// `tasksForDay` re-reads the stored order when the body runs. The counter
+    /// exists to be written, not to be read.
+    @State private var reorderToken = 0
     /// The + opens the composer (D200). The inline "Add a to-do" row stays
     /// exactly as it was: that one is the contextual add, this one is the
     /// considered one.
@@ -144,11 +179,20 @@ struct TraceMacTodayView: View {
     /// filters `upcomingTasks` to that day. Same rule as `DayflowTodaySection`,
     /// so a task is on the same day in both apps.
     private var tasksForDay: [ThingsTask] {
-        if isToday { return store.tasks }
-        return store.upcomingTasks.filter { task in
-            guard let due = task.date else { return false }
-            return cal.isDate(due, inSameDayAs: date)
+        let base: [ThingsTask]
+        if isToday {
+            base = store.tasks
+        } else {
+            base = store.upcomingTasks.filter { task in
+                guard let due = task.date else { return false }
+                return cal.isDate(due, inSameDayAs: date)
+            }
         }
+        // The hand-arranged order, if there is one for this day. `apply` takes
+        // the store's list and rearranges it rather than replacing it, so a
+        // task completed or deleted elsewhere simply stops appearing — see the
+        // note in MacTaskOrder for why that direction matters.
+        return MacTaskOrder.apply(base, dayKey: dayKey)
     }
 
     /// The start of the next meeting on one of HIS calendars after this one
@@ -229,10 +273,41 @@ struct TraceMacTodayView: View {
     private var todoSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             MacEditorialSectionLabel(text: "To do", trailing: remainLabel)
+                // One measurement for the whole list, taken from the section
+                // rather than per row: every row is the same width, and reading
+                // it once avoids a GeometryReader behind each one.
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { rowWidth = geo.size.width }
+                            .onChange(of: geo.size.width) { _, w in rowWidth = w }
+                    }
+                )
             if tasksForDay.isEmpty {
                 emptyTodo
             } else {
                 ForEach(tasksForDay) { task in
+                    // **The dragged row becomes a gap.** David: "as i drag the
+                    // drag row and the destination row overlap their text until
+                    // i let go... The way things does it is that the two rows
+                    // can never ocupy the same space."
+                    //
+                    // Exactly right, and the cause was that the row stayed in
+                    // the list while its preview floated over it — so the thing
+                    // under the cursor was always a row, and the preview always
+                    // sat on top of some text. Leaving a slot instead means the
+                    // space under the preview is empty by construction, and the
+                    // two can never overlap because only one of them is ever
+                    // drawn.
+                    //
+                    // Same height as a row, so nothing jumps when the swap
+                    // happens; a whisper of accent so the slot reads as "here"
+                    // rather than as a rendering glitch.
+                    if draggingID == task.id {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(MacEditorialColor.accent.opacity(0.06))
+                            .frame(height: 42)
+                    } else {
                     // `isToday` last, matching its declaration order in
                     // MacTaskRow: a memberwise init takes its arguments in the
                     // order the properties are written, not in reading order.
@@ -242,6 +317,49 @@ struct TraceMacTodayView: View {
                                onChanged: { refresh() },
                                onMoved: { day in noteMove(to: day) },
                                isToday: isToday)
+                        // **`.onDrag`, not `.draggable`**, for one reason: it
+                        // fires when the drag BEGINS. `.draggable` does not,
+                        // and a row cannot slide out of the way for something
+                        // it does not know is coming.
+                        .onDrag {
+                            draggingID = task.id
+                            return NSItemProvider(object: task.id as NSString)
+                        } preview: {
+                            dragPreview(task)
+                        }
+                        // **The reorder happens on HOVER, not on drop.** David:
+                        // "as the row moves down the row that it is moving to
+                        // slides up or down visually so you can see it as the
+                        // two rows are swapping places."
+                        //
+                        // So the list really does reorder as the cursor passes,
+                        // and the animation is SwiftUI moving the rows it is
+                        // already drawing. A drop-only version cannot show that
+                        // — there is nothing to animate until the gesture is
+                        // over, which is one moment too late to be feedback.
+                        //
+                        // Writing through on every hover rather than holding a
+                        // temporary order also means an abandoned drag leaves
+                        // the list where you last saw it, with no shadow state
+                        // that can outlive the gesture and freeze the order.
+                        .dropDestination(for: String.self) { _, _ in
+                            endDrag()
+                            return true
+                        } isTargeted: { over in
+                            guard over, let dragged = draggingID,
+                                  dragged != task.id else { return }
+                            // Slower than a normal transition on purpose.
+                            // David: the replaced row "just jumps into the new
+                            // row in a slower way so it looks like it is moving
+                            // there." At 0.16s it reads as a jump; the point of
+                            // the animation is that you SEE the swap happen.
+                            withAnimation(.easeInOut(duration: 0.22)) {
+                                MacTaskOrder.move(dragged, toward: task.id,
+                                                  in: tasksForDay, dayKey: dayKey)
+                                reorderToken += 1
+                            }
+                        }
+                    }
                     MacEditorialRule.hair
                 }
             }
@@ -249,6 +367,23 @@ struct TraceMacTodayView: View {
             movedOffer
         }
         .padding(.top, 16)
+        // **The gap has to close even when the drop misses.** A row released
+        // over the day note, the sidebar or the masthead never reaches a row's
+        // own `dropDestination`, and without this the source row would stay
+        // blank until the next drag started.
+        //
+        // Returns false — it accepts nothing and reorders nothing. It exists
+        // only to notice that the gesture ended somewhere in this column.
+        .dropDestination(for: String.self) { _, _ in
+            endDrag()
+            // **True, not false.** A rejected drop makes AppKit animate the
+            // drag image back to where it started, which is a second copy of
+            // the row flying across the screen for no reason — the gesture
+            // ended where he let go, and snapping back says otherwise. It still
+            // accepts nothing and reorders nothing; the reorder already
+            // happened on hover.
+            return true
+        }
     }
 
     /// One quiet line, four seconds, after a task is moved off this day.
@@ -379,14 +514,43 @@ struct TraceMacTodayView: View {
     /// for the collapse above: `onChange(of: noteFocused)` only fires on a
     /// CHANGE, so a note that still held focus from before would give the next
     /// click over there nothing to report.
+    /// Ends a drag, a beat after the drop.
+    ///
+    /// **The delay is the fix for the double image.** David: "when I release
+    /// the row the wording of the row seems to be double exposed... slightly
+    /// offset for a fraction of a second before it settles."
+    ///
+    /// Clearing `draggingID` immediately puts the real row back the instant the
+    /// drop is accepted — while AppKit is still removing the drag image it was
+    /// carrying. For those few frames the same words are drawn twice, a few
+    /// points apart, which is exactly what he described.
+    ///
+    /// Nothing observable says "the drag image is gone", so this waits out the
+    /// removal and then swaps the slot for the row. The fade makes the swap
+    /// look deliberate rather than late, and it is short enough that the gap
+    /// never reads as lag.
+    ///
+    /// 0.14s is tuned by eye against AppKit's own removal, not derived from
+    /// anything — if it ever looks wrong on a slower machine this is the number
+    /// to move.
+    private func endDrag() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+            withAnimation(.easeOut(duration: 0.12)) { draggingID = nil }
+        }
+    }
+
     private func toggle(_ task: ThingsTask) {
-        noteFocused = false
+        // Any click on a row also clears a stranded drag. Belt and braces for
+        // the one case the catch-all above cannot see: a release outside the
+        // window entirely, which this app never hears about.
+        draggingID = nil
+        releaseNote()
         openEventID = nil
         openTaskID = (openTaskID == task.id) ? nil : task.id
     }
 
     private func toggle(_ event: NextCalendarEvent) {
-        noteFocused = false
+        releaseNote()
         openTaskID = nil
         openEventID = (openEventID == event.id) ? nil : event.id
     }
@@ -515,7 +679,11 @@ struct TraceMacTodayView: View {
 
     private var noteColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            MacEditorialSectionLabel(text: "Day note")
+            HStack(spacing: 2) {
+                MacEditorialSectionLabel(text: "Day note")
+                Spacer(minLength: 8)
+                noteHeaderControls
+            }
             // **The rule goes accent while the note has the keyboard.**
             //
             // David: "the issue was that i was in the Day Note section of the
@@ -532,20 +700,53 @@ struct TraceMacTodayView: View {
             Group {
                 if noteFocused { MacEditorialRule.accent } else { MacEditorialRule.ink }
             }
-            TextEditor(text: $noteText)
-                .font(MacEditorialType.note)
-                .foregroundStyle(MacEditorialColor.noteText)
-                .lineSpacing(6)
-                .scrollContentBackground(.hidden)
-                .background(MacEditorialColor.paper)
+            // **The real editor** (Session 80). Was a plain `TextEditor`, which
+            // meant the day note was the only writing surface in the app with
+            // no markdown: no headings, no bold, no `[[wikilinks]]`, and no
+            // clickable checkboxes — while the phone's day note had all four.
+            //
+            // `MacTextEditor` is the same component the journal uses, not a
+            // second one written beside it. That mattered enough to make it
+            // non-private: this project has paid twice for two renderers of one
+            // format (iOS vs Mac markdown, and the note-prose test that lived
+            // privately inside `MacTaskRow`).
+            //
+            // `noteTitles` is left empty here deliberately. It only decides
+            // whether a wikilink paints as a NOTE link or a RECORD link, and
+            // building it costs two directory reads — the journal rebuilds it
+            // when a link session opens, which is a cost that screen has a
+            // reason to pay and this one does not. Links still work; they are
+            // just one colour.
+            // `maxHeight: .infinity` and NO trailing `Spacer`. `MacTextEditor`
+            // adopts whatever height it is proposed and never reports a minimum
+            // (see its `sizeThatFits`), so a Spacer competing for the same
+            // space would win it entirely and leave the editor one line tall.
+            // `TextEditor` expanded on its own and did not care; this does.
+            MacTextEditor(text: $noteText,
+                          actions: noteActions,
+                          onFocusChange: { focused in noteFocused = focused })
                 .padding(.top, 12)
-                .padding(.leading, -5)   // TextEditor's own inset, removed
-                .focused($noteFocused)
+                .frame(maxHeight: .infinity)
                 .onChange(of: noteText) { _, _ in scheduleSave() }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, MacEditorialLayout.margin)
         .padding(.top, MacEditorialLayout.topMargin)
+        // **Floating, not stacked** (Session 80, second pass). David, with a
+        // Bear screenshot: "there if i hit shift command y the tool bar floats
+        // up above the canvas sheet."
+        //
+        // The first version sat in the VStack under the editor, which meant the
+        // editor gave up 34 points to it — the text did not JUMP, but the
+        // writing area shrank and grew as focus came and went. An overlay takes
+        // nothing: the page is the page, and the bar is a thing resting on top
+        // of it.
+        //
+        // Bottom-centred over the pane, the way Bear does it, so it sits where
+        // your hand already is and never covers the line you are writing (which
+        // is at the top of a note that is still short).
+        .overlay(alignment: .bottom) {
+            if showNoteToolbar { noteBar }
+        }
         .contentShape(Rectangle())
         // Covers the label and the empty space below the editor. It does NOT
         // cover the editor itself: `TextEditor` is an `NSTextView`, AppKit
@@ -579,11 +780,255 @@ struct TraceMacTodayView: View {
         // the note (`toggle(_:)`).
         .background {
             if noteFocused {
-                Color.clear.escapeCloses(includingTextFields: true) {
-                    noteFocused = false
-                }
+                Color.clear.escapeCloses(includingTextFields: true) { releaseNote() }
             }
         }
+    }
+
+    /// What travels with the cursor on a reorder — the same shaded row shape
+    /// the Upcoming spread uses, so one gesture looks like itself on both
+    /// screens.
+    /// What travels with the cursor.
+    ///
+    /// **The same width as the row it left**, which is the whole of David's
+    /// complaint about the first version: a preview that sizes to its own
+    /// content shrinks to the length of the title, and a row that changes shape
+    /// the instant you pick it up does not read as the row any more.
+    ///
+    /// `rowWidth` is measured once off the section heading rather than per row,
+    /// and falls back to sizing naturally if the measurement has not landed yet
+    /// — a preview one frame too narrow beats a preview zero points wide.
+    private func dragPreview(_ task: ThingsTask) -> some View {
+        // **Geometry copied from `MacTaskRow.collapsed`, character for
+        // character.** David: on release the words "move from upper right
+        // diagonally to lower left slightly."
+        //
+        // That is the preview's text and the row's text not being in the same
+        // place. The first version inset its content by 8pt and drew a bare
+        // 18pt circle, while the row has no inset and a circle that occupies 22
+        // (18 plus `.padding(2)`) — so the title sat 12pt right of where the
+        // real one lands, and the eye reads the correction as a slide.
+        //
+        // The rule this is an instance of: **a drag preview is a promise about
+        // where the thing will be.** Any difference between it and the real row
+        // is paid back as movement at the moment of the drop, which is the one
+        // moment the gesture should look settled.
+        //
+        // So: spacing 12, a circle padded to 22, no horizontal inset, height
+        // 42. The wash and border go OUTSIDE the frame, where they colour the
+        // row without moving anything inside it.
+        HStack(spacing: 12) {
+            Circle()
+                .strokeBorder(MacEditorialColor.faint, lineWidth: 1.5)
+                .frame(width: 18, height: 18)
+                .padding(2)
+            Text(task.title)
+                .font(MacEditorialType.taskTitle)
+                .foregroundStyle(MacEditorialColor.ink)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+        }
+        .frame(width: rowWidth > 0 ? rowWidth : nil, height: 42)
+        .background(MacEditorialColor.accent.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(MacEditorialColor.accent.opacity(0.40), lineWidth: 1)
+        }
+    }
+
+    /// The two controls in the corner of the DAY NOTE heading.
+    ///
+    /// Session 80, from a Bear screenshot: "there is a B/I/U icon on the top
+    /// right of the area that when clicked brings up the same floating format
+    /// bar but it also has the table of contents, statistics, and backlinks in
+    /// that information box."
+    ///
+    /// **Two buttons rather than Bear's one.** Bear's `ⓘ` opens a panel that
+    /// happens to contain the formatting controls as well. Here the formatting
+    /// bar already exists as a thing that floats over the page, and folding it
+    /// into a popover would mean two ways to summon one bar with different
+    /// behaviour. So `B I U` toggles the bar — the same state ⇧⌘Y writes, so
+    /// the button and the key are the same switch, not two — and `ⓘ` is only
+    /// the information.
+    ///
+    /// In the heading rather than floating over the page, because these are
+    /// about the note as a whole. The floating bar acts on the words you are
+    /// writing; these two describe the document. Different scope, different
+    /// place.
+    private var noteHeaderControls: some View {
+        HStack(spacing: 1) {
+            Button { showNoteToolbar.toggle() } label: {
+                Text("B I U")
+                    .font(.system(size: 9.5, weight: .bold))
+                    .tracking(0.5)
+                    .foregroundStyle(showNoteToolbar ? MacEditorialColor.accent
+                                                     : MacEditorialColor.faint)
+                    .frame(height: 22)
+                    .padding(.horizontal, 5)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Formatting bar (\u{21e7}\u{2318}Y)")
+
+            Button { showNoteInfo.toggle() } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MacEditorialColor.faint)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("About this note")
+            .popover(isPresented: $showNoteInfo, arrowEdge: .bottom) { noteInfo }
+        }
+    }
+
+    /// What the note is made of. Deliberately small — David: "minimal is fine
+    /// now and we can iterate on it later."
+    ///
+    /// Contents, then counts. Both are read straight off `noteText`, which
+    /// costs one pass over a document that is at most a screen or two; no index,
+    /// no cache, nothing to invalidate. A day note is not big enough to earn
+    /// machinery, and building some would be answering a scale question nobody
+    /// has asked.
+    ///
+    /// **Backlinks are absent on purpose.** `NoteStore.findWikilinkMentions` can
+    /// answer "what links to X" and Bear shows exactly that — but a day note's X
+    /// is a date, and it is not clear what linking to a date means in this vault
+    /// yet. Shipping a section that is empty for every note is worse than not
+    /// shipping it. Noted in the backlog with the question that has to be
+    /// answered first.
+    private var noteInfo: some View {
+        let lines = noteText.split(separator: "\n", omittingEmptySubsequences: false)
+        let headings = lines.filter { $0.hasPrefix("#") }.map(String.init)
+        let words = noteText.split(whereSeparator: { $0.isWhitespace }).count
+        let open = lines.filter { $0.hasPrefix("\u{2610} ") }.count
+        let done = lines.filter { $0.hasPrefix("\u{2611} ") }.count
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("Contents").editorialFieldLabel()
+            if headings.isEmpty {
+                Text("No headings")
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.faint)
+                    .padding(.top, 4)
+            } else {
+                ForEach(Array(headings.enumerated()), id: \.offset) { _, heading in
+                    let depth = heading.prefix(while: { $0 == "#" }).count
+                    Text(heading.drop(while: { $0 == "#" || $0 == " " }))
+                        .font(MacEditorialType.fieldValue)
+                        .foregroundStyle(MacEditorialColor.ink)
+                        .lineLimit(1)
+                        // Indent by level, so a note with structure looks like
+                        // it has structure.
+                        .padding(.leading, CGFloat(max(0, depth - 1)) * 12)
+                        .padding(.vertical, 2)
+                }
+            }
+
+            MacEditorialRule.hair.padding(.vertical, 10)
+
+            Text("Statistics").editorialFieldLabel()
+            statRow("Words", "\(words)")
+            statRow("Characters", "\(noteText.count)")
+            if open + done > 0 {
+                statRow("To do", "\(open)")
+                statRow("Done", "\(done)")
+            }
+        }
+        .padding(16)
+        .frame(width: 230, alignment: .leading)
+    }
+
+    private func statRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(MacEditorialType.meta)
+                .foregroundStyle(MacEditorialColor.muted)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(MacEditorialType.time)
+                .foregroundStyle(MacEditorialColor.ink)
+        }
+        .frame(height: 20)
+    }
+
+    /// The formatting bar: a capsule floating over the page, toggled by ⇧⌘Y or
+    /// by the `B I U` button in the heading.
+    ///
+    /// Session 80. Answering the constraint David set at the start of this
+    /// work: *"the most important thing is a sense of joy using the app"* and
+    /// *"i do not want clutter"*.
+    ///
+    /// **Toggled, not focus-gated.** The first version showed itself whenever
+    /// the note had the keyboard, which was my answer to "no clutter". A toggle
+    /// is his answer — the Bear model he asked for — and it is the better one
+    /// twice over: it is a decision he makes rather than a rule inferred on his
+    /// behalf, and it persists, so a bar turned on last week is on this morning.
+    ///
+    /// **Floating, not stacked.** It sat under the editor at first, which meant
+    /// the writing area shrank and grew as the bar came and went. The text never
+    /// jumped, which is what I had optimised for, but the page changed size. An
+    /// overlay takes nothing: the page is the page and the bar rests on it.
+    ///
+    /// Bottom-centred, where Bear puts it — near your hand, and never over the
+    /// line you are writing, which on a short note is near the top.
+    ///
+    /// **Seven buttons, not thirteen**, grouped by a divider into block-level
+    /// (heading, checkbox, bullet) and inline (bold, italic, highlight, link).
+    /// `MacEditorCommand` offers indent, outdent, date, timestamp and more, and
+    /// the journal's bar carries most of them; a day note is tick, heading,
+    /// stress, link.
+    ///
+    /// Nothing here is exclusive — every command is still reachable by typing,
+    /// and the checkbox has its own shorthand (D218). The bar is
+    /// discoverability, not capability, which is why hiding it costs nothing.
+    private var noteBar: some View {
+        HStack(spacing: 1) {
+            barButton("textformat.size", "Heading") { noteActions.execute(.heading) }
+            barButton("checkmark.square", "Checkbox") { noteActions.execute(.checkbox) }
+            barButton("list.bullet", "Bullet") { noteActions.execute(.bullet) }
+            Divider().frame(height: 15).padding(.horizontal, 4)
+            barButton("bold", "Bold") { noteActions.execute(.bold) }
+            barButton("italic", "Italic") { noteActions.execute(.italic) }
+            barButton("highlighter", "Highlight") { noteActions.execute(.highlight) }
+            barButton("link", "Link") { noteActions.execute(.link) }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(MacEditorialColor.paper, in: Capsule())
+        .overlay { Capsule().strokeBorder(MacEditorialColor.hairline, lineWidth: 1) }
+        .shadow(color: .black.opacity(0.13), radius: 10, y: 3)
+        .padding(.bottom, 18)
+    }
+
+    private func barButton(_ icon: String, _ help: String,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(MacEditorialColor.muted)
+                .frame(width: 28, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    /// Hands the keyboard back from the day note.
+    ///
+    /// **Setting the flag is no longer enough.** With `@FocusState`, writing
+    /// `false` moved the focus. With an `NSTextView` the flag is a REPORT of
+    /// AppKit's state, not a lever on it — so this resigns first responder and
+    /// lets `onFocusChange` set the flag on the way back.
+    ///
+    /// Writing the flag directly would have left the caret blinking in a note
+    /// the app believed was unfocused, with the arrow keys still dead and the
+    /// rule back to ink saying otherwise. That is the worst version of this
+    /// bug: the indicator lying about the thing it exists to report.
+    private func releaseNote() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
     private var notePath: String { "Calendar/\(dayKey).md" }
