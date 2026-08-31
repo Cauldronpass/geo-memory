@@ -68,11 +68,32 @@ struct MacTaskRow: View {
     /// Declared last so every existing call site's memberwise argument order is
     /// untouched.
     var completed: Bool = false
-    /// Inside a list view the `PERSONAL` label on every row says what the
-    /// heading already said, so the slot shows the DATE instead. The trailing
-    /// mark carries whatever the context does not already imply. Declared last
-    /// so no existing call site's argument order moves.
-    var showsDate: Bool = false
+    /// What the row's trailing slot says.
+    ///
+    /// **The slot carries whatever the CONTEXT does not already imply**, which
+    /// is why this is three values and not a flag.
+    ///
+    ///   * `.list` — Today and Upcoming. The day is the heading, so the useful
+    ///     thing is which list the task is in.
+    ///   * `.date` — the Tasks screen's list rail. `PERSONAL` on every row would
+    ///     repeat the heading, so the slot shows the date instead. An undated
+    ///     task shows nothing, correctly: the pool is one list and nothing is
+    ///     left to say.
+    ///   * `.dateElseList` — a document's task band, where NEITHER is implied.
+    ///     The band mixes lists and mixes dated with undated, so a row has to
+    ///     answer both questions and the date is the more specific answer when
+    ///     there is one.
+    ///
+    /// It was a `showsDate` Bool until Session 80, and `.date` was the only
+    /// alternative to `.list`. David caught the gap immediately: a task added
+    /// from a document showed no label at all — *"there is no reference to
+    /// inbox on the row within satchel"* — because `true` meant "the date, or
+    /// nothing" and the task was undated by design.
+    ///
+    /// Declared last so no existing call site's argument order moves.
+    var trailing: TrailingLabel = .list
+
+    enum TrailingLabel { case list, date, dateElseList }
 
     @State private var draftTitle: String = ""
     @State private var draftNotes: String = ""
@@ -83,8 +104,22 @@ struct MacTaskRow: View {
     @FocusState private var shortcutFocused: Bool
     @State private var pickingDay: Bool = false
     @State private var pickedDay: Date = Date()
+    /// Set once this card has written its pending edits, so `onDisappear`
+    /// cannot write them a second time. Reset in `onAppear`.
+    @State private var exitCommitted: Bool = false
+    @State private var pickingDocs: Bool = false
+    /// Resolves linked paths to titles and icons. Built lazily and only when a
+    /// link exists, so a card with no documents pays nothing — this row is
+    /// drawn dozens at a time.
+    @State private var docStore: TraceMacDocumentStore? = nil
+    @State private var pickingRemind: Bool = false
+    /// Seeded from the task's existing alarm when there is one, otherwise 9am
+    /// on its due day — a default nobody has to correct as often as "now".
+    @State private var remindAt: Date = Date()
 
     private var store: ReminderTaskStore { ReminderTaskStore.shared }
+
+    @Environment(NoteStore.self) private var noteStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -219,6 +254,43 @@ struct MacTaskRow: View {
         }
     }
 
+    /// The task points at something openable: a web page, a Satchel document,
+    /// or both.
+    ///
+    /// David, Session 80: *"i think we need an indicator if the task has a link
+    /// (either a web, or a document in satchel, etc)...also in the same color
+    /// font."* Accent, matching the note mark beside it.
+    ///
+    /// **Accent from the start, which took three passes to learn on the note
+    /// mark.** That one shipped `faint`, was darkened to `muted` when David
+    /// could not see it, and ended `accent` at his request. The lesson was that
+    /// a mark competing with a caps list label a few points away cannot win by
+    /// being quieter than its neighbour — quiet reads as furniture. Accent is
+    /// the only value on this row that nothing else uses, so a second mark that
+    /// means "there is more here" belongs in it too.
+    ///
+    /// One mark for both kinds, not two. Two accent glyphs on a row would spend
+    /// the loudest colour in the design on a distinction the tooltip can make
+    /// for free, and the answer to "which is it" is one hover away.
+    @ViewBuilder
+    private var linkMark: some View {
+        if task.hasFollowableLink {
+            Image(systemName: "link")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(MacEditorialColor.accent)
+                .help(linkHint)
+        }
+    }
+
+    private var linkHint: String {
+        let docs = task.linkedDocumentPaths.count
+        let webs = task.webLinks.count
+        var parts: [String] = []
+        if docs > 0 { parts.append(docs == 1 ? "1 document" : "\(docs) documents") }
+        if webs > 0 { parts.append(webs == 1 ? "1 link" : "\(webs) links") }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
     /// One line, capped. A tooltip is a glance, not a reader.
     private static func noteHint(_ prose: String) -> String {
         let first = prose.split(separator: "\n").first.map(String.init) ?? prose
@@ -235,6 +307,7 @@ struct MacTaskRow: View {
         // where it sits, and keeping the two kinds from interleaving is what
         // stops this from reading as a row of assorted badges.
         noteMark
+        linkMark
         if task.repeats {
             Image(systemName: "repeat")
                 .font(.system(size: 10, weight: .semibold))
@@ -245,12 +318,21 @@ struct MacTaskRow: View {
                 .font(MacEditorialType.time)
                 .foregroundStyle(MacEditorialColor.faint)
         }
-        if showsDate {
+        switch trailing {
+        case .list:
+            if let list = task.list {
+                Text(list).editorialListLabel()
+            }
+        case .date:
             if let due = task.date {
                 Text(Self.shortDate(due)).editorialListLabel()
             }
-        } else if let list = task.list {
-            Text(list).editorialListLabel()
+        case .dateElseList:
+            if let due = task.date {
+                Text(Self.shortDate(due)).editorialListLabel()
+            } else if let list = task.list {
+                Text(list).editorialListLabel()
+            }
         }
     }
 
@@ -338,6 +420,7 @@ struct MacTaskRow: View {
             fieldRows
             offerLine
             if pickingDay { dayPicker }
+            if pickingRemind { remindPicker }
             MacEditorialRule.hair
             pills
             verbs
@@ -365,7 +448,33 @@ struct MacTaskRow: View {
             draftTitle = task.title
             draftNotes = strippedNotes
             editingTitle = false
+            exitCommitted = false
         }
+        // **The backstop, and the only thing that can catch a click outside.**
+        // That collapse is the HOST's — Today clears `openTaskID` when the day
+        // note takes focus — so the card is never told, it simply stops
+        // existing. Nothing inside it can intercept that except its own
+        // disappearance.
+        //
+        // Safe to fire on any teardown (a scroll, a window close, a redraw)
+        // because `commitPendingEdits` writes only when something changed, and
+        // the save is an unstructured `Task` that outlives the view.
+        .onDisappear { commitPendingEdits() }
+        // Only when there is a chip to resolve. An open card with no documents
+        // never scans the folder.
+        .task(id: task.linkedDocumentPaths) { await loadDocsIfNeeded() }
+        .sheet(isPresented: $pickingDocs) {
+            MacTaskDocumentPicker(linked: task.linkedDocumentPaths) { path in
+                toggleDocument(path)
+            }
+            .environment(noteStore)
+        }
+    }
+
+    private func loadDocsIfNeeded() async {
+        guard !task.linkedDocumentPaths.isEmpty else { return }
+        if docStore == nil { docStore = TraceMacDocumentStore(noteStore: noteStore) }
+        await docStore?.reload()
     }
 
     /// The title is a `Text` until you ask to edit it, and that is the whole
@@ -401,7 +510,7 @@ struct MacTaskRow: View {
                 .foregroundStyle(MacEditorialColor.ink)
                 .lineLimit(2)
                 .contentShape(Rectangle())
-                .onTapGesture(count: 2) { onToggle() }
+                .onTapGesture(count: 2) { closeCard() }
                 .onTapGesture(count: 1) { editingTitle = true }
         }
     }
@@ -413,7 +522,7 @@ struct MacTaskRow: View {
     }
 
     private var closeButton: some View {
-        Button(action: onToggle) {
+        Button(action: closeCard) {
             Image(systemName: "chevron.up")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(MacEditorialColor.faint)
@@ -462,19 +571,34 @@ struct MacTaskRow: View {
                         Image(systemName: "bell")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(MacEditorialColor.noteText)
-                        Text(alarm)
-                            .font(MacEditorialType.fieldValue)
-                            .foregroundStyle(MacEditorialColor.ink)
+                        Button {
+                            remindAt = defaultRemindTime
+                            pickingRemind = true
+                        } label: {
+                            Text(alarm)
+                                .font(MacEditorialType.fieldValue)
+                                .foregroundStyle(MacEditorialColor.ink)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Change the time")
+                        Button { clearRemind() } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(MacEditorialColor.faint)
+                                .frame(width: 16, height: 16)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("No reminder")
                     }
                 }
             }
             if task.repeats {
                 MacEditorialRule.hair
-                fieldRow("Repeat") {
-                    Text("On")
-                        .font(MacEditorialType.fieldValue)
-                        .foregroundStyle(MacEditorialColor.ink)
-                }
+                // The label reads the rule off the reminder rather than saying
+                // "On", which told you a repeat existed and nothing about it.
+                fieldRow("Repeat") { repeatMenu(label: currentRepeat.label) }
             }
             if shortcutLink != nil || editingShortcut {
                 MacEditorialRule.hair
@@ -486,6 +610,48 @@ struct MacTaskRow: View {
                     HStack(spacing: 6) {
                         ForEach(linkedNames, id: \.self) { name in
                             linkChip(name)
+                        }
+                    }
+                }
+            }
+            if !task.webLinks.isEmpty {
+                MacEditorialRule.hair
+                // **"Web", not "Link".** There is already a "Linked" row for
+                // people and places and a "Document" row below; a third row
+                // called "Link" would be the least distinguishable label of the
+                // three. The row says what the thing IS.
+                //
+                // These URLs stay in the note prose as well, and that is
+                // deliberate: a URL is something he typed, it reads as part of
+                // the sentence around it, and stripping it into machinery
+                // (`isMachineryLine`) would silently rewrite his note. This row
+                // makes it clickable without taking it away.
+                fieldRow("Web") {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(task.webLinks, id: \.self) { url in
+                            Button { NSWorkspace.shared.open(url) } label: {
+                                Text(url.host ?? url.absoluteString)
+                                    .font(MacEditorialType.fieldValue)
+                                    .foregroundStyle(MacEditorialColor.accent)
+                                    .lineLimit(1)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(url.absoluteString)
+                        }
+                    }
+                }
+            }
+            if !task.linkedDocumentPaths.isEmpty {
+                MacEditorialRule.hair
+                // Its own row, not folded into "Linked". A person and a place
+                // are people-and-places; a document is a FILE, it opens
+                // somewhere else, and it can go missing in a way a Notion
+                // record cannot. Different failure mode, different row.
+                fieldRow("Document") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(task.linkedDocumentPaths, id: \.self) { path in
+                            documentChip(path)
                         }
                     }
                 }
@@ -525,6 +691,105 @@ struct MacTaskRow: View {
         }
     }
 
+    /// A linked Satchel document.
+    ///
+    /// **Resolved live, never cached** (D227). The title comes from the store
+    /// each time; the notes hold only the path. A document that has been
+    /// deleted says so rather than showing a name that no longer opens
+    /// anything — the one thing a stale cached title could not do.
+    private func documentChip(_ path: String) -> some View {
+        let doc: TraceMacDocument? = docStore?.documents.first { $0.relativePath == path }
+        let title: String = doc?.title ?? Self.filenameOf(path)
+        let glyph: String = doc?.resolvedIcon.sfSymbol ?? "questionmark.square.dashed"
+        let tint: Color = doc.map { MacPalette.documentTint($0.resolvedTint) }
+            ?? MacEditorialColor.faint
+        let missing: Bool = docStore != nil && doc == nil
+        return HStack(spacing: 6) {
+            Button {
+                // The notification, not a closure: `.navigateToRecord` is what
+                // the Photos and Places sheets already post to reach a record
+                // without every intervening view growing a parameter, and
+                // `TraceMacContentView` routes it through `openSearchResult`,
+                // so the jump lands in the navigator's history for free.
+                guard !missing else { return }
+                NotificationCenter.default.post(
+                    name: .navigateToRecord, object: nil,
+                    userInfo: ["type": "document", "id": path])
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: glyph)
+                        .font(.system(size: 9))
+                        .foregroundStyle(missing ? MacEditorialColor.faint : tint)
+                    Text(missing ? "\(title) (missing)" : title)
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(1.0)
+                        .foregroundStyle(missing ? MacEditorialColor.faint
+                                                 : MacEditorialColor.muted)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 3)
+                        .strokeBorder(MacEditorialColor.hairline, lineWidth: 1)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(missing ? path : "Open in Documents")
+            Button { toggleDocument(path) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(MacEditorialColor.faint)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Unlink")
+        }
+    }
+
+    /// The last path component, for a document the store cannot resolve. The
+    /// timestamp prefix is dropped so a missing file still reads as something
+    /// recognisable rather than as a serial number.
+    private static func filenameOf(_ path: String) -> String {
+        let name = (path as NSString).lastPathComponent
+        let parts = name.split(separator: "-", maxSplits: 3, omittingEmptySubsequences: false)
+        if parts.count == 4, parts[0].count == 4, Int(parts[0]) != nil {
+            return String(parts[3])
+        }
+        return name
+    }
+
+    /// Adds or removes one `satchel:doc:` line, leaving every other line alone.
+    ///
+    /// Rewrites the whole notes field because that is the only write the store
+    /// offers, so the rule is that this must be lossless for everything it does
+    /// not own — prose, wikilinks and the shortcut URL all survive verbatim.
+    private func toggleDocument(_ path: String) {
+        let marker = ThingsTask.documentMarkerPrefix + path
+        let existing = task.notes ?? ""
+        var lines = existing.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        if let at = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces) == marker
+        }) {
+            lines.remove(at: at)
+        } else {
+            // Appended, so a document link never lands above the prose he
+            // wrote. Same placement the shortcut URL gets.
+            lines.append(marker)
+        }
+        let notes = lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            _ = await store.update(taskID: task.id, title: task.title, date: task.date,
+                                   clearDate: task.date == nil, list: task.list,
+                                   notes: notes)
+            onChanged()
+        }
+    }
+
     /// Everything the task does NOT carry, in one faint line. Nothing here when
     /// the task carries all of it.
     @ViewBuilder
@@ -533,16 +798,19 @@ struct MacTaskRow: View {
         if !offers.isEmpty {
             HStack(spacing: 16) {
                 ForEach(offers, id: \.self) { offer in
-                    Button {
-                        guard offer == "Shortcut" else { return }
-                        draftShortcut = ""
-                        editingShortcut = true
-                    } label: {
-                        Text("+ \(offer)")
-                            .editorialQuietLabel()
-                            .contentShape(Rectangle())
+                    // Repeat is the odd one: picking a recurrence is picking
+                    // one of eight, and a button that opens a picker to choose
+                    // among eight is a menu with extra steps.
+                    if offer == "Repeat" {
+                        repeatMenu(label: "+ Repeat")
+                    } else {
+                        Button { tapOffer(offer) } label: {
+                            Text("+ \(offer)")
+                                .editorialQuietLabel()
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 Spacer(minLength: 0)
             }
@@ -551,12 +819,52 @@ struct MacTaskRow: View {
         }
     }
 
+    /// **Every label here must do something.** This action used to open
+    /// `guard offer == "Shortcut" else { return }`, so four of the five offers
+    /// rendered, accepted the click and swallowed it — D225, and the third bug
+    /// of its kind in one session. `missingOffers` and this switch have to be
+    /// read together: a label added there without an arm here is silent again.
+    private func tapOffer(_ offer: String) {
+        switch offer {
+        case "Shortcut":
+            draftShortcut = ""
+            editingShortcut = true
+        case "When":
+            pickedDay = task.date ?? Calendar.current.startOfDay(for: Date())
+            pickingDay = true
+        case "Remind":
+            remindAt = defaultRemindTime
+            pickingRemind = true
+        case "Link":
+            pickingDocs = true
+        default:
+            // "Repeat" is a Menu and never arrives here. Anything else is a
+            // label someone added to `missingOffers` without an arm.
+            break
+        }
+    }
+
+    /// Only the offers that DO something.
+    ///
+    /// All five were listed here once and four were wired to nothing (D225).
+    /// Remind and Repeat came back a build later with their controls; Link is
+    /// still out, because it needs a decision about how a document link is
+    /// written into the notes, not just a button.
+    ///
+    /// **Remind and Repeat require a due date and are hidden without one.**
+    /// `update(remindAt:)` only sets an alarm alongside a date, and
+    /// `setRepeat`'s own note says a repeat needs a date to anchor to. Offering
+    /// either on an undated task would be a fourth control that accepts a click
+    /// and does nothing — the exact bug this list was trimmed for. "+ When" is
+    /// the offer showing in that case, which is also the honest instruction.
     private var missingOffers: [String] {
         var out: [String] = []
         if task.date == nil { out.append("When") }
-        if task.alarmTimeString == nil { out.append("Remind") }
-        if !task.repeats { out.append("Repeat") }
-        if linkedNames.isEmpty { out.append("Link") }
+        if task.date != nil, task.alarmTimeString == nil { out.append("Remind") }
+        if task.date != nil, !task.repeats { out.append("Repeat") }
+        // Offered even when documents are already linked — unlike the others,
+        // this is a list you add to rather than a single value you set.
+        out.append("Link")
         if shortcutLink == nil { out.append("Shortcut") }
         return out
     }
@@ -641,6 +949,122 @@ struct MacTaskRow: View {
                 setDate(day)
                 pickingDay = false
             }
+    }
+
+    // MARK: Remind
+
+    /// 9am on the due day, or the alarm already set. Chosen over "now" because
+    /// a reminder is nearly always for a working hour on the day the task is
+    /// due, and "now" is the one time it is never for.
+    private var defaultRemindTime: Date {
+        let cal = Calendar.current
+        // `remindDate` reads the EKReminder; `ThingsTask` carries only the
+        // display STRING, which cannot be parsed back into a time reliably.
+        if let existing = store.remindDate(taskID: task.id) { return existing }
+        let day = task.date ?? Date()
+        return cal.date(bySettingHour: 9, minute: 0, second: 0, of: day) ?? day
+    }
+
+    /// Time only. The DAY is the task's due day and is not re-asked here —
+    /// "When" already owns that question, and two controls that can disagree
+    /// about which day a task is on is a record that contradicts itself.
+    private var remindPicker: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bell")
+                .font(.system(size: 11))
+                .foregroundStyle(MacEditorialColor.faint)
+            DatePicker("", selection: $remindAt, displayedComponents: .hourAndMinute)
+                .datePickerStyle(.field)
+                .labelsHidden()
+                .fixedSize()
+            MacEditorialPill(label: "Set") { commitRemind() }
+            Button("Cancel") { pickingRemind = false }
+                .buttonStyle(.plain)
+                .font(MacEditorialType.meta)
+                .foregroundStyle(MacEditorialColor.muted)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 30)
+        .padding(.vertical, 10)
+    }
+
+    private func commitRemind() {
+        guard let day = task.date else { pickingRemind = false; return }
+        // The picker only moved the time, so the day is re-imposed here: a
+        // `.hourAndMinute` picker still carries whatever date it was seeded
+        // with, and seeding drift would silently move the task.
+        let cal = Calendar.current
+        let hm = cal.dateComponents([.hour, .minute], from: remindAt)
+        let when = cal.date(bySettingHour: hm.hour ?? 9, minute: hm.minute ?? 0,
+                            second: 0, of: day) ?? day
+        pickingRemind = false
+        Task {
+            _ = await store.update(taskID: task.id, title: task.title, date: day,
+                                   clearDate: false, list: task.list,
+                                   notes: task.notes, remindAt: when)
+            onChanged()
+        }
+    }
+
+    private func clearRemind() {
+        guard let day = task.date else { return }
+        Task {
+            _ = await store.update(taskID: task.id, title: task.title, date: day,
+                                   clearDate: false, list: task.list,
+                                   notes: task.notes, clearRemind: true)
+            onChanged()
+        }
+    }
+
+    // MARK: Repeat
+
+    private var currentRepeat: ReminderTaskStore.DayflowRepeatRule {
+        store.repeatRule(taskID: task.id)
+    }
+
+    /// Styled the long way round, matching `listMenu` above rather than calling
+    /// `editorialQuietLabel()`.
+    ///
+    /// David: *"the wording for repeat is dark and bigger than the others."*
+    /// Two causes, both about a `Menu` not being a `Button`:
+    ///
+    /// **A Menu imposes its own control font and colour on its label**, so the
+    /// modifier's `font`/`foregroundStyle` lost to it and "+ REPEAT" came out
+    /// dark and full-size beside two faint 10pt offers. Setting the font on the
+    /// `Text` and the colour on the `HStack` — exactly what `listMenu` does —
+    /// is what survives.
+    ///
+    /// **`.menuIndicator(.hidden)` has to come BEFORE `.menuStyle`**, which is
+    /// written down two functions up and which I still got backwards: applied
+    /// after, the style had already drawn its own chevron, so the row showed
+    /// one on the left as well as the Editorial one on the right.
+    private func repeatMenu(label: String) -> some View {
+        Menu {
+            ForEach(ReminderTaskStore.DayflowRepeatRule.allCases, id: \.self) { rule in
+                Button(rule.label) { setRepeat(rule) }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(MacEditorialType.quietLabel)
+                    .textCase(.uppercase)
+                    .tracking(MacEditorialType.quietTracking)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+            }
+            .foregroundStyle(MacEditorialColor.faint)
+            .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private func setRepeat(_ rule: ReminderTaskStore.DayflowRepeatRule) {
+        Task {
+            _ = await store.setRepeat(taskID: task.id, rule: rule)
+            onChanged()
+        }
     }
 
     // MARK: Footer
@@ -741,10 +1165,49 @@ struct MacTaskRow: View {
     /// One layer at a time, same as everywhere else: an open day grid closes
     /// first and the card stays.
     private func escapePressed() {
+        if pickingDocs { pickingDocs = false; return }
+        if pickingRemind { pickingRemind = false; return }
         if pickingDay { pickingDay = false; return }
+        closeCard()
+    }
+
+    /// **Every way out of the card commits**, which it did not until now.
+    ///
+    /// David, Session 80: *"i added a note then closed the task and reopened
+    /// and the note was gone. is there a save or just exiting was suppose to
+    /// save the note."* Exiting was supposed to. Only two of the four exits
+    /// actually did: Return (`onSubmit`) and Escape. The chevron called
+    /// `onToggle` straight through, and clicking outside the card is the host's
+    /// collapse — neither passed anywhere that could save.
+    ///
+    /// The note field has no Save button by design (nothing else in this app
+    /// does), so "it saves when you leave" has to be true of leaving in
+    /// general, not of the two exits that happened to be wired.
+    private func closeCard() {
+        commitPendingEdits()
+        onToggle()
+    }
+
+    /// Commits the title and the note if either differs from what is stored.
+    ///
+    /// Guarded on dirtiness because `onDisappear` calls it too: an unguarded
+    /// version would write to Reminders every time a row scrolled out of view.
+    private func commitPendingEdits() {
+        guard !exitCommitted else { return }
+        exitCommitted = true
         if editingTitle { commitTitle() }
         if draftNotes != strippedNotes { commitNotes() }
-        onToggle()
+    }
+
+    /// The note as it should be SAVED right now — the merged form when the
+    /// field is dirty, the stored value when it is not.
+    ///
+    /// Exists so a path that both mutates the task and closes the card can
+    /// carry the unsaved note in its OWN single write. Two concurrent
+    /// `update`s on one reminder race on every field, and the loser here would
+    /// be the one holding the new date.
+    private var notesToSave: String? {
+        draftNotes != strippedNotes ? rebuiltNotes(prose: draftNotes) : task.notes
     }
 
     private func commitTitle() {
@@ -775,9 +1238,21 @@ struct MacTaskRow: View {
     /// made, so it goes away. `onMoved` also tells the host where it went, so
     /// the host can offer to follow it.
     private func setDate(_ day: Date) {
+        // **One write, carrying any unsaved note with it.**
+        //
+        // This method closes the card, and `onDisappear` now commits pending
+        // edits — so without this, typing a note and then pressing a date pill
+        // fired TWO updates on the same reminder. The second one is
+        // `commitNotes`, built from this view's `task`, which still holds the
+        // OLD date: it would land after the move and quietly undo it.
+        //
+        // Merging the note into this write removes the second update entirely
+        // rather than trying to order the two.
+        let notes = notesToSave
+        exitCommitted = true
         Task {
             _ = await store.update(taskID: task.id, title: task.title, date: day,
-                                   clearDate: false, list: task.list, notes: task.notes)
+                                   clearDate: false, list: task.list, notes: notes)
             onChanged()
             onMoved(day)
             onToggle()
@@ -922,12 +1397,18 @@ struct MacTaskRow: View {
     /// nothing for them to ask.
     private var strippedNotes: String { task.noteProse }
 
-    /// Prose first, then the link lines exactly as they were.
+    /// Prose first, then every machinery line exactly as it was.
+    ///
+    /// **Keyed on `ThingsTask.isMachineryLine`, which is also what `noteProse`
+    /// strips.** This used to carry its own list of what to preserve, and the
+    /// two lists drifted the moment D227 added the `satchel:doc:` marker —
+    /// `noteProse` hid it from the field, and this dropped it on save, so
+    /// editing a note would have deleted the document links without a word.
+    /// Whatever the reader hides, this keeps. By construction, not by care.
     private func rebuiltNotes(prose: String) -> String {
         guard let notes = task.notes else { return prose }
         let links = notes.split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[[")
-                      || Self.hasShortcut($0) }
+            .filter { ThingsTask.isMachineryLine($0) }
             .map(String.init)
         guard !links.isEmpty else { return prose }
         let body = prose.trimmingCharacters(in: .whitespacesAndNewlines)

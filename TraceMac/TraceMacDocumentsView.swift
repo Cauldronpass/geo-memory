@@ -907,6 +907,15 @@ struct TraceMacDocumentsView: View {
                                         selectedDoc = store?.documents.first { $0.filename == movedDoc.filename }
                                     }
                                 }
+                                // A SIBLING of the metadata panel, not a row
+                                // inside it: that panel is a `DisclosureGroup`
+                                // he can collapse, and tasks folded away with
+                                // the metadata would be invisible exactly when
+                                // the document is being read rather than
+                                // edited (D230).
+                                MacEditorialRule.hair
+                                    .padding(.top, 4)
+                                DocTasksPanel(doc: doc)
                             }
                             .frame(height: metadataH)
                         }

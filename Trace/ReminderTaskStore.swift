@@ -86,6 +86,8 @@ final class ReminderTaskStore {
     var tasks: [ThingsTask] = []
     var totalCount: Int = 0
     var inboxCount: Int = 0
+    /// Increments on every applied fetch. See `apply(_:)`.
+    private(set) var revision: UInt64 = 0
     var isLoading = false
     private(set) var lastFetched: Date?
     private(set) var lastError: String?
@@ -178,6 +180,17 @@ final class ReminderTaskStore {
         allTasks = all
         inboxCount = inboxTasks.count
         totalCount = all.count
+        // Bumped on every applied fetch, so a view can re-derive something this
+        // store does NOT publish — completed tasks, above all.
+        //
+        // Session 80: a task ticked in Apple's Reminders fires
+        // `EKEventStoreChanged`, which refreshes the open lists and therefore
+        // makes the task disappear from a document's band. Nothing told the
+        // band to re-ask which tasks were FINISHED, so it kept showing the
+        // answer from when the document opened. Observing `allTasks` would not
+        // help: a completion removes a task from it, and "something left this
+        // array" is not a signal a view can key a query on.
+        revision &+= 1
         lastFetched = Date()
         lastError = nil
         // Session 78 — the tasks widget mirrors this store; any applied
@@ -185,10 +198,74 @@ final class ReminderTaskStore {
         WidgetCenter.shared.reloadTimelines(ofKind: "DayflowTasksWidget")
     }
 
+    /// Set once the first fetch of a launch has run the repair below.
+    /// `@ObservationIgnored` because it is bookkeeping — no view reads it, and
+    /// an observable flag flipping inside `fetch` would invalidate every
+    /// task-showing view for nothing.
+    @ObservationIgnored private var reconciled = false
+
     func fetch() async {
         isLoading = true
         defer { isLoading = false }
-        if let r = await fetchIncomplete() { apply(r) }
+        guard let r = await fetchIncomplete() else { return }
+        // Once per launch, and only re-fetches when it actually changed
+        // something — so the steady state is exactly the old single fetch.
+        if !reconciled {
+            reconciled = true
+            if await repairDatedRefusals(r), let repaired = await fetchIncomplete() {
+                apply(repaired)
+                return
+            }
+        }
+        apply(r)
+    }
+
+    /// Moves already-broken records into line with D210/D225: a reminder that
+    /// holds BOTH a due date and a list that refuses dates goes to Personal,
+    /// keeping its date.
+    ///
+    /// David, Session 80: *"I saw that task in someday and changed the date to
+    /// today. when i do that it should move to personal i think."* It does now
+    /// — but the fix only governs writes made THROUGH this store from here on.
+    /// The records that were already incoherent stayed incoherent, and they are
+    /// the ones he can see: a Someday task carrying today's date renders on
+    /// Today wearing a SOMEDAY label, which is the contradiction stated out
+    /// loud on screen.
+    ///
+    /// **Keeping the date rather than dropping it** is the same call D225 made.
+    /// A date is the more specific statement, it is the one he can see and act
+    /// on, and dropping it would make tasks disappear from Today with no
+    /// explanation — the failure mode D210 was written to end, reintroduced by
+    /// the cleanup meant to finish it.
+    ///
+    /// Runs once per launch and writes nothing when there is nothing to fix, so
+    /// after the first clean launch it costs one predicate scan that `fetch`
+    /// was doing anyway.
+    private func repairDatedRefusals(_ reminders: [EKReminder]) async -> Bool {
+        let broken = reminders.filter {
+            $0.dueDateComponents != nil && Self.listRefusesDates($0.calendar?.title)
+        }
+        guard !broken.isEmpty, let personal = personalList() else { return false }
+        var changed = false
+        for reminder in broken {
+            reminder.calendar = personal
+            do {
+                try store.save(reminder, commit: false)
+                changed = true
+            } catch {
+                // One bad record must not strand the rest. Nothing is committed
+                // yet, so a failure here simply leaves that reminder as it was.
+                continue
+            }
+        }
+        guard changed else { return false }
+        do {
+            try store.commit()
+            return true
+        } catch {
+            lastError = "Could not tidy up dated Someday tasks. \(error.localizedDescription)"
+            return false
+        }
     }
     func fetchAnytime() async { isLoadingAnytime = true; defer { isLoadingAnytime = false }; await fetch() }
     func fetchUpcoming() async { isLoadingUpcoming = true; defer { isLoadingUpcoming = false }; await fetch() }
@@ -245,6 +322,35 @@ final class ReminderTaskStore {
     /// reminders are outside it by definition — same reason `fetchCompleted(on:)`
     /// is separate, and that one stays: the Today card's "n done" foot wants
     /// exactly one day and should not pay for ninety.
+    /// Completed tasks carrying a `satchel:doc:` marker for this document.
+    ///
+    /// **Bounded by the document's own age, not by a fixed window** (D230). The
+    /// Logbook's 90 days is right for "what did I finish lately" and wrong for
+    /// "did I ever pay this": a tax bill settled in September is asked about the
+    /// following March, and a 90-day window answers with silence — which reads
+    /// exactly like "no task was ever made". Starting at the document's created
+    /// date is the only bound that cannot be too short, and it costs a new
+    /// document nothing.
+    ///
+    /// `predicateForCompletedReminders` demands both ends, so there is no "all
+    /// time" to ask for. `since` falls back two years when a document carries no
+    /// creation date.
+    ///
+    /// Timing is logged once per call under `[DocTasks]` — the cost of this
+    /// query on a real Reminders store was asserted before it was measured
+    /// (Session 80), and the fallback if it is slow is a cached count in the
+    /// sidecar with the task still authoritative.
+    func completedLinkedTo(documentPath: String, since: Date?) async -> [ThingsTask] {
+        let start = since ?? Calendar.current.date(byAdding: .year, value: -2, to: Date())
+            ?? Date.distantPast
+        let began = CFAbsoluteTimeGetCurrent()
+        let all = await fetchCompleted(from: start, to: Date())
+        let hits = all.filter { $0.linkedDocumentPaths.contains(documentPath) }
+        let ms = Int((CFAbsoluteTimeGetCurrent() - began) * 1000)
+        print("[DocTasks] completed query \(ms)ms — \(all.count) completed reminders scanned, \(hits.count) linked")
+        return hits
+    }
+
     func fetchCompleted(from start: Date, to end: Date) async -> [ThingsTask] {
         guard await ensureAccess() else { return [] }
         let predicate = store.predicateForCompletedReminders(
@@ -402,7 +508,61 @@ final class ReminderTaskStore {
         // the placeholder filter in `CalendarService`: three call sites across
         // two apps already move tasks between lists, and a rule that each one
         // has to remember is a rule that gets forgotten by the fourth.
-        let destinationRefusesDates = Self.listRefusesDates(list)
+        // ── Session 80, second pass: refusing was half the answer ──────────
+        //
+        // David added "pay property tax bill" to the Inbox, opened it, pressed
+        // Pick day, chose 19 September — and nothing happened. The rule above
+        // fired: the Mac's `setDate` passes the task's CURRENT list, so `list`
+        // was "Inbox", the date was dropped, and the card closed on a change
+        // that had not been made.
+        //
+        // **A guard that silently disables behaviour needs a visible sign that
+        // it fired** — this project's own rule, and the second time this
+        // session it has been broken by the same shape of code.
+        //
+        // But the sign was never the fix. Refusing is right when the LIST is
+        // what the user is choosing (the D210 story: a dated task moved into
+        // the Inbox to be re-triaged must shed its date, or it lands in
+        // neither place he looks). Refusing is wrong when the DATE is what the
+        // user is choosing — because David's own routing rule already answers
+        // that case: *"our rule on ios is that once a date is applied it
+        // changes to personal list."* The Inbox means no when-decision has been
+        // made (D158). Making one is not an error to swallow; it is the task
+        // graduating, and it should leave the Inbox on its way out.
+        //
+        // Which intent it is, is legible from the arguments:
+        //
+        //   * `list` names a DIFFERENT list  → the list is the choice → shed
+        //     the date (D210, unchanged).
+        //   * `list` is nil, or names the list the task is already in, and a
+        //     real date is arriving → the date is the choice → move the task
+        //     to Personal and KEEP it.
+        //
+        // The second arm also closes a hole D210 left open. `listRefusesDates`
+        // reads the list it is PASSED, and `nil` is not a refusing list — so
+        // `update(list: nil)` set a date and left the task sitting in the
+        // Inbox, which is exactly the incoherent record D210 was written to
+        // prevent. Dayflow's Inbox swipe passes `list: nil`. **The phone has
+        // been able to mint that record all along**; the Mac only ever hit the
+        // over-strict arm, which is why this surfaced here first.
+        let currentList = reminder.calendar?.title
+        let movingToAnotherList = list != nil && list != currentList
+        let effectiveList = list ?? currentList
+        let effectiveRefusesDates = Self.listRefusesDates(effectiveList)
+        let applyingADate = !clearDate && date != nil
+
+        var graduated = false
+        if effectiveRefusesDates, applyingADate, !movingToAnotherList {
+            // Graduating. `personalList()` makes the list if it is missing, so
+            // this cannot drop the task into whatever Apple's default happens
+            // to be.
+            if let personal = personalList() {
+                reminder.calendar = personal
+                graduated = true
+            }
+        }
+
+        let destinationRefusesDates = effectiveRefusesDates && !graduated
         let clearDate = clearDate || destinationRefusesDates
         let date = destinationRefusesDates ? nil : date
         if clearDate {
@@ -441,7 +601,13 @@ final class ReminderTaskStore {
                 reminder.dueDateComponents = Self.components(date)
             }
         }
-        if let list, !list.isEmpty, let cal = calendar(named: list) { reminder.calendar = cal }
+        // `!graduated`: when the task has just been moved out of a refusing
+        // list, `list` still names the one it came FROM (the Mac passes the
+        // task's current list), and honouring it here would put it straight
+        // back and undo the date with it.
+        if !graduated, let list, !list.isEmpty, let cal = calendar(named: list) {
+            reminder.calendar = cal
+        }
         if let notes { reminder.notes = notes.isEmpty ? nil : notes }
         do {
             try store.save(reminder, commit: true)
@@ -457,7 +623,9 @@ final class ReminderTaskStore {
     // to add repeat to the task"; until now repeats could only be set in
     // Apple's Reminders)
 
-    enum DayflowRepeatRule: Equatable, CaseIterable {
+    // `Hashable` so the Mac task card can drive a `ForEach(id: \.self)` over
+    // the cases. Synthesised — no associated values.
+    enum DayflowRepeatRule: Equatable, Hashable, CaseIterable {
         case none, daily, everyTwoDays, everyThreeDays, weekly, everyTwoWeeks, monthly, yearly
 
         var label: String {

@@ -55,10 +55,17 @@ struct TraceMacTasksView: View {
     /// A context list chosen in the search panel's GO TO section. `nil` leaves
     /// the screen on whatever pool it was showing.
     @Binding var deepLinkList: String?
+    /// Opens Today on a given day. Declared last, defaulted — the memberwise
+    /// init takes declaration order and every existing call site keeps its own.
+    var onGoToDay: (Date) -> Void = { _ in }
 
     @State private var tab: Pool = .inbox
     @State private var openTaskID: String? = nil
 
+    /// The day a task just graduated to, for the "Moved to…" line. See
+    /// `movedOffer`.
+    @State private var movedTo: Date? = nil
+    @State private var movedClearTask: Task<Void, Never>? = nil
     @State private var logbook: [ThingsTask] = []
     /// A context list chosen from the rail. Mutually exclusive with `tab` by
     /// construction — setting either clears the other — because the two are
@@ -203,9 +210,57 @@ struct TraceMacTasksView: View {
         }
     }
 
+    /// **A task dated out of the Inbox LEAVES the Inbox** (D225): the Inbox
+    /// tab is `date == nil && list == Inbox`, so giving it a day makes it
+    /// vanish from the pool he is looking at. Correct, and identical on screen
+    /// to the silent failure it replaced unless the screen says where it went.
+    ///
+    /// Deliberately the same line Today already uses, down to the wording and
+    /// the four seconds — David asked for that treatment once ("this would have
+    /// to be subtle to work") and a second screen inventing a second answer is
+    /// how one app starts feeling like two.
+    @ViewBuilder
+    private var movedOffer: some View {
+        if let day = movedTo {
+            let f = DateFormatter()
+            let label: String = { f.dateFormat = "EEEE, MMM d"; return f.string(from: day) }()
+            HStack(spacing: 8) {
+                Text("Moved to \(label)")
+                    .editorialQuietLabel()
+                Button {
+                    movedClearTask?.cancel()
+                    movedTo = nil
+                    onGoToDay(day)
+                } label: {
+                    Text("Go there")
+                        .font(.system(size: 10, weight: .bold))
+                        .textCase(.uppercase)
+                        .tracking(1.4)
+                        .foregroundStyle(MacEditorialColor.accent)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 0)
+            }
+            .frame(height: 30)
+            .transition(.opacity)
+        }
+    }
+
+    private func noteMove(to day: Date) {
+        movedClearTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.18)) { movedTo = day }
+        movedClearTask = Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.18)) { movedTo = nil }
+        }
+    }
+
     private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                movedOffer
                 if let selectedList {
                     listRows(selectedList)
                 } else if rows.isEmpty {
@@ -217,7 +272,8 @@ struct TraceMacTasksView: View {
                         MacTaskRow(task: task,
                                    isOpen: openTaskID == task.id,
                                    onToggle: { toggle(task) },
-                                   onChanged: { reload() })
+                                   onChanged: { reload() },
+                                   onMoved: { day in noteMove(to: day) })
                         MacEditorialRule.hair
                     }
                 }
@@ -393,7 +449,8 @@ struct TraceMacTasksView: View {
                            isOpen: openTaskID == task.id,
                            onToggle: { toggle(task) },
                            onChanged: { reload() },
-                           showsDate: true)
+                           onMoved: { day in noteMove(to: day) },
+                           trailing: .date)
                 MacEditorialRule.hair
             }
         }

@@ -45,6 +45,11 @@ struct TraceMacTodayView: View {
     /// Owned by `TraceMacContentView` so the arrow-key monitor can move it and
     /// so the day survives leaving the section and coming back.
     @Binding var date: Date
+    /// Opens a place record in Directory, for the meeting card's WHERE row
+    /// (D223). Defaulted, so nothing that builds this view alone has to know
+    /// about Directory.
+    var onOpenPlace: (String) -> Void = { _ in }
+
     @State private var events: [NextCalendarEvent] = []
     @State private var noteText: String = ""
     @State private var noteLoadedKey: String = ""
@@ -225,7 +230,14 @@ struct TraceMacTodayView: View {
     private var dayColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                MacEditorialDayNav(date: $date)
+                // Yesterday / today / tomorrow are most of where a task
+                // actually goes, and they are already on screen — no calendar
+                // to open first (D231).
+                MacEditorialDayNav(date: $date,
+                                   onDropTask: { id, day in
+                                       moveTask(id, to: day)
+                                       return true
+                                   })
                 MacEditorialMasthead(kicker: mastheadKicker,
                                      numeral: mastheadNumeral,
                                      weekday: mastheadWeekday,
@@ -234,9 +246,24 @@ struct TraceMacTodayView: View {
                                              monthUnfolded.toggle()
                                          }
                                      },
-                                     unfolded: monthUnfolded)
+                                     unfolded: monthUnfolded,
+                                     // Resting a dragged task on the title
+                                     // opens the grid under it. Unfold only —
+                                     // never fold — because a grid that closed
+                                     // while you were aiming at it would be
+                                     // the worst possible answer to a hover.
+                                     onDragOverSubject: {
+                                         guard !monthUnfolded else { return }
+                                         withAnimation(.easeInOut(duration: 0.2)) {
+                                             monthUnfolded = true
+                                         }
+                                     })
                 if monthUnfolded {
-                    MacEditorialMonthGrid(selected: $date)
+                    MacEditorialMonthGrid(selected: $date,
+                                          onDropTask: { id, day in
+                                              moveTask(id, to: day)
+                                              return true
+                                          })
                         .padding(.top, 12)
                         .transition(.opacity)
                 }
@@ -421,6 +448,30 @@ struct TraceMacTodayView: View {
         }
     }
 
+    /// Re-dates a task by id — the drop half of D231.
+    ///
+    /// Same shape as Upcoming's `move(taskID:to:)`, including the guard that a
+    /// drop onto the day a task is ALREADY on writes nothing: dragging within
+    /// the screen you are standing on is the easiest accidental gesture here,
+    /// and a no-op write would still fire `onMoved` and offer to send you
+    /// somewhere you already are.
+    private func moveTask(_ taskID: String, to day: Date) {
+        guard let task = store.allTasks.first(where: { $0.id == taskID }) else { return }
+        let target = cal.startOfDay(for: day)
+        guard task.date.map({ !cal.isDate($0, inSameDayAs: target) }) ?? true else { return }
+        endDrag()
+        Task {
+            _ = await store.update(taskID: task.id,
+                                   title: task.title,
+                                   date: target,
+                                   clearDate: false,
+                                   list: task.list,
+                                   notes: task.notes)
+            await store.refreshAll()
+            noteMove(to: target)
+        }
+    }
+
     private func noteMove(to day: Date) {
         guard !cal.isDate(day, inSameDayAs: date) else { return }
         movedClearTask?.cancel()
@@ -586,6 +637,7 @@ struct TraceMacTodayView: View {
                 MacMeetingRow(event: event,
                               isOpen: openEventID == event.id,
                               onToggle: { toggle(event) },
+                              onOpenPlace: onOpenPlace,
                               nextOwnStart: nextOwnStart(after: event))
             }
         }

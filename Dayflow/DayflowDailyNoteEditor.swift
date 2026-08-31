@@ -203,14 +203,8 @@ struct DayflowDailyNoteEditor: View {
                             relativePath: relativePath,
                             onWikiTap: { name in resolveWikiLink(name) },
                             wikiSuggestions: { query in wikiSuggestions(for: query) },
-                            // Dayflow's Daily Note checkboxes are always local-only — no
-                            // Send to Things/Tweek menu (that's a Trace-only concept).
-                            // Fixed 2026-07-19 after David hit the menu in testing.
-                            checklistSendEnabled: false,
-                            // Must come after checklistSendEnabled — Swift call-site
-                            // argument order has to match MarkdownEditorView's
-                            // declaration order (onCaptureTap is declared after
-                            // checklistSendEnabled/onPinSucceeded/onPinFailed).
+                            // Argument order has to match
+                            // MarkdownEditorView's declaration order.
                             onCaptureTap: { id in tappedCaptureID = id },
                             attachTrigger: $attachRequest,
                             // Checkbox → task (Session 78): right swipe on a

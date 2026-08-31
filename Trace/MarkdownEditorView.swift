@@ -5,7 +5,6 @@ import VisionKit
 import UniformTypeIdentifiers
 import PDFKit
 import AVFoundation
-import EventKit
 import CoreLocation
 
 // MARK: - Tag index
@@ -285,8 +284,7 @@ struct ToolbarCustomizeSheet: View {
 //   • Scrollable toolbar: B · I · ~~ · H · # · − · → · ← · ☐ · 📎 · 🔗 ‖ Done
 //   • Auto-save: 0.8 s debounce after last keystroke
 //   • Checkbox tap: tapping the circle overlay toggles - [ ] ↔ - [x]
-//   • ☐ toolbar tap: UIMenu → Keep local / Things / Tweek
-//     Picking Things/Tweek inserts ☐ and stores .sendTarget; Return fires the send.
+//   • ☐ toolbar tap: inserts a local checkbox
 //   • Link tap: opens URLs (http/https and custom schemes) via UIApplication.open
 //   • Placeholder label shown when text is empty
 //   • Timestamp insert: triggered externally via timestampTrigger binding
@@ -329,31 +327,8 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// scrolls to the first hit. Purely visual — never touches the saved file.
     /// Supports the same token syntax as GlobalSearchView: plain text and #tag.
     var searchQuery: String? = nil
-    /// Controls the ☐ toolbar button: a UIMenu (Keep local / Send to Things /
-    /// Send to Tweek) when true, a plain button that inserts a local ☐ when
-    /// false.
-    ///
-    /// **Default flipped to `false` 2026-08-04.** David: *"in trace the checkbox
-    /// still has the three options (keep local, sent to things, sent to tweek),
-    /// we got rid of that in mac."* Correct — the Mac's checkbox button has
-    /// always just inserted a checkbox, and every one of Dayflow's eight call
-    /// sites passes `false` explicitly. Trace was the only caller left on the
-    /// default, so the default was carrying one app's old behaviour and calling
-    /// it a default.
-    ///
-    /// **Two taps to get a checkbox is the actual cost.** The menu fires on
-    /// press, so the common case — a plain local checkbox, which is what every
-    /// other surface in every other app produces — took a tap and a menu
-    /// selection. A menu is right when the options are comparable; here one of
-    /// them is the answer nearly every time.
-    ///
-    /// **The send machinery is deliberately left in place**, not deleted:
-    /// `insertCheckboxAndSend`, `sendToThings`, `sendToTweek` and the
-    /// `.sendTarget` attribute all still work, and `.sendTarget` is runtime-only
-    /// so nothing on disk changes either way. Restoring the menu is passing
-    /// `true` from Trace's call sites. Deleting a working integration on an
-    /// inconsistency report would be a bigger decision than the one he made.
-    var checklistSendEnabled: Bool = false
+    // `checklistSendEnabled` and the whole Send-to-Things/Tweek path were
+    // DELETED in Session 80. See the note above `makeCheckboxButton`.
     /// Quick Pin toolbar button (added 2026-07-25) — fires the instant it's
     /// tapped (no confirmation sheet), same "instant save" design as Jot's
     /// own Quick Pin (CaptureView.swift/JotTextView.swift, Session 45
@@ -789,11 +764,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         for itemID in order {
             switch itemID {
             case .checkbox:
-                if checklistSendEnabled {
-                    stack.addArrangedSubview(makeCheckboxMenuButton(coordinator: coordinator))
-                } else {
-                    stack.addArrangedSubview(makePlainCheckboxButton(coordinator: coordinator))
-                }
+                stack.addArrangedSubview(makeCheckboxButton(coordinator: coordinator))
             case .attach:
                 stack.addArrangedSubview(makeAttachMenuButton(coordinator: coordinator))
             default:
@@ -917,46 +888,30 @@ struct MarkdownEditorView: UIViewRepresentable {
         return btn
     }
 
-    // Checkbox button — UIMenu (showsMenuAsPrimaryAction) so the popup never
-    // resigns first responder from the text view. Uses an SF Symbol image so the
-    // toolbar never hits the same U+2610 font-fallback "W" bug as the inline glyph.
-    private func makeCheckboxMenuButton(coordinator: Coordinator) -> UIButton {
-        let btn = UIButton(type: .system)
-        let symConfig = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
-        if let img = UIImage(systemName: "checkmark.square", withConfiguration: symConfig) {
-            btn.setImage(img, for: .normal)
-            btn.tintColor = .label
-        } else {
-            // Fallback: text label (should never be reached on iOS 13+)
-            btn.setTitle("cb", for: .normal)
-        }
-        btn.menu = UIMenu(title: "", children: [
-            UIAction(title: "Keep local",
-                     image: UIImage(systemName: "checkmark.square")) { [weak coordinator] _ in
-                coordinator?.insertCheckbox()
-            },
-            // 2026-08-27: was Keep local / Send to Things / Send to Tweek. Things
-            // is being retired for Apple Reminders and Tweek is deprecated
-            // (David: *"tweek is no longer a thing"*). The Tweek path was
-            // already an EventKit write to a Reminders list, so it IS the
-            // send-to-Reminders path; only the list and the words changed. The
-            // `.things` case stays compiled and unreachable until the export.
-            UIAction(title: "Send to Reminders",
-                     image: UIImage(systemName: "bell")) { [weak coordinator] _ in
-                coordinator?.insertCheckboxAndSend(to: .tweek)
-            },
-        ])
-        btn.showsMenuAsPrimaryAction = true
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
-        btn.heightAnchor.constraint(equalToConstant: 43).isActive = true
-        return btn
-    }
-
-    // Plain checkbox button — used when `checklistSendEnabled == false` (Dayflow's
-    // Daily Note). Same icon as the menu variant, but a direct tap always inserts
-    // a local ☐ via `insertCheckbox()` — no UIMenu, no Things/Tweek options.
-    private func makePlainCheckboxButton(coordinator: Coordinator) -> UIButton {
+    // The checkbox button. A tap inserts a local ☐ via `insertCheckbox()`.
+    // SF Symbol image so the toolbar never hits the same U+2610 font-fallback
+    // "W" bug as the inline glyph.
+    //
+    // **There used to be two of these** (Session 80 deleted the other). A UIMenu
+    // variant offered "Keep local / Send to Things / Send to Tweek", stored the
+    // choice as a `.sendTarget` attribute on the ☐, and fired the send when you
+    // pressed Return. David turned it off at every call site on 2026-08-04
+    // — *"in trace the checkbox still has the three options... we got rid of that
+    // in mac"* — and the machinery was kept on the reasoning that deleting a
+    // working integration was too big a call to make on an inconsistency report.
+    //
+    // By Session 80 it was not a working integration. Things was retired for
+    // Apple Reminders, Tweek was gone (*"tweek is no longer a thing"*), and the
+    // `things:///` URL opened an app that no longer exists. D177's promote swipe
+    // had replaced the whole idea with something better: a real task through
+    // `ReminderTaskStore`, with a dimmed ↗ pointer left in the prose.
+    //
+    // It was also a fifth task writer. `sendToTweek` built an `EKReminder` by
+    // hand and saved it to a list found by the literal string "Personal",
+    // entirely outside the store — exactly the hole D210's four-writer invariant
+    // exists to close. Unreachable, so it never violated it; one `true` away from
+    // being able to.
+    private func makeCheckboxButton(coordinator: Coordinator) -> UIButton {
         let btn = UIButton(type: .system)
         let symConfig = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
         if let img = UIImage(systemName: "checkmark.square", withConfiguration: symConfig) {
@@ -1003,9 +958,6 @@ struct MarkdownEditorView: UIViewRepresentable {
                              UINavigationControllerDelegate,
                              VNDocumentCameraViewControllerDelegate,
                              UIDocumentPickerDelegate {
-
-        // MARK: - App target for task sends
-        enum SendApp { case things, tweek }
 
         @Binding var text: String
         var onSave: ((String) -> Void)?
@@ -1066,9 +1018,6 @@ struct MarkdownEditorView: UIViewRepresentable {
         private var hashtagOpenLoc: Int? = nil
         /// Back-reference to the SwiftUI view, used when rebuilding the toolbar after reorder.
         var parentView: MarkdownEditorView?
-
-        /// EKEventStore for writing to Apple Reminders (Tweek sync target). One instance per coordinator.
-        private let eventStore = EKEventStore()
 
         /// Cache of loaded UIImages keyed by NoteStore path, for fast thumbnail redraws.
         private var thumbnailImageCache: [String: UIImage] = [:]
@@ -1360,43 +1309,15 @@ struct MarkdownEditorView: UIViewRepresentable {
             // textViewDidChange never fires — so we call refreshCheckboxOverlays
             // explicitly here to place the overlay for the newly inserted ☐.
             //
-            // If the ☐ carries a .sendTarget attribute (set by the toolbar UIMenu),
-            // Return fires the send instead of auto-continuing with a new checkbox.
             if line.hasPrefix("☐ ") || line.hasPrefix("☑ ") {
                 let content = String(line.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
                 if content.isEmpty {
                     tv.textStorage.replaceCharacters(in: lineRange, with: "\n")
                     tv.selectedRange = NSRange(location: lineRange.location + 1, length: 0)
                 } else {
-                    let checkboxIdx = lineRange.location
-                    let sendTarget = (tv.textStorage as? MarkdownTextStorage)?.getSendTarget(at: checkboxIdx)
-                    if let target = sendTarget {
-                        // Capture line coords before modifying text — appendBadge uses them async.
-                        let capturedLoc = lineRange.location
-                        let capturedLen = lineRange.length
-                        // Clear sendTarget immediately so the new ☐ written by appendBadge's
-                        // replaceCharacters cannot inherit the attribute (NSMutableAttributedString
-                        // copies attributes from the first character of the replaced range).
-                        // Without this, applyStyles() snapshots and restores the inherited
-                        // sendTarget on every keystroke, causing every subsequent Return to fire
-                        // another send (Bug: double-send / duplicate tasks).
-                        (tv.textStorage as? MarkdownTextStorage)?.setSendTarget(nil, at: checkboxIdx)
-                        // Plain newline; no checkbox continuation.
-                        tv.textStorage.replaceCharacters(in: range, with: "\n")
-                        tv.selectedRange = NSRange(location: range.location + 1, length: 0)
-                        self.text = tv.text; scheduleSave(tv.text)
-                        refreshOverlaysAfterStyling(in: tv)
-                        let date = noteDate()
-                        if target == "things" {
-                            sendToThings(taskTitle: content, date: date,
-                                         lineLocation: capturedLoc, lineLength: capturedLen, in: tv)
-                        } else {
-                            sendToTweek(taskTitle: content, date: date,
-                                        lineLocation: capturedLoc, lineLength: capturedLen, in: tv)
-                        }
-                        return false
-                    }
-                    // No send target — normal checkbox auto-continue.
+                    // Session 80: a `.sendTarget` branch used to sit here and fire
+                    // a Things/Tweek send instead of continuing the list. Deleted
+                    // with the rest of that path.
                     tv.textStorage.replaceCharacters(in: range, with: "\n☐ ")
                     tv.selectedRange = NSRange(location: range.location + 3, length: 0)
                 }
@@ -1495,19 +1416,15 @@ struct MarkdownEditorView: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
         }
 
-        // MARK: - Note date helpers
-
-        /// Extracts the ISO date (YYYY-MM-DD) from the note's relativePath filename.
-        /// Returns nil for non-daily notes (week notes, month notes, etc.).
-        func noteDate() -> String? {
-            guard let path = relativePath else { return nil }
-            let pattern = #"\d{4}-\d{2}-\d{2}"#
-            guard let range = path.range(of: pattern, options: .regularExpression) else { return nil }
-            return String(path[range])
-        }
-
-        /// Strips any known send badge suffix from a line string (no newline manipulation).
-        /// Used before retrying a failed send so the old badge is replaced cleanly.
+        /// Strips any known badge suffix from a line string (no newline manipulation).
+        /// Used by the checkbox tap and by D177's promote, so a line never ends up
+        /// wearing two badges.
+        ///
+        /// **The blue and feather badges can no longer be written** — Session 80
+        /// deleted the Things and Tweek senders that produced them. They stay in
+        /// this list because notes already on disk still carry them from before,
+        /// and a promote on one of those lines has to strip the old badge cleanly.
+        /// Remove them here only once the vault has none left.
         private func stripBadges(from line: String) -> String {
             var s = line.trimmingCharacters(in: .newlines)
             for badge in [" ⚠️🔵", " ⚠️🪶", " ⚠️↗", " 🔵", " 🪶", " ↗"] {
@@ -2054,7 +1971,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         // until the save actually completes — a failed save calls
         // `onPinFailed(_:)` and leaves the note's text completely untouched,
         // same principle every other failure path in this Coordinator
-        // already follows (see insertCheckboxAndSend's own error handling).
+        // already follows.
         // Self-contained: requests location permission and starts updates
         // itself rather than relying on the host screen to have warmed
         // anything up first, since this button can now appear on screens
@@ -2212,21 +2129,15 @@ struct MarkdownEditorView: UIViewRepresentable {
             for itemID in order {
                 switch itemID {
                 case .checkbox:
-                    // MUST honour `checklistSendEnabled`, exactly as
-                    // `makeScrollToolbar` does. This branch ignored it until
-                    // 2026-07-30, so reordering the toolbar in Dayflow silently
-                    // brought back the Send to Things / Tweek menu that Dayflow
-                    // deliberately does not have — those are Trace concepts, and
-                    // Dayflow checkboxes are local-only.
-                    //
-                    // The two builders are the same list built twice, which is why
-                    // one of them drifted. If a third special case is ever added,
-                    // extract one function rather than adding a third copy.
-                    if pv.checklistSendEnabled {
-                        stack.addArrangedSubview(pv.makeCheckboxMenuButton(coordinator: self))
-                    } else {
-                        stack.addArrangedSubview(pv.makePlainCheckboxButton(coordinator: self))
-                    }
+                    // This branch and `makeScrollToolbar` are the same list
+                    // built twice, which is how one of them drifted before:
+                    // until 2026-07-30 it ignored `checklistSendEnabled`, so
+                    // reordering the toolbar in Dayflow silently restored a menu
+                    // Dayflow deliberately did not have. Session 80 deleted the
+                    // flag and the menu, which removes that particular trap — but
+                    // the duplication is still here. If a third special case is
+                    // ever added, extract one function rather than a third copy.
+                    stack.addArrangedSubview(pv.makeCheckboxButton(coordinator: self))
                 case .attach:
                     stack.addArrangedSubview(pv.makeAttachMenuButton(coordinator: self))
                 default:
@@ -3031,171 +2942,15 @@ struct MarkdownEditorView: UIViewRepresentable {
             }
         }
 
-        // MARK: - Insert checkbox + immediately send (toolbar picker shortcut)
-
-        func insertCheckboxAndSend(to app: SendApp) {
-            guard let tv = textView else { return }
-
-            // UIMenu tap hides the keyboard before the action fires — restore first responder.
-            suppressResignOnHide = true
-            tv.becomeFirstResponder()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                self?.suppressResignOnHide = false
-            }
-
-            let cursorRange = tv.selectedRange
-            let ns = tv.textStorage.string as NSString
-            let lineRange = ns.lineRange(for: NSRange(location: cursorRange.location, length: 0))
-            let line = ns.substring(with: lineRange)
-
-            // Insert ☐ prefix if the line isn't already a checkbox.
-            let alreadyCheckbox = line.hasPrefix("☐ ") || line.hasPrefix("☑ ")
-            if !alreadyCheckbox {
-                tv.selectedRange = NSRange(location: lineRange.location, length: 0)
-                tv.insertText("☐ ")
-            }
-
-            // Store the send destination on the ☐ character so that the Return-key
-            // handler can fire the send after the user finishes typing the task title.
-            let checkboxIdx = lineRange.location
-            let targetStr = app == .things ? "things" : "tweek"
-            (tv.textStorage as? MarkdownTextStorage)?.setSendTarget(targetStr, at: checkboxIdx)
-
-            // Place cursor at end of line content so the user can type immediately.
-            let updatedNs = tv.textStorage.string as NSString
-            let updatedLineRange = updatedNs.lineRange(for: NSRange(location: checkboxIdx, length: 0))
-            let updatedLine = updatedNs.substring(with: updatedLineRange)
-            let trailingNewline = updatedLine.hasSuffix("\n") ? 1 : 0
-            tv.selectedRange = NSRange(
-                location: updatedLineRange.location + (updatedLine as NSString).length - trailingNewline,
-                length: 0)
-
-            text = tv.text
-            scheduleSave(tv.text)
-        }
-
-        // MARK: - E11 / Tweek: Send task to external app
-        //
-        // Things: things:/// URL scheme — opens Things directly, user sees task land immediately.
-        // Tweek:  EventKit → Apple Reminders (no app switch; Tweek syncs the list automatically).
-        //         Target list name stored in UserDefaults key "tweek_reminders_list" (default "Reminders").
-        // On success: appends ` 🔵` / ` 🪶`.
-        // On failure: appends ` ⚠️🔵` / ` ⚠️🪶` — tap the orange retry button to retry.
-        // Simulator: both paths skipped to avoid noise during development.
-
-        private func sendToThings(taskTitle: String,
-                                   date: String?,
-                                   lineLocation: Int,
-                                   lineLength: Int,
-                                   in tv: UITextView) {
-            // Sim builds skip the send entirely; the #if !simulator wrap
-            // replaced a bare early-return that made everything below it
-            // 'unreachable' on simulator builds (warning pass, 2026-08-29).
-#if !targetEnvironment(simulator)
-            // Build things:///add URL. URLComponents percent-encodes query values automatically.
-            var components = URLComponents(string: "things:///add")!
-            var queryItems = [
-                URLQueryItem(name: "title", value: taskTitle),
-                URLQueryItem(name: "notes", value: "From Trace")
-            ]
-            if let d = date, !d.isEmpty {
-                // Things accepts ISO date strings (yyyy-MM-dd) directly in the "when" parameter.
-                queryItems.append(URLQueryItem(name: "when", value: d))
-            }
-            components.queryItems = queryItems
-
-            guard let url = components.url else {
-                appendBadge(" ⚠️🔵", lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                return
-            }
-
-            UIApplication.shared.open(url, options: [:]) { [weak self, weak tv] success in
-                DispatchQueue.main.async {
-                    guard let self, let tv else { return }
-                    self.appendBadge(success ? " 🔵" : " ⚠️🔵",
-                                     lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                }
-            }
-        #endif
-        }
-
-        // Requests Reminders write access, respecting iOS 17 writeOnly vs older .authorized.
-        private func requestRemindersAccess(completion: @escaping (Bool) -> Void) {
-            if #available(iOS 17.0, *) {
-                switch EKEventStore.authorizationStatus(for: .reminder) {
-                case .fullAccess:
-                    completion(true)
-                case .notDetermined:
-                    eventStore.requestFullAccessToReminders { granted, _ in completion(granted) }
-                default:
-                    completion(false)
-                }
-            } else {
-                switch EKEventStore.authorizationStatus(for: .reminder) {
-                case .authorized:
-                    completion(true)
-                case .notDetermined:
-                    eventStore.requestAccess(to: .reminder) { granted, _ in completion(granted) }
-                default:
-                    completion(false)
-                }
-            }
-        }
-
-        private func sendToTweek(taskTitle: String,
-                                  date: String?,
-                                  lineLocation: Int,
-                                  lineLength: Int,
-                                  in tv: UITextView) {
-            // Sim builds skip the send entirely; the #if !simulator wrap
-            // replaced a bare early-return that made everything below it
-            // 'unreachable' on simulator builds (warning pass, 2026-08-29).
-#if !targetEnvironment(simulator)
-            requestRemindersAccess { [weak self, weak tv] granted in
-                DispatchQueue.main.async {
-                    guard let self, let tv else { return }
-                    guard granted else {
-                        self.appendBadge(" ⚠️🪶", lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                        return
-                    }
-
-                    let reminder = EKReminder(eventStore: self.eventStore)
-                    reminder.title = taskTitle
-
-                    // Find the Reminders list Tweek is watching. Configurable via
-                    // UserDefaults key "tweek_reminders_list"; falls back to default list.
-                    // The Personal list — the same one Dayflow's Quick Add writes
-                    // to (`ReminderTaskStore.personalListName`, not visible from
-                    // this target). `tweek_reminders_list` is no longer read.
-                    let listName = "Personal"
-                    let lists = self.eventStore.calendars(for: .reminder)
-                    reminder.calendar = lists.first(where: { $0.title == listName })
-                                     ?? self.eventStore.defaultCalendarForNewReminders()
-
-                    if let d = date, !d.isEmpty {
-                        let fmt = DateFormatter()
-                        fmt.locale = Locale(identifier: "en_US_POSIX")
-                        fmt.dateFormat = "yyyy-MM-dd"
-                        if let due = fmt.date(from: d) {
-                            reminder.dueDateComponents = Calendar.current.dateComponents(
-                                [.year, .month, .day], from: due)
-                        }
-                    }
-
-                    do {
-                        try self.eventStore.save(reminder, commit: true)
-                        self.appendBadge(" 🪶", lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                    } catch {
-                        self.appendBadge(" ⚠️🪶", lineLocation: lineLocation, lineLength: lineLength, in: tv)
-                    }
-                }
-            }
-        #endif
-        }
+        // Session 80: `insertCheckboxAndSend`, `sendToThings`, `sendToTweek`
+        // and `requestRemindersAccess` were deleted from here. See the note
+        // above `makeCheckboxButton`.
 
         /// Appends a badge string to the task line, stripping any prior badge first.
         /// Shifts the cursor forward by the length delta so it stays on the correct line
         /// when the Return-key flow has already moved it to the line below.
+        ///
+        /// Still live: D177's promote swipe badges its lines through this.
         // MARK: - Checkbox → task (Session 78)
 
         /// Right swipe on an unchecked checkbox line: hand the line's text to

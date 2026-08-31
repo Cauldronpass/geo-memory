@@ -47,33 +47,57 @@ struct MacEditorialMasthead: View {
     /// carries these two as well.
     private let onTapSubject: (() -> Void)?
     private let unfolded: Bool
+    /// Fired when a task has HOVERED over the subject line for a moment
+    /// mid-drag. The screen unfolds its month grid, so a date that was two
+    /// gestures away — open the calendar, then drag — becomes one.
+    ///
+    /// David, Session 80: *"if I drag the task to the title of the screen it
+    /// expands to show the calendar and then i can choose the date."*
+    ///
+    /// Spring-loaded rather than instant: unfolding moves everything below it,
+    /// and a grid that appeared the moment the pointer crossed the title would
+    /// yank the page out from under a drag merely passing through. The delay is
+    /// the same idea as a Finder folder springing open.
+    ///
+    /// The subject NEVER accepts the drop itself — it only opens the door. The
+    /// day cells are the targets, and a title that swallowed the task would
+    /// have to invent a date to give it.
+    private let onDragOverSubject: (() -> Void)?
 
     /// "AUGUST" over "31 Monday".
     init(kicker: String,
          numeral: String,
          weekday: String,
          onTapSubject: (() -> Void)? = nil,
-         unfolded: Bool = false) {
+         unfolded: Bool = false,
+         onDragOverSubject: (() -> Void)? = nil) {
         self.kicker = kicker
         self.numeral = numeral
         self.weekday = weekday
         self.title = nil
         self.onTapSubject = onTapSubject
         self.unfolded = unfolded
+        self.onDragOverSubject = onDragOverSubject
     }
 
     /// "NEXT TWO WEEKS" over "Upcoming".
     init(kicker: String,
          title: String,
          onTapSubject: (() -> Void)? = nil,
-         unfolded: Bool = false) {
+         unfolded: Bool = false,
+         onDragOverSubject: (() -> Void)? = nil) {
         self.kicker = kicker
         self.numeral = nil
         self.weekday = nil
         self.title = title
         self.onTapSubject = onTapSubject
         self.unfolded = unfolded
+        self.onDragOverSubject = onDragOverSubject
     }
+
+    /// Counts down the spring-load. Cancelled the moment the pointer leaves, so
+    /// crossing the title on the way somewhere else opens nothing.
+    @State private var springTask: Task<Void, Never>? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -85,6 +109,11 @@ struct MacEditorialMasthead: View {
             .padding(.vertical, 9)
             .contentShape(Rectangle())
             .onTapGesture { onTapSubject?() }
+            // Only where a host asked for it — every other masthead in the app
+            // has nothing to drag and should not be answering drops.
+            .modifier(SpringLoadOnDrag(enabled: onDragOverSubject != nil,
+                                       springTask: $springTask,
+                                       fire: { onDragOverSubject?() }))
             MacEditorialRule.ink
         }
     }
@@ -114,6 +143,59 @@ struct MacEditorialMasthead: View {
                     .foregroundStyle(MacEditorialColor.faint)
                     .rotationEffect(unfolded ? .degrees(180) : .zero)
             }
+        }
+    }
+}
+
+/// Opens something after a dragged item rests over this view for a beat.
+///
+/// **Returns `false` from the drop**, always: this is a door, not a
+/// destination. Whatever opens behind it carries the real targets.
+private struct SpringLoadOnDrag: ViewModifier {
+
+    let enabled: Bool
+    @Binding var springTask: Task<Void, Never>?
+    let fire: () -> Void
+    /// When set, `fire` runs again on this interval for as long as the drag
+    /// stays put. `nil` fires once.
+    ///
+    /// The month chevrons repeat (D231b): paging one month per hover would mean
+    /// lifting and re-entering for every month, which is worse than the two
+    /// gestures this whole feature exists to replace. The title does not — it
+    /// unfolds, and there is nothing to unfold twice.
+    var repeatEvery: UInt64? = nil
+    /// Called the instant the drag enters or leaves, before any delay — for
+    /// hosts that shade the target. Kept separate from `fire` because entering
+    /// and ACTING are different moments here: the arrow lights when you arrive,
+    /// and pages 400ms later.
+    var onTargetChanged: ((Bool) -> Void)? = nil
+
+    /// Long enough that crossing does nothing, short enough that resting does
+    /// not feel broken.
+    private static let delay: UInt64 = 400_000_000
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.dropDestination(for: String.self) { _, _ in
+                false
+            } isTargeted: { over in
+                onTargetChanged?(over)
+                springTask?.cancel()
+                guard over else { springTask = nil; return }
+                springTask = Task {
+                    try? await Task.sleep(nanoseconds: Self.delay)
+                    guard !Task.isCancelled else { return }
+                    fire()
+                    guard let repeatEvery else { return }
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: repeatEvery)
+                        guard !Task.isCancelled else { return }
+                        fire()
+                    }
+                }
+            }
+        } else {
+            content
         }
     }
 }
@@ -150,6 +232,19 @@ struct MacEditorialSectionLabel: View {
 struct MacEditorialDayNav: View {
 
     @Binding var date: Date
+    /// Accepts a dragged task id on one of the three words and returns whether
+    /// it took it. `nil` — the default — leaves them plain labels.
+    ///
+    /// David, Session 80: *"Can we add the ability to drag a task in the today
+    /// screen to either the tomorrow row at the top, or the dates hidden on the
+    /// calendar within the large title."* Yesterday, today and tomorrow are
+    /// most of where a task actually goes, and they are already on screen —
+    /// cheaper than the calendar for the common case.
+    var onDropTask: ((String, Date) -> Bool)? = nil
+
+    /// Which word a task is hovering over, so it can shade.
+    @State private var targeted: Int? = nil
+
     private let cal = Calendar.current
 
     var body: some View {
@@ -166,18 +261,49 @@ struct MacEditorialDayNav: View {
         let target: Date = dayOffset(offset)
         let active: Bool = cal.isDate(date, inSameDayAs: target)
         let weight: Font.Weight = active ? .bold : .semibold
-        let tint: Color = active ? MacEditorialColor.ink : MacEditorialColor.faint
+        let over: Bool = targeted == offset
+        // Ink while a task hovers, so the word you are about to drop on reads
+        // as the live one — the same promotion tapping it would give.
+        let tint: Color = (active || over) ? MacEditorialColor.ink : MacEditorialColor.faint
+        // The month grid's own hover wash, reused rather than reinvented: one
+        // appearance for "this is the one you are about to pick".
+        let fill: Color = over ? MacEditorialColor.accent.opacity(0.12) : .clear
         return Text(label)
             .font(.system(size: 10, weight: weight))
             .textCase(.uppercase)
             .tracking(1.6)
             .foregroundStyle(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(fill, in: RoundedRectangle(cornerRadius: 3))
             .contentShape(Rectangle())
             .onTapGesture { date = target }
+            .modifier(DayWordDrop(enabled: onDropTask != nil,
+                                  accept: { id in onDropTask?(id, target) ?? false },
+                                  targeted: { on in targeted = on ? offset : (targeted == offset ? nil : targeted) }))
     }
 
     private func dayOffset(_ days: Int) -> Date {
         cal.date(byAdding: .day, value: days, to: cal.startOfDay(for: Date())) ?? Date()
+    }
+}
+
+/// A drop target on one of the day words. Conditional, so a nav with nothing
+/// to receive is not quietly answering drags meant for something behind it.
+private struct DayWordDrop: ViewModifier {
+    let enabled: Bool
+    let accept: (String) -> Bool
+    let targeted: (Bool) -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.dropDestination(for: String.self) { ids, _ in
+                guard let id = ids.first else { return false }
+                return accept(id)
+            } isTargeted: { targeted($0) }
+        } else {
+            content
+        }
     }
 }
 
@@ -537,6 +663,11 @@ struct MacEditorialMonthGrid: View {
     var marked: Set<String> = []
 
     @State private var monthAnchor: Date? = nil
+    /// The paging spring-loads, one per arrow. See `chevron(_:page:)`.
+    @State private var pageTask: Task<Void, Never>? = nil
+    @State private var pageTaskBack: Task<Void, Never>? = nil
+    /// Which arrow is currently paging, so it can shade like a live target.
+    @State private var pagingHover: Int? = nil
     /// The day under the pointer. Things' own pleasure: the grid answers the
     /// mouse before you click it. Session 80, David: "the day under the mouse
     /// should have a slight shading to it... This is the behavior of Things
@@ -623,13 +754,20 @@ struct MacEditorialMonthGrid: View {
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
         scrollMonitor = nil
         hoveredKey = nil
+        // A repeating page task outlives the view that started it — it is an
+        // unstructured `Task`, not a view modifier — and would keep stepping a
+        // month anchor nothing is drawing. Cancelled here, where the scroll
+        // monitor already is, because both are subscriptions this view owns.
+        pageTask?.cancel();     pageTask = nil
+        pageTaskBack?.cancel(); pageTaskBack = nil
+        pagingHover = nil
     }
 
     // MARK: Header
 
     private var header: some View {
         HStack(spacing: 0) {
-            chevron("chevron.left") { step(-1) }
+            chevron("chevron.left", page: -1)
             Spacer(minLength: 0)
             Text(monthTitle)
                 .font(.system(size: 10, weight: .bold))
@@ -637,20 +775,54 @@ struct MacEditorialMonthGrid: View {
                 .tracking(2)
                 .foregroundStyle(MacEditorialColor.accent)
             Spacer(minLength: 0)
-            chevron("chevron.right") { step(1) }
+            chevron("chevron.right", page: 1)
         }
         .padding(.bottom, 8)
     }
 
-    private func chevron(_ name: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    /// A month chevron. Clicking pages once; **resting a dragged task on it
+    /// pages repeatedly** until you move away.
+    ///
+    /// David, Session 80: *"hovering over the calendar arrows should move to the
+    /// next or previous month. This is important for days like today when we are
+    /// at the end of the month and I may want to move the task a few days into
+    /// the future."* Exactly right, and the end-of-month case is the one that
+    /// makes it necessary rather than nice: on 30 August the visible grid runs
+    /// out two days later, and a task cannot be dropped where the calendar does
+    /// not go.
+    ///
+    /// Only where the grid accepts tasks at all. A calendar with nothing to
+    /// receive should not be answering drags meant for something behind it.
+    private func chevron(_ name: String, page: Int) -> some View {
+        Button { step(page) } label: {
             Image(systemName: name)
                 .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(MacEditorialColor.faint)
+                .foregroundStyle(pagingHover == page
+                                 ? MacEditorialColor.accent
+                                 : MacEditorialColor.faint)
                 .frame(width: 18, height: 18)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .background(pagingHover == page ? MacEditorialColor.accent.opacity(0.12) : .clear,
+                    in: RoundedRectangle(cornerRadius: 3))
+        .modifier(SpringLoadOnDrag(
+            enabled: onDropTask != nil,
+            springTask: pageTaskBinding(page),
+            fire: { withAnimation(.easeInOut(duration: 0.15)) { step(page) } },
+            repeatEvery: 550_000_000,
+            // Lights on ARRIVAL, not on the first page: an arrow that stayed
+            // grey for the first 400ms would read as not being a target at all,
+            // which is the moment you need it to read as one.
+            onTargetChanged: { over in
+                pagingHover = over ? page : (pagingHover == page ? nil : pagingHover)
+            }))
+    }
+
+    /// One task slot per direction, so hovering the other arrow cancels this
+    /// one rather than the two fighting over a single handle.
+    private func pageTaskBinding(_ page: Int) -> Binding<Task<Void, Never>?> {
+        page < 0 ? $pageTaskBack : $pageTask
     }
 
     /// Names what is actually on screen. With two months up, a header reading

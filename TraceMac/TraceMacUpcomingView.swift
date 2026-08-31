@@ -41,6 +41,9 @@ struct TraceMacUpcomingView: View {
     /// here lands somewhere sensible. Owned by `TraceMacContentView`.
     @Binding var dayInView: Date
     @Binding var selectedSection: MacSection?
+    /// Opens a place record in Directory, for the meeting card's WHERE row
+    /// (D223).
+    var onOpenPlace: (String) -> Void = { _ in }
 
     @State private var eventsByDay: [String: [NextCalendarEvent]] = [:]
     @State private var openTaskID: String? = nil
@@ -104,7 +107,16 @@ struct TraceMacUpcomingView: View {
                                          monthUnfolded.toggle()
                                      }
                                  },
-                                 unfolded: monthUnfolded)
+                                 unfolded: monthUnfolded,
+                                 // David, Session 80: the calendar should open
+                                 // for a dragged task "rather than having to
+                                 // expand the calendar first before dragging".
+                                 onDragOverSubject: {
+                                     guard !monthUnfolded else { return }
+                                     withAnimation(.easeInOut(duration: 0.2)) {
+                                         monthUnfolded = true
+                                     }
+                                 })
             if monthUnfolded {
                 // **Two months, and a drop target on every day.**
                 //
@@ -242,6 +254,7 @@ struct TraceMacUpcomingView: View {
                 MacMeetingRow(event: event,
                               isOpen: openEventID == event.id,
                               onToggle: { toggle(event) },
+                              onOpenPlace: onOpenPlace,
                               nextOwnStart: nextOwnStart(after: event, on: key))
             }
             if !meetings.isEmpty && !tasks.isEmpty {

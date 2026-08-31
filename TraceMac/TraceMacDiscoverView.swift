@@ -1437,7 +1437,16 @@ private struct SearchResultInfoCard: View {
 
 // MARK: - Add-from-search sheet
 
-private struct AddDiscoveredPlaceSheet: View {
+/// **Internal since Session 80**, so the meeting card's place picker can reuse
+/// it rather than growing a second saver.
+///
+/// This sheet is the only path in the Mac app that turns a `GooglePlace` into a
+/// Notion record, and it carries three decisions worth not duplicating: the
+/// category guess and its picker, `addressWithRegion` over `streetAddress`, and
+/// the D138 guard that refuses to store an Apple result's id in the Google
+/// Place ID field. A second saver would eventually disagree with one of them,
+/// and the disagreement would be invisible until a record matched nothing.
+struct AddDiscoveredPlaceSheet: View {
     let result: GooglePlace
     let onSaved: () async -> Void
 

@@ -45,11 +45,24 @@ struct MacTaskComposer: View {
     /// passes `nil`. A typed date always wins over it.
     let defaultDate: Date?
     let onAdded: () -> Void
+    /// Which list to open on. `nil` keeps the + button's own default, Personal,
+    /// which is the considered-add rule this file is named for.
+    ///
+    /// A document passes the Inbox (D230): a task made from a document has made
+    /// no when-decision yet, and the document is its context the way an agenda
+    /// anchor is. Declared after `onAdded` and defaulted, so the memberwise
+    /// order every existing call site uses is untouched.
+    var defaultList: String? = nil
+    /// Machinery lines appended to whatever note the line itself produces —
+    /// a `satchel:doc:` marker, today. Not shown in the composer: it is not
+    /// something he typed and not something he can usefully edit here.
+    var extraNoteLines: [String] = []
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var text = ""
     @State private var list = ReminderTaskStore.personalListName
+    @State private var seededList = false
     @State private var dateCleared = false
     @State private var saving = false
     @State private var pickingDay = false
@@ -164,6 +177,9 @@ struct MacTaskComposer: View {
         // arrow anchoring to the + button, and that is a fair price for a
         // composer that can open a calendar without eating itself.
         .onAppear {
+            // Seeded once. `onAppear` can run again on a rebuild, and
+            // re-seeding would throw away a list he had already picked.
+            if !seededList, let defaultList { list = defaultList; seededList = true }
             DispatchQueue.main.async { field = .text }
             installKeys()
         }
@@ -534,12 +550,19 @@ struct MacTaskComposer: View {
         let day = effectiveDate
         let remind = effectiveRemind
         let destination = list
+        // Prose first, machinery after — the placement `rebuiltNotes` keeps and
+        // `noteProse` strips.
+        let notes: String? = {
+            let prose = line.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let all = (prose.isEmpty ? [] : [prose]) + extraNoteLines
+            return all.isEmpty ? nil : all.joined(separator: "\n")
+        }()
         saving = true
         Task {
             _ = await store.addTask(title: line.title,
                                     date: day,
                                     list: destination,
-                                    notes: line.note,
+                                    notes: notes,
                                     remindAt: remind)
             await store.refreshAll()
             saving = false

@@ -263,6 +263,10 @@ struct TraceMacContentView: View {
             case "person":   destination = .person(id)
             case "place":    destination = .place(id)
             case "endeavor": destination = .endeavor(id)
+            // A task's document chip (D227). `id` is the document's
+            // relativePath — the same string `MacSearchDestination.document`
+            // already carries, so this arm adds a poster, not a new route.
+            case "document": destination = .document(id)
             default:         destination = nil
             }
             if let destination { openSearchResult(destination, query: "") }
@@ -769,18 +773,30 @@ struct TraceMacContentView: View {
         // Session 79, D186. `nil` (and launch) lands on Today, not Notes — the
         // day is what the app is opened for. Notes keeps its own case below.
         case .today, nil:
-            TraceMacTodayView(date: $dayInView)
+            TraceMacTodayView(date: $dayInView,
+                              onOpenPlace: { openSearchResult(.place($0), query: "") })
                 .environment(noteStore)
                 .environment(notionService)
         case .upcoming:
             TraceMacUpcomingView(dayInView: $dayInView,
-                                 selectedSection: $selectedSection)
+                                 selectedSection: $selectedSection,
+                                 onOpenPlace: { openSearchResult(.place($0), query: "") })
                 .environment(noteStore)
                 .environment(notionService)
         case .tasks:
             TraceMacTasksView(selectedSection: $selectedSection,
                               deepLinkTaskID: $pendingTaskID,
-                              deepLinkList: $pendingTaskList)
+                              deepLinkList: $pendingTaskList,
+                              onGoToDay: { day in
+                                  dayInView = Calendar.current.startOfDay(for: day)
+                                  selectedSection = .today
+                              })
+                // `MacTaskRow` resolves its document chips through NoteStore
+                // (D227). Today, Upcoming and the quick panel already pass it;
+                // this was the only host that did not, and a non-optional
+                // `@Environment` traps when read, not when built — so the gap
+                // would have shipped as a crash on opening a linked task here.
+                .environment(noteStore)
         case .notes:
             TraceMacNotesView(deepLinkFile: $pendingHorizonsFile,
                               deepLinkNotePath: $pendingNotePath)

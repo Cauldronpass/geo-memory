@@ -38,6 +38,15 @@ struct MacMeetingRow: View {
     let event: NextCalendarEvent
     let isOpen: Bool
     let onToggle: () -> Void
+    /// Opens a place record in Directory. Defaulted, so a host that has no
+    /// Directory to open says nothing and the link simply does not appear.
+    var onOpenPlace: (String) -> Void = { _ in }
+
+    @Environment(NotionService.self) private var notion
+    @State private var picking = false
+    /// Bumped when a link is made, so the WHERE row re-reads it. `MacPlaceLink`
+    /// stores in `UserDefaults`, which SwiftUI does not observe.
+    @State private var linkToken = 0
     /// When YOUR next meeting starts after this one ends — nil if this is the
     /// last of your day. Passed in because the answer depends on the whole day
     /// and a row cannot see the day.
@@ -205,12 +214,7 @@ struct MacMeetingRow: View {
             }
             if let place = trimmed(event.location) {
                 MacEditorialRule.hair
-                fieldRow("Where") {
-                    Text(place)
-                        .font(MacEditorialType.fieldValue)
-                        .foregroundStyle(MacEditorialColor.ink)
-                        .lineLimit(2)
-                }
+                fieldRow("Where") { whereValue(place) }
             }
             if let link = joinLink {
                 MacEditorialRule.hair
@@ -250,6 +254,89 @@ struct MacMeetingRow: View {
         }
         .padding(.leading, 18)
         .padding(.top, 12)
+    }
+
+    /// The WHERE row, in one of two states.
+    ///
+    /// **Unlinked:** the invitation's text, and a button to say what it means.
+    /// **Linked:** the place's own name opening its record, and its address
+    /// opening Maps — David: "make the address clickable as well as the place
+    /// itself."
+    ///
+    /// The invitation's own words are kept underneath when they differ from the
+    /// place name, because they sometimes carry the half the map does not know:
+    /// a room, a floor, a door code. Dropping them in favour of a tidy record
+    /// name would lose the only part that tells you where to walk.
+    ///
+    /// `_ = linkToken` is what ties this to the link being made. The store is
+    /// `UserDefaults` and SwiftUI does not observe it, so without reading the
+    /// counter the row would keep showing the button after a successful match.
+    @ViewBuilder
+    private func whereValue(_ location: String) -> some View {
+        let _ = linkToken
+        let linked: Place? = MacPlaceLink.place(for: location, in: notion.places)
+
+        VStack(alignment: .leading, spacing: 3) {
+            if let linked {
+                Button { onOpenPlace(linked.id) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: placeIcon(for: linked.category))
+                            .font(.system(size: 10))
+                            .foregroundStyle(placeColor(for: linked.category))
+                        Text(linked.name)
+                            .font(MacEditorialType.fieldValue)
+                            .foregroundStyle(MacEditorialColor.accent)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open in Directory")
+
+                if !linked.address.isEmpty {
+                    // `openMapsDirections` and not a new `openMapsPlace`.
+                    // Directions were spelled four different ways in this
+                    // project before PlaceHelpers consolidated them, and the
+                    // address under a meeting is read by someone who has to
+                    // get there.
+                    Button { openMapsDirections(to: linked) } label: {
+                        Text(linked.address)
+                            .font(MacEditorialType.meta)
+                            .foregroundStyle(MacEditorialColor.muted)
+                            .lineLimit(2)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Directions")
+                }
+
+                // Kept only when it says something the record does not.
+                if MacPlaceLink.normalise(location) != MacPlaceLink.normalise(linked.name) {
+                    Text(location)
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .lineLimit(2)
+                }
+            } else {
+                Text(location)
+                    .font(MacEditorialType.fieldValue)
+                    .foregroundStyle(MacEditorialColor.ink)
+                    .lineLimit(2)
+                Button { picking = true } label: {
+                    Text("Match a place")
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.accent)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .sheet(isPresented: $picking) {
+            MacPlacePicker(location: location) { placeID in
+                MacPlaceLink.link(location, to: placeID)
+                linkToken += 1
+            }
+            .environment(notion)
+        }
     }
 
     private func fieldRow<Content: View>(_ label: String,

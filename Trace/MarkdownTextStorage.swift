@@ -177,21 +177,19 @@ final class MarkdownTextStorage: NSTextStorage {
         guard backing.length > 0 else { return }
         let full = NSRange(location: 0, length: backing.length)
 
-        // --- Snapshot fold state and sendTarget BEFORE attribute reset ---
-        // Both are custom attributes that survive the setAttributes reset by being
+        // --- Snapshot fold state BEFORE attribute reset ---
+        // A custom attribute that survives the setAttributes reset by being
         // snapshotted here and restored after the per-line styling pass.
         // NSAttributedString keeps attribute ranges aligned with their characters
         // as the string is edited, so character indices here are always current.
+        //
+        // Session 80: `.sendTarget` was snapshotted and restored here too, which
+        // meant an enumerate and a re-add on EVERY keystyle pass for a feature
+        // nothing could reach. Deleted with the rest of the send path.
         var foldedCharIndices = Set<Int>()
         backing.enumerateAttribute(.foldState, in: full, options: []) { value, range, _ in
             if value as? Bool == true {
                 foldedCharIndices.insert(range.location)
-            }
-        }
-        var sendTargets = [Int: String]()   // character index of ☐ → "things" | "tweek"
-        backing.enumerateAttribute(.sendTarget, in: full, options: []) { value, range, _ in
-            if let target = value as? String {
-                sendTargets[range.location] = target
             }
         }
 
@@ -244,14 +242,6 @@ final class MarkdownTextStorage: NSTextStorage {
             self.styleLine(line, in: subRange)
         }
 
-        // Restore sendTarget attributes — must run before the fold guard so it
-        // fires even when no bullets are folded.
-        for (idx, target) in sendTargets {
-            guard idx < backing.length else { continue }
-            backing.addAttribute(.sendTarget, value: target,
-                                 range: NSRange(location: idx, length: 1))
-        }
-
         // Re-apply fold state and hide child lines for each folded parent bullet.
         // "Children" = consecutive lines after the parent whose indent level is
         // strictly greater. They get 0.1pt height + clear color (same trick as
@@ -301,30 +291,6 @@ final class MarkdownTextStorage: NSTextStorage {
                                        effectiveRange: nil) as? Bool ?? false
         backing.addAttribute(.foldState, value: !current,
                              range: NSRange(location: characterIndex, length: 1))
-    }
-
-    // MARK: - Send-target support
-
-    /// Stores (or clears) a send destination on the ☐/☑ character at characterIndex.
-    /// Pass nil to remove. Writes directly to backing — does NOT trigger processEditing.
-    /// applyStyles() snapshots and restores this on every subsequent keystroke.
-    func setSendTarget(_ target: String?, at characterIndex: Int) {
-        guard characterIndex < backing.length else { return }
-        if let target = target {
-            backing.addAttribute(.sendTarget, value: target,
-                                 range: NSRange(location: characterIndex, length: 1))
-        } else {
-            backing.removeAttribute(.sendTarget,
-                                    range: NSRange(location: characterIndex, length: 1))
-        }
-    }
-
-    /// Returns the stored send destination ("things" or "tweek") for the ☐/☑ at
-    /// characterIndex, or nil if none is set.
-    func getSendTarget(at characterIndex: Int) -> String? {
-        guard characterIndex < backing.length else { return nil }
-        return backing.attribute(.sendTarget, at: characterIndex,
-                                 effectiveRange: nil) as? String
     }
 
     /// Runs a full applyStyles() pass then fires an .editedAttributes notification
@@ -784,8 +750,7 @@ final class MarkdownTextStorage: NSTextStorage {
     // Hides the brackets (and, on an alias, the `target|` half); colors what is left
     // in linkColor. Adds .wikiTarget on the visible span so handleTap/handleLongPress
     // can detect it without a second regex pass. .wikiTarget is re-derived from text on
-    // every applyStyles() pass (unlike .sendTarget which is user-set state), so no
-    // snapshot/restore needed.
+    // every applyStyles() pass, so no snapshot/restore needed.
     //
     // ALIASES, 2026-08-01. `[[Nick's on the Lake (formerly known as Popeye's)|Nick's on
     // the Lake]]` shows "Nick's on the Lake" and still resolves against the full Notion
@@ -1112,11 +1077,6 @@ extension NSAttributedString.Key {
     /// Bool — true = folded (children hidden). Set on the parent • character by
     /// toggleFoldState(); snapshotted and restored across every applyStyles() pass.
     static let foldState          = NSAttributedString.Key("com.david.trace.foldState")
-    /// String ("things" or "tweek") — pending send destination for this checkbox.
-    /// Set by insertCheckboxAndSend() when the user picks from the toolbar UIMenu.
-    /// Consumed by the Return-key handler in shouldChangeTextIn to fire the send.
-    /// Snapshotted and restored across every applyStyles() pass.
-    static let sendTarget         = NSAttributedString.Key("com.david.trace.sendTarget")
     /// String — the inner name of a [[wikilink]] span (e.g. "Blue Bottle Coffee").
     /// Set by applyWikilinks() on the visible name characters (between the hidden [[ and ]]).
     /// Re-derived from text on every applyStyles() pass; no snapshot/restore needed.

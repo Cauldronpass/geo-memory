@@ -762,18 +762,11 @@ struct DayflowInboxFilingSheet: View {
 /// editing markdown text in a modal sheet, so the formatting toolbar looks
 /// and behaves identically to every other note-editing surface in this app.
 ///
-/// **`checklistSendEnabled: false`** — caught by David 2026-07-24, right
-/// after this shipped: `MarkdownEditorView`'s checkbox button defaults to
-/// `checklistSendEnabled = true`, which pops a "Keep local / Send to
-/// Things / Send to Tweek" menu — a Trace-only concept (QuickAppendSheet.swift
-/// wants that, since Trace really does sync checkboxes to Things). Dayflow's
-/// OWN note-editing surfaces don't — `DayflowDailyNoteEditor.swift` already
-/// established this exact convention (`checklistSendEnabled: false`, "always
-/// local-only"), and this Inbox sheet is a Dayflow surface too, so it should
-/// match Dayflow's convention, not Trace's. The bare `MarkdownEditorView
-/// (text:placeholder:)` call this used at first silently inherited the
-/// `true` default instead — fixed by setting it explicitly, same as
-/// DayflowDailyNoteEditor.swift does.
+/// This sheet once had to pass `checklistSendEnabled: false` to suppress a
+/// "Keep local / Send to Things / Send to Tweek" menu it inherited from a
+/// `true` default — caught by David 2026-07-24, right after it shipped. The
+/// default flipped in August and the whole send path was deleted in Session 80,
+/// so the argument is gone and the checkbox button is simply a checkbox button.
 struct DayflowInboxNoteEditSheet: View {
     let file: InboxNoteFile
     var onSaved: () -> Void
@@ -786,8 +779,7 @@ struct DayflowInboxNoteEditSheet: View {
         NavigationStack {
             MarkdownEditorView(
                 text: $text,
-                placeholder: "Write something…",
-                checklistSendEnabled: false
+                placeholder: "Write something…"
             )
                 .navigationTitle(file.title)
                 .navigationBarTitleDisplayMode(.inline)

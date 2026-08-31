@@ -605,7 +605,6 @@ struct DayflowWikiSummaryView: View {
                     relativePath: placeNotePath(place),
                     onWikiTap: { name in resolveWikiLink(name) },
                     wikiSuggestions: { query in wikiSuggestions(for: query) },
-                    checklistSendEnabled: false,
                     onCaptureTap: { id in tappedCaptureID = id }
                 )
                 .frame(minHeight: 320)
@@ -1065,7 +1064,6 @@ struct DayflowWikiSummaryView: View {
                     relativePath: personNotePath(person),
                     onWikiTap: { name in resolveWikiLink(name) },
                     wikiSuggestions: { query in wikiSuggestions(for: query) },
-                    checklistSendEnabled: false,
                     onCaptureTap: { id in tappedCaptureID = id }
                 )
                 .frame(minHeight: 320)

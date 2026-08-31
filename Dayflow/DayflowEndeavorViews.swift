@@ -718,7 +718,6 @@ struct DayflowEndeavorView: View {
                 // this list rather than waiting to be told.
                 onWikiTap: { name in resolveWikiLink(name) },
                 wikiSuggestions: { query in wikiSuggestions(for: query) },
-                checklistSendEnabled: false,
                 attachTrigger: $attachRequest,
                 // Checkbox → task (Session 78): swipe right on a ☐ line in
                 // the endeavor's note files a real task linked [[name]] —

@@ -94,18 +94,120 @@ extension ThingsTask {
         text.range(of: shortcutScheme, options: .caseInsensitive) != nil
     }
 
+    // MARK: - Linked Satchel documents (Session 80, D227)
+
+    /// Marker prefix for a document link. One line per document:
+    /// `satchel:doc:Documents/2026/2026-07-02-143022-tax-bill.pdf`
+    ///
+    /// **The PATH, not the title.** The title is editable in the sidecar and
+    /// nothing makes it unique — two years of property tax bills are both
+    /// "Property tax bill", and a title-keyed link resolves to whichever the
+    /// store returns first. `TraceMacDocument.id` is no use either: it is a
+    /// fresh `UUID()` on every load. `relativePath` is the only stable handle,
+    /// and it is genuinely stable — `moveDocument` was removed in Session 69
+    /// and `Documents-App-Scope.md` records that the move command "was never
+    /// built, deliberately". Documents are imported under a timestamped name
+    /// and never move; refiling edits the sidecar.
+    ///
+    /// **A marker line, not a `[[wikilink]]`.** Wikilinks match on NAME, which
+    /// is the one property this link must not depend on. The notes field
+    /// already carries two kinds of machinery stripped from prose — the
+    /// Shortcuts URL and `dayflow:birthday:<personID>:<kind>` — and this is the
+    /// third of those, not a fourth kind of thing.
+    ///
+    /// **No cached title.** The chip resolves against the live document store,
+    /// the way the person and place chips resolve against Notion. A cached
+    /// title would go stale the first time he retitles a sidecar, and a link
+    /// that displays one name while pointing at another is worse than one that
+    /// briefly says nothing.
+    static let documentMarkerPrefix = "satchel:doc:"
+
+    static func isDocumentLine(_ text: any StringProtocol) -> Bool {
+        text.trimmingCharacters(in: .whitespaces).hasPrefix(documentMarkerPrefix)
+    }
+
+    /// Relative paths of every linked document, in the order written.
+    var linkedDocumentPaths: [String] {
+        guard let notes else { return [] }
+        return notes.split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { line in
+                let s = line.trimmingCharacters(in: .whitespaces)
+                guard s.hasPrefix(Self.documentMarkerPrefix) else { return nil }
+                let path = String(s.dropFirst(Self.documentMarkerPrefix.count))
+                    .trimmingCharacters(in: .whitespaces)
+                return path.isEmpty ? nil : path
+            }
+    }
+
+    var hasLinkedDocuments: Bool { !linkedDocumentPaths.isEmpty }
+
+    /// Web URLs sitting in the note.
+    ///
+    /// Scanned rather than run through `NSDataDetector`: the detector matches
+    /// bare hostnames and email addresses too, and "carries a link" has to mean
+    /// something a click can follow, not something that looks vaguely like an
+    /// address. `shortcuts://` cannot match, so the bolt and this stay separate
+    /// marks about separate things.
+    var webLinks: [URL] {
+        guard let notes, notes.contains("://") else { return [] }
+        var out: [URL] = []
+        for field in notes.split(whereSeparator: { $0.isWhitespace }) {
+            let raw = field.trimmingCharacters(in: CharacterSet(charactersIn: "\"'<>()[],."))
+            let lower = raw.lowercased()
+            guard lower.hasPrefix("http://") || lower.hasPrefix("https://"),
+                  let url = URL(string: raw) else { continue }
+            out.append(url)
+        }
+        return out
+    }
+
+    var hasWebLink: Bool { !webLinks.isEmpty }
+
+    /// Does this task point at something you could open?
+    ///
+    /// **A web page or a Satchel document, and deliberately NOT `[[wikilinks]]`.**
+    /// A mark that also covered those would mean "this row has some machinery
+    /// on it", and the note mark's own reasoning says why that is the wrong
+    /// kind of mark: one that means "this row has SOMETHING" is one you learn
+    /// to stop reading. Wikilinks are associations to records inside the app
+    /// and already render as chips; this mark is about an attachment pointing
+    /// OUT — a page, a file.
+    var hasFollowableLink: Bool { hasWebLink || hasLinkedDocuments }
+
     /// The note with its machinery removed: `[[link]]` lines, which are drawn
-    /// as chips, and the Shortcuts URL, which is drawn as a bolt.
+    /// as chips, the Shortcuts URL, which is drawn as a bolt, and
+    /// `satchel:doc:` markers, which are drawn as document chips.
     ///
     /// This is what "has a note" has to mean. A task whose entire note is a
     /// shortcut URL is already fully represented by its bolt, and marking it as
     /// having a note too would make the mark mean "this row has SOMETHING" —
     /// a mark you learn to stop reading.
+    ///
+    /// **Shared, so the phone strips the document marker too.** This type lives
+    /// here rather than on the Mac precisely so a marker written on the Mac
+    /// does not surface as a line of prose in Dayflow. iOS gets the filtering
+    /// the moment this ships, and grows the chip whenever it grows the chip.
+    /// Is this line machinery rather than something he wrote?
+    ///
+    /// **The single definition, and it has to stay single.** `noteProse` strips
+    /// these lines out for display; the Mac card's `rebuiltNotes` puts them back
+    /// when saving an edited note. Those were two separate predicates until
+    /// Session 80 and they had ALREADY drifted: the document marker (D227) was
+    /// added to the reader and not the writer, so editing a note would have
+    /// silently deleted every document link on the task.
+    ///
+    /// That is the exact failure the note above `rebuiltNotes` was written to
+    /// warn about, reintroduced by the next person to add a line kind. One
+    /// function, both callers, so a fifth kind cannot repeat it.
+    static func isMachineryLine(_ text: any StringProtocol) -> Bool {
+        let s = text.trimmingCharacters(in: .whitespaces)
+        return s.hasPrefix("[[") || isShortcutLine(s) || isDocumentLine(s)
+    }
+
     var noteProse: String {
         guard let notes else { return "" }
         return notes.split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("[[") }
-            .filter { !ThingsTask.isShortcutLine($0) }
+            .filter { !ThingsTask.isMachineryLine($0) }
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
