@@ -1050,7 +1050,11 @@ struct ContentView: View {
             return notion.people.contains { $0.id == id }
         case .place(let id):
             return notion.places.contains { $0.id == id }
-        case .weeklyNote, .inboxNote, .preview:
+        // `.task` has no route in THIS app. Tasks are Dayflow's screens, and
+        // Trace has no tasks UI to hand one to — so it is declined rather than
+        // opened into a guess. The Mac, which does have those screens, routes it
+        // (see `MacSearchDestination.task`).
+        case .weeklyNote, .inboxNote, .task, .preview:
             return false
         }
     }
@@ -1085,7 +1089,7 @@ struct ContentView: View {
         case .document(let path):
             guard let url = TraceSatchelHandoff.documentURL(path: path) else { return }
             openURL(url)
-        case .weeklyNote, .inboxNote, .preview:
+        case .weeklyNote, .inboxNote, .task, .preview:
             // Declined by `canOpenFromSearch`, so unreachable. Exhaustive rather
             // than `default:` so a new case has to be thought about here.
             break

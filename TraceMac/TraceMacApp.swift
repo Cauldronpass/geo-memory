@@ -13,7 +13,6 @@ struct TraceMacApp: App {
     /// title. Registration happens in `TraceMacContentView`'s launch task; the
     /// Carbon hot key is app-wide and outlives the window, so closing the window
     /// does not stop the shortcut that reopens it.
-    @State private var hotKeys = MacHotKeyCenter.shared
     /// Spotlight results arrive here on macOS, not through SwiftUI's
     /// `onContinueUserActivity`. See the delegate file's header.
     @NSApplicationDelegateAdaptor(TraceMacSpotlightDelegate.self) private var spotlightDelegate
@@ -51,7 +50,15 @@ struct TraceMacApp: App {
             // list already has its own New Note toolbar button — and wiring it
             // needs a focused-section concept the app does not have until the
             // NavigationSplitView work.
-            CommandGroup(replacing: .newItem) { }
+            // ⌘N is a real command now (Session 80). It was an empty group
+            // suppressing the default New Item, because at the time nothing in
+            // this app knew what "new" meant. The composer does — it is the one
+            // thing you make here — and it is reachable from every screen, so
+            // it has earned the standard key.
+            CommandGroup(replacing: .newItem) {
+                Button("New Task") { MacComposeTrigger.shared.requests += 1 }
+                    .keyboardShortcut("n", modifiers: .command)
+            }
             // Session 63 (2026-08-02): reordered to follow the new sidebar, so
             // ⌘1–⌘7 read top to bottom rather than in the order they were added.
             // `Horizons` became `Weekly` (D3) and `Visits` took ⌘5 now that it
@@ -71,9 +78,25 @@ struct TraceMacApp: App {
                 //
                 // The item stays so the feature is discoverable in a menu and
                 // the current shortcut is written where someone would look.
-                Button("Search…  \(hotKeys.combo.label)") {
+                // **⌘K is back, and this reverses D-79's removal knowingly.**
+                //
+                // It came out because David said *"Id want in app to be the same
+                // as out of app"* — two keys for one panel with nothing to tell
+                // them apart. What changed is that the panel now has a visible
+                // control in the sidebar rail, and ⌘K is that button's keyboard
+                // equivalent, which is a different job from the global hot key's
+                // "reach it from anywhere". The distinction is real: one is for
+                // when TraceMac is in front of you, the other for when it is
+                // not.
+                //
+                // The global combination moved OUT of this label. Showing both
+                // here would read "Search…  ⌃⌥Space  ⌘K", which is the exact
+                // confusion the original removal was avoiding. It is on the
+                // rail button's tooltip and in Settings, where it is set.
+                Button("Search…") {
                     MacQuickPanelController.shared.show()
                 }
+                .keyboardShortcut("k", modifiers: .command)
                 Divider()
                 Button("Notes")     { selectedSection = .notes }
                     .keyboardShortcut("1", modifiers: .command)

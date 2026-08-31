@@ -17,6 +17,8 @@ struct TraceMacSettingsView: View {
     /// Shared with the search panel through `@AppStorage`, so the toggle and
     /// the thing it governs read one key and neither owns it.
     @AppStorage("tracemac.ask.includeNotion") private var includeNotionInAsk = false
+    @AppStorage(MacInboxCountSetting.sidebarKey) private var showInboxCount = false
+    @AppStorage(MacInboxCountSetting.dockKey) private var showDockBadge = false
     /// The same key `TraceMacDocumentsView` reads. `@AppStorage` in two views is
     /// two readers of one default, not two copies — dragging the pane moves this
     /// slider and vice versa, live, with nothing to keep in step.
@@ -28,6 +30,11 @@ struct TraceMacSettingsView: View {
 
     var body: some View {
         Form {
+            // Session 80, D192. First, because "which calendars am I looking
+            // at" is a question about the screen he opens every morning, and
+            // everything below it is a question about a service.
+            MacCalendarChoicesSection()
+
             Section("Notion") {
                 SecureField("Notion Integration Token", text: $token)
                     .textContentType(.password)
@@ -80,6 +87,29 @@ struct TraceMacSettingsView: View {
                     .font(.caption)
                     .buttonStyle(.borderless)
                 }
+            }
+
+            Section("Tasks") {
+                Toggle("Show the Inbox count beside Tasks", isOn: $showInboxCount)
+                Text("A small number in the sidebar when captured tasks are waiting to be filed. Visible only while you are in the app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Also badge the Dock icon", isOn: $showDockBadge)
+                    .disabled(!showInboxCount)
+                // **Dependent, not independent.** The Dock badge is the louder
+                // version of the same message, and wanting the loud one without
+                // the quiet one is not a state worth supporting — it would mean
+                // being told across every app all day but not while looking at
+                // the app that can act on it.
+                //
+                // The sentence names the trade rather than selling the feature.
+                // David: "I dont really like icon badges but the task subtle
+                // circle idea might be just enough of a push for me." A setting
+                // he is ambivalent about should say what it costs.
+                Text("Follows you outside the app. The sidebar count only appears when you are already here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Global search") {

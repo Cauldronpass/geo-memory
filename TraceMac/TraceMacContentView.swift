@@ -119,6 +119,37 @@ struct TraceMacContentView: View {
     /// `TraceMacTodayView` so the arrow-key monitor installed by this view can
     /// move it, and so the day survives a trip to Satchel and back.
     @State private var dayInView: Date = Calendar.current.startOfDay(for: Date())
+    /// A task chosen in search. `TraceMacTasksView` works out which pool holds
+    /// it, switches there and opens the card — see its deep link.
+    @State private var pendingTaskID: String? = nil
+    @State private var composing = false
+    /// A context list chosen in the panel's GO TO section, handed to the Tasks
+    /// screen the same way a task id is.
+    @State private var pendingTaskList: String? = nil
+    /// Read only for the search glyph's tooltip, so the rail can say which key
+    /// does the same thing. Observed rather than copied: he can change the
+    /// combination in Settings and the tooltip has to follow it.
+    @State private var hotKeys = MacHotKeyCenter.shared
+    @State private var composeTrigger = MacComposeTrigger.shared
+    /// **The supported way to open the Settings scene**, and the reason the
+    /// gear did nothing on first build.
+    ///
+    /// I reached for `NSApp.sendAction(Selector(("showSettingsWindow:")), …)`,
+    /// which is the widely-copied workaround from before this environment
+    /// action existed. It is a PRIVATE selector, Apple has already renamed it
+    /// once (`showPreferencesWindow:` became `showSettingsWindow:` in Ventura),
+    /// and a string selector that no longer matches fails silently — no crash,
+    /// no log, nothing. Exactly the failure David saw.
+    ///
+    /// `openSettings` is public, typed, and breaks at compile time if it ever
+    /// goes away. The lesson generalises: a stringly-typed call into AppKit is
+    /// a call that can stop working without telling anyone.
+    @Environment(\.openSettings) private var openSettings
+    /// Both default false — see `MacInboxCountSetting` for why an unrequested
+    /// count is the app deciding on his behalf that an un-triaged Inbox is a
+    /// problem.
+    @AppStorage(MacInboxCountSetting.sidebarKey) private var showInboxCount = false
+    @AppStorage(MacInboxCountSetting.dockKey) private var showDockBadge = false
 
     @State private var pendingPersonID: String? = nil
     @State private var pendingPlaceID: String? = nil
@@ -299,6 +330,37 @@ struct TraceMacContentView: View {
         // view, its `@State`/`@Binding` storage outlives any closure it hands
         // out, and `install` replaces its handler rather than stacking
         // monitors. Do not copy the pattern into a view that comes and goes.
+        // Three triggers, because the badge is wrong if any one is missed: the
+        // count changed, the switch changed, or the app just launched and the
+        // tile is showing whatever it showed last time.
+        // Consume-and-clear, same shape as every other cross-window request
+        // here: the panel lives outside this view's hierarchy and the window may
+        // be reopening at the moment the request is made.
+        .task(id: composeTrigger.requests) {
+            // Not on the first fire: `.task(id:)` runs on appear as well as on
+            // change, and a composer that opens itself every time the window
+            // appears would be a sheet nobody asked for.
+            guard composeTrigger.requests > 0 else { return }
+            composing = true
+        }
+        .task(id: searchRoute.pendingGoTo) {
+            guard let go = searchRoute.pendingGoTo else { return }
+            searchRoute.pendingGoTo = nil
+            selectedSection = go.section
+            pendingTaskList = go.list
+        }
+        .sheet(isPresented: $composing) {
+            // The day in view when Today is showing, nothing otherwise — the
+            // same rule the per-screen buttons used, kept when they were
+            // replaced so the behaviour did not quietly change with the
+            // button's address.
+            MacTaskComposer(defaultDate: (selectedSection ?? .today) == .today
+                            ? dayInView : nil) { }
+        }
+        .onAppear { syncDockBadge() }
+        .onChange(of: ReminderTaskStore.shared.inboxCount) { _, _ in syncDockBadge() }
+        .onChange(of: showDockBadge) { _, _ in syncDockBadge() }
+        .onChange(of: showInboxCount) { _, _ in syncDockBadge() }
         .onAppear {
             MacEditorialArrowKeys.shared.install { direction in
                 switch direction {
@@ -435,6 +497,9 @@ struct TraceMacContentView: View {
         case .endeavor(let id):
             selectedSection = .endeavors
             pendingEndeavorID = id
+        case .task(let id):
+            selectedSection = .tasks
+            pendingTaskID = id
         case .document(let path):
             selectedSection = .documents
             // Query first. `TraceMacDocumentsView` consumes the path in a
@@ -541,10 +606,64 @@ struct TraceMacContentView: View {
             navRow(.archive)
 
             Spacer(minLength: 0)
+            bottomRail
         }
         .frame(width: MacEditorialLayout.sidebarWidth, alignment: .leading)
         .frame(maxHeight: .infinity)
         .background(MacEditorialColor.panel)
+    }
+
+    /// **Settings, search, add** — the three things that belong to the app
+    /// rather than to whichever screen is showing.
+    ///
+    /// Session 80, David, with a Things screenshot: "i want a visual element to
+    /// the mac app as well where i can type. Im thinking of a magnifying glass
+    /// on the bottom rail (which doesnt exist at the moment). It could include a
+    /// settings button, and a magnifying glass and the plus symbol."
+    ///
+    /// **Why the sidebar and not the content pane.** Things puts its bar under
+    /// the content because its sidebar is a list of projects. Here the sidebar
+    /// is the app's own navigation, and these three controls are the app's too:
+    /// none of them changes meaning when the section changes. Putting them under
+    /// the content would imply they act on what is above them, which is exactly
+    /// what they do not do.
+    ///
+    /// **The search glyph is not a second search.** It opens the same panel the
+    /// hot key opens — David's rule from Session 79, "Id want in app to be the
+    /// same as out of app", and a magnifying glass that opened a DIFFERENT
+    /// search would be the two-shortcuts mistake wearing a picture.
+    ///
+    /// It replaces the floating `MacEditorialPlus` that Today, Upcoming and
+    /// Tasks each carried. Three screens with a button in the same corner doing
+    /// the same thing is one button in the wrong place.
+    private var bottomRail: some View {
+        VStack(spacing: 0) {
+            MacEditorialRule.hair
+            HStack(spacing: 0) {
+                railButton("gearshape", "Settings") { openSettings() }
+                Spacer(minLength: 0)
+                railButton("magnifyingglass", "Search  \(hotKeys.combo.label)") {
+                    MacQuickPanelController.shared.show()
+                }
+                Spacer(minLength: 0)
+                railButton("plus", "New task") { composing = true }
+            }
+            .padding(.horizontal, 22)
+            .frame(height: 42)
+        }
+    }
+
+    private func railButton(_ icon: String, _ help: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(MacEditorialColor.muted)
+                .frame(width: 30, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     /// Up/down through the sidebar in the order it is drawn, which is
@@ -552,6 +671,19 @@ struct TraceMacContentView: View {
     /// keeping it that way is cheaper than a second list to fall out of step.
     /// Clamped rather than wrapped: arriving back at Today by pressing down
     /// eleven times is a surprise, and nothing else in this app wraps.
+    /// One writer for the Dock badge, driven from the root view so it tracks
+    /// the count and both switches without any screen having to remember to
+    /// call it. Clearing on `false` is as important as setting on `true`: a
+    /// badge nobody updates is a badge that lies for a week.
+    private func syncDockBadge() {
+        // BOTH switches. The Dock toggle is only disabled in Settings when the
+        // sidebar count is off — its stored value survives, so turning the
+        // sidebar count off has to clear the badge here or the louder half
+        // outlives the quieter one it was supposed to depend on.
+        MacDockBadge.set(ReminderTaskStore.shared.inboxCount,
+                         enabled: showDockBadge && showInboxCount)
+    }
+
     private func moveSection(_ delta: Int) {
         let all = MacSection.allCases
         let current: MacSection = selectedSection ?? .today
@@ -593,6 +725,13 @@ struct TraceMacContentView: View {
             Text(section.rawValue)
                 .editorialNavLabel(active: active)
             Spacer(minLength: 0)
+            // Only on TASKS, and only for the Inbox. The other pools are things
+            // you go and look at; the Inbox is the only one that accumulates
+            // whether you look or not, which is the difference between a count
+            // that informs and a count that nags.
+            if section == .tasks, showInboxCount {
+                MacEditorialCount(count: ReminderTaskStore.shared.inboxCount)
+            }
         }
         // Session 79: the accent left bar is retired at David's call. The
         // accent on the label is already the whole signal, and a second mark
@@ -634,13 +773,14 @@ struct TraceMacContentView: View {
                 .environment(noteStore)
                 .environment(notionService)
         case .upcoming:
-            MacEditorialSoon(kicker: "Next two weeks",
-                             title: "Upcoming",
-                             line: "The two-week spread lands next.")
+            TraceMacUpcomingView(dayInView: $dayInView,
+                                 selectedSection: $selectedSection)
+                .environment(noteStore)
+                .environment(notionService)
         case .tasks:
-            MacEditorialSoon(kicker: "Reminders",
-                             title: "Tasks",
-                             line: "Inbox, Anytime, Someday and the rail land next.")
+            TraceMacTasksView(selectedSection: $selectedSection,
+                              deepLinkTaskID: $pendingTaskID,
+                              deepLinkList: $pendingTaskList)
         case .notes:
             TraceMacNotesView(deepLinkFile: $pendingHorizonsFile,
                               deepLinkNotePath: $pendingNotePath)

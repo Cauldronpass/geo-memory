@@ -5,11 +5,38 @@ import Observation
 // MARK: - Model
 
 struct NextCalendarEvent: Identifiable {
-    var id: String { "\(startDate.timeIntervalSinceReferenceDate)-\(title)" }
+    /// **The calendar is part of the identity** (Session 80).
+    ///
+    /// The console said so directly: *"the ID 810450000.0-Labor Day occurs
+    /// multiple times within the collection, this will give undefined
+    /// results!"* Start time plus title is not unique — a holiday that appears
+    /// on two subscribed calendars produces the same start and the same title,
+    /// and every `ForEach` over a day's events then has two rows claiming one
+    /// identity. SwiftUI's "undefined results" there means rows that reuse each
+    /// other's state: the wrong card opens, the wrong one animates.
+    ///
+    /// David's setup makes this ordinary rather than exotic — his calendars and
+    /// his wife's both carry the US holidays.
+    ///
+    /// Safe to change: every use of this id is in-memory and within a single
+    /// render (an `expandedAgendas` set, an offsets dictionary, `firstIndex`
+    /// comparisons). Nothing persists it, checked by grep across all targets.
+    /// It stays deterministic and stable across fetches, because
+    /// `calendarIdentifier` is stable per calendar.
+    var id: String {
+        "\(startDate.timeIntervalSinceReferenceDate)-\(calendarIdentifier)-\(title)"
+    }
     let title: String
     let startDate: Date
     let endDate: Date
     let calendarTitle: String
+    /// `EKCalendar.calendarIdentifier`. Added Session 80 so a surface can tell
+    /// WHOSE calendar an event came from without matching on a title, which
+    /// users rename. TraceMac uses it to mark events from a calendar he has
+    /// flagged as someone else's (D193); nothing else reads it yet, and it is
+    /// additive — `makeEvent` below is the only place this struct is
+    /// constructed, checked by grep across every target.
+    let calendarIdentifier: String
     let isAllDay: Bool
     let colorR: Double
     let colorG: Double
@@ -230,6 +257,20 @@ final class CalendarService {
         let pred = store.predicateForEvents(withStart: start, end: end, calendars: includedCalendarsForDayflow())
         let events = store.events(matching: pred)
             .filter { $0.status != .canceled }
+            // Session 80: the placeholder filter moved HERE, from the call
+            // sites. It was already the rule (`excludedTitleKeywords` — rehab,
+            // bewell, trivia, happy hour) but every screen had to remember to
+            // apply it, and screens kept forgetting: Session 78 found "rehab"
+            // back on Today because that rewrite did not inherit
+            // DayflowAgendaSection's filter and Upcoming never had one, and
+            // Session 80 found it again on the Mac's brand-new Today for the
+            // same reason. Three misses is a design fault, not three mistakes.
+            //
+            // At the source, the surviving call-site filters become redundant
+            // but harmless, and the NEXT screen cannot get this wrong.
+            // `fetchUpcomingEvents` is untouched — Trace's Home widget keeps
+            // its own separate list, as it always has.
+            .filter { !Self.isExcludedPlaceholderTitle($0.title ?? "") }
             .sorted { $0.startDate < $1.startDate }
         return events.map { makeEvent($0) }
     }
@@ -491,6 +532,7 @@ final class CalendarService {
             startDate: ev.startDate,
             endDate: ev.endDate,
             calendarTitle: ev.calendar?.title ?? "",
+            calendarIdentifier: ev.calendar?.calendarIdentifier ?? "",
             isAllDay: ev.isAllDay,
             colorR: comps.count > 0 ? Double(comps[0]) : 0.22,
             colorG: comps.count > 1 ? Double(comps[1]) : 0.36,

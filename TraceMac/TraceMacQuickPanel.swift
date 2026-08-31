@@ -77,11 +77,33 @@ final class MacQuickPanelController: NSObject, NSWindowDelegate {
 
     // MARK: Show and hide
 
+    /// **Debounced, because two keys can now reach this.**
+    ///
+    /// ⌘K is a menu shortcut and the global combination is a Carbon hot key,
+    /// and nothing stops David setting the global one TO ⌘K in Settings — at
+    /// which point both fire on one press, `show()` then `toggle()`, and the
+    /// panel opens and immediately closes. That reads as "the shortcut is
+    /// broken", which is the hardest kind of bug to attribute.
+    ///
+    /// A time guard rather than a rule against colliding combinations: the rule
+    /// would have to be enforced in the recorder, explained to the user, and
+    /// re-explained every time a menu item is added. 200ms costs nothing and
+    /// closes the whole class.
+    private var lastRequest = Date.distantPast
+
+    private func debounced() -> Bool {
+        let now = Date()
+        defer { lastRequest = now }
+        return now.timeIntervalSince(lastRequest) < 0.2
+    }
+
     func toggle() {
+        guard !debounced() else { return }
         isVisible ? hide() : show()
     }
 
     func show() {
+        guard !debounced() else { return }
         guard let noteStore, let notionService else { return }
 
         let panel = self.panel ?? makePanel(noteStore: noteStore, notionService: notionService)
@@ -255,6 +277,11 @@ final class MacQuickPanelController: NSObject, NSWindowDelegate {
         let root = TraceMacSearchPanel(
             isPresented: Binding(get: { [weak self] in self?.isVisible ?? false },
                                  set: { [weak self] shown in if !shown { self?.hide() } }),
+            // `onOpen` before `onGoTo`, matching the order the properties are
+            // declared in `TraceMacSearchPanel`. A memberwise initialiser takes
+            // its arguments in declaration order, not in whatever order reads
+            // best here — the same rule that bit `MacTaskRow(isToday:)` earlier
+            // this session.
             onOpen: { destination, query in
                 // **The request is posted before the app is surfaced**, not
                 // after. Surfacing can restore a closed `WindowGroup` window,
@@ -264,6 +291,13 @@ final class MacQuickPanelController: NSObject, NSWindowDelegate {
                 // window is old or brand new.
                 MacSearchRoute.shared.pending = MacSearchRoute.Request(destination: destination,
                                                                       query: query)
+                MacQuickPanelController.shared.hideAndSurfaceApp()
+            },
+            onGoTo: { section, list in
+                // Same order-of-operations as `onOpen` above, and for the same
+                // reason: set the request, then surface the window.
+                MacSearchRoute.shared.pendingGoTo = MacSearchRoute.GoTo(section: section,
+                                                                       list: list)
                 MacQuickPanelController.shared.hideAndSurfaceApp()
             })
             .environment(noteStore)
@@ -321,7 +355,22 @@ final class MacSearchRoute {
         let query: String
     }
 
+    /// **A second request type, not a `MacSearchDestination`.** Going to a
+    /// SCREEN is not the same act as opening a RECORD: there is nothing to
+    /// find, nothing to fail to find, and no history entry worth keeping — the
+    /// navigator records records. Squeezing "show me Anytime" into the
+    /// destination enum would have meant a case that carries no identity, which
+    /// is exactly the kind of not-quite-a-route that enum's doc comment warns
+    /// against.
+    struct GoTo: Equatable {
+        let section: MacSection
+        /// A context list to select on the Tasks screen. `nil` means the
+        /// section's own default.
+        let list: String?
+    }
+
     static let shared = MacSearchRoute()
     var pending: Request?
+    var pendingGoTo: GoTo?
     private init() {}
 }

@@ -776,7 +776,20 @@ struct ContentView: View {
             return NotionService.shared.people.contains { $0.id == id }
         case .place(let id):
             return NotionService.shared.places.contains { $0.id == id }
-        case .weeklyNote, .preview:
+        // **`.task` is declined here for now, and this is the one place in the
+        // project where that is a placeholder rather than a decision.**
+        //
+        // Dayflow OWNS the task screens, so unlike Trace — which has no tasks UI
+        // and declines permanently — this app is the one that should route a
+        // task. It cannot yet: `DayflowQuickFindView` passes no tasks into
+        // `MacSearchEngine.run`, so `.task` never arrives, and building half a
+        // route for a destination nothing produces is how dead branches get
+        // written and then trusted.
+        //
+        // Both halves are in Trace-Backlog.md as one item, deliberately: pass
+        // the store's `allTasks` in AND give this switch a real arm, in the same
+        // change, or neither.
+        case .weeklyNote, .task, .preview:
             return false
         }
     }
@@ -808,7 +821,7 @@ struct ContentView: View {
         case .document(let path):
             guard let url = TraceSatchelHandoff.documentURL(path: path) else { return }
             openURL(url)
-        case .weeklyNote, .preview:
+        case .weeklyNote, .task, .preview:
             // Declined by `canOpenFromSearch`, so this is unreachable. Left
             // exhaustive rather than `default:` so a new case has to be thought
             // about here instead of silently falling through to nothing.

@@ -386,6 +386,25 @@ struct DayflowTodaySection: View {
                 }
                 .foregroundStyle(Color.dayflowFaint)
             }
+            // Session 80. David: "the tasks on the screen of the app that
+            // have notes have no indication of that fact. This is true for IOS
+            // as well." A note you cannot see is a note you will not open.
+            //
+            // `hasNoteProse`, not `notes != nil`: a task whose whole note is a
+            // Shortcuts URL or a single `[[link]]` is already represented, and
+            // marking those too would make the glyph mean "this row has
+            // SOMETHING", which is a mark you learn to stop reading.
+            if task.hasNoteProse {
+                // Muted rather than faint — see the Mac note in
+                // TraceMacTaskCard: in faint it sat at the same weight as the
+                // list label beside it and read as one blob.
+                // Accent, matching the Mac (Session 80). The two were unified
+                // in D199 and they stay unified — a mark that means "there is
+                // more here" should not be more visible on one device.
+                Image(systemName: "text.alignleft")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.dayflowAccent)
+            }
             if task.repeats {
                 Image(systemName: "repeat")
                     .font(.system(size: 11, weight: .semibold))

@@ -50,7 +50,31 @@ struct TraceMacTodayView: View {
     @State private var noteLoadedKey: String = ""
     @State private var saveTask: Task<Void, Never>? = nil
     @State private var newTaskTitle: String = ""
+    /// The one task whose card is open (D190) — at most one at a time, so
+    /// opening a second closes the first without either row having to know
+    /// about the other.
+    @State private var openTaskID: String? = nil
+    /// The one meeting whose card is open. Separate from `openTaskID` but
+    /// mutually exclusive with it — opening either closes the other, because
+    /// two cards open at once on a 524pt column is a scroll, not a screen.
+    @State private var openEventID: String? = nil
+    /// The month grid, unfolded under the masthead. Same door as the phone's
+    /// chevron (Session 80): the three-word day nav reaches yesterday, today
+    /// and tomorrow, and the month reaches everything else.
+    @State private var monthUnfolded: Bool = false
+    /// A task that just moved, and where it went. Drives the one quiet line
+    /// offering to follow it (Session 80). Cleared on a timer, on a day change,
+    /// or when he takes the offer.
+    @State private var movedTo: Date? = nil
+    @State private var movedClearTask: Task<Void, Never>? = nil
     @FocusState private var addFieldFocused: Bool
+    /// Focus on the day note is what actually tells us the click landed over
+    /// there. See `noteColumn`.
+    @FocusState private var noteFocused: Bool
+    /// The + opens the composer (D200). The inline "Add a to-do" row stays
+    /// exactly as it was: that one is the contextual add, this one is the
+    /// considered one.
+
 
     /// The store is an `@Observable` singleton; reading its properties inside
     /// `body` is what registers the dependency, so a plain computed accessor is
@@ -72,9 +96,6 @@ struct TraceMacTodayView: View {
                 .frame(maxWidth: .infinity)
         }
         .background(MacEditorialColor.paper)
-        .overlay(alignment: .bottomTrailing) {
-            MacEditorialPlus { addFieldFocused = true }
-        }
         .task(id: dayKey) { await load() }
     }
 
@@ -105,21 +126,9 @@ struct TraceMacTodayView: View {
         return f.string(from: date)
     }
 
-    private func clockString(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "h:mm a"
-        return f.string(from: d)
-    }
-
-    private func durationString(_ event: NextCalendarEvent) -> String? {
-        let minutes = Int(event.endDate.timeIntervalSince(event.startDate) / 60)
-        guard minutes > 0 else { return nil }
-        if minutes < 60 { return "(\(minutes)m)" }
-        let hours = minutes / 60
-        let rest = minutes % 60
-        if rest == 0 { return "(\(hours)h)" }
-        return "(\(hours)h \(rest)m)"
-    }
+    // `clockString` and `durationString` retired with `meetingRow`, Session 80
+    // — both were only ever its helpers, and they now live inside
+    // `MacMeetingRow` where the one thing that formats a meeting also draws it.
 
     // MARK: - Data
 
@@ -142,7 +151,26 @@ struct TraceMacTodayView: View {
         }
     }
 
+    /// The start of the next meeting on one of HIS calendars after this one
+    /// ends — what the row's parenthetical measures (D194).
+    ///
+    /// Foreign meetings are skipped on both sides: his wife's breakfast sits
+    /// inside his morning without taking any of it, so counting it would report
+    /// free time he actually has as time he does not.
+    private func nextOwnStart(after event: NextCalendarEvent) -> Date? {
+        let choices = MacCalendarChoices.shared
+        return timedEvents
+            .filter { !choices.isForeign($0.calendarIdentifier) }
+            .first { $0.startDate >= event.endDate }?
+            .startDate
+    }
+
     private func load() async {
+        clearMovedOffer()
+        // Picking a day is the end of picking a day: the grid folds itself away
+        // rather than sitting open over the day it just chose.
+        if monthUnfolded { withAnimation(.easeInOut(duration: 0.2)) { monthUnfolded = false } }
+        await MacCalendarChoices.shared.load()
         events = await CalendarService.shared.fetchDayEvents(for: date)
         await store.refreshAll()
         loadNote()
@@ -156,7 +184,18 @@ struct TraceMacTodayView: View {
                 MacEditorialDayNav(date: $date)
                 MacEditorialMasthead(kicker: mastheadKicker,
                                      numeral: mastheadNumeral,
-                                     weekday: mastheadWeekday)
+                                     weekday: mastheadWeekday,
+                                     onTapSubject: {
+                                         withAnimation(.easeInOut(duration: 0.2)) {
+                                             monthUnfolded.toggle()
+                                         }
+                                     },
+                                     unfolded: monthUnfolded)
+                if monthUnfolded {
+                    MacEditorialMonthGrid(selected: $date)
+                        .padding(.top, 12)
+                        .transition(.opacity)
+                }
                 allDayRows
                 todoSection
                 if !timedEvents.isEmpty { daySection }
@@ -194,13 +233,73 @@ struct TraceMacTodayView: View {
                 emptyTodo
             } else {
                 ForEach(tasksForDay) { task in
-                    taskRow(task)
+                    // `isToday` last, matching its declaration order in
+                    // MacTaskRow: a memberwise init takes its arguments in the
+                    // order the properties are written, not in reading order.
+                    MacTaskRow(task: task,
+                               isOpen: openTaskID == task.id,
+                               onToggle: { toggle(task) },
+                               onChanged: { refresh() },
+                               onMoved: { day in noteMove(to: day) },
+                               isToday: isToday)
                     MacEditorialRule.hair
                 }
             }
             addRow
+            movedOffer
         }
         .padding(.top, 16)
+    }
+
+    /// One quiet line, four seconds, after a task is moved off this day.
+    ///
+    /// David, Session 80: "do you think there is an option that could be shown
+    /// briefly to ask if i want to move to that day that we moved the task to?
+    /// this would have to be subtle to work." So: no capsule, no toast, no
+    /// dimming — a caps line where the task used to be, with the day in accent
+    /// because the accent means acting. Ignoring it is free and it removes
+    /// itself. Nothing about the move is undone by letting it go.
+    @ViewBuilder
+    private var movedOffer: some View {
+        if let day = movedTo {
+            let f = DateFormatter()
+            let label: String = { f.dateFormat = "EEEE, MMM d"; return f.string(from: day) }()
+            HStack(spacing: 8) {
+                Text("Moved to \(label)")
+                    .editorialQuietLabel()
+                Button {
+                    date = cal.startOfDay(for: day)
+                    clearMovedOffer()
+                } label: {
+                    Text("Go there")
+                        .font(.system(size: 10, weight: .bold))
+                        .textCase(.uppercase)
+                        .tracking(1.4)
+                        .foregroundStyle(MacEditorialColor.accent)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 0)
+            }
+            .frame(height: 30)
+            .transition(.opacity)
+        }
+    }
+
+    private func noteMove(to day: Date) {
+        guard !cal.isDate(day, inSameDayAs: date) else { return }
+        movedClearTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.18)) { movedTo = day }
+        movedClearTask = Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.18)) { movedTo = nil }
+        }
+    }
+
+    private func clearMovedOffer() {
+        movedClearTask?.cancel()
+        movedTo = nil
     }
 
     private var remainLabel: String? {
@@ -216,57 +315,89 @@ struct TraceMacTodayView: View {
             .padding(.vertical, 10)
     }
 
-    private func taskRow(_ task: ThingsTask) -> some View {
-        let listName: String? = task.list
-        let alarm: String? = task.alarmTimeString
-        return HStack(spacing: 12) {
-            Button {
-                Task { await store.complete(taskID: task.id) }
-            } label: {
-                Circle()
-                    .strokeBorder(MacEditorialColor.faint, lineWidth: 1.5)
-                    .frame(width: 18, height: 18)
-            }
-            .buttonStyle(.plain)
-
-            Text(task.title)
-                .font(MacEditorialType.taskTitle)
-                .foregroundStyle(MacEditorialColor.ink)
-                .lineLimit(1)
-
-            Spacer(minLength: 8)
-
-            if task.repeats {
-                Image(systemName: "repeat")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(MacEditorialColor.faint)
-            }
-            if let alarm {
-                Text(alarm)
-                    .font(MacEditorialType.time)
-                    .foregroundStyle(MacEditorialColor.faint)
-            }
-            if let listName {
-                Text(listName).editorialListLabel()
-            }
-        }
-        .frame(height: 42)
-    }
+    // `taskRow` retired, Session 80. A task row is now `MacTaskRow`
+    // (TraceMacTaskCard.swift) so that Today, Upcoming and Tasks all draw the
+    // same row and open the same card (D190). This screen's copy would have
+    // been the one that drifted.
 
     private var addRow: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "plus")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(MacEditorialColor.faint)
-                .frame(width: 18)
-            TextField("Add a to-do", text: $newTaskTitle)
-                .textFieldStyle(.plain)
-                .font(MacEditorialType.taskTitle)
-                .focused($addFieldFocused)
-                .onSubmit { submitNewTask() }
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(addFieldFocused ? MacEditorialColor.accent
+                                                     : MacEditorialColor.faint)
+                    .frame(width: 18)
+                TextField("Add a to-do", text: $newTaskTitle)
+                    .textFieldStyle(.plain)
+                    .font(MacEditorialType.taskTitle)
+                    .focused($addFieldFocused)
+                    .onSubmit { submitNewTask() }
+                Spacer(minLength: 0)
+            }
+            .frame(height: 38)
+            // **A rule, because the glyph alone was not enough.**
+            //
+            // The first version tinted only the 11pt `+`. That is a weaker
+            // signal than the day note's full-width rule, and it sits where
+            // nobody is looking: your eye is on the words you are typing, not
+            // on a small mark to their left. The day note works because a wide
+            // line changing colour is visible in peripheral vision.
+            //
+            // Same vocabulary, then — accent underline while this row holds the
+            // keyboard, nothing when it does not. The `+` keeps its tint too;
+            // two quiet signals in the same place cost nothing and the row is
+            // read from either end.
+            Group {
+                if addFieldFocused { MacEditorialRule.accent } else { Color.clear.frame(height: 1) }
+            }
         }
-        .frame(height: 38)
+        // Same treatment as the day note, and for the same reason (D206).
+        // David: "when i click in the add a to-do it stops working" — the day
+        // nav standing down for a focused text field is correct, and silent, so
+        // this row says when it holds the keyboard and Escape hands it back.
+        //
+        // **Deliberately NOT letting up/down escape this field.** It is single
+        // line, so up and down have nothing to do here and could in principle
+        // navigate — but pressing down out of habit while half-typing a to-do
+        // would throw you onto another screen mid-thought. Escape is the one
+        // way out of a text field on this platform; one idiom beats two.
+        .background {
+            if addFieldFocused {
+                Color.clear.escapeCloses(includingTextFields: true) {
+                    addFieldFocused = false
+                }
+            }
+        }
+    }
+
+    /// One card open at a time: opening a second closes the first, and no row
+    /// needs to know another exists.
+    /// Opening a card takes focus off the day note.
+    ///
+    /// Correct on its own terms — your attention just moved — and load-bearing
+    /// for the collapse above: `onChange(of: noteFocused)` only fires on a
+    /// CHANGE, so a note that still held focus from before would give the next
+    /// click over there nothing to report.
+    private func toggle(_ task: ThingsTask) {
+        noteFocused = false
+        openEventID = nil
+        openTaskID = (openTaskID == task.id) ? nil : task.id
+    }
+
+    private func toggle(_ event: NextCalendarEvent) {
+        noteFocused = false
+        openTaskID = nil
+        openEventID = (openEventID == event.id) ? nil : event.id
+    }
+
+    private func collapseCards() {
+        openTaskID = nil
+        openEventID = nil
+    }
+
+    private func refresh() {
+        Task { await store.refreshAll() }
     }
 
     private func submitNewTask() {
@@ -288,7 +419,10 @@ struct TraceMacTodayView: View {
             track
             trackTicks
             ForEach(timedEvents) { event in
-                meetingRow(event)
+                MacMeetingRow(event: event,
+                              isOpen: openEventID == event.id,
+                              onToggle: { toggle(event) },
+                              nextOwnStart: nextOwnStart(after: event))
             }
         }
         .padding(.top, 14)
@@ -332,9 +466,16 @@ struct TraceMacTodayView: View {
         let fill: Color = pastel ?? MacEditorialColor.noteText
         let w: CGFloat = max(2, CGFloat(end - start) * width)
         let x: CGFloat = CGFloat(start) * width
+        // D193 amended, Session 80. The first cut drew a foreign block at HALF
+        // height. David killed it, correctly: weight is a RELATIVE signal, and
+        // on a day whose events are all his wife's there is nothing on screen
+        // to compare a short block against. Colour is absolute — it says the
+        // same thing on a day with one event as on a day with nine.
+        let foreign: Bool = MacCalendarChoices.shared.isForeign(event.calendarIdentifier)
+        let paint: Color = foreign ? MacEditorialColor.foreignEvent : fill
         return Rectangle()
-            .fill(fill)
-            .frame(width: w)
+            .fill(paint)
+            .frame(width: w, height: 7)
             .offset(x: x)
     }
 
@@ -361,38 +502,36 @@ struct TraceMacTodayView: View {
             .offset(x: x)
     }
 
-    private func meetingRow(_ event: NextCalendarEvent) -> some View {
-        let verdict = DayflowMeetingColor.classify(event.title, organizer: event.organizerName)
-        let chip: Color = verdict.chip ?? MacEditorialColor.faint
-        let duration: String? = durationString(event)
-        return HStack(spacing: 10) {
-            Text(clockString(event.startDate))
-                .font(MacEditorialType.time)
-                .foregroundStyle(MacEditorialColor.muted)
-                .frame(width: 66, alignment: .leading)
-            Rectangle()
-                .fill(chip)
-                .frame(width: 8, height: 8)
-            Text(event.title)
-                .font(MacEditorialType.rowTitle)
-                .foregroundStyle(MacEditorialColor.ink)
-                .lineLimit(1)
-            if let duration {
-                Text(duration)
-                    .font(MacEditorialType.meta)
-                    .foregroundStyle(MacEditorialColor.faint)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(height: 32)
-    }
+    // `meetingRow` retired, Session 80 — it is `MacMeetingRow`
+    // (TraceMacMeetingCard.swift) now, so Today and Upcoming draw the same
+    // meeting and open the same card. Same move as `taskRow` before it.
+
+    // `meetingChip(_:hollow:)` retired the same session it was written.
+    // The hollow-versus-filled distinction never landed at 8pt, and its track
+    // counterpart was worse — see `trackBlock`. A foreign event is now simply
+    // painted `MacEditorialColor.foreignEvent`, chip and block alike.
 
     // MARK: - DAY NOTE column
 
     private var noteColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
             MacEditorialSectionLabel(text: "Day note")
-            MacEditorialRule.ink
+            // **The rule goes accent while the note has the keyboard.**
+            //
+            // David: "the issue was that i was in the Day Note section of the
+            // Today screen and from there the arrows did not work." The
+            // behaviour is correct — arrows must move the caret while you are
+            // typing, and `MacEditorialArrowKeys` stands down for exactly that
+            // reason — but it happened SILENTLY. This pane is large, pale and
+            // often empty, so a caret sitting in it is invisible, and four keys
+            // stopped working with nothing on screen to explain why.
+            //
+            // Accent already means "active, or acting" everywhere in this app,
+            // so one rule changing colour is the whole fix: the day nav is not
+            // broken, it is somewhere else, and now you can see where.
+            Group {
+                if noteFocused { MacEditorialRule.accent } else { MacEditorialRule.ink }
+            }
             TextEditor(text: $noteText)
                 .font(MacEditorialType.note)
                 .foregroundStyle(MacEditorialColor.noteText)
@@ -401,11 +540,50 @@ struct TraceMacTodayView: View {
                 .background(MacEditorialColor.paper)
                 .padding(.top, 12)
                 .padding(.leading, -5)   // TextEditor's own inset, removed
+                .focused($noteFocused)
                 .onChange(of: noteText) { _, _ in scheduleSave() }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, MacEditorialLayout.margin)
         .padding(.top, MacEditorialLayout.topMargin)
+        .contentShape(Rectangle())
+        // Covers the label and the empty space below the editor. It does NOT
+        // cover the editor itself: `TextEditor` is an `NSTextView`, AppKit
+        // consumes the click outright, and there is no SwiftUI gesture there
+        // for `simultaneousGesture` to run alongside. That is why the first
+        // attempt at this did nothing — same family as the arrow keys and
+        // Escape, where AppKit had the event and SwiftUI never saw it.
+        .simultaneousGesture(TapGesture().onEnded { collapseCards() })
+        // **Focus is the signal that survives AppKit.** Whatever the click did
+        // on its way through, landing in the editor makes it first responder,
+        // and SwiftUI reports that faithfully. So the collapse hangs off the
+        // fact rather than off the gesture.
+        //
+        // David: "if i click outside of the expanded task (like in the day note
+        // pane) it should collapse the task that was expanded." The general
+        // shape: a card is open because your attention is on it, and moving
+        // your attention to the other half of the screen answers the question
+        // the card was asking.
+        .onChange(of: noteFocused) { _, focused in
+            if focused { collapseCards() }
+        }
+        // **Escape hands the keyboard back.** The standard way out of a text
+        // field on this platform, and the counterpart to the accent rule above:
+        // one says where the keyboard went, the other takes it back.
+        //
+        // The monitor exists only while the note is focused, which is the rule
+        // `escapeCloses` was written for — apply it to the thing whose lifetime
+        // IS the scope. It cannot collide with the open card's Escape, because
+        // the two states are mutually exclusive by construction: focusing the
+        // note collapses the cards (just above), and opening a card releases
+        // the note (`toggle(_:)`).
+        .background {
+            if noteFocused {
+                Color.clear.escapeCloses(includingTextFields: true) {
+                    noteFocused = false
+                }
+            }
+        }
     }
 
     private var notePath: String { "Calendar/\(dayKey).md" }

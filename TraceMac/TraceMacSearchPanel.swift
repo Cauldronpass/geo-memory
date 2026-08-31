@@ -33,6 +33,9 @@ struct TraceMacSearchPanel: View {
     /// splitting it into terms is `MacSearchEngine`'s job and is done again at
     /// the other end, from the same function, so the two cannot drift.
     var onOpen: (MacSearchDestination, String) -> Void
+    /// Jump to a screen rather than open a record. Defaulted so a preview or a
+    /// test can build this view without wiring navigation it does not need.
+    var onGoTo: (MacSection, String?) -> Void = { _, _ in }
 
     @Environment(NoteStore.self)     private var noteStore
     @Environment(NotionService.self) private var notionService
@@ -55,6 +58,27 @@ struct TraceMacSearchPanel: View {
     @AppStorage("tracemac.ask.includeNotion") private var includeNotionInAsk = false
     @State private var previewText = ""
     @FocusState private var fieldFocused: Bool
+
+    /// Whether shift is held RIGHT NOW, so the field can say what Return will
+    /// do before Return is pressed (Session 80, David's design: "what about one
+    /// hotkey but i hold the shift key down when i hit enter to make it a
+    /// task? when i hold shift the text goes blue to give me another clue?").
+    ///
+    /// A `flagsChanged` monitor, because a modifier held on its own produces no
+    /// key press and `onKeyPress` will never see it. Same local-monitor shape
+    /// as `MacEditorialArrowKeys` and `MacSatchelFilterShortcut`, installed
+    /// while this panel is on screen and removed with it.
+    @State private var shiftHeld = false
+    @State private var flagsMonitor: Any? = nil
+    /// The signature of a parse the user declined with backspace. Not a plain
+    /// Bool: the suppression has to survive a trailing space (same signature)
+    /// and die on a real edit (different signature), and a Bool cannot tell
+    /// those apart.
+    @State private var unparsedSignature: String? = nil
+    /// Whether the last change to `query` made it longer. The backspace
+    /// un-parse only arms while you are typing FORWARD, so backspace behaves
+    /// like backspace once you have started editing.
+    @State private var queryGrew = false
     @State private var session = MacQuickPanelSession.shared
     /// Set for a couple of seconds after a successful capture.
     @State private var addNotice: String? = nil
@@ -139,6 +163,17 @@ struct TraceMacSearchPanel: View {
             // frame that used to be here as well, is what David saw.
             .padding(24)
             .onExitCommand { close() }
+            .onAppear { installFlagsMonitor() }
+            .onDisappear { removeFlagsMonitor() }
+            .onChange(of: query) { old, new in
+                queryGrew = new.count > old.count
+                // Clearing the field clears the refusal with it. Otherwise a
+                // declined parse would haunt the next thing typed into a panel
+                // that is reused between openings.
+                if new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    unparsedSignature = nil
+                }
+            }
             // Fires on appear AND again when the container resolves. A panel
             // opened in the first second of a launch would otherwise hold an
             // empty corpus for the rest of its life. One modifier, not two — a
@@ -162,6 +197,8 @@ struct TraceMacSearchPanel: View {
                 preview = nil
                 expanded = []
                 selection = 0
+                unparsedSignature = nil
+                queryGrew = false
                 fieldFocused = true
             }
     }
@@ -169,6 +206,24 @@ struct TraceMacSearchPanel: View {
     private var panel: some View {
         VStack(spacing: 0) {
             field
+            if query.isEmpty {
+                // **The landing state.** David, with the Things phone
+                // screenshot: "when we click the magnifying glass the options
+                // should be similar to the IOS experience."
+                //
+                // An empty search box is a question with no hint of what it
+                // accepts. This is the answer the phone gives: here is where you
+                // could go, with how much is waiting in each. It also makes the
+                // panel useful for the thing it is opened for most often — not
+                // finding a record, just going somewhere.
+                //
+                // It disappears the moment you type, because then the results
+                // ARE the answer and a list of destinations underneath them is
+                // furniture.
+                Divider()
+                goToRows
+            }
+            if !query.isEmpty { hintRow }
             if let notice {
                 Divider()
                 noticeRow(notice)
@@ -203,9 +258,16 @@ struct TraceMacSearchPanel: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("Search notes, Satchel, people, places", text: $query)
+            TextField("Search notes, tasks, Satchel, people, places", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 18, weight: .regular))
+                // Accent, not blue. David asked for blue and blue is spoken
+                // for: baby blue means somebody else's calendar (D193) and the
+                // meeting palette owns the other one. The accent already means
+                // "active, or acting" everywhere in this app, which is exactly
+                // what holding shift is announcing, so it needs no new
+                // vocabulary.
+                .foregroundStyle(taskMode ? MacEditorialColor.accent : Color.primary)
                 .focused($fieldFocused)
                 // **On the field, not on an ancestor.** The text field is first
                 // responder, and on macOS the text system claims the arrow keys
@@ -226,6 +288,32 @@ struct TraceMacSearchPanel: View {
                 .onKeyPress(.upArrow) {
                     guard answer == nil else { return .ignored }
                     move(-1)
+                    return .handled
+                }
+                // **Backspace declines a parsed date** (David, Session 80,
+                // naming Todoist as the reference). One press turns the date
+                // off and the words go back into the title; the hint row
+                // changes so you can see that is what happened.
+                //
+                // Armed only while the last change GREW the string. Once you
+                // are deleting, backspace is backspace. The residual false fire
+                // is a mid-string edit: click into the middle of a finished
+                // line and backspace, and this eats it, because a SwiftUI
+                // `TextField` does not expose its caret. It costs one keystroke
+                // and can fire at most once per parse, which is the price of
+                // not rewriting this field as an `NSTextView` (deferred,
+                // Session 80).
+                //
+                // `.ignored` genuinely falls through to normal text editing
+                // here: the arrow handlers above have relied on that since they
+                // were written. The Return breakage in this file's history was
+                // `.onSubmit`, an ACTION, not default editing.
+                .onKeyPress(.delete) {
+                    let live = rawParse
+                    guard queryGrew, live.hasDate,
+                          unparsedSignature != live.signature else { return .ignored }
+                    unparsedSignature = live.signature
+                    queryGrew = false
                     return .handled
                 }
                 // **⌘⏎ and ⌘E live here, not on their buttons.**
@@ -263,7 +351,9 @@ struct TraceMacSearchPanel: View {
                 .onKeyPress(keys: [.return, "e"], phases: .down) { press in
                     switch press.key {
                     case .return:
-                        if press.modifiers.contains(.command) {
+                        if press.modifiers.contains(.shift) {
+                            addTaskToInbox()
+                        } else if press.modifiers.contains(.command) {
                             addToToday()
                         } else {
                             activate()
@@ -294,6 +384,175 @@ struct TraceMacSearchPanel: View {
         // panel's whole life, because the panel is reused between presses — the
         // reason the caret was missing from the second press onwards. Focus is
         // claimed on `session.opens` instead.
+    }
+
+    /// `↩ SEARCH · ⇧↩ NEW TASK`, the live half in ink and the other faint.
+    ///
+    /// The colour of the text tells you the mode has changed; this tells you
+    /// what the mode IS. Without it the accent is a mood ring — you can see
+    /// something is different and you have to press Return to find out what.
+    /// One row, and only while there is a line to act on, so the resting panel
+    /// is unchanged.
+    private var hintRow: some View {
+        let line: ParsedTaskLine = capture
+        let stamp: String? = line.dateLabel
+        let declined: Bool = unparsedSignature != nil && rawParse.hasDate
+        let searchTint: Color = taskMode ? MacEditorialColor.faint : MacEditorialColor.ink
+        // Ink rather than faint once the line carries a date OR a note, even
+        // with shift up: the half is now saying something about what will
+        // happen, and a fact drawn in the "nothing here" colour is a fact
+        // nobody reads. Faint is for the offer; ink is for the consequence.
+        let carries: Bool = stamp != nil || line.hasNote
+        let taskTint: Color = taskMode
+            ? MacEditorialColor.accent
+            : (carries ? MacEditorialColor.ink : MacEditorialColor.faint)
+
+        return HStack(spacing: 8) {
+            Text("\u{21a9} Search")
+                .foregroundStyle(searchTint)
+            Text("\u{00b7}")
+                .foregroundStyle(MacEditorialColor.faint)
+            if let stamp {
+                Text("\u{21e7}\u{21a9}")
+                    .foregroundStyle(taskTint)
+                // `.textCase(nil)` because this is HIS text in a row of
+                // furniture, and uppercasing it would hide the one thing he is
+                // checking: which words survived the strip.
+                Text("\u{201c}\(line.title)\u{201d}")
+                    .textCase(nil)
+                    .foregroundStyle(taskTint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                // Priority over the title, so a long line loses its tail rather
+                // than losing the date — the date is the half that can surprise
+                // you.
+                Text("\u{2192} \(stamp)")
+                    .foregroundStyle(taskTint)
+                    .layoutPriority(1)
+            } else {
+                Text("\u{21e7}\u{21a9} New task")
+                    .foregroundStyle(taskTint)
+                if declined {
+                    // Says the backspace landed. Without it, declining a parse
+                    // and mistyping a word look identical.
+                    Text("\u{00b7} date off")
+                        .foregroundStyle(MacEditorialColor.faint)
+                } else {
+                    // **The syntax, shown only when there is nothing better to
+                    // say.** David, Session 80: "We left the hot key pills
+                    // without the knowledge that the natural language is a
+                    // possibility and also the // for note."
+                    //
+                    // He is right, and the omission had a shape worth naming: a
+                    // feature that only announces itself once you have already
+                    // used it is a feature for the person who wrote it. The
+                    // parse preview is excellent AFTER you type a date and
+                    // silent before, which is exactly backwards for learning.
+                    //
+                    // It costs no row and no new state, because it lives in the
+                    // slot the parse preview will occupy the moment there is a
+                    // parse. Type a date and the hint is replaced by what the
+                    // date actually resolved to — the teaching disappears the
+                    // instant it is no longer the most useful thing to say.
+                    //
+                    // `.textCase(nil)`: these are characters to type, and
+                    // uppercasing them would misrepresent the one thing they
+                    // exist to show.
+                    Text("\u{00b7} try \u{201c}friday\u{201d} or // note")
+                        .textCase(nil)
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .lineLimit(1)
+                }
+            }
+            // A marker, not the note itself. The note text is still sitting in
+            // the field after the `//`, unedited, so repeating it here would
+            // spend the row's whole width saying something already on screen.
+            // What is NOT on screen is whether the delimiter was accepted, and
+            // that is exactly what this says. Priority above the title for the
+            // same reason the date has it.
+            if line.hasNote {
+                Text("\u{00b7} + note")
+                    .foregroundStyle(taskTint)
+                    .layoutPriority(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 9.5, weight: .bold))
+        .textCase(.uppercase)
+        .tracking(1.6)
+        .padding(.horizontal, 17)
+        .padding(.bottom, 11)
+    }
+
+    // MARK: - Go to
+
+    /// Pools first, then context lists — the same axis split the Tasks screen
+    /// uses (D213), so the two surfaces describe his tasks the same way. A
+    /// panel that grouped them differently would be teaching a second model of
+    /// the same data.
+    ///
+    /// Counts come straight off the store, and empty lists are hidden on the
+    /// same reasoning as the rail: a column of zeros is a column you stop
+    /// reading.
+    @ViewBuilder
+    private var goToRows: some View {
+        let store = ReminderTaskStore.shared
+        let hidden: Set<String> = [ReminderTaskStore.inboxListName,
+                                   ReminderTaskStore.somedayListName]
+        let lists: [(String, Int)] = store.listNames
+            .filter { name in !hidden.contains(name) }
+            .map { name -> (String, Int) in
+                (name, store.allTasks.filter { task in task.list == name }.count)
+            }
+            .filter { pair in pair.1 > 0 }
+
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Go to").editorialFieldLabel()
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                .padding(.bottom, 2)
+            goToRow("Today", "sun.max", nil) { onGoTo(.today, nil) }
+            goToRow("Upcoming", "calendar", nil) { onGoTo(.upcoming, nil) }
+            goToRow("Inbox", "tray", store.inboxCount) { onGoTo(.tasks, nil) }
+
+            if !lists.isEmpty {
+                Text("Lists").editorialFieldLabel()
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .padding(.bottom, 2)
+                ForEach(lists, id: \.0) { name, count in
+                    goToRow(name, "list.bullet", count) { onGoTo(.tasks, name) }
+                }
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    private func goToRow(_ label: String, _ icon: String, _ count: Int?,
+                         action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(MacEditorialColor.faint)
+                    .frame(width: 16)
+                Text(label)
+                    .font(MacEditorialType.fieldValue)
+                    .foregroundStyle(MacEditorialColor.ink)
+                Spacer(minLength: 8)
+                // Zero draws nothing, same rule as the sidebar count: an empty
+                // pool should look like nothing, not like a number.
+                if let count, count > 0 {
+                    Text("\(count)")
+                        .font(MacEditorialType.time)
+                        .foregroundStyle(MacEditorialColor.faint)
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func noticeRow(_ text: String) -> some View {
@@ -560,15 +819,43 @@ struct TraceMacSearchPanel: View {
             // text field — see the `onKeyPress` there for why a
             // `.keyboardShortcut` on this button silently did nothing.
             if answer == nil {
+                // **"Add to note", not "Add to today".** David: *"rename the
+                // pill that says add to today which is confusing since i think
+                // that is the note add."* He was right, and it was worse than
+                // ambiguous — it was ambiguous in exactly the place where the
+                // distinction now matters. "Today" is the name of a SCREEN, a
+                // task state, and a date, and this button is none of those: it
+                // appends a line to the daily note. The label says the noun the
+                // line lands in.
                 Button {
                     addToToday()
                 } label: {
-                    Label("Add to today", systemImage: "text.append")
+                    Label("Add to note", systemImage: "text.append")
                         .font(MacType.meta)
                 }
                 .buttonStyle(.bordered)
                 .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty)
                 .help("Append this line to today's note (⌘⏎)")
+
+                // Its sibling, and the reason the rename could not wait. Two
+                // buttons side by side ARE the explanation: one writes a line,
+                // the other makes a commitment, and neither label needs a
+                // sentence once the other is standing next to it.
+                //
+                // On screen as well as on ⇧⏎, for the same reason the note
+                // button is: a shortcut nobody can discover is a shortcut for
+                // the person who wrote it. The hint row under the field teaches
+                // the key; this pill is how you do it before you have learned
+                // the key.
+                Button {
+                    addTaskToInbox()
+                } label: {
+                    Label("New task", systemImage: "checklist")
+                        .font(MacType.meta)
+                }
+                .buttonStyle(.bordered)
+                .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty)
+                .help("Add this line to the Reminders Inbox (⇧⏎). A date at the end sets the due date, backspace declines it, and // starts a note.")
 
                 // **A labelled button, not the icon it was.** The icon sat in
                 // the footer between a `Spacer` and a run of grey key hints, at
@@ -601,9 +888,19 @@ struct TraceMacSearchPanel: View {
                 // Said every time, on the control that does it. Search never
                 // leaves the Mac and this does, and the difference should not
                 // live only in a document nobody has open.
+                // Two lines and a width, because the row gained a fourth
+                // button (New task) and this is the only compressible thing on
+                // it — an HStack shrinks Text before it shrinks a Button, so
+                // left alone it would truncate mid-word, which is the exact
+                // failure the note above this block was written about. Wrapping
+                // costs a few points of footer height; truncating costs the
+                // sentence.
                 Text("Sends your notes to Claude. Search does not.")
                     .font(MacType.meta)
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(2)
+                    .frame(maxWidth: 190, alignment: .trailing)
             }
         }
         .padding(.horizontal, 16)
@@ -751,6 +1048,112 @@ struct TraceMacSearchPanel: View {
     /// adds to the daily note would append to the bottom of what is there"*
     /// describes a run of captures, not one. Closing after each would make the
     /// second one cost another shortcut press.
+    // MARK: - Shift capture (D196)
+
+    /// True while shift is down and there is something to capture.
+    ///
+    /// Gated on non-empty text on purpose: shift is held for a hundred reasons
+    /// (a capital letter, a selection) and colouring an empty field accent for
+    /// each of them would make the signal noise. It only means something once
+    /// there is a line that could become a task.
+    private var taskMode: Bool {
+        shiftHeld && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// What the line says on its own terms, before the user's refusal is
+    /// applied. The backspace handler needs this one, because it has to see the
+    /// parse in order to decline it.
+    private var rawParse: ParsedTaskLine { TaskDateParser.parse(query) }
+
+    /// What ⇧⏎ and the New task pill will actually create. Recomputed rather
+    /// than cached: it is one `NSDataDetector` pass over a short string against
+    /// a static detector, and a cache here would be a third piece of state that
+    /// can disagree with the field.
+    ///
+    /// **Both capture paths read this one property**, so the pill and the key
+    /// can never do different things — the failure that makes a parser feel
+    /// haunted rather than helpful.
+    private var capture: ParsedTaskLine {
+        let live = rawParse
+        if let unparsedSignature, unparsedSignature == live.signature {
+            return live.withoutDate()
+        }
+        return live
+    }
+
+    /// Shift is not a key press, it is a key *state*, so `onKeyPress` never
+    /// sees it — a modifier alone produces `flagsChanged`, not `keyDown`. A
+    /// local monitor is the only way to know it is down before Return is hit,
+    /// and knowing that BEFORE is the entire point: the accent is a promise
+    /// about what Return is going to do, and a promise made afterwards is a
+    /// report.
+    ///
+    /// Local, not global: no Accessibility permission, and it fires only while
+    /// this panel is key. Same instrument as `MacSatchelFilterShortcut`, and the
+    /// event is returned unswallowed because the text system still needs shift
+    /// for capital letters.
+    private func installFlagsMonitor() {
+        guard flagsMonitor == nil else { return }
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            let down = event.modifierFlags.contains(.shift)
+            if down != shiftHeld { shiftHeld = down }
+            return event
+        }
+    }
+
+    private func removeFlagsMonitor() {
+        if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
+        flagsMonitor = nil
+        // The panel is reused between presses (see the focus note on `field`),
+        // so a stale `true` left here would paint the next opening accent for a
+        // shift nobody is holding.
+        shiftHeld = false
+    }
+
+    /// ⇧⏎ — the line becomes a task in the Inbox list.
+    ///
+    /// **Inbox, not Today.** ⌘⏎ already appends to the daily NOTE, which is
+    /// journal: a line you wrote down. A task is a commitment, and the whole
+    /// point of the Inbox list (D158) is that capture does not have to decide
+    /// where a commitment belongs at the moment of having it. Giving this a
+    /// date here would be that decision, made badly, at the worst possible time.
+    ///
+    /// Same aftermath as `addToToday`: field clears, panel stays open, notice
+    /// for 2.5s. A run of captures is one shortcut press, not one per thought.
+    private func addTaskToInbox() {
+        let line = capture
+        guard !line.title.isEmpty else { return }
+        let stamp = line.dateLabel
+        let hadNote = line.hasNote
+        query = ""
+        askError = nil
+        fieldFocused = true
+        Task {
+            let ok = await ReminderTaskStore.shared.addTask(
+                title: line.title,
+                date: line.date,
+                list: ReminderTaskStore.inboxListName,
+                notes: line.note,
+                remindAt: line.remindAt)
+            if ok {
+                // The date is repeated back. A parser's one real failure mode
+                // is landing the right words on the wrong day, and the notice
+                // is the last moment that is cheap to catch.
+                var said = "Added to Inbox"
+                if let stamp { said += " \u{00b7} \(stamp)" }
+                if hadNote { said += " \u{00b7} + note" }
+                addNotice = said
+                try? await Task.sleep(for: .seconds(2.5))
+                addNotice = nil
+            } else {
+                // The only way this fails is Reminders access, and a silent
+                // no-op on a capture is how you lose the thought AND the trust.
+                addNotice = nil
+                askError = "Could not add the task \u{2014} Trace does not have access to Reminders."
+            }
+        }
+    }
+
     private func addToToday() {
         let line = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !line.isEmpty else { return }
@@ -758,7 +1161,7 @@ struct TraceMacSearchPanel: View {
             try noteStore.appendToDailyNote(line)
             query = ""
             askError = nil
-            addNotice = "Added to today"
+            addNotice = "Added to note"
             fieldFocused = true
             Task {
                 // The corpus is now one line out of date, and the very next
@@ -880,7 +1283,13 @@ struct TraceMacSearchPanel: View {
                                       corpus: corpus,
                                       documents: documents,
                                       people: notionService.people,
-                                      places: notionService.places)
+                                      places: notionService.places,
+                                      // Straight off the store, not a snapshot
+                                      // taken at load. Tasks change under this
+                                      // panel constantly — ⇧⏎ adds one from the
+                                      // panel itself — and a corpus copied once
+                                      // would go stale mid-session.
+                                      tasks: ReminderTaskStore.shared.allTasks)
         selection = 0
         expanded = []
         preview = nil

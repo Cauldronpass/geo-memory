@@ -45,6 +45,11 @@ enum MacPlace: Hashable, Sendable {
             case .person, .place:                            return .directory
             case .endeavor:                                  return .endeavors
             case .document:                                  return .documents
+            // Session 80. Note that this is the section a task LIVES in, which
+            // is always Tasks — even for a dated task, whose deep link lands on
+            // its context list rather than a pool. Back should return to the
+            // screen, and the screen is the same one either way.
+            case .task:                                      return .tasks
             }
         }
     }

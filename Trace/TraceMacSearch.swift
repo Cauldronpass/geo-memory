@@ -41,7 +41,7 @@ import Foundation
 // MARK: - Kinds
 
 enum MacSearchKind: String, CaseIterable, Identifiable, Sendable {
-    case note, document, person, place, endeavor
+    case note, document, person, place, endeavor, task
 
     var id: String { rawValue }
 
@@ -55,6 +55,7 @@ enum MacSearchKind: String, CaseIterable, Identifiable, Sendable {
         case .person:   return "People"
         case .place:    return "Places"
         case .endeavor: return "Endeavors"
+        case .task:     return "Tasks"
         }
     }
 
@@ -65,6 +66,7 @@ enum MacSearchKind: String, CaseIterable, Identifiable, Sendable {
         case .person:   return "person"
         case .place:    return "mappin.and.ellipse"
         case .endeavor: return "flag"
+        case .task:     return "checklist"
         }
     }
 }
@@ -99,6 +101,14 @@ enum MacSearchDestination: Hashable, Sendable {
     case place(String)
     /// Endeavor slug — the frontmatter `id:`, never the filename.
     case endeavor(String)
+    /// A reminder's `calendarItemIdentifier`. The Tasks screen finds which pool
+    /// holds it and opens the card there — see `TraceMacTasksView`'s deep link.
+    ///
+    /// A real route, not a hopeful one. The rule at the top of this enum is that
+    /// every case here goes somewhere that exists, and a task id would have been
+    /// the easiest place in the file to break it: `.preview` was available and
+    /// would have compiled, and a task has almost nothing to preview.
+    case task(String)
     /// Container-relative path to the *binary*, not the sidecar.
     case document(String)
     /// No screen shows this record. Expand it in the panel instead.
@@ -308,6 +318,19 @@ enum MacSearchEngine {
     /// rule spec §3 sets for the token budget.
     static let groupLimit = 5
 
+    /// Short and human. A search row is scanned, not read, so "Tomorrow" beats
+    /// a date nobody has to parse.
+    nonisolated static func taskDateLabel(_ day: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(day) { return "Today" }
+        if cal.isDateInTomorrow(day) { return "Tomorrow" }
+        if cal.isDateInYesterday(day) { return "Yesterday" }
+        let f = DateFormatter()
+        f.dateFormat = cal.isDate(day, equalTo: Date(), toGranularity: .year)
+            ? "EEE d MMM" : "d MMM yyyy"
+        return f.string(from: day)
+    }
+
     static func terms(in query: String) -> [String] {
         query.lowercased()
             .split(whereSeparator: { $0.isWhitespace })
@@ -336,7 +359,8 @@ enum MacSearchEngine {
                     corpus: MacSearchCorpus,
                     documents: [TraceMacDocument],
                     people: [Person],
-                    places: [Place]) -> [MacSearchResult] {
+                    places: [Place],
+                    tasks: [ThingsTask] = []) -> [MacSearchResult] {
 
         // `Self.` is load-bearing: a local named `terms` shadows the static
         // `terms(in:)` from the point of its own declaration, so the unqualified
@@ -411,6 +435,39 @@ enum MacSearchEngine {
                 previewPath: note?.relativePath,
                 score: hit.score,
                 sortDate: place.lastVisited))
+        }
+
+        // ── Tasks ─────────────────────────────────────────────────────────
+        //
+        // Open tasks only: `allTasks` is the incomplete set, so nothing here
+        // resurrects something finished. A completed task IS findable, but in
+        // the Logbook, which is the screen that admits it is looking backwards.
+        //
+        // The body searched is the note's PROSE, not the raw notes field. A
+        // task whose note is a `shortcuts://` URL should not match the word
+        // "shortcuts", and one whose note is a `[[wikilink]]` should be found by
+        // the linked name — which it is, because the person or place row carries
+        // that name already. Same test the row's note mark uses, so "this task
+        // has a note" and "this task matched on its note" can never disagree.
+        for task in tasks {
+            guard let hit = match(terms: terms, phrase: phrase,
+                                  title: task.title,
+                                  tags: [],
+                                  meta: [task.list].compactMap { $0 },
+                                  body: task.noteProse) else { continue }
+            out.append(MacSearchResult(
+                id: "task:\(task.id)",
+                kind: .task,
+                title: task.title,
+                // The list, and the date when there is one — the two facts that
+                // tell you WHICH "call Bryan" this is.
+                subtitle: [task.list, task.date.map(Self.taskDateLabel)]
+                    .compactMap { $0 }.joined(separator: " · "),
+                snippet: hit.snippet,
+                destination: .task(task.id),
+                previewPath: nil,
+                score: hit.score,
+                sortDate: nil))
         }
 
         // ── Endeavors ─────────────────────────────────────────────────────

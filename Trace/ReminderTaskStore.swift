@@ -61,6 +61,26 @@ final class ReminderTaskStore {
     /// Reminders' one exposed structure).
     static let inboxListName = "Inbox"
 
+    /// **Lists that cannot hold a date** (D210, extended Session 80).
+    ///
+    /// Inbox means no decision about WHEN has been made; Someday means the
+    /// decision was NOT NOW. A due date is a when-decision, so a task in either
+    /// list holding one asserts two contradictory things and lands in no pool
+    /// at all — it shows on Today wearing an INBOX label and appears in neither
+    /// the Inbox tab nor Someday.
+    ///
+    /// One definition because this is now enforced in FOUR places —
+    /// `update(taskID:)`, `moveToSomeday`, `uncomplete` and `addTask` — and
+    /// four copies of a predicate is three chances to change one and miss the
+    /// others. Every path that can write a reminder checks it, including the
+    /// ones that write `EKReminder` directly and never pass through `update`.
+    /// That is what it takes for an invariant to actually hold: not a rule the
+    /// callers follow, a rule none of them can break.
+    static func listRefusesDates(_ name: String?) -> Bool {
+        guard let name else { return false }
+        return name == inboxListName || name == somedayListName
+    }
+
     // MARK: - Published state (ThingsService-shaped)
 
     var tasks: [ThingsTask] = []
@@ -208,6 +228,38 @@ final class ReminderTaskStore {
         return reminders.map(Self.task(from:)).sorted(by: Self.order)
     }
 
+    /// Completed reminders across a RANGE — the Logbook (Session 80).
+    ///
+    /// **The window is the API, not a simplification.** EventKit's
+    /// `predicateForCompletedReminders` demands both ends; there is no "show me
+    /// everything I have ever finished". So the Logbook is necessarily a
+    /// window, and the only real decision is how wide.
+    ///
+    /// 90 days, because the two things a logbook is actually for both live
+    /// inside it: proving to yourself you did something recently, and undoing a
+    /// tick you did not mean. Neither is a question anyone asks about last
+    /// spring, and a year of completed reminders is a slow query for rows
+    /// nobody reads.
+    ///
+    /// Separate from `fetchIncomplete`'s single predicate because completed
+    /// reminders are outside it by definition — same reason `fetchCompleted(on:)`
+    /// is separate, and that one stays: the Today card's "n done" foot wants
+    /// exactly one day and should not pay for ninety.
+    func fetchCompleted(from start: Date, to end: Date) async -> [ThingsTask] {
+        guard await ensureAccess() else { return [] }
+        let predicate = store.predicateForCompletedReminders(
+            withCompletionDateStarting: start, ending: end, calendars: nil)
+        let reminders: [EKReminder] = await withCheckedContinuation { cont in
+            store.fetchReminders(matching: predicate) { cont.resume(returning: $0 ?? []) }
+        }
+        // Most recently finished first. `order(_:_:)` sorts by DUE date, which
+        // is the wrong axis here: a logbook is a record of when you did things,
+        // not of when they were meant to happen.
+        return reminders
+            .map(Self.task(from:))
+            .sorted { ($0.completedDateString ?? "") > ($1.completedDateString ?? "") }
+    }
+
     /// Deletes a reminder outright — the Inbox's Delete choice (asks
     /// nothing, David's locked call in the task UI design). Distinct from
     /// `complete`: nothing lands in Reminders' Completed.
@@ -231,6 +283,27 @@ final class ReminderTaskStore {
         guard await ensureAccess(),
               let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder else { return false }
         reminder.isCompleted = false
+        // **The path D210 missed.** David: "i went to logbook again and
+        // unchecked a task called pick up meds which was scheduled today
+        // originally. it landed in today again so not in the inbox."
+        //
+        // It was an Inbox task carrying a date — a record created before the
+        // rule existed. `uncomplete` writes the reminder directly and never
+        // passes through `update(taskID:)`, so the stale date came back with
+        // it and the task returned to being in no pool.
+        //
+        // Enforcing here also repairs legacy records at the moment they become
+        // visible again, which is the only moment anyone would notice them. A
+        // migration pass would be the alternative and is not worth it: the set
+        // is small, and a reopen is exactly when the question "where does this
+        // belong now" is being asked anyway.
+        //
+        // Deliberately narrow: reopening a PERSONAL task dated Friday keeps
+        // Friday. Only the two lists that refuse dates shed them.
+        if Self.listRefusesDates(reminder.calendar?.title) {
+            reminder.dueDateComponents = nil
+            reminder.alarms = nil
+        }
         do {
             try store.save(reminder, commit: true)
             await fetch()
@@ -242,8 +315,19 @@ final class ReminderTaskStore {
     }
 
     @discardableResult
+    /// `remindAt` (Session 80): capture can now carry a time. "Call the Wrigley
+    /// office tomorrow at 3pm" parses to a due DAY plus an alarm, and until now
+    /// there was no way to set the second one at creation — you had to add the
+    /// task and then open it, which is exactly the friction natural-language
+    /// capture exists to remove.
+    ///
+    /// Additive with a default, so every existing call site is unchanged. The
+    /// same-day rule matches `update(taskID:)`: an alarm on the due day puts
+    /// the time ON the due date (Reminders then shows "Tuesday 3:00 PM"), while
+    /// a lead-time alarm leaves the due date day-only.
     func addTask(title: String, toToday: Bool = false, date: Date? = nil,
-                 list: String? = nil, notes: String? = nil) async -> Bool {
+                 list: String? = nil, notes: String? = nil,
+                 remindAt: Date? = nil) async -> Bool {
         guard await ensureAccess() else { return false }
         let reminder = EKReminder(eventStore: store)
         reminder.title = title
@@ -255,8 +339,22 @@ final class ReminderTaskStore {
                 ? ensureList(named: name)
                 : calendar(named: name)
         } ?? personalList()
-        let due = toToday ? Calendar.current.startOfDay(for: Date()) : date
-        if let due { reminder.dueDateComponents = Self.components(due) }
+        // Capture can name both a list and a date — the composer has a list
+        // menu and the parser reads "friday" off the end of the line — so this
+        // is the fourth path that could mint an incoherent record.
+        let refuses = Self.listRefusesDates(reminder.calendar?.title)
+        let due = refuses ? nil : (toToday ? Calendar.current.startOfDay(for: Date()) : date)
+        let remindAt = refuses ? nil : remindAt
+        if let due {
+            let cal = Calendar.current
+            if let remindAt, cal.isDate(remindAt, inSameDayAs: due) {
+                reminder.dueDateComponents = cal.dateComponents(
+                    [.year, .month, .day, .hour, .minute], from: remindAt)
+            } else {
+                reminder.dueDateComponents = Self.components(due)
+            }
+            if let remindAt { reminder.alarms = [EKAlarm(absoluteDate: remindAt)] }
+        }
         do {
             try store.save(reminder, commit: true)
             await fetch()
@@ -286,6 +384,27 @@ final class ReminderTaskStore {
         guard await ensureAccess(),
               let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder else { return false }
         reminder.title = title
+        // **Inbox and Someday cannot hold a date, whatever the caller passed.**
+        //
+        // Session 80. David reopened a completed task, it landed on Today
+        // because it still carried an old date, he moved it to Inbox to
+        // re-triage it — and it vanished. It was still on Today and NOT in the
+        // Inbox tab, because that tab is `date == nil && list == Inbox`.
+        //
+        // The tab filter was not the bug. The bug is that a task was allowed to
+        // hold two contradictory statements at once: "Inbox" means no decision
+        // about WHEN has been made (D158), "Someday" means the decision was NOT
+        // NOW, and a due date is a when-decision. A record that says both is
+        // incoherent, and the incoherence surfaced as a task that existed in
+        // neither place he looked.
+        //
+        // Enforced HERE rather than at the call sites, on the same principle as
+        // the placeholder filter in `CalendarService`: three call sites across
+        // two apps already move tasks between lists, and a rule that each one
+        // has to remember is a rule that gets forgotten by the fourth.
+        let destinationRefusesDates = Self.listRefusesDates(list)
+        let clearDate = clearDate || destinationRefusesDates
+        let date = destinationRefusesDates ? nil : date
         if clearDate {
             reminder.dueDateComponents = nil
             reminder.alarms = nil
@@ -508,6 +627,12 @@ final class ReminderTaskStore {
               let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder,
               let list = ensureList(named: Self.somedayListName) else { return false }
         reminder.calendar = list
+        // Someday means "not now", so it sheds the date and any alarm with it.
+        // Same invariant `update(taskID:)` enforces; stated in both places
+        // because this method writes the reminder directly and never goes
+        // through it.
+        reminder.dueDateComponents = nil
+        reminder.alarms = nil
         do {
             try store.save(reminder, commit: true)
             await fetch()
@@ -596,7 +721,8 @@ final class ReminderTaskStore {
                           notes: r.notes,
                           repeats: r.hasRecurrenceRules,
                           createdDateString: r.creationDate.map { dayFormatter.string(from: $0) },
-                          alarmTimeString: alarmString)
+                          alarmTimeString: alarmString,
+                          completedDateString: r.completionDate.map { dayFormatter.string(from: $0) })
     }
 
     /// Dated before undated, earlier first, then title. Reminders' own order

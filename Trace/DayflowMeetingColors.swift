@@ -90,7 +90,15 @@ enum DayflowMeetingColor {
                                "hiring", "onboarding", "recruiting", "hr", "candidate"]
     private static let blueKeywords = ["forecast", "3+9", "6+6", "9+3", "12+0"]
     private static let mintKeywords = ["treasury", "finance leadership", "cash", "banking"]
-    private static let yellowKeywords = ["catch up", "catch-up", "1:1", "1 on 1"]
+    // "weekly connect" added Session 80 (2026-08-31), doc first as always —
+    // see Color-Key-Time-Block-Plan.md, which now describes Yellow as
+    // "Catch-up / 1:1 / standing team time". David's Global Support Finance
+    // Weekly Connect is the recurring hour with the people who report to him,
+    // which belongs with the recurring hour with one of them rather than in
+    // the unclassified grey of a project meeting. The specific phrase, not the
+    // bare word "connect", which would catch far too much.
+    private static let yellowKeywords = ["catch up", "catch-up", "1:1", "1 on 1",
+                                         "weekly connect"]
     private static let orangeKeywords = ["commute", "drive", "uber", "flight", "airport",
                                  "train", "transit"]
 

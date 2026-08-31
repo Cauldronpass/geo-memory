@@ -30,6 +30,15 @@ struct ThingsTask: Identifiable, Codable {
     /// task rows (Session 77, the When card's REMIND toggle). Defaulted and
     /// NOT in CodingKeys, same reasoning as `repeats`.
     var alarmTimeString: String? = nil
+    /// The reminder's `completionDate` as "yyyy-MM-dd" — the Logbook groups by
+    /// it (Session 80). Defaulted and NOT in CodingKeys, same reasoning as
+    /// `repeats` and `alarmTimeString` above: the legacy Things-bridge decode
+    /// paths and the UserDefaults response cache are untouched, and only
+    /// `ReminderTaskStore.task(from:)` ever sets it.
+    ///
+    /// Nil for everything that is not completed, which is nearly every task the
+    /// app handles — a Logbook row is the exception, not the rule.
+    var completedDateString: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id = "uuid"
@@ -61,6 +70,47 @@ struct ThingsTask: Identifiable, Codable {
         guard let s = createdDateString, !s.isEmpty else { return nil }
         return Self.dateFormatter.date(from: s)
     }
+}
+
+// MARK: - What a note actually contains
+
+/// Session 80. David: "the tasks on the screen of the app that have notes have
+/// no indication of that fact. This is true for IOS as well."
+///
+/// **Shared, and shared for a specific reason.** The Mac already had this test
+/// living privately inside `MacTaskRow`, and the iOS rows had nothing. Fixing
+/// the Mac alone would have left two apps disagreeing about what "has a note"
+/// means, which is the same shape as the markdown-renderer drift this project
+/// has already paid for once. The test belongs to the MODEL, not to a row.
+extension ThingsTask {
+
+    /// The scheme match is CASE-INSENSITIVE, and that is not defensiveness:
+    /// David's own note reads `Shortcuts://run-shortcut?name=monarch` with a
+    /// capital S, which is perfectly legal (RFC 3986) and which the first
+    /// version of this silently missed.
+    static let shortcutScheme = "shortcuts://"
+
+    static func isShortcutLine(_ text: any StringProtocol) -> Bool {
+        text.range(of: shortcutScheme, options: .caseInsensitive) != nil
+    }
+
+    /// The note with its machinery removed: `[[link]]` lines, which are drawn
+    /// as chips, and the Shortcuts URL, which is drawn as a bolt.
+    ///
+    /// This is what "has a note" has to mean. A task whose entire note is a
+    /// shortcut URL is already fully represented by its bolt, and marking it as
+    /// having a note too would make the mark mean "this row has SOMETHING" —
+    /// a mark you learn to stop reading.
+    var noteProse: String {
+        guard let notes else { return "" }
+        return notes.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("[[") }
+            .filter { !ThingsTask.isShortcutLine($0) }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var hasNoteProse: Bool { !noteProse.isEmpty }
 }
 
 private struct ThingsResponse: Decodable {

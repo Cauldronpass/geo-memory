@@ -278,3 +278,19 @@ final class MacSearchTrigger {
     var pending = false
     private init() {}
 }
+
+/// ⌘N, on its way from the menu to the window.
+///
+/// Same consume-and-clear shape as `MacSearchTrigger` above and for the same
+/// reason: `Commands` are declared on the `App`, the composer's state lives in
+/// `TraceMacContentView`, and a menu item cannot reach into a view's `@State`.
+///
+/// A counter rather than a `Bool`: pressing ⌘N twice in a row should open the
+/// composer twice, and a Bool that is already `true` swallows the second press.
+@MainActor
+@Observable
+final class MacComposeTrigger {
+    static let shared = MacComposeTrigger()
+    var requests = 0
+    private init() {}
+}

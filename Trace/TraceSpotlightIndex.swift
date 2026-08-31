@@ -63,6 +63,13 @@ enum TraceSpotlightIndex {
         case .place(let id):                return "place:\(id)"
         case .endeavor(let id):             return "endeavor:\(id)"
         case .document(let path):           return "document:\(path)"
+        // **Not indexed, deliberately.** Apple already puts every reminder in
+        // Spotlight. Adding ours would give one task two rows there, and the
+        // second one would route through this app to say what the first one
+        // already said. `nil` here means "findable in the app, not ours to
+        // publish", which is a different thing from `.preview`'s "nowhere to
+        // go" but takes the same value.
+        case .task:                         return nil
         case .preview:                      return nil
         }
     }

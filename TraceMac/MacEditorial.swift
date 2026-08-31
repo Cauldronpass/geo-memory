@@ -90,6 +90,24 @@ enum MacEditorialColor {
     /// The ONE accent. It means active, or acting, and nothing else. Never
     /// decoration, never a second colour to reach for.
     static let accent = Color.macDynamic(light: "C24D2A", dark: "D0603C")
+
+    /// Events from a calendar David has flagged as somebody else's (D193,
+    /// amended Session 80). The one colour in this app that does NOT name a
+    /// category of meeting — it names WHOSE meeting it is, and it replaces the
+    /// classifier's verdict entirely rather than sitting beside it.
+    ///
+    /// The first version of D193 drew these hollow, with a half-height track
+    /// block. David killed it for a better reason than the one that built it:
+    /// weight is a RELATIVE signal, and on a day whose events are all his
+    /// wife's there is nothing on screen to be relative to. Colour is absolute.
+    ///
+    /// Baby blue, with the risk named rather than hidden: the meeting-colour
+    /// system already owns a blue (`#6E9CE8`, forecast meetings — 3+9, 6+6,
+    /// 9+3, 12+0). This is deliberately PALER and cooler so that at 8pt it
+    /// reads as a different thing rather than a lighter version of the same
+    /// thing, and forecast meetings are rare enough that a confusion would be
+    /// uncommon and cheap. Every surface reads this token; change it here.
+    static let foreignEvent = Color.macDynamic(light: "8ECAE6", dark: "7CB6D2")
 }
 
 // MARK: - Type

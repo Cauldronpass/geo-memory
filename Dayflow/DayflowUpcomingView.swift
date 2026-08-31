@@ -475,6 +475,13 @@ struct DayflowUpcomingView: View {
                 }
                 .foregroundStyle(Color.dayflowFaint)
             }
+            // See the note mark in DayflowTodaySection for why this reads
+            // `hasNoteProse` rather than `notes`.
+            if task.hasNoteProse {
+                Image(systemName: "text.alignleft")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.dayflowAccent)
+            }
             if task.repeats && !isTraceYearly {
                 Image(systemName: "repeat")
                     .font(.system(size: 10, weight: .semibold))
