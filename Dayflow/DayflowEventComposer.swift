@@ -171,6 +171,38 @@ struct DayflowEventComposer: View {
             .strokeBorder(Color.dayflowHairline, lineWidth: 1))
     }
 
+    /// The month grid. Rebuilt Session 82 (D245) after David paged to
+    /// September 2026 and found the 1st to the 4th simply gone: the row read
+    /// five blanks, then Saturday the 5th.
+    ///
+    /// **The month maths was never wrong.** September 1st 2026 is a Tuesday,
+    /// `lead` computes 1, and every other grid in this project renders it
+    /// correctly. What was wrong was the grid's SHAPE. It used to be two
+    /// sibling `ForEach`es inside one `LazyVGrid`:
+    ///
+    ///     ForEach(0..<lead, id: \.self)      { ... }   // the blanks
+    ///     ForEach(1...dayCount, id: \.self)  { ... }   // the days
+    ///
+    /// Two defects, either of which is enough on its own.
+    ///
+    ///   * `ForEach(0..<lead)` iterates a range that CHANGES when you page the
+    ///     month. SwiftUI documents that form as being for constant data only;
+    ///     it does not re-read the count, so the blanks stayed at August's
+    ///     five.
+    ///   * Both `ForEach`es key on `Int`, and a `LazyVGrid` flattens its
+    ///     children into ONE identity space. Blanks own ids 0..<lead and days
+    ///     own 1...dayCount, so 1, 2, 3 and 4 belonged to two views at once.
+    ///     Duplicate identity is undefined, and what it did here was give the
+    ///     ids to the blanks and drop the days.
+    ///
+    /// Five stale blanks plus four days eaten by the collision is exactly the
+    /// screenshot: nothing until Saturday the 5th.
+    ///
+    /// The fix is not arithmetic, it is one array and one `ForEach` keyed on
+    /// position — which is what `DayflowMonthGridView`, `DayflowMonthUnfold`,
+    /// `TraceMacCalendarPanel` and the journal's grid all already do. This was
+    /// the only grid in the project that built its cells any other way, and it
+    /// was the only one with this bug.
     private var monthGrid: some View {
         let cal = Calendar.current
         let monthStart = cal.date(from: cal.dateComponents([.year, .month], from: displayedMonth)) ?? displayedMonth
@@ -178,6 +210,11 @@ struct DayflowEventComposer: View {
         // Monday-first leading blanks.
         let weekday = cal.component(.weekday, from: monthStart) // 1 = Sunday
         let lead = (weekday + 5) % 7
+        // ONE flat array, `nil` for the leading blanks — the shape
+        // DayflowMonthGridView has always used, and the shape this grid should
+        // have used. See the note above this property (D245).
+        var cells: [Int?] = Array(repeating: nil, count: lead)
+        cells.append(contentsOf: (1...dayCount).map { Optional($0) })
         let monthName: String = {
             let f = DateFormatter(); f.dateFormat = "MMMM yyyy"
             return f.string(from: monthStart).uppercased()
@@ -213,9 +250,12 @@ struct DayflowEventComposer: View {
                         .font(.system(size: 10))
                         .foregroundStyle(Color.dayflowFaint)
                 }
-                ForEach(0..<lead, id: \.self) { _ in Color.clear.frame(height: 40) }
-                ForEach(1...dayCount, id: \.self) { day in
-                    dayCell(day, monthStart: monthStart)
+                ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
+                    if let cell {
+                        dayCell(cell, monthStart: monthStart)
+                    } else {
+                        Color.clear.frame(height: 40)
+                    }
                 }
             }
         }

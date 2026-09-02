@@ -45,16 +45,49 @@ struct MacMeetingRow: View {
     @Environment(NotionService.self) private var notion
     @State private var picking = false
     /// Bumped when a link is made, so the WHERE row re-reads it. `PlaceLink`
-    /// stores in `UserDefaults`, which SwiftUI does not observe.
+    /// stores in `NSUbiquitousKeyValueStore` (D241, was `UserDefaults`), which
+    /// SwiftUI does not observe.
     @State private var linkToken = 0
     /// When YOUR next meeting starts after this one ends — nil if this is the
     /// last of your day. Passed in because the answer depends on the whole day
     /// and a row cannot see the day.
     var nextOwnStart: Date? = nil
 
+    // MARK: The agenda's four (D246)
+    //
+    // All four REQUIRED, unlike `onOpenPlace` above, and that is deliberate.
+    // Session 80 lost six bugs to one shape — behaviour attached to the paths
+    // that reach a thing rather than to the thing itself — and one of the six
+    // was a defaulted closure nobody passed. A required parameter makes the
+    // COMPILER do the call-site sweep. There are exactly two screens that build
+    // a meeting row, so the cost of requiring them is two lines.
+
+    /// Opens a daily or project note by container-relative path — the agenda's
+    /// note rows.
+    let onOpenNote: (String) -> Void
+    /// The SCREEN's open task card, shared with its TO DO list rather than a
+    /// second one of the agenda's own. Today's rule is at most one card open at
+    /// a time, so opening a second closes the first; a task opened from an
+    /// agenda is the same task, and two open-card universes would break that
+    /// promise the first time one task appeared in both places.
+    let agendaOpenTaskID: String?
+    let onToggleAgendaTask: (ThingsTask) -> Void
+    let onAgendaChanged: () -> Void
+
+    /// Unfolded or not. Local `@State`, where iOS keeps a `Set` on the screen:
+    /// the row's identity inside its `ForEach` is the event id, so this survives
+    /// the host's reloads on its own.
+    @State private var agendaExpanded = false
+    /// Wikilink mentions, fetched once on first unfold. `nil` means NOT LOADED,
+    /// which is exactly what `DayflowAgendaMatch.displayNotes` expects as its
+    /// cache argument — it is not the same thing as "loaded and empty".
+    @State private var agendaMentions: [NoteMention]? = nil
+    @State private var agendaHovering = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if isOpen { card } else { collapsed }
+            agenda
         }
     }
 
@@ -147,6 +180,138 @@ struct MacMeetingRow: View {
         .frame(height: 32)
         .contentShape(Rectangle())
         .onTapGesture { onToggle() }
+    }
+
+    // MARK: - AGENDA (D171-D176, on the Mac at last — D246)
+    //
+    // Option A of three, David's pick. The line lives UNDER the row with its own
+    // fold, so the count is visible while you scan the day and the contents are
+    // one click away without opening the meeting's briefing card. B (agenda as a
+    // section inside the card) and C (count outside, contents inside) both lost
+    // for the same reason: D171 says this screen is the prep sheet, and a prep
+    // sheet you have to open a card to read is a filing cabinet.
+    //
+    // **It lives on the ROW, not on Today.** Today and Upcoming both draw this
+    // type, so putting the agenda here is the same argument the iOS matcher's
+    // own header makes ("extracted so the two can never drift"), one level up.
+    // Building it on Today and porting it to Upcoming afterwards is how the
+    // `rehab` filter got missed three times.
+    //
+    // Draw-time, like the phone: nothing cached, nothing written to the event.
+    // The note check is a `FileManager.fileExists` per meeting per redraw, which
+    // is what iOS has done since Session 78.
+
+    /// The matched person or place, or the meeting's own title when nothing
+    /// matches (D175 round two — the Brewers game still gets an agenda).
+    private var agendaAnchor: String {
+        DayflowAgendaMatch.agendaAnchor(forTitle: event.title)
+    }
+
+    @ViewBuilder
+    private var agenda: some View {
+        let anchor: String = agendaAnchor
+        let tasks: [ThingsTask] = DayflowAgendaMatch.tasks(linkedTo: anchor)
+        let notePath: String? = DayflowAgendaMatch.meetingNotePath(forTitle: event.title)
+        // D176: the running note IS agenda by existence, so a task-less meeting
+        // that has one still earns the line. Sarah's catch-up is the case.
+        let count: Int = tasks.count + (notePath == nil ? 0 : 1)
+        if count > 0 {
+            agendaFold(count: count)
+            if agendaExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(tasks) { task in
+                        MacTaskRow(task: task,
+                                   isOpen: agendaOpenTaskID == task.id,
+                                   onToggle: { onToggleAgendaTask(task) },
+                                   onChanged: onAgendaChanged,
+                                   // Neither the day nor the list is implied
+                                   // here: an agenda mixes lists and mixes dated
+                                   // with undated, exactly like a document's
+                                   // band. Same answer, same reason.
+                                   trailing: .dateElseList)
+                    }
+                    agendaNoteRows
+                }
+                .padding(.leading, 28)
+                .task { loadAgendaMentions(anchor) }
+            }
+        }
+    }
+
+    private func agendaFold(count: Int) -> some View {
+        let glyph: String = agendaExpanded ? "chevron.up" : "chevron.down"
+        // Quiet by default, a step darker under the pointer. Session 80, David
+        // on the month grid's hover: a control that answers the pointer says it
+        // is a control before you commit to clicking it, and everything in this
+        // design is too quiet to say so any other way.
+        let tint: Color = agendaHovering ? MacEditorialColor.muted : MacEditorialColor.faint
+        return Button {
+            withAnimation(.easeInOut(duration: 0.16)) { agendaExpanded.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                // Clears the clock column (66) plus the row's spacing (10), so
+                // AGENDA starts under the colour chip and not under the time.
+                Spacer().frame(width: 76)
+                Text("Agenda \u{00B7} \(count)")
+                    .editorialQuietLabel()
+                    .foregroundStyle(tint)
+                Image(systemName: glyph)
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(tint)
+                Spacer(minLength: 0)
+            }
+            .frame(height: 20)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { agendaHovering = $0 }
+    }
+
+    /// Notes under the tasks, with their own glyph. The meeting's own running
+    /// note rides first (D176); the rest are wikilink mentions of the anchor.
+    @ViewBuilder
+    private var agendaNoteRows: some View {
+        let mentions: [NoteMention] = DayflowAgendaMatch.displayNotes(cached: agendaMentions,
+                                                                     forTitle: event.title)
+        ForEach(mentions.prefix(4)) { mention in
+            agendaNoteRow(mention)
+        }
+    }
+
+    private func agendaNoteRow(_ mention: NoteMention) -> some View {
+        // Calendar/ and Notes/Projects/ are the only two folders the Mac's note
+        // screen can route (see MacSearchDestination.dailyOrProjectNote). A row
+        // outside them still SHOWS — it is real context — but it does not
+        // pretend to be a link.
+        let openable: Bool = mention.relativePath.hasPrefix("Calendar/")
+            || mention.relativePath.hasPrefix("Notes/Projects/")
+        let tint: Color = openable ? MacEditorialColor.noteText : MacEditorialColor.faint
+        return Button {
+            guard openable else { return }
+            onOpenNote(mention.relativePath)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MacEditorialColor.faint)
+                    .frame(width: 18)
+                Text(mention.title)
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .frame(height: 26)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Same lazy once-per-unfold shape as iOS: the scan is a regex over every
+    /// note, so it is not something to run on a redraw.
+    private func loadAgendaMentions(_ anchor: String) {
+        guard agendaMentions == nil else { return }
+        Task { agendaMentions = NoteStore.shared.findWikilinkMentions(of: anchor) }
     }
 
     // MARK: - Expanded

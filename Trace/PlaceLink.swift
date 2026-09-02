@@ -1,10 +1,11 @@
 // PlaceLink.swift
 // Ties a meeting's WHERE text to a record in Places.
 // (Renamed from MacPlaceLink.swift, Session 81, D241 — the store went to
-// iCloud, so it stopped being Mac anything. The file still lives in
-// TraceMac/ because only the Mac reads it today; it moves to Trace/ with a
-// membershipExceptions entry at the next Xcode-closed window, when the iOS
-// picker is built.)
+// iCloud, so it stopped being Mac anything. Moved from TraceMac/ to Trace/ in
+// Session 82, D244, with membershipExceptions for TraceMac and Dayflow, so
+// the iOS WHERE picker has a store to read the moment it is built. Trace/ is
+// native to the Trace target, so the Trace app compiles this file as well; it
+// never calls it, and `Place` is the only type it needs.)
 //
 // Session 80 (2026-08-31). David: "it could have a button that i would press
 // whenever a Where is filled in. when we press it it would look up the places in

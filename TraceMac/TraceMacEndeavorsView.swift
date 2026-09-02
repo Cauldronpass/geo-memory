@@ -1658,6 +1658,9 @@ struct MacEndeavorSheet: View {
     let onSave: (Endeavor?, String, String, Date?, Date?, String, EndeavorStatus?, Bool) async -> Void
     /// Only offered when editing. Nil hides the button entirely.
     var onDelete: ((Endeavor) async -> Void)? = nil
+    /// A name typed somewhere else, carried in (D249's + rail). Only consulted
+    /// when creating; an edit seeds from `existing` as it always has.
+    var seedName: String = ""
 
     @Environment(\.dismiss) private var dismiss
 
@@ -1752,7 +1755,11 @@ struct MacEndeavorSheet: View {
             // Seeded once, not bound: an edit to a field must survive the next
             // re-render, and `.task` re-runs on identity change rather than on
             // every body evaluation.
-            guard !seeded, let e = existing else { seeded = true; return }
+            guard !seeded, let e = existing else {
+                seeded = true
+                if name.isEmpty { name = seedName }
+                return
+            }
             seeded      = true
             name        = e.name
             type        = types.contains(e.type) ? e.type : types[0]

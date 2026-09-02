@@ -2681,10 +2681,10 @@ struct MacProjectHubSidebar: View {
     @Environment(NoteStore.self) private var noteStore
     /// **The environment instance, NOT `NotionService.shared`.**
     ///
-    /// `TraceMacApp` does `@State private var notionService = NotionService()` and
-    /// injects that. `.shared` is a second, separate object on this target that
-    /// nothing ever fetches into, so reading `.shared.people` returns an empty
-    /// array forever — which is exactly what happened: `[[Megan Weiss]]` was in
+    /// `TraceMacApp` USED TO DO `@State private var notionService = NotionService()`
+    /// and inject that, which made `.shared` a second, separate object on this
+    /// target that nothing ever fetched into, so reading `.shared.people`
+    /// returned an empty array forever — which is exactly what happened: `[[Megan Weiss]]` was in
     /// the note, Megan Weiss was in Notion, and the People section stayed empty
     /// because it was asking the wrong object.
     ///
@@ -2692,6 +2692,15 @@ struct MacProjectHubSidebar: View {
     /// out to have the environment (the sheet already declares its own
     /// `@Environment(NotionService.self)`), so the risk was imaginary and the
     /// workaround was the bug. **Check which instance the app actually uses.**
+    ///
+    /// **Session 82 (D248): the two instances are now one.** `TraceMacApp` takes
+    /// `NotionService.shared`, so this read and `.shared` reach the same object
+    /// and either would work. This stays as the environment read because it is
+    /// the honest expression of the dependency — but note that the rule this
+    /// comment taught ("use the environment, not `.shared`") is NOT universally
+    /// safe on this target: several sections, the Tasks screen among them, are
+    /// built without `.environment(notionService)`, so a view that can appear
+    /// there must not declare `@Environment(NotionService.self)`.
     @Environment(NotionService.self) private var notionService
 
     @State private var linkedDocs: [TraceMacDocument] = []

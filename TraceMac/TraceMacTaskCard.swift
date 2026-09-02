@@ -108,6 +108,8 @@ struct MacTaskRow: View {
     /// cannot write them a second time. Reset in `onAppear`.
     @State private var exitCommitted: Bool = false
     @State private var pickingDocs: Bool = false
+    @State private var pickingPerson: Bool = false
+    @State private var pickingPlace: Bool = false
     /// Resolves linked paths to titles and icons. Built lazily and only when a
     /// link exists, so a card with no documents pays nothing — this row is
     /// drawn dozens at a time.
@@ -469,6 +471,16 @@ struct MacTaskRow: View {
             }
             .environment(noteStore)
         }
+        .sheet(isPresented: $pickingPerson) {
+            MacRecordLinkPicker(kind: .person, linked: linkedNames) { name in
+                toggleWikilink(name)
+            }
+        }
+        .sheet(isPresented: $pickingPlace) {
+            MacRecordLinkPicker(kind: .place, linked: linkedNames) { name in
+                toggleWikilink(name)
+            }
+        }
     }
 
     private func loadDocsIfNeeded() async {
@@ -606,8 +618,12 @@ struct MacTaskRow: View {
             }
             if !linkedNames.isEmpty {
                 MacEditorialRule.hair
+                // A column, and the same column the Document row uses. Four
+                // chips each carrying an unlink cross do not fit across a task
+                // card, and two link rows that stack differently read as two
+                // unrelated features rather than one.
                 fieldRow("Linked") {
-                    HStack(spacing: 6) {
+                    VStack(alignment: .leading, spacing: 4) {
                         ForEach(linkedNames, id: \.self) { name in
                             linkChip(name)
                         }
@@ -670,25 +686,82 @@ struct MacTaskRow: View {
             content()
             Spacer(minLength: 0)
         }
-        .frame(height: 34)
+        // `minHeight`, not `height`. Every row but two holds one line and is
+        // unchanged by this. The Linked and Document rows hold a COLUMN of
+        // chips, and a fixed 34 clipped the second one onto its neighbour the
+        // moment a task linked two documents — a latent bug, found while making
+        // the two rows match rather than by anybody hitting it.
+        .frame(minHeight: 34)
     }
 
+    /// A person or place the task names, from a `[[wikilink]]` in its notes.
+    ///
+    /// **Three states, where there were two.** `isPlace(name) ? mappin : person`
+    /// meant a name matching NOTHING wore a person glyph and read as a contact.
+    /// That case is not exotic, it is the normal shape of an agenda anchor:
+    /// D175 round two files a task against the MEETING'S OWN TITLE when the
+    /// title matches nobody, so `[[Brewers @Cubs]]` was being drawn as a person.
     private func linkChip(_ name: String) -> some View {
-        let glyph: String = isPlace(name) ? "mappin.and.ellipse" : "person"
-        return HStack(spacing: 5) {
-            Image(systemName: glyph)
-                .font(.system(size: 9))
-            Text(name)
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(1.0)
+        let record: LinkedRecord = resolve(name)
+        let glyph: String
+        let tint: Color
+        let help: String
+        let open: (() -> Void)?
+        switch record {
+        case .person(let id):
+            glyph = "person"
+            tint = MacEditorialColor.accent
+            help = "Open in Directory"
+            open = { openRecord(type: "person", id: id) }
+        case .place(let id):
+            glyph = "mappin.and.ellipse"
+            tint = MacEditorialColor.accent
+            help = "Open in Directory"
+            open = { openRecord(type: "place", id: id) }
+        case .unknown:
+            glyph = "tag"
+            tint = MacEditorialColor.faint
+            help = "Not in People or Places"
+            open = nil
         }
-        .foregroundStyle(MacEditorialColor.muted)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .overlay {
-            RoundedRectangle(cornerRadius: 3)
-                .strokeBorder(MacEditorialColor.hairline, lineWidth: 1)
+        return MacTaskLinkChip(glyph: glyph, tint: tint, label: name,
+                               dim: record.isUnknown, help: help,
+                               onOpen: open, onUnlink: { toggleWikilink(name) })
+    }
+
+    /// What a `[[Name]]` actually points at.
+    ///
+    /// **Person before place, deliberately**, which is the same precedence
+    /// `DayflowAgendaMatch.name(forTitle:)` uses when it matches a meeting. Two
+    /// records with one name is rare and a person is the likelier subject of a
+    /// task; more important is that both places answer it the same way, so a
+    /// chip can never disagree with the agenda that produced it.
+    private enum LinkedRecord {
+        case person(String)
+        case place(String)
+        case unknown
+        var isUnknown: Bool { if case .unknown = self { true } else { false } }
+    }
+
+    private func resolve(_ name: String) -> LinkedRecord {
+        if let person = NotionService.shared.people.first(where: { $0.name == name }) {
+            return .person(person.id)
         }
+        if let place = NotionService.shared.places.first(where: { $0.name == name }) {
+            return .place(place.id)
+        }
+        return .unknown
+    }
+
+    /// The notification, not a closure: `.navigateToRecord` is what the Photos
+    /// and Places sheets already post to reach a record without every
+    /// intervening view growing a parameter, and `TraceMacContentView` routes it
+    /// through `openSearchResult`, so the jump lands in the navigator's history
+    /// for free. One poster for all three kinds — the document chip had its own
+    /// copy of these three lines.
+    private func openRecord(type: String, id: String) {
+        NotificationCenter.default.post(name: .navigateToRecord, object: nil,
+                                        userInfo: ["type": type, "id": id])
     }
 
     /// A linked Satchel document.
@@ -701,52 +774,22 @@ struct MacTaskRow: View {
         let doc: TraceMacDocument? = docStore?.documents.first { $0.relativePath == path }
         let title: String = doc?.title ?? Self.filenameOf(path)
         let glyph: String = doc?.resolvedIcon.sfSymbol ?? "questionmark.square.dashed"
-        let tint: Color = doc.map { MacPalette.documentTint($0.resolvedTint) }
-            ?? MacEditorialColor.faint
         let missing: Bool = docStore != nil && doc == nil
-        return HStack(spacing: 6) {
-            Button {
-                // The notification, not a closure: `.navigateToRecord` is what
-                // the Photos and Places sheets already post to reach a record
-                // without every intervening view growing a parameter, and
-                // `TraceMacContentView` routes it through `openSearchResult`,
-                // so the jump lands in the navigator's history for free.
-                guard !missing else { return }
-                NotificationCenter.default.post(
-                    name: .navigateToRecord, object: nil,
-                    userInfo: ["type": "document", "id": path])
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: glyph)
-                        .font(.system(size: 9))
-                        .foregroundStyle(missing ? MacEditorialColor.faint : tint)
-                    Text(missing ? "\(title) (missing)" : title)
-                        .font(.system(size: 10, weight: .semibold))
-                        .tracking(1.0)
-                        .foregroundStyle(missing ? MacEditorialColor.faint
-                                                 : MacEditorialColor.muted)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 3)
-                        .strokeBorder(MacEditorialColor.hairline, lineWidth: 1)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(missing ? path : "Open in Documents")
-            Button { toggleDocument(path) } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(MacEditorialColor.faint)
-                    .frame(width: 14, height: 14)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Unlink")
-        }
+        // Hoisted, every one of them, per this file's own rule. The `onOpen`
+        // one is not style: `missing ? nil : { ... }` gives the type-checker a
+        // ternary between a bare `nil` and a closure literal with nothing to
+        // infer from, which is the shape that fails rather than merely slows.
+        let resolved: Color = doc.map { MacPalette.documentTint($0.resolvedTint) }
+            ?? MacEditorialColor.faint
+        let tint: Color = missing ? MacEditorialColor.faint : resolved
+        let label: String = missing ? "\(title) (missing)" : title
+        let hint: String = missing ? path : "Open in Documents"
+        let open: (() -> Void)? = missing
+            ? nil
+            : { openRecord(type: "document", id: path) }
+        return MacTaskLinkChip(glyph: glyph, tint: tint, label: label,
+                               dim: missing, help: hint,
+                               onOpen: open, onUnlink: { toggleDocument(path) })
     }
 
     /// The last path component, for a document the store cannot resolve. The
@@ -790,6 +833,78 @@ struct MacTaskRow: View {
         }
     }
 
+    /// Adds or removes one `[[Name]]` line, leaving every other line alone.
+    ///
+    /// Same shape as `toggleDocument`, and for the same reason: the store's only
+    /// write is the whole notes field, so this has to be lossless for
+    /// everything it does not own.
+    ///
+    /// **On its own line, not inside the prose.** `ThingsTask.isMachineryLine`
+    /// treats a line beginning `[[` as machinery, which is what hides it from
+    /// the note field (`noteProse`) and what makes `rebuiltNotes` carry it
+    /// through an edit of the prose. A wikilink written mid-sentence would draw
+    /// a chip just the same — `linkedNames` scans the whole string — and would
+    /// then sit visibly in the note field and be lost the first time he edited
+    /// around it.
+    private func toggleWikilink(_ name: String) {
+        let marker = "[[\(name)]]"
+        let existing = task.notes ?? ""
+        var lines = existing.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        if let at = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces) == marker
+        }) {
+            lines.remove(at: at)
+        } else if existing.contains(marker) {
+            // Written INSIDE a sentence — by hand, or on an older build. Unlink
+            // has to remove that one, not append a second copy on a new line:
+            // the chip he clicked came from this occurrence, and a cross that
+            // adds something is the worst possible answer to a click.
+            lines = lines.map { $0.replacingOccurrences(of: marker, with: "") }
+        } else {
+            // Appended, so a link never lands above the prose he wrote. Same
+            // placement the shortcut URL and the document marker get.
+            lines.append(marker)
+        }
+        let notes = lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            _ = await store.update(taskID: task.id, title: task.title, date: task.date,
+                                   clearDate: task.date == nil, list: task.list,
+                                   notes: notes)
+            onChanged()
+        }
+    }
+
+    /// The three things a task can point at, in one menu.
+    private var linkMenu: some View {
+        Menu {
+            Button { pickingPerson = true } label: {
+                Label("Person", systemImage: "person")
+            }
+            Button { pickingPlace = true } label: {
+                Label("Place", systemImage: "mappin.and.ellipse")
+            }
+            Button { pickingDocs = true } label: {
+                Label("Document", systemImage: "doc.text")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text("+ Link")
+                    .font(MacEditorialType.quietLabel)
+                    .textCase(.uppercase)
+                    .tracking(MacEditorialType.quietTracking)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+            }
+            .foregroundStyle(MacEditorialColor.faint)
+            .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
     /// Everything the task does NOT carry, in one faint line. Nothing here when
     /// the task carries all of it.
     @ViewBuilder
@@ -803,6 +918,14 @@ struct MacTaskRow: View {
                     // among eight is a menu with extra steps.
                     if offer == "Repeat" {
                         repeatMenu(label: "+ Repeat")
+                    } else if offer == "Link" {
+                        // Link is three different things now, so it is a menu
+                        // for the same reason Repeat is: a button that opens a
+                        // chooser to pick among three is a menu with extra
+                        // steps. Until Session 82 it was a button straight to
+                        // the document picker, which is why this card could
+                        // DRAW a person chip and never make one.
+                        linkMenu
                     } else {
                         Button { tapOffer(offer) } label: {
                             Text("+ \(offer)")
@@ -835,11 +958,9 @@ struct MacTaskRow: View {
         case "Remind":
             remindAt = defaultRemindTime
             pickingRemind = true
-        case "Link":
-            pickingDocs = true
         default:
-            // "Repeat" is a Menu and never arrives here. Anything else is a
-            // label someone added to `missingOffers` without an arm.
+            // "Repeat" and "Link" are Menus and never arrive here. Anything
+            // else is a label someone added to `missingOffers` without an arm.
             break
         }
     }
@@ -847,9 +968,11 @@ struct MacTaskRow: View {
     /// Only the offers that DO something.
     ///
     /// All five were listed here once and four were wired to nothing (D225).
-    /// Remind and Repeat came back a build later with their controls; Link is
-    /// still out, because it needs a decision about how a document link is
-    /// written into the notes, not just a button.
+    /// Remind and Repeat came back a build later with their controls. Link came
+    /// back in Session 80 wired to documents only — and this comment went on
+    /// saying it was "still out" for two more sessions, which is how nobody
+    /// noticed it had never learned people or places. It is a three-item menu
+    /// as of D247.
     ///
     /// **Remind and Repeat require a due date and are hidden without one.**
     /// `update(remindAt:)` only sets an alarm alongside a date, and
@@ -1166,6 +1289,8 @@ struct MacTaskRow: View {
     /// first and the card stays.
     private func escapePressed() {
         if pickingDocs { pickingDocs = false; return }
+        if pickingPerson { pickingPerson = false; return }
+        if pickingPlace { pickingPlace = false; return }
         if pickingRemind { pickingRemind = false; return }
         if pickingDay { pickingDay = false; return }
         closeCard()
@@ -1395,10 +1520,6 @@ struct MacTaskRow: View {
         NSWorkspace.shared.open(url)
     }
 
-    private func isPlace(_ name: String) -> Bool {
-        NotionService.shared.places.contains { $0.name == name }
-    }
-
     /// The note text with every `[[link]]` line and the shortcut URL removed —
     /// what the field shows, and what the row's note mark counts.
     ///
@@ -1424,5 +1545,97 @@ struct MacTaskRow: View {
         let body = prose.trimmingCharacters(in: .whitespacesAndNewlines)
         return body.isEmpty ? links.joined(separator: "\n")
                             : body + "\n" + links.joined(separator: "\n")
+    }
+}
+
+
+/// One chip, worn by everything a task points at: people, places, documents,
+/// and names that resolve to none of them.
+///
+/// **It exists because there were two copies carrying identical numbers** — 8/4
+/// padding, corner radius 3, 10pt semibold, tracking 1.0 — with nothing holding
+/// them together. `MacAvatar`'s header records what happens next: the same small
+/// thing rebuilt from memory a few weeks apart, ending up 28pt in one place and
+/// 30pt in another for no reason anybody could state. These two sit within a few
+/// pixels of each other on the same card, so a drift of two points would be
+/// visible rather than merely wrong.
+///
+/// What varies between the kinds is the GLYPH and its tint, and nothing else.
+/// That is the whole design: identical shape says "these are all things this
+/// task points at", and one small coloured mark says which kind. People and
+/// places take the accent because they are both Notion records that open in
+/// Directory; a document keeps its OWN tint, because a Satchel document has a
+/// colour identity of its own and borrowing the accent would throw it away.
+private struct MacTaskLinkChip: View {
+
+    let glyph: String
+    let tint: Color
+    let label: String
+    /// A chip that cannot be followed: a document the store cannot find, or a
+    /// name in no record. It still shows — it is real, he wrote it — but it is
+    /// not dressed as a link.
+    let dim: Bool
+    let help: String
+    /// `nil` when there is nowhere to go, and then this renders as plain text
+    /// rather than as a Button. **Not a disabled button, and not a button with
+    /// an empty action** — a control that accepts a click and swallows it is
+    /// the D225 bug this card has already paid for once.
+    let onOpen: (() -> Void)?
+    let onUnlink: () -> Void
+
+    @State private var hovering = false
+    @State private var crossHovering = false
+
+    var body: some View {
+        let edge: Color = hovering ? MacEditorialColor.accent.opacity(0.5)
+                                   : MacEditorialColor.hairline
+        let text: Color = dim ? MacEditorialColor.faint : MacEditorialColor.muted
+        let cross: Color = crossHovering ? MacEditorialColor.accent
+                                         : MacEditorialColor.hairline
+        return HStack(spacing: 5) {
+            if let onOpen {
+                Button(action: onOpen) { face(edge: edge, text: text) }
+                    .buttonStyle(.plain)
+                    .help(help)
+                    .onHover { hovering = $0 }
+            } else {
+                face(edge: MacEditorialColor.hairline, text: text)
+                    .help(help)
+            }
+            // Always present, never loud. Hiding it until hover would keep the
+            // card quieter and make unlinking a thing you have to already know
+            // about; at hairline weight it is legible only when you look at the
+            // chip, which is exactly when you would want it.
+            Button(action: onUnlink) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(cross)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Unlink")
+            .onHover { crossHovering = $0 }
+        }
+    }
+
+    private func face(edge: Color, text: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: glyph)
+                .font(.system(size: 9))
+                .foregroundStyle(tint)
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(1.0)
+                .foregroundStyle(text)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .overlay {
+            RoundedRectangle(cornerRadius: 3)
+                .strokeBorder(edge, lineWidth: 1)
+        }
+        .contentShape(Rectangle())
     }
 }

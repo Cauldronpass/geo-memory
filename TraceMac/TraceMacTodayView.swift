@@ -16,11 +16,12 @@
 //
 // ── What is NOT here yet, deliberately ───────────────────────────────────
 //
-//   * AGENDA lines under meetings (D171-D176). `DayflowAgendaMatch` lives
-//     inside the 1,400-line iOS `DayflowTodaySection.swift` and calls
-//     `DayflowMeetingActions.noteStem`, whose enum also carries Dayflow-only
-//     routing. Extracting it is a real refactor of a shared file and was not
-//     smuggled into this one.
+//   * AGENDA lines under meetings (D171-D176). No longer blocked: Session 82
+//     (D244) lifted `DayflowAgendaMatch` into `Trace/` and moved `noteStem`
+//     onto it, so this target can see the matcher. When the line is built it
+//     belongs on `MacMeetingRow`, not in this file — Today and Upcoming draw
+//     the same meeting row, and two agendas is the drift the iOS extraction
+//     note exists to prevent.
 //   * The month rail. `TraceMacCalendarPanel` exists and works, but it wears
 //     the old dress; putting it in an Editorial screen unrestyled would look
 //     exactly like what it would be.
@@ -49,6 +50,9 @@ struct TraceMacTodayView: View {
     /// (D223). Defaulted, so nothing that builds this view alone has to know
     /// about Directory.
     var onOpenPlace: (String) -> Void = { _ in }
+    /// Opens a daily or project note — the agenda's note rows (D246). REQUIRED,
+    /// not defaulted like `onOpenPlace`: see the note on `MacMeetingRow`'s four.
+    let onOpenNote: (String) -> Void
 
     @State private var events: [NextCalendarEvent] = []
     @State private var noteText: String = ""
@@ -638,7 +642,11 @@ struct TraceMacTodayView: View {
                               isOpen: openEventID == event.id,
                               onToggle: { toggle(event) },
                               onOpenPlace: onOpenPlace,
-                              nextOwnStart: nextOwnStart(after: event))
+                              nextOwnStart: nextOwnStart(after: event),
+                              onOpenNote: onOpenNote,
+                              agendaOpenTaskID: openTaskID,
+                              onToggleAgendaTask: { toggle($0) },
+                              onAgendaChanged: { refresh() })
             }
         }
         .padding(.top, 14)

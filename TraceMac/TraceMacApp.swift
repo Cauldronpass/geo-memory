@@ -10,7 +10,26 @@ struct TraceMacApp: App {
     /// Shared by key with the day note pane — see `MacNoteToolbarSetting`.
     @AppStorage(MacNoteToolbarSetting.key) private var showNoteToolbar = false
     @State private var noteStore = NoteStore.shared
-    @State private var notionService = NotionService()
+    /// **`NotionService.shared`, the same instance both iOS apps use.**
+    ///
+    /// This was `NotionService()` — a fresh object, unique to this target — from
+    /// the day the Mac app was written, and nobody ever recorded a reason.
+    /// `TraceApp` and `DayflowApp` both take `.shared`, so the Mac was the odd
+    /// one out, and the divergence had grown three separate workarounds:
+    /// `TraceMacContentView` configuring the quick panel by hand,
+    /// `MacQuickPanelController` explaining why it could not reach for the
+    /// singleton, and `TraceMacDocumentsView` documenting a live bug where
+    /// `.shared.people` was empty forever.
+    ///
+    /// **It was also a bug factory for shared code.** Files in `Trace/` are
+    /// compiled into this target and reach for `NotionService.shared` because on
+    /// iOS that IS the app's instance — `DayflowAgendaMatch` does, which is how
+    /// D246's agenda shipped unable to match a single person on the Mac hours
+    /// after D244 moved that matcher into the shared folder. Every future shared
+    /// file would have walked into the same hole.
+    ///
+    /// One instance, reachable both ways. Session 82, D248.
+    @State private var notionService = NotionService.shared
     @State private var selectedSection: MacSection? = .today
     /// Held here only so the Go menu can print the current shortcut in its
     /// title. Registration happens in `TraceMacContentView`'s launch task; the

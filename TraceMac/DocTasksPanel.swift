@@ -98,7 +98,14 @@ struct DocTasksPanel: View {
             MacTaskComposer(defaultDate: nil,
                             onAdded: { refresh() },
                             defaultList: ReminderTaskStore.inboxListName,
-                            extraNoteLines: [ThingsTask.documentMarkerPrefix + doc.relativePath])
+                            extraNoteLines: [ThingsTask.documentMarkerPrefix + doc.relativePath],
+                            // No rail here, deliberately. This + means "a task
+                            // ABOUT THIS DOCUMENT" — the seeded list and the
+                            // document marker are the whole point of it. A door
+                            // out to "new person" would drop both on the floor
+                            // and answer a question nobody asked from a
+                            // document screen.
+                            onSwitch: nil)
         }
     }
 

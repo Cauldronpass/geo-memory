@@ -44,6 +44,9 @@ struct TraceMacUpcomingView: View {
     /// Opens a place record in Directory, for the meeting card's WHERE row
     /// (D223).
     var onOpenPlace: (String) -> Void = { _ in }
+    /// Opens a daily or project note — the agenda's note rows (D246). REQUIRED,
+    /// not defaulted like `onOpenPlace`: see the note on `MacMeetingRow`'s four.
+    let onOpenNote: (String) -> Void
 
     @State private var eventsByDay: [String: [NextCalendarEvent]] = [:]
     @State private var openTaskID: String? = nil
@@ -255,7 +258,11 @@ struct TraceMacUpcomingView: View {
                               isOpen: openEventID == event.id,
                               onToggle: { toggle(event) },
                               onOpenPlace: onOpenPlace,
-                              nextOwnStart: nextOwnStart(after: event, on: key))
+                              nextOwnStart: nextOwnStart(after: event, on: key),
+                              onOpenNote: onOpenNote,
+                              agendaOpenTaskID: openTaskID,
+                              onToggleAgendaTask: { toggle($0) },
+                              onAgendaChanged: { reload() })
             }
             if !meetings.isEmpty && !tasks.isEmpty {
                 MacEditorialRule.hair.padding(.top, 5)

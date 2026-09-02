@@ -1272,11 +1272,41 @@ class NoteStore {
 
     /// `nonisolated`: called from the Mac's detached day-preview scan. Pure
     /// filesystem read, touching only `documentsURL`.
+    /// Reads a note, and **returns "" for a file that is not there.**
+    ///
+    /// That is deliberate and every caller but two relies on it: a note you have
+    /// not written yet reads as empty, which is what an editor wants. It is
+    /// stated here in capitals because of what it is NOT.
+    ///
+    /// **`(try? readFile(path)) == nil` is not an existence test and never
+    /// fires.** `try?` only produces nil when the call THROWS, and a missing
+    /// file does not throw — it returns "". Session 82 shipped a "create the
+    /// note if it is not there" that therefore never created anything, and
+    /// then navigated to the note it had not made. A second, older instance of
+    /// the same line sits in `TraceMacJournalView.ensureFileExists`.
+    ///
+    /// Use `fileExists(_:)` below. It exists so that the question has a name.
     nonisolated func readFile(_ relativePath: String) throws -> String {
         guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
         let fileURL = documentsURL.appendingPathComponent(relativePath)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return "" }
         return try String(contentsOf: fileURL, encoding: .utf8)
+    }
+
+    /// Is this note actually on disk?
+    ///
+    /// One line, and it earns its place by being the only honest way to ask.
+    /// `readFile` cannot answer it (see above), `listFiles` reads a whole folder
+    /// to answer a question about one file, and every caller that rolled its own
+    /// had to reach through `containerURL` and rebuild the path — which is the
+    /// third copy of a path-building rule this type already owns.
+    ///
+    /// Returns false when the container has not resolved, which is the same
+    /// answer as "not there" for every caller: neither can read it.
+    nonisolated func fileExists(_ relativePath: String) -> Bool {
+        guard let documentsURL else { return false }
+        return FileManager.default.fileExists(
+            atPath: documentsURL.appendingPathComponent(relativePath).path)
     }
 
     func writeFile(_ relativePath: String, content: String) throws {

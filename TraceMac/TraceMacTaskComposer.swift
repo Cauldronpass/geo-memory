@@ -57,6 +57,14 @@ struct MacTaskComposer: View {
     /// a `satchel:doc:` marker, today. Not shown in the composer: it is not
     /// something he typed and not something he can usefully edit here.
     var extraNoteLines: [String] = []
+    /// Hand the typed text to a different KIND of new thing (D249), or `nil` for
+    /// a composer with no rail.
+    ///
+    /// **Required, and `nil` is a stated answer rather than a default.** A
+    /// defaulted closure nobody passes is one of the six shapes Session 80 cost
+    /// us; making this explicit means the document panel had to say out loud
+    /// that it does not want the rail, which is true and worth reading.
+    let onSwitch: ((MacNewKind, String) -> Void)?
 
     @Environment(\.dismiss) private var dismiss
 
@@ -149,6 +157,8 @@ struct MacTaskComposer: View {
                     .padding(.bottom, 9)
             }
 
+            if onSwitch != nil { kindRail }
+
             MacEditorialRule.hair
             listRow
             MacEditorialRule.hair
@@ -190,6 +200,79 @@ struct MacTaskComposer: View {
         .onExitCommand {
             if pickingDay { pickingDay = false; field = .when } else { dismiss() }
         }
+    }
+
+    // MARK: - The kind rail (D249)
+    //
+    // David: "can you rewrite the plus sign on these screens to offer up a new
+    // project note, a new person, a new endeavor or a new task? lets think
+    // about the best way to do that with joy in the app."
+    //
+    // ── Why this is not a menu on the + ──────────────────────────────────
+    //
+    // The four are not equals. A task is captured dozens of times a week and a
+    // person is added maybe once; a flat four-item menu makes the constant act
+    // pay the same price as the rare one, and the whole reason the + exists is
+    // that capture should cost nothing. His call, put to him plainly: task
+    // first.
+    //
+    // ── You name the thing before you say what kind it is ────────────────
+    //
+    // The rail is not a mode switch you set before typing. The composer opens as
+    // a task, focused, exactly as it always did — press +, type, Return, and
+    // nothing about that path has changed. The other three sit underneath as
+    // quiet words, and picking one carries WHAT YOU HAVE ALREADY TYPED into that
+    // creator as its name.
+    //
+    // That is the whole joy of it, and it matches how the thought actually
+    // arrives: you do not think "I want to create a person", you think "Megan
+    // Weiss" and then notice she is not in there yet. Type the name, change your
+    // mind about the kind, keep the name.
+    //
+    // Two pieces of this app's own grammar said this was the shape: the task
+    // card's offer line ("+ REMIND · + REPEAT · + LINK"), quiet caps under the
+    // main thing; and D235's rule that you decline a guess AFTER seeing it
+    // rather than deciding before.
+    //
+    // ── The composer does not create three more kinds of thing ───────────
+    //
+    // It emits a request and dismisses. `TraceMacContentView` performs it,
+    // because that view is already the one funnel every route goes through
+    // (D112) and it is where the stores live. A composer that knew how to write
+    // a Notion person would be a second creator to keep in step with the first.
+
+    /// The rail's three doors need a NAME to carry, so they are inert until
+    /// there is one.
+    ///
+    /// The first version let you click PROJECT NOTE with an empty field, where
+    /// it hit a `guard !stem.isEmpty` and returned without a word — a control
+    /// that accepts a click and swallows it, which is the D225 bug this project
+    /// has now paid for three times. Faint-and-inert says the same thing
+    /// honestly, and it reinforces the design rather than fighting it: you name
+    /// the thing first, and until you have, there is nothing to hand over.
+    private var kindRail: some View {
+        let named: Bool = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return HStack(spacing: 16) {
+            ForEach(MacNewKind.allCases) { kind in
+                MacKindWord(kind: kind,
+                            current: kind == .task,
+                            armed: named,
+                            action: { switchTo(kind) })
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.bottom, 10)
+    }
+
+    /// Hand the line over and get out of the way. The text is passed RAW, not
+    /// `parsed.title`: "friday" is a date to a task and part of a name to
+    /// everything else, and silently deleting a word because the task parser
+    /// recognised it would be the composer editing a name it does not own.
+    private func switchTo(_ kind: MacNewKind) {
+        guard kind != .task, let onSwitch else { return }
+        let seed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        dismiss()
+        onSwitch(kind, seed)
     }
 
     // MARK: - Rows
@@ -568,6 +651,96 @@ struct MacTaskComposer: View {
             saving = false
             onAdded()
             dismiss()
+        }
+    }
+}
+
+// MARK: - What the + can make (D249)
+
+/// The four things the app's + offers, in the order the rail draws them.
+///
+/// Task is first and always current: the composer IS the task case, and the
+/// other three are doors out of it. Declared here rather than in
+/// `TraceMacContentView` because this is the file that shows them.
+/// A rail choice, in flight. `Identifiable` so it can drive `.sheet(item:)` —
+/// a fresh `id` per request means picking Person twice in a row presents twice,
+/// where a `Bool` would have been already-true the second time.
+struct MacNewRequest: Identifiable {
+    let id = UUID()
+    let kind: MacNewKind
+    let seed: String
+}
+
+enum MacNewKind: String, CaseIterable, Identifiable {
+    case task
+    case person
+    case endeavor
+    case projectNote
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .task:        "Task"
+        case .person:      "Person"
+        case .endeavor:    "Endeavor"
+        case .projectNote: "Project note"
+        }
+    }
+
+    /// `nil` for Task, which needs no shortcut: it is where you already are.
+    var shortcut: Character? {
+        switch self {
+        case .task:        nil
+        case .person:      "2"
+        case .endeavor:    "3"
+        case .projectNote: "4"
+        }
+    }
+}
+
+/// One word on the rail.
+///
+/// Its own type only because it needs hover state, and hover is doing real work
+/// here: everything in this design is quiet, so a word that warms under the
+/// pointer is what says it is a control at all (Session 80, the month grid).
+private struct MacKindWord: View {
+
+    let kind: MacNewKind
+    /// The kind the composer already is. Drawn in ink and inert — clicking
+    /// "Task" while composing a task should do nothing, and a control that
+    /// accepts the click and swallows it is the D225 bug.
+    let current: Bool
+    /// False until the line has something in it. The doors carry a NAME, so
+    /// with nothing typed there is nothing to carry.
+    let armed: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        let live: Bool = !current && armed
+        let tint: Color = current ? MacEditorialColor.ink
+            : (!armed ? MacEditorialColor.hairline
+               : (hovering ? MacEditorialColor.accent : MacEditorialColor.faint))
+        let word = Text(kind.label)
+            .font(MacEditorialType.quietLabel)
+            .textCase(.uppercase)
+            .tracking(MacEditorialType.quietTracking)
+            .foregroundStyle(tint)
+        return Group {
+            if !live {
+                word
+            } else if let key = kind.shortcut {
+                Button(action: action) { word.contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(KeyEquivalent(key), modifiers: .command)
+                    .onHover { hovering = $0 }
+            } else {
+                Button(action: action) { word.contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+                    .onHover { hovering = $0 }
+            }
         }
     }
 }

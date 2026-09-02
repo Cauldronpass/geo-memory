@@ -1469,6 +1469,10 @@ struct AddPersonSheet: View {
 
     let notionService: NotionService
     let onSaved: (Person) -> Void
+    /// A name typed somewhere else, carried in (D249's + rail). Defaulted, and
+    /// unlike a defaulted CLOSURE this cannot hide a missing wire: empty is
+    /// exactly the behaviour every existing call site already had.
+    var seedName: String = ""
 
     @Environment(\.dismiss) private var dismiss
 
@@ -1479,12 +1483,22 @@ struct AddPersonSheet: View {
     @State private var tagsText = ""
     @State private var isSaving = false
     @State private var error: String? = nil
+    @State private var seeded = false
 
     private let relationships = ["Friend", "Family", "Colleague", "Acquaintance", "Client", "Mentor", "Business", "Pool Team", "Other"]
 
     var body: some View {
         VStack(spacing: 0) {
             Text("New Person").font(.headline).padding()
+                .task {
+                    // Seeded once, never bound: a name typed here must survive
+                    // the next re-render, and `.task` re-runs on identity
+                    // change rather than on every body evaluation. Same shape
+                    // MacEndeavorSheet uses, and for the same reason.
+                    guard !seeded else { return }
+                    seeded = true
+                    if name.isEmpty { name = seedName }
+                }
             Divider()
             Form {
                 Section {

@@ -53,10 +53,13 @@ final class MacQuickPanelWindow: NSPanel {
 ///
 /// A singleton because there is one of it, and because the hot key fires from a
 /// C callback that has no view hierarchy to reach into. `configure` is called
-/// once from `TraceMacContentView`, which is where the two stores actually live
-/// — `TraceMacApp` builds its own `NotionService` rather than using
-/// `NotionService.shared`, so reaching for the shared one here would quietly
-/// search a second, empty copy.
+/// once from `TraceMacContentView`, which is where the two stores actually live.
+///
+/// (Before D248, reaching for `NotionService.shared` here would have searched a
+/// second, empty copy, because `TraceMacApp` built its own. The Mac now uses the
+/// shared singleton like both iOS apps, so that hazard is gone — but the
+/// explicit hand-off stays, because `NoteStore` still has to arrive somehow and
+/// one configure call is clearer than two sources.)
 @MainActor
 final class MacQuickPanelController: NSObject, NSWindowDelegate {
 

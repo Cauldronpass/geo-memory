@@ -123,6 +123,12 @@ struct TraceMacContentView: View {
     /// it, switches there and opens the card — see its deep link.
     @State private var pendingTaskID: String? = nil
     @State private var composing = false
+    /// A `+` rail choice waiting to be performed (D249).
+    @State private var newRequest: MacNewRequest? = nil
+    /// Built on demand for the rail's Endeavor door. Every other Mac surface
+    /// that needs endeavors builds its own the same way; a shared instance for
+    /// one sheet would be a new lifetime to reason about.
+    @State private var endeavorStore: TraceMacEndeavorStore? = nil
     /// A context list chosen in the panel's GO TO section, handed to the Tasks
     /// screen the same way a task id is.
     @State private var pendingTaskList: String? = nil
@@ -359,7 +365,37 @@ struct TraceMacContentView: View {
             // replaced so the behaviour did not quietly change with the
             // button's address.
             MacTaskComposer(defaultDate: (selectedSection ?? .today) == .today
-                            ? dayInView : nil) { }
+                            ? dayInView : nil,
+                            onAdded: { },
+                            onSwitch: { kind, seed in
+                                performNew(kind, seed: seed)
+                            })
+        }
+        // The rail's other three doors (D249). `item:` rather than
+        // `isPresented:` so a second Person in a row presents a second time.
+        .sheet(item: $newRequest) { request in
+            switch request.kind {
+            case .person:
+                AddPersonSheet(notionService: notionService,
+                               onSaved: { person in
+                                   openSearchResult(.person(person.id), query: "")
+                               },
+                               seedName: request.seed)
+            case .endeavor:
+                MacEndeavorSheet(existing: nil,
+                                 onSave: { _, name, type, starts, ends, destination, _, _ in
+                                     await createEndeavor(name: name, type: type, starts: starts,
+                                                          ends: ends, destination: destination)
+                                 },
+                                 seedName: request.seed)
+            case .task, .projectNote:
+                // Unreachable. `.task` never leaves the composer, and a project
+                // note needs no sheet — `makeProjectNote` writes and opens it.
+                // `EmptyView` rather than a `fatalError`: a sheet body is a bad
+                // place to die, and this arm exists only because the enum is
+                // exhaustive.
+                EmptyView()
+            }
         }
         .onAppear { syncDockBadge() }
         .onChange(of: ReminderTaskStore.shared.inboxCount) { _, _ in syncDockBadge() }
@@ -409,10 +445,12 @@ struct TraceMacContentView: View {
             // itself is not tied to this view's lifetime, so closing the window
             // leaves the shortcut that reopens it working.
             MacHotKeyCenter.shared.start()
-            // The floating panel needs these two, and this is where they live —
-            // `TraceMacApp` builds its own `NotionService` rather than using the
-            // shared one, so a panel that reached for `NotionService.shared`
-            // would search a second, empty copy and report that nobody exists.
+            // The floating panel needs these two, and this is where they live.
+            // (Until D248 there was a second reason: `TraceMacApp` built its own
+            // `NotionService`, so the panel could not reach for `.shared`. That
+            // divergence is gone — the Mac now uses the same singleton as both
+            // iOS apps — and this call is simply the tidiest place to hand the
+            // panel its stores.)
             MacQuickPanelController.shared.configure(noteStore: noteStore,
                                                      notionService: notionService)
             async let p: ()  = notionService.fetchPlaces()
@@ -679,6 +717,121 @@ struct TraceMacContentView: View {
     /// the count and both switches without any screen having to remember to
     /// call it. Clearing on `false` is as important as setting on `true`: a
     /// badge nobody updates is a badge that lies for a week.
+
+    // MARK: - The + rail's three other doors (D249)
+
+    /// Perform a rail choice made in the composer.
+    ///
+    /// **The delay is not superstition.** The composer calls `dismiss()` and
+    /// then this, in the same run loop. Presenting a second sheet while the
+    /// first is still tearing down is how AppKit drops one of them, and the
+    /// symptom is the worst kind — it works most of the time. A beat is the
+    /// standard remedy and the only one that does not require the composer to
+    /// stay on screen while its replacement arrives.
+    private func performNew(_ kind: MacNewKind, seed: String) {
+        switch kind {
+        case .task:
+            break
+        case .projectNote:
+            // **Synchronously, and that is the fix.** The first version put this
+            // inside the same 0.2s delay the sheets need, which meant it ran off
+            // a captured copy of this view long after its update had finished —
+            // and an `@Environment` value read from a stale copy is not
+            // guaranteed to be anything. The note was never written and nothing
+            // said so. A no-sheet door has no teardown to wait for, so it does
+            // its work now, while the view is still live.
+            makeProjectNote(named: seed)
+        case .person, .endeavor:
+            if kind == .endeavor, endeavorStore == nil {
+                endeavorStore = TraceMacEndeavorStore(noteStore: NoteStore.shared)
+            }
+            // Only the SHEET needs the beat: the composer is still tearing down,
+            // and presenting into that is how AppKit drops one of the two. This
+            // closure now writes nothing but `@State`, which is a stable box and
+            // survives the view copy that the environment does not.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                newRequest = MacNewRequest(kind: kind, seed: seed)
+            }
+        }
+    }
+
+    /// Make — or simply open — `Notes/Projects/<name>.md`, and go there.
+    ///
+    /// **No sheet, because the name is the only thing a project note needs and
+    /// the composer already collected it.** A confirmation step here would be a
+    /// dialog whose one field is already filled in.
+    ///
+    /// The stem comes from `DayflowAgendaMatch.noteStem`, which is the same
+    /// function a meeting uses to find its running note. That is deliberate and
+    /// it is the payoff from D244 moving that type into `Trace/`: a project note
+    /// made here for "Sarah <> David Catch up" lands on exactly the path that
+    /// meeting's AGENDA line looks for, so the note shows up on the day without
+    /// anybody linking anything.
+    ///
+    /// An existing note is opened rather than overwritten. Typing a name you
+    /// already use should take you there; the alternative is a + that can
+    /// silently destroy a note.
+    private func makeProjectNote(named raw: String) {
+        let stem = DayflowAgendaMatch.noteStem(raw)
+        guard !stem.isEmpty else { return }
+        // **`NoteStore.shared`, not the environment copy.** `TraceMacApp` injects
+        // `NoteStore.shared` (unlike `NotionService`, which diverged until D248),
+        // so these are provably the same object — and naming the store directly
+        // means this cannot depend on when it is called relative to a view
+        // update. Checked against the app's own declaration, not assumed.
+        let store = NoteStore.shared
+        // The folder name comes from `NoteStore.projectsFolder` rather than a
+        // second copy of the string, because `TraceMacNotesView` decides which
+        // TAB to open by testing that exact prefix. A literal here that drifted
+        // by one character would write the file correctly and then route
+        // nowhere, which is the least debuggable pair of behaviours available.
+        let path = "\(NoteStore.projectsFolder)/\(stem).md"
+        // **`fileExists`, because `(try? readFile(path)) == nil` never fires.**
+        // `readFile` returns "" for a missing file rather than throwing, so that
+        // test was false every single time and the write below was dead code.
+        // The note was never created and the app navigated to it anyway. See the
+        // note on `readFile` itself.
+        if !store.fileExists(path) {
+            do {
+                try store.writeFile(path, content: "# \(stem)\n\n")
+            } catch {
+                // **Not `try?`.** A creation path that can fail silently is the
+                // thing this evening kept finding. There is no banner on this
+                // screen to raise, so the honest minimum is: say so where it can
+                // be read, and do NOT navigate to a note that does not exist.
+                NSLog("[NewProjectNote] write failed for %@: %@",
+                      path, String(describing: error))
+                return
+            }
+        }
+        // **Confirmed on disk before routing, not assumed from a successful
+        // write.** Routing to a note that is not there is not a harmless
+        // no-op: `TraceMacProjectsView`'s deep-link arm appends the filename to
+        // its list whether or not the file exists, and the editor then opens a
+        // phantom and can save an empty buffer over it. A zero-byte
+        // `project3.md` in David's vault is what that looks like from outside.
+        guard store.fileExists(path) else {
+            NSLog("[NewProjectNote] %@ still not on disk after write", path)
+            return
+        }
+        openSearchResult(.dailyOrProjectNote(path), query: "")
+    }
+
+    /// **`reload()` before `create`, not after.** `TraceMacEndeavorStore.create`
+    /// derives the new id from `endeavors.map(\.id)`, so a store that has never
+    /// loaded thinks nothing exists and can mint an id that is already on disk.
+    /// The Endeavors screen never hits this because it loads on appear; a door
+    /// opened from the sidebar has no such screen behind it.
+    private func createEndeavor(name: String, type: String,
+                                starts: Date?, ends: Date?, destination: String) async {
+        guard let store = endeavorStore else { return }
+        if !store.hasLoaded { await store.reload() }
+        guard let made = try? await store.create(name: name, type: type, starts: starts,
+                                                 ends: ends, destination: destination)
+        else { return }
+        openSearchResult(.endeavor(made.id), query: "")
+    }
+
     private func syncDockBadge() {
         // BOTH switches. The Dock toggle is only disabled in Settings when the
         // sidebar count is off — its stored value survives, so turning the
@@ -774,13 +927,15 @@ struct TraceMacContentView: View {
         // day is what the app is opened for. Notes keeps its own case below.
         case .today, nil:
             TraceMacTodayView(date: $dayInView,
-                              onOpenPlace: { openSearchResult(.place($0), query: "") })
+                              onOpenPlace: { openSearchResult(.place($0), query: "") },
+                              onOpenNote: { openSearchResult(.dailyOrProjectNote($0), query: "") })
                 .environment(noteStore)
                 .environment(notionService)
         case .upcoming:
             TraceMacUpcomingView(dayInView: $dayInView,
                                  selectedSection: $selectedSection,
-                                 onOpenPlace: { openSearchResult(.place($0), query: "") })
+                                 onOpenPlace: { openSearchResult(.place($0), query: "") },
+                                 onOpenNote: { openSearchResult(.dailyOrProjectNote($0), query: "") })
                 .environment(noteStore)
                 .environment(notionService)
         case .tasks:
