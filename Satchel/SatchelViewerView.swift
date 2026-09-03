@@ -171,6 +171,34 @@ struct SatchelViewerView: View {
         }
         .padding(.horizontal, 18)
         .padding(.top, 14)
+        // **The count needs the store loaded, and nothing in Satchel loads it
+        // for this screen.** `SatchelDocTasksPanel` refreshes when Edit info
+        // opens; the viewer has no such moment, so `allTasks` would be empty on
+        // a cold open and the chip silently absent on a document that HAS tasks
+        // — a wrong answer that looks like a calm one, which is the exact
+        // failure shape this session kept finding.
+        //
+        // An EventKit read, local and cheap, once per document opened.
+        .task { await ReminderTaskStore.shared.refreshAll() }
+    }
+
+    /// Open tasks carrying this document's `satchel:doc:` marker.
+    ///
+    /// The same query `SatchelDocTasksPanel` runs, spelled the same way on
+    /// purpose: `linkedDocumentPaths` is the one reader of that marker, so a
+    /// count derived any other way could disagree with the band it summarises.
+    private var openTaskCount: Int {
+        ReminderTaskStore.shared.allTasks
+            .filter { $0.linkedDocumentPaths.contains(current.relativePath) }
+            .count
+    }
+
+    /// One name, or a count. Two names side by side is the width that breaks
+    /// this row on a phone, and a truncated person reads worse than a number.
+    private var peopleLabel: String? {
+        let names = current.people.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !names.isEmpty else { return nil }
+        return names.count == 1 ? names[0] : "\(names.count) people"
     }
 
     // MARK: Filed to
@@ -194,9 +222,14 @@ struct SatchelViewerView: View {
     @ViewBuilder
     private var filedToStrip: some View {
         let noteName = current.linkedNote.map(Self.noteDisplayName)
+        // Tasks and people join the test, or a document carrying three open
+        // tasks and no endeavor would draw "Unfiled" beside a chip saying it has
+        // three open tasks — the strip contradicting itself in one row.
         let hasFiling = current.endeavorName?.isEmpty == false
             || noteName != nil
             || !current.tags.isEmpty
+            || !current.people.isEmpty
+            || openTaskCount > 0
 
         HStack(spacing: 6) {
             if let endeavor = current.endeavorName, !endeavor.isEmpty {
@@ -229,6 +262,39 @@ struct SatchelViewerView: View {
             } else if let trip = kitTrip {
                 chip("In Kit · \(trip.name)", symbol: "airplane",
                      tint: Color.satchelAuto, navigates: false)
+            }
+
+            // **Tasks and people: told, not tapped.**
+            //
+            // David: "is there a way ... to see the fact that the document is
+            // linked to a task or to a person ... without having to click the
+            // edit info button? even smaller indicators would preserve the joy
+            // of the app without crowding the main document sheet."
+            //
+            // Two of his four were already here — the endeavor and the linked
+            // note, added 2026-07-30 for the same complaint in its first form.
+            // These are the two that were not: the tasks band lives inside Edit
+            // info, and `people` was on the model and drawn nowhere at all.
+            //
+            // **Neither navigates, and that is a decision.** A person is stored
+            // as a NAME in the sidecar, not a record id, and no `person` route
+            // exists in any of the three apps — a chip that opened a search
+            // would be pretending. Tasks have `dayflow://task?id=`, which needs
+            // ONE id: it would work for a document with a single task and not
+            // for one with two, and a chip that sometimes acts is worse than a
+            // chip that never does. This file's own rule, three chips above: a
+            // chip that both tells you something and commits you to something is
+            // how a row ends up doing two jobs.
+            //
+            // Edit info's band remains where you ACT on them. This row's whole
+            // job is that you no longer have to go there to KNOW.
+            if openTaskCount > 0 {
+                chip(openTaskCount == 1 ? "1 task" : "\(openTaskCount) tasks",
+                     symbol: "circle.dashed", tint: Color.satchelBlue, navigates: false)
+            }
+
+            if let people = peopleLabel {
+                chip(people, symbol: "person", tint: Color.satchelAuto, navigates: false)
             }
 
             if !hasFiling {

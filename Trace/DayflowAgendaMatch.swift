@@ -45,9 +45,67 @@ enum DayflowAgendaMatch {
         Set(title.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
     }
 
+    /// The person whose calendar this is, so their own name can be ignored in a
+    /// meeting title. Comma-separated; usually one word.
+    ///
+    /// **Why this exists.** David, looking at a Tuesday: four of eleven meetings
+    /// were "<him> and one other person" — `David <> Kosta Catch up`,
+    /// `Catch up - David <> Sarah`, `Mickey <> David Catch up`,
+    /// `David / Martin | Weekly 1:1`. Every one of them matched NOBODY, because
+    /// the bare-first-name rule requires exactly one candidate and each title
+    /// carries two. The rule is right; it was just counting a person who is
+    /// present in every meeting he attends.
+    ///
+    /// Removing his own name first turns all four into a single candidate. It is
+    /// not a special case for the `<>` shape — it works on any separator,
+    /// which is what he asked for ("`<>` or some equivalent").
+    ///
+    /// Stored in iCloud KVS on D241's rail so the phone inherits whatever the
+    /// Mac sets, with `UserDefaults` as a local fallback for a target that has
+    /// no KVS entitlement. Empty means the old behaviour exactly.
+    static var ownerNames: String {
+        get {
+            let kv = NSUbiquitousKeyValueStore.default.string(forKey: ownerKey)
+            if let kv, !kv.isEmpty { return kv }
+            return UserDefaults.standard.string(forKey: ownerKey) ?? seededOwnerName
+        }
+        set {
+            NSUbiquitousKeyValueStore.default.set(newValue, forKey: ownerKey)
+            NSUbiquitousKeyValueStore.default.synchronize()
+            UserDefaults.standard.set(newValue, forKey: ownerKey)
+        }
+    }
+
+    private static let ownerKey = "trace.owner.names"
+
+    /// A first guess, so this works before anybody visits Settings.
+    ///
+    /// macOS knows the account's full name; iOS does not, and does not need to —
+    /// once the Mac has written a real value it rides KVS to the phone. A guess
+    /// is safe here in a way it would not be elsewhere: the worst case is that
+    /// one word stops being counted as a candidate, and if that word is not in
+    /// People it was never a candidate anyway.
+    private static var seededOwnerName: String {
+        #if os(macOS)
+        return NSFullUserName().split(separator: " ").first.map(String.init) ?? ""
+        #else
+        return ""
+        #endif
+    }
+
+    private static var ownerWords: Set<String> {
+        Set(ownerNames.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
+    }
+
     static func name(forTitle title: String) -> String? {
-        let words = titleWords(title)
-        guard !words.isEmpty else { return nil }
+        let all = titleWords(title)
+        guard !all.isEmpty else { return nil }
+        // The owner is dropped BEFORE counting candidates, not after matching.
+        // Doing it after would still see two people and still refuse.
+        let stripped = all.subtracting(ownerWords)
+        // A title that is nothing but your own name has no other subject; fall
+        // back rather than inventing one, so nothing that matched before stops.
+        let words = stripped.isEmpty ? all : stripped
         let people = NotionService.shared.people.filter { !$0.isArchived }
         if let full = people.first(where: { person in
             let nameWords = person.name.lowercased()
@@ -112,5 +170,56 @@ enum DayflowAgendaMatch {
                                    modified: nil), at: 0)
         }
         return out
+    }
+
+    // MARK: - The meeting's running note (D175, one writer as of D250)
+
+    /// Create — or add today's heading to — the meeting's running note, and give
+    /// back its path.
+    ///
+    /// **One writer for both platforms.** This was `DayflowMeetingActions`'
+    /// private business until the Mac grew a Running-note pill and would have
+    /// needed a second copy. A note format with two authors is the drift this
+    /// project has paid for repeatedly; the difference between the platforms is
+    /// only where they route afterwards, so only the routing stayed behind.
+    ///
+    /// **The bug it was carrying.** The original read
+    /// `if let existing = try? NoteStore.shared.readFile(path)`, and `readFile`
+    /// returns "" for a missing file rather than throwing — so `existing` was
+    /// never nil, the create branch was unreachable, and every meeting note ever
+    /// made by the iOS swipe was born WITHOUT its `# Title` line and without the
+    /// `[[person]]` link that branch adds. Same mistake, same evening, as the
+    /// + button's project note (D249). It is fixed here by asking
+    /// `fileExists` — the question, by name.
+    ///
+    /// One occurrence per heading: a meeting you open twice in a day does not
+    /// get two identical dated headings.
+    @discardableResult
+    static func ensureMeetingNote(title: String, occurring startDate: Date) -> String? {
+        let stem = noteStem(title)
+        guard !stem.isEmpty else { return nil }
+        let path = "\(NoteStore.projectsFolder)/\(stem).md"
+        let store = NoteStore.shared
+        let f = DateFormatter(); f.dateFormat = "EEE, MMM d yyyy"
+        let heading = "## \(f.string(from: startDate))"
+
+        if store.fileExists(path) {
+            let existing = (try? store.readFile(path)) ?? ""
+            guard !existing.contains(heading) else { return path }
+            let grown = existing.hasSuffix("\n")
+                ? existing + "\n\(heading)\n\n"
+                : existing + "\n\n\(heading)\n\n"
+            do { try store.writeFile(path, content: grown) } catch { return nil }
+            return path
+        }
+
+        var body = "# \(title.trimmingCharacters(in: .whitespaces))\n"
+        // The wikilink is what puts this note in the person's own Mentioned In
+        // list and in every backlink view, for free. It has never actually been
+        // written until now.
+        if let matched = name(forTitle: title) { body += "\n[[\(matched)]]\n" }
+        body += "\n\(heading)\n\n"
+        do { try store.writeFile(path, content: body) } catch { return nil }
+        return path
     }
 }

@@ -538,9 +538,29 @@ struct MacMeetingRow: View {
     private var footer: some View {
         HStack(spacing: 7) {
             MacEditorialPill(label: "Open in Calendar") { openInCalendar() }
+            // **The Mac's answer to D175's left swipe** (D250). Until now the
+            // only way to give a meeting a running note here was to type its
+            // title into a New Project box exactly, character for character —
+            // and David proved how that goes within a minute of being told to do
+            // it, writing "Catchup" for a meeting called "Catch up". A space.
+            //
+            // The title never passes through a keyboard now: this and the agenda
+            // line derive the filename from the same `noteStem`, so they cannot
+            // disagree about which file they mean.
+            MacEditorialPill(label: "Running note") { openRunningNote() }
             Spacer(minLength: 0)
         }
         .padding(.top, 14)
+    }
+
+    /// Make or extend the note, then hand the path to whoever knows how to open
+    /// it. The row does not route — Today and Upcoming already pass `onOpenNote`
+    /// for the agenda's note rows, and this is the same journey.
+    private func openRunningNote() {
+        guard let path = DayflowAgendaMatch.ensureMeetingNote(title: event.title,
+                                                             occurring: event.startDate)
+        else { return }
+        onOpenNote(path)
     }
 
     // MARK: - Values

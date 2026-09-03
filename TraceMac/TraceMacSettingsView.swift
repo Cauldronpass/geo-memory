@@ -14,6 +14,10 @@ struct TraceMacSettingsView: View {
     @State private var googlePlacesKey: String = ""
     @State private var showGooglePlacesKey = false
     @State private var saved = false
+    /// Seeded from the matcher on appear, written back on Return. Not
+    /// `@AppStorage`: the value lives in iCloud KVS so the phone inherits it,
+    /// and `DayflowAgendaMatch` owns that read/write pair.
+    @State private var ownerNames: String = ""
     /// Shared with the search panel through `@AppStorage`, so the toggle and
     /// the thing it governs read one key and neither owns it.
     @AppStorage("tracemac.ask.includeNotion") private var includeNotionInAsk = false
@@ -89,6 +93,20 @@ struct TraceMacSettingsView: View {
                 }
             }
 
+            Section("You") {
+                TextField("Your name, as it appears in meeting titles", text: $ownerNames)
+                    .onSubmit { DayflowAgendaMatch.ownerNames = ownerNames }
+                Text("""
+                     Meetings called things like "David <> Kosta Catch up" name \
+                     two people, and the agenda matcher refuses to guess between \
+                     two candidates. Telling it which one is you leaves exactly \
+                     one, so the meeting finds the right person. Separate several \
+                     spellings with commas. Press Return to save.
+                     """)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Tasks") {
                 Toggle("Show the Inbox count beside Tasks", isOn: $showInboxCount)
                 Text("A small number in the sidebar when captured tasks are waiting to be filed. Visible only while you are in the app.")
@@ -155,6 +173,10 @@ struct TraceMacSettingsView: View {
         .frame(width: 420)
         .padding()
         .onAppear {
+            // Seeded from the matcher, which owns the KVS pair. On a Mac that
+            // has never been told, this shows the guess made from the account's
+            // full name — visible and editable rather than silently applied.
+            ownerNames = DayflowAgendaMatch.ownerNames
             token           = sharedDefaults.string(forKey: "notion_token")   ?? ""
             // `ClaudeKeyStore`, not `sharedDefaults`. On macOS the key now
             // lives in the keychain, and reading it here also performs the

@@ -104,7 +104,7 @@ struct TraceMacBilliardsView: View {
             isLoading = false
         }
         .sheet(isPresented: $showNewSheet) {
-            NewBilliardsSessionSheet()
+            BilliardsSessionSheet(existing: nil)
                 .environment(notion)
         }
     }
@@ -273,6 +273,7 @@ private struct BilliardsSessionDetailPanel: View {
     @State private var notes: String = ""
     @State private var isSavingNotes = false
     @State private var saveError: String?
+    @State private var editing = false
 
     var body: some View {
         ScrollView {
@@ -289,6 +290,14 @@ private struct BilliardsSessionDetailPanel: View {
         }
         .onChange(of: session.id) { _, _ in
             notes = session.notes ?? ""
+        }
+        // Closed when the selection moves. The editor is seeded once from the
+        // session it opened on, so leaving it up while a different match is
+        // selected would show one match's numbers under another's name.
+        .onChange(of: session.id) { _, _ in editing = false }
+        .sheet(isPresented: $editing) {
+            BilliardsSessionSheet(existing: session)
+                .environment(notion)
         }
     }
 
@@ -399,6 +408,12 @@ private struct BilliardsSessionDetailPanel: View {
             }
 
             HStack {
+                // **Edit sits with Save Notes, not in a toolbar.** The notes box
+                // above it is already an edit of this record; putting the fuller
+                // edit anywhere else would imply they are different kinds of act.
+                Button("Edit match\u{2026}") { editing = true }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 Spacer()
                 Button {
                     Task { await saveNotes() }
@@ -442,13 +457,25 @@ private struct BilliardsSessionDetailPanel: View {
 
 // MARK: - New session sheet
 
-private struct NewBilliardsSessionSheet: View {
+/// Log a match, or edit one already logged (D251).
+///
+/// **One sheet for both**, which is the shape `MacEndeavorSheet` already uses in
+/// this project and for the same reason: a create form and an edit form for the
+/// same record drift the moment one of them gains a field. `existing == nil`
+/// creates; non-nil seeds every control from the session and saves back to it.
+private struct BilliardsSessionSheet: View {
+    /// Nil creates, non-nil edits.
+    let existing: BilliardsSession?
+
     @Environment(NotionService.self) private var notion
     @Environment(\.dismiss) private var dismiss
 
     @State private var draft   = BilliardsDraft()
     @State private var isSaving = false
     @State private var saveError: String?
+    /// Seeded once. `.task` re-runs on identity change, and re-seeding would
+    /// throw away an edit in progress — the same guard `MacEndeavorSheet` keeps.
+    @State private var seeded = false
 
     // String fields for numeric input
     @State private var myScoreStr        = ""
@@ -468,7 +495,7 @@ private struct NewBilliardsSessionSheet: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("New Billiards Session")
+                Text(existing == nil ? "New Billiards Session" : "Edit Billiards Session")
                     .font(.headline)
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -519,9 +546,19 @@ private struct NewBilliardsSessionSheet: View {
 
                 Toggle("Won Lag", isOn: $draft.wonLag)
 
-                LabeledContent("Notes") {
+                // **Not `LabeledContent`.** It right-aligns its content column,
+                // which is right for a value and wrong for a paragraph — a note
+                // ragged down its LEFT edge is unreadable, and it is the one
+                // field here you actually read rather than glance at. The label
+                // sits above instead, the same way the detail panel's notes box
+                // does, so the two look like the same field in two places.
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Notes")
+                        .foregroundStyle(.secondary)
                     TextEditor(text: $draft.notes)
+                        .multilineTextAlignment(.leading)
                         .frame(height: 80)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 LabeledContent("Scan") {
@@ -563,6 +600,7 @@ private struct NewBilliardsSessionSheet: View {
             }
         }
         .frame(width: 480, height: 620)
+        .task { seed() }
     }
 
     // MARK: - Scorecard Scan
@@ -638,11 +676,45 @@ private struct NewBilliardsSessionSheet: View {
         isSaving  = true
         saveError = nil
         do {
-            _ = try await notion.logBilliardsSession(draft)
+            if let existing {
+                try await notion.updateBilliardsSession(id: existing.id, draft)
+            } else {
+                _ = try await notion.logBilliardsSession(draft)
+            }
             dismiss()
         } catch {
             saveError = error.localizedDescription
         }
         isSaving = false
+    }
+
+    /// Fill the draft from the session being edited.
+    ///
+    /// **`visitID` is carried across even though nothing here shows it.** The
+    /// update deliberately never writes the Visit relation (see
+    /// `NotionService.billiardsProperties`), but a draft that quietly dropped it
+    /// would be a trap for whoever wires this to a code path that does.
+    private func seed() {
+        guard !seeded, let s = existing else { seeded = true; return }
+        seeded = true
+        draft.date               = s.date
+        draft.format             = s.format
+        draft.opponent           = s.opponent
+        draft.mySkillLevel       = s.mySkillLevel ?? draft.mySkillLevel
+        draft.opponentSkillLevel = s.opponentSkillLevel
+        draft.result             = s.result
+        draft.myTeamPoints       = s.myTeamPoints
+        draft.opponentTeamPoints = s.opponentTeamPoints
+        draft.myScore            = s.myScore
+        draft.opponentScore      = s.opponentScore
+        draft.innings            = s.innings
+        draft.wonLag             = s.wonLag
+        draft.notes              = s.notes ?? ""
+        draft.visitID            = s.visitID
+        draft.matchNumber        = s.matchNumber
+        // The three text fields the form edits as strings rather than numbers.
+        myScoreStr       = s.myScore ?? ""
+        opponentScoreStr = s.opponentScore ?? ""
+        inningsStr       = s.innings.map(String.init) ?? ""
     }
 }

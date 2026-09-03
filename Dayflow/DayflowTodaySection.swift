@@ -962,26 +962,13 @@ enum DayflowMeetingActions {
     /// this occurrence's dated heading; routing rides the same pending-
     /// destination pipe the agenda note rows use.
     static func openMeetingNote(for event: NextCalendarEvent) {
-        let stem = DayflowAgendaMatch.noteStem(event.title)
-        guard !stem.isEmpty else { return }
-        let path = "Notes/Projects/\(stem).md"
-        let f = DateFormatter(); f.dateFormat = "EEE, MMM d yyyy"
-        let heading = "## \(f.string(from: event.startDate))"
-        if let existing = try? NoteStore.shared.readFile(path) {
-            if !existing.contains(heading) {
-                let grown = existing.hasSuffix("\n")
-                    ? existing + "\n\(heading)\n\n"
-                    : existing + "\n\n\(heading)\n\n"
-                try? NoteStore.shared.writeFile(path, content: grown)
-            }
-        } else {
-            var body = "# \(event.title)\n"
-            if let name = DayflowAgendaMatch.name(forTitle: event.title) {
-                body += "\n[[\(name)]]\n"
-            }
-            body += "\n\(heading)\n\n"
-            try? NoteStore.shared.writeFile(path, content: body)
-        }
+        // The file work moved to `DayflowAgendaMatch.ensureMeetingNote` in D250
+        // so the Mac's Running-note pill could not become a second author of the
+        // same note format. What is left here is the only genuinely Dayflow part:
+        // where you land afterwards.
+        guard let path = DayflowAgendaMatch.ensureMeetingNote(title: event.title,
+                                                             occurring: event.startDate)
+        else { return }
         DayflowQuickFindRouter.shared.pendingDestination = .dailyOrProjectNote(path)
     }
 }

@@ -327,6 +327,7 @@ struct BilliardsSessionDetailView: View {
     @State private var isEditingNotes = false
     @State private var draftNotes = ""
     @State private var isSavingNotes = false
+    @State private var editing = false
 
     private var resultColor: Color {
         switch session.result {
@@ -467,6 +468,17 @@ struct BilliardsSessionDetailView: View {
         }
         .navigationTitle("\(session.format) · \(session.date.formatted(.dateTime.month(.abbreviated).day()))")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Edit") { editing = true }
+            }
+        }
+        .sheet(isPresented: $editing) {
+            NavigationStack {
+                BilliardsSessionEditView(session: session)
+                    .environment(notion)
+            }
+        }
         .drawerToolbar()
         .confirmationDialog("Delete this match?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -488,5 +500,159 @@ struct BilliardsSessionDetailView: View {
             Spacer()
             Text(value).foregroundStyle(.primary)
         }
+    }
+}
+
+
+// MARK: - Session edit (D251)
+
+/// Change a match that is already logged.
+///
+/// **Why a form and not the wizard.** `BilliardsWizardView` is a multi-step
+/// LOGGING flow — it walks you through a match as it is being entered, with
+/// scanning and defaults and a running summary. Editing is the opposite shape:
+/// you already know the one number that is wrong, and every step between you and
+/// it is in the way. Same reason the Mac reuses its compact sheet rather than
+/// its scanner.
+///
+/// **Every field the create can set, or none of them.** A partial editor is how
+/// a record gets a field you can enter once and never correct, which is worse
+/// than no editor at all — the number is wrong AND it looks authoritative.
+struct BilliardsSessionEditView: View {
+
+    let session: BilliardsSession
+
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var draft = BilliardsDraft()
+    @State private var seeded = false
+    @State private var isSaving = false
+    @State private var saveError: String?
+
+    // Held as strings, because a `TextField` over an `Int?` cannot tell "empty"
+    // from "zero" and this record has fields where that difference is real.
+    @State private var mySL = ""
+    @State private var oppSL = ""
+    @State private var myTeamPts = ""
+    @State private var oppTeamPts = ""
+    @State private var innings = ""
+    @State private var matchNo = ""
+
+    private let formats = ["8-Ball", "9-Ball", "10-Ball", "One Pocket", "Bank Pool"]
+
+    var body: some View {
+        Form {
+            Section {
+                DatePicker("Date", selection: $draft.date, displayedComponents: .date)
+                TextField("Opponent", text: $draft.opponent)
+                Picker("Format", selection: $draft.format) {
+                    ForEach(formats, id: \.self) { Text($0).tag($0) }
+                }
+                Picker("Result", selection: Binding(
+                    get: { draft.result ?? "" },
+                    set: { draft.result = $0.isEmpty ? nil : $0 }
+                )) {
+                    Text("Not recorded").tag("")
+                    Text("Win").tag("Win")
+                    Text("Loss").tag("Loss")
+                }
+            }
+
+            Section("Scores") {
+                TextField("My score", text: Binding(
+                    get: { draft.myScore ?? "" },
+                    set: { draft.myScore = $0.isEmpty ? nil : $0 }))
+                TextField("Opponent score", text: Binding(
+                    get: { draft.opponentScore ?? "" },
+                    set: { draft.opponentScore = $0.isEmpty ? nil : $0 }))
+                numberField("My team points", $myTeamPts)
+                numberField("Opponent team points", $oppTeamPts)
+                numberField("Innings", $innings)
+            }
+
+            Section("Players") {
+                numberField("My skill level", $mySL)
+                numberField("Opponent skill level", $oppSL)
+                Toggle("Won the lag", isOn: $draft.wonLag)
+                numberField("Match number", $matchNo)
+            }
+
+            Section("Notes") {
+                TextEditor(text: $draft.notes).frame(minHeight: 90)
+            }
+
+            if let saveError {
+                Section { Text(saveError).font(.footnote).foregroundStyle(.red) }
+            }
+        }
+        .navigationTitle("Edit match")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { Task { await save() } }
+                    .disabled(isSaving)
+            }
+        }
+        .task { seed() }
+    }
+
+    private func numberField(_ label: String, _ text: Binding<String>) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            TextField("", text: text)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 70)
+        }
+    }
+
+    /// Seeded once. `.task` runs again on identity change, and re-seeding would
+    /// discard an edit in progress.
+    private func seed() {
+        guard !seeded else { return }
+        seeded = true
+        draft.date        = session.date
+        draft.format      = session.format
+        draft.opponent    = session.opponent
+        draft.result      = session.result
+        draft.myScore     = session.myScore
+        draft.opponentScore = session.opponentScore
+        draft.wonLag      = session.wonLag
+        draft.notes       = session.notes ?? ""
+        // Carried even though nothing here shows it — see the note on
+        // `NotionService.billiardsProperties` about the Visit relation.
+        draft.visitID     = session.visitID
+        mySL       = session.mySkillLevel.map(String.init) ?? ""
+        oppSL      = session.opponentSkillLevel.map(String.init) ?? ""
+        myTeamPts  = session.myTeamPoints.map(String.init) ?? ""
+        oppTeamPts = session.opponentTeamPoints.map(String.init) ?? ""
+        innings    = session.innings.map(String.init) ?? ""
+        matchNo    = session.matchNumber.map(String.init) ?? ""
+    }
+
+    private func save() async {
+        // `Int(...)` on an empty string is nil, which is exactly "clear this
+        // field" — and the update writer sends an explicit null for a nil, so
+        // emptying a box here really does empty it in Notion.
+        draft.mySkillLevel       = Int(mySL) ?? 0
+        draft.opponentSkillLevel = Int(oppSL)
+        draft.myTeamPoints       = Int(myTeamPts)
+        draft.opponentTeamPoints = Int(oppTeamPts)
+        draft.innings            = Int(innings)
+        draft.matchNumber        = Int(matchNo)
+        isSaving = true
+        saveError = nil
+        do {
+            try await notion.updateBilliardsSession(id: session.id, draft)
+            dismiss()
+        } catch {
+            saveError = error.localizedDescription
+        }
+        isSaving = false
     }
 }

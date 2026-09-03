@@ -786,10 +786,22 @@ class NotionService {
 
     // MARK: - Billiards Sessions
 
-    func logBilliardsSession(_ b: BilliardsDraft) async throws -> String {
-        // Title: "vs Opponent" with date
+    /// Every property a billiards row carries, in ONE mapping.
+    ///
+    /// It was inline in `logBilliardsSession` until Session 82 (D251) gave the
+    /// apps an edit path, at which point a second copy would have existed —
+    /// and a create and an update that disagree about a property name fail in
+    /// the worst way available: silently, on one of the two, months later.
+    ///
+    /// **`forUpdate` is not a flag for tidiness, it is the whole difference
+    /// between the two operations.** A create SKIPS an empty field, because
+    /// Notion's default for an absent property is already empty. An update must
+    /// send an explicit null for it, or clearing the innings on a match simply
+    /// leaves yesterday's number sitting there — a field you cannot empty is
+    /// worse than a field you cannot edit, because it looks like it worked.
+    private func billiardsProperties(_ b: BilliardsDraft, forUpdate: Bool) -> [String: Any] {
         let df = DateFormatter(); df.dateFormat = "M/d"
-        let titleStr = "vs \(b.opponent.isEmpty ? "Opponent" : b.opponent) · \(df.string(from: b.date))"
+        let titleStr = "vs \(b.opponent.isEmpty ? "Opponent" : b.opponent) \u{00B7} \(df.string(from: b.date))"
 
         var props: [String: Any] = [
             "Name":   ["title": [["text": ["content": titleStr]]]],
@@ -797,13 +809,16 @@ class NotionService {
             "Date":   ["date": ["start": localDateString(from: b.date)]]
         ]
 
-        func num(_ val: Int?, key: String)    { if let v = val { props[key] = ["number": v] } }
+        func num(_ val: Int?, key: String) {
+            if let v = val { props[key] = ["number": v] }
+            else if forUpdate { props[key] = ["number": NSNull()] }
+        }
         func txt(_ val: String?, key: String) {
             if let v = val, !v.isEmpty { props[key] = ["rich_text": [["text": ["content": v]]]] }
+            else if forUpdate { props[key] = ["rich_text": []] }
         }
-        func rel(_ id: String?, key: String)  { if let id { props[key] = ["relation": [["id": id]]] } }
 
-        if !b.opponent.isEmpty { txt(b.opponent, key: "Opponent") }
+        txt(b.opponent,           key: "Opponent")
         num(b.mySkillLevel,       key: "My Skill Level")
         num(b.opponentSkillLevel, key: "Opponent Skill Level")
         num(b.myTeamPoints,       key: "My Team Points")
@@ -814,18 +829,43 @@ class NotionService {
         num(b.matchNumber,        key: "Match Number")
         props["Won Lag"] = ["checkbox": b.wonLag]
         if let r = b.result, !r.isEmpty { props["Result"] = ["select": ["name": r]] }
-        if !b.notes.isEmpty             { txt(b.notes,   key: "Notes") }
-        rel(b.visitID, key: "Visit")
+        else if forUpdate               { props["Result"] = ["select": NSNull()] }
+        txt(b.notes, key: "Notes")
 
+        // **`Visit` is deliberately absent from an update.**
+        //
+        // The relation is set by the geofence/visit pipeline
+        // (`linkBilliardsSessionToVisit`), not by anything a person edits, and
+        // no edit form shows it. Sending it would mean sending `b.visitID`,
+        // which an editor seeded from a session carries only if somebody
+        // remembered to copy it — and the failure mode of forgetting is that
+        // saving an unrelated typo silently unlinks the match from the night it
+        // was played. A field this screen does not own is a field it does not
+        // write.
+        if !forUpdate, let id = b.visitID { props["Visit"] = ["relation": [["id": id]]] }
+
+        return props
+    }
+
+    func logBilliardsSession(_ b: BilliardsDraft) async throws -> String {
         let body: [String: Any] = [
             "parent": ["database_id": billiardsDBID],
-            "properties": props
+            "properties": billiardsProperties(b, forUpdate: false)
         ]
         let data   = try await post("\(baseURL)/pages", body: body)
         let result = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         let id     = result["id"] as? String ?? ""
         await fetchBilliardsSessions()
         return id
+    }
+
+    /// Edit an existing match (D251). Same mapping as the create, so the two
+    /// cannot drift; refetches afterwards so every screen showing this session
+    /// redraws from Notion rather than from a local guess about what changed.
+    func updateBilliardsSession(id: String, _ b: BilliardsDraft) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)",
+                            body: ["properties": billiardsProperties(b, forUpdate: true)])
+        await fetchBilliardsSessions()
     }
 
     func fetchBilliardsSessions() async {
