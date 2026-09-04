@@ -43,12 +43,41 @@ struct DayflowRootView: View {
     /// the tab switch; DayflowInboxView consumes the pending value.
     @State private var quickActions = DayflowQuickActionRouter.shared
 
+    /// The tab a pending destination asked for, captured at the MOMENT the
+    /// destination arrived rather than looked up later (Session 84, with
+    /// `tab(for:)`).
+    ///
+    /// A destination set while Quick Find is up cannot switch the tab yet, so
+    /// it is held here until the card closes. Holding the ANSWER rather than
+    /// re-deriving it from the router closes the same race on that path: the
+    /// Notes tab can drain the destination while the card is still on screen,
+    /// and the old code then found nothing to route by.
+    @State private var routedTab: DayflowTab? = nil
+
     /// Which tab owns a routed destination (Session 78, Notes redesign):
-    /// PROJECT notes open in place on the Notes tab so the tab bar stays —
+    /// PROJECT notes open in place on the Notes tab so the tab bar stays,
     /// one tap to Today from any note. Everything else keeps Today's
     /// routing machinery.
-    private func tabForPendingDestination() -> DayflowTab {
-        if case .dailyOrProjectNote(let path)? = quickFind.pendingDestination,
+    ///
+    /// **Takes the destination. It must never re-read the router** (Session
+    /// 84). David: *"i click on the note itself under Agenda... it twinkles
+    /// when i press but it doesnt take me anywhere"*, and then, decisively:
+    /// *"when i went manually to notes the kosta note is there waiting."*
+    ///
+    /// Two views observe `pendingDestination` and both fire on one change:
+    /// `DayflowNotesView` DRAINS it (setting it back to nil) and this view
+    /// reads it to pick a tab. **Delivery order across views is undefined**,
+    /// the phrase `ContentView` already uses about this same router, and here
+    /// the drain won: by the time this function ran the value was nil, it fell
+    /// through to `.today`, and the note opened correctly on a tab the user
+    /// was being sent away from. The route was never broken; the tab decision
+    /// was racing the consumer of the thing it was deciding about.
+    ///
+    /// Taking the value as an argument is the whole fix: the change handler is
+    /// handed the value that caused the change, so nothing can drain it out
+    /// from under this.
+    private func tab(for destination: MacSearchDestination?) -> DayflowTab {
+        if case .dailyOrProjectNote(let path)? = destination,
            path.hasPrefix("Notes/Projects/") { return .notes }
         return .today
     }
@@ -176,16 +205,21 @@ struct DayflowRootView: View {
         // Session 78 evening — agenda NOTE rows (Today/Upcoming) route by
         // setting pendingDestination directly with Quick Find closed; land
         // on the tab that owns the note machinery.
-        .onChange(of: quickFind.pendingDestination != nil) { _, hasPending in
-            if hasPending, !quickFind.show { selectedTab = tabForPendingDestination() }
+        .onChange(of: quickFind.pendingDestination) { _, destination in
+            // Watches the VALUE, not "is it nil". The old form handed this
+            // closure a Bool and left it to look the destination up again,
+            // which is the race described on `tab(for:)`.
+            guard let destination else { return }
+            let wanted = tab(for: destination)
+            if quickFind.show { routedTab = wanted } else { selectedTab = wanted }
         }
         .onChange(of: quickFind.show) { _, showing in
-            // A tapped result that needs the Today screen's routing: land on
-            // that tab as the card goes; ContentView watches the router and
-            // drains the destination.
-            if !showing, quickFind.pendingDestination != nil {
-                selectedTab = tabForPendingDestination()
-            }
+            // A tapped result that needs another tab: land on it as the card
+            // goes. The tab was decided when the destination arrived, so a
+            // drain that has already happened cannot erase the decision.
+            guard !showing, let wanted = routedTab else { return }
+            routedTab = nil
+            selectedTab = wanted
         }
         .sheet(item: $selectionWhenRequest) { request in
             DayflowWhenSheet(tasks: request.tasks) { selection.exit() }
