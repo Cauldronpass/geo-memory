@@ -33,10 +33,11 @@ struct TraceMacActivityView: View {
             // One shared header row — see `TraceMacSectionHeader.swift` for why
             // the title is here and why the tabs are leading rather than
             // trailing. The tab *state* stays local to this view.
-            MacSectionHeader("Activity") {
-                MacTabStrip(options: ActivityTab.allCases,
-                            selection: $tab) { $0.rawValue }
-            }
+            // D260 (Session 83): tab words over a masthead. Everything below
+            // the rule is each room's own and is unchanged tonight.
+            MacEditorialTabMasthead(kicker: "Activity",
+                                    tabs: ActivityTab.allCases,
+                                    selection: $tab) { $0.rawValue }
 
             Group {
                 switch tab {

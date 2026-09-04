@@ -315,6 +315,11 @@ enum MacEditorialLayout {
     /// The task inspector on Tasks.
     static let inspectorWidth: CGFloat = 348
 
+    /// A list column beside a note — Projects (D256). Narrower than THE DAY's
+    /// reading measure, wider than a rail: a title, a first line and a date
+    /// need the room; a column of meetings needs more.
+    static let listColumnWidth: CGFloat = 400
+
     /// Left margin of a page's content, and the margin everything on it aligns
     /// to. Wider than `MacChrome.headerInset` (16) on purpose — Editorial pages
     /// breathe, list sections do not.

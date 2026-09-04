@@ -37,10 +37,11 @@ struct TraceMacArchiveView: View {
             // visible, against h16 / v8 and `.labelsHidden()` on every other
             // section — the top-left of this screen sat four points right and
             // two points down from the one before it, with a stray label in it.
-            MacSectionHeader("Archive") {
-                MacTabStrip(options: ArchiveTab.allCases,
-                            selection: $selectedTab) { $0.rawValue }
-            }
+            // D260 (Session 83): tab words over a masthead. The two lists
+            // beneath keep their own furniture for now (noted in the backlog).
+            MacEditorialTabMasthead(kicker: "Archive",
+                                    tabs: ArchiveTab.allCases,
+                                    selection: $selectedTab) { $0.rawValue }
 
             Group {
                 switch selectedTab {

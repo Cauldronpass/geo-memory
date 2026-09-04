@@ -44,6 +44,9 @@ struct MacMeetingRow: View {
 
     @Environment(NotionService.self) private var notion
     @State private var picking = false
+    /// The composer for **+ Task** in the footer (D253). Local to the row,
+    /// like `picking`: a sheet belongs to the card that opened it.
+    @State private var composingTask = false
     /// Bumped when a link is made, so the WHERE row re-reads it. `PlaceLink`
     /// stores in `NSUbiquitousKeyValueStore` (D241, was `UserDefaults`), which
     /// SwiftUI does not observe.
@@ -548,9 +551,43 @@ struct MacMeetingRow: View {
             // line derive the filename from the same `noteStem`, so they cannot
             // disagree about which file they mean.
             MacEditorialPill(label: "Running note") { openRunningNote() }
+            // **+ Task** (D253). David, testing D250: "having to remember the
+            // exact name of the meeting... I was thinking that in the meeting
+            // itself I could have a button next to running note that would add
+            // a task directly." The task's link is written FOR him, from the
+            // same `agendaAnchor` the AGENDA line searches with, so it cannot
+            // miss its own meeting. Same mechanism as `DocTasksPanel`'s +: the
+            // ordinary composer, one line pre-written into the notes.
+            MacEditorialPill(label: "+ Task") { composingTask = true }
             Spacer(minLength: 0)
         }
         .padding(.top, 14)
+        .sheet(isPresented: $composingTask) {
+            // Undated (David's call, Session 83): the agenda is where this task
+            // will be read, and it is found there by its link, not by a date.
+            // Dating it to the meeting's day would draw the same task twice on
+            // that day, once in TO DO and once here, and a follow-up from a
+            // meeting is rarely due the day of the meeting. The card can date it
+            // later. List follows the composer's default.
+            //
+            // The anchor is the person the title names, or the place, or the
+            // title itself when it names nobody (D175 round two) — so a task
+            // made from a repeating 1:1 rides under EVERY meeting with that
+            // person until it is ticked, which is what a prep sheet wants.
+            //
+            // No rail (`onSwitch: nil`), for `DocTasksPanel`'s reason: this +
+            // means "a task for this meeting", and a door out to "new person"
+            // would drop the link on the floor.
+            MacTaskComposer(defaultDate: nil,
+                            onAdded: {
+                                // Show what was just made rather than leaving a
+                                // count to be unfolded by hand.
+                                agendaExpanded = true
+                                onAgendaChanged()
+                            },
+                            extraNoteLines: ["[[" + agendaAnchor + "]]"],
+                            onSwitch: nil)
+        }
     }
 
     /// Make or extend the note, then hand the path to whoever knows how to open

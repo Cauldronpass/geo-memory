@@ -84,7 +84,6 @@ struct TraceMacDocumentsView: View {
     /// Remembered across launches. The two inline copies of this strip in
     /// People and Places used plain `@State`, so a widened column was narrow
     /// again on the next launch.
-    @AppStorage("tracemac.column.satchel") private var listWidth: Double = 240
 
     /// The filter pane. Remembered across launches like the column opposite it
     /// — a pane you have to reopen every morning is one you stop opening.
@@ -295,17 +294,10 @@ struct TraceMacDocumentsView: View {
             // literal, because Session 73 made it settable and a tooltip that
             // says ⇧⌘F after he has changed it is worse than one that says
             // nothing: it is a confident wrong answer about his own settings.
-            MacSectionHeader("Satchel",
-                             leadingAction: MacHeaderButton(
-                                icon: showFacets
-                                    ? "line.3.horizontal.decrease.circle.fill"
-                                    : "line.3.horizontal.decrease.circle",
-                                help: (showFacets ? "Hide filters (" : "Show filters (")
-                                      + filterShortcut.combo.label + ")") {
-                                    showFacets.toggle()
-                                },
-                             action: MacHeaderButton(icon: "plus",
-                                                     help: "Add a document") { importDocument() })
+            // D260 (Session 83): no `MacSectionHeader`. The list column carries
+            // the Editorial masthead, the `+` square (Add a document) and the
+            // FILTERS word that toggles the facet pane; the keyboard shortcut
+            // for the pane is unchanged (`MacSatchelFilterShortcut`).
             columns
         }
     }
@@ -315,8 +307,11 @@ struct TraceMacDocumentsView: View {
     private var columns: some View {
         HStack(spacing: 0) {
             if !listCollapsed {
+                // The Editorial list measure, fixed (D260). The old draggable
+                // width defaulted to 240, which hid the filter row's fourth
+                // word off the right edge — David: "it's missing the tags
+                // screen." The pane was there; its switch was not on screen.
                 leftColumn
-                MacColumnResizer(width: $listWidth)
             }
             CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
             rightColumn.frame(maxWidth: .infinity)
@@ -499,19 +494,21 @@ struct TraceMacDocumentsView: View {
     // MARK: - Left column
 
     private var leftColumn: some View {
-        VStack(spacing: 0) {
-            // Search
+        VStack(alignment: .leading, spacing: 0) {
+            MacEditorialMasthead(kicker: satchelKicker, title: "Satchel")
+                .padding(.horizontal, MacEditorialLayout.margin)
+                .padding(.top, MacEditorialLayout.topMargin)
             TextField("Search documents", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .padding(10)
+                .textFieldStyle(.plain)
+                .font(MacEditorialType.meta)
+                .foregroundStyle(MacEditorialColor.ink)
+                .padding(.top, 14)
+                .padding(.bottom, 8)
+                .overlay(alignment: .bottom) { MacEditorialRule.hair }
+                .padding(.horizontal, MacEditorialLayout.margin)
 
-            .padding(.bottom, 2)
-
-            Divider()
-
-            // Filter bar — Tag, Project (when in Project tab), Date
+            // Filter words — Tag, Project, Date, and FILTERS for the pane.
             filterBar
-            Divider()
 
             // Document list + drop zone
             ZStack {
@@ -531,14 +528,18 @@ struct TraceMacDocumentsView: View {
                         Spacer()
                     }
                 } else {
-                    List(filtered, selection: $selectedDoc) { doc in
-                        DocListRow(doc: doc)
-                            .tag(doc)
-                            .contextMenu { rowMenu(for: doc) }
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(filtered) { doc in
+                                let isSelected: Bool = selectedDoc == doc
+                                DocListRow(doc: doc, isSelected: isSelected)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { selectedDoc = doc }
+                                    .contextMenu { rowMenu(for: doc) }
+                            }
+                            Spacer(minLength: MacEditorialLayout.plusSize + MacEditorialLayout.plusInset * 2)
+                        }
                     }
-                    .listStyle(.sidebar)
-                    .scrollContentBackground(.hidden)
-                    .background(Color(nsColor: .windowBackgroundColor))
                 }
 
             }
@@ -570,7 +571,25 @@ struct TraceMacDocumentsView: View {
                 handleDrop(providers: providers)
             }
         }
-        .frame(width: listWidth)
+        .frame(width: MacEditorialLayout.listColumnWidth)
+        .background(MacEditorialColor.paper)
+        .overlay(alignment: .bottomTrailing) {
+            MacEditorialPlus { importDocument() }
+        }
+    }
+
+    /// "184 documents · 6 this week", or what the filter narrowed it to.
+    private var satchelKicker: String {
+        let all: Int = store?.documents.count ?? 0
+        if all == 0 { return "Nothing yet" }
+        let shown: Int = filtered.count
+        if shown != all { return shown == 1 ? "1 of \(all) documents" : "\(shown) of \(all) documents" }
+        let cal = Calendar.current
+        let weekAgo: Date = cal.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+        let recent: Int = (store?.documents ?? []).filter { ($0.created ?? .distantPast) >= weekAgo }.count
+        var parts: [String] = [all == 1 ? "1 document" : "\(all) documents"]
+        if recent > 0 { parts.append("\(recent) this week") }
+        return parts.joined(separator: " \u{00B7} ")
     }
 
     // MARK: - Drop handler
@@ -634,8 +653,10 @@ struct TraceMacDocumentsView: View {
     // MARK: - Filter bar
 
     private var filterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+        // A plain row, not a horizontal scroller: at the fixed measure the
+        // four words fit, and a scroller is how the fourth one went missing.
+        Group {
+            HStack(spacing: 14) {
                 // Tag filter pill. A view onto `selectedTags` since Session 73,
                 // not a second store of the same filter. It still picks ONE tag
                 // — the popover is a single-select list — but it reports the
@@ -705,13 +726,28 @@ struct TraceMacDocumentsView: View {
                         selectedMonth: $filterMonth
                     )
                 }
+
+                Spacer(minLength: 8)
+                // The facet pane's switch, at the row's right edge so it is
+                // where the eye lands; accent while the pane is open. Was a
+                // header button (D260).
+                Button { showFacets.toggle() } label: {
+                    Text("Filters")
+                        .editorialQuietLabel()
+                        .foregroundStyle(showFacets ? MacEditorialColor.accent : MacEditorialColor.faint)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help((showFacets ? "Hide filters (" : "Show filters (") + filterShortcut.combo.label + ")")
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.horizontal, MacEditorialLayout.margin)
+            .padding(.top, 10)
+            .padding(.bottom, 2)
         }
     }
 
-    /// A compact pill button with optional clear (×) badge.
+    /// A filter as a quiet caps word (D260): faint when it is only an offer,
+    /// ink when it is narrowing the list, with a small × to clear it.
     private func filterPill(
         icon: String,
         label: String,
@@ -719,29 +755,31 @@ struct TraceMacDocumentsView: View {
         onClear: @escaping () -> Void,
         onTap: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: 3) {
+        let tint: Color = isActive ? MacEditorialColor.ink : MacEditorialColor.faint
+        return HStack(spacing: 3) {
             Button(action: onTap) {
                 HStack(spacing: 4) {
-                    Image(systemName: icon).font(MacGlyph.small)
-                    Text(label).font(.caption).lineLimit(1)
+                    Text(label).editorialQuietLabel().foregroundStyle(tint).lineLimit(1)
                     if !isActive {
-                        Image(systemName: "chevron.down").font(MacGlyph.small)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .semibold))
+                            .foregroundStyle(MacEditorialColor.faint)
                     }
                 }
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(isActive ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.09))
-                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                .clipShape(Capsule())
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             if isActive {
                 Button(action: onClear) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(MacGlyph.control)
-                        .foregroundStyle(Color.accentColor.opacity(0.7))
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("Clear")
             }
         }
     }
@@ -770,37 +808,28 @@ struct TraceMacDocumentsView: View {
         if let doc = selectedDoc {
             VStack(spacing: 0) {
                 // Tab bar
-                HStack(spacing: 0) {
+                // D260: the two tabs as quiet caps words over an ink rule, the
+                // day-nav grammar, accent on the one you are in.
+                HStack(spacing: 18) {
                     ForEach(DocDetailTab.allCases, id: \.self) { tab in
+                        let on: Bool = docDetailTab == tab
                         Button {
                             docDetailTab = tab
                         } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: tab.icon).font(.caption)
-                                Text(tab.label).font(.caption)
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                            .background(docDetailTab == tab
-                                ? Color.accentColor.opacity(0.12)
-                                : Color.gray.opacity(0.0001))
-                            .foregroundStyle(docDetailTab == tab
-                                ? Color.accentColor
-                                : Color.secondary)
-                            // Same fix as the section tabs: a `.plain` button
-                            // hit-tests its rendered content, so an unselected
-                            // tab over a clear background was only clickable on
-                            // the glyphs. These are short words with icons so it
-                            // was easy to hit by accident, which is how it went
-                            // unnoticed.
-                            .contentShape(Rectangle())
+                            Text(tab.label)
+                                .editorialQuietLabel()
+                                .foregroundStyle(on ? MacEditorialColor.accent : MacEditorialColor.faint)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
                     Spacer()
                 }
-                .background(Color(nsColor: .windowBackgroundColor))
-                Divider()
+                .padding(.horizontal, MacEditorialLayout.margin)
+                .padding(.top, MacEditorialLayout.topMargin - 8)
+                .background(MacEditorialColor.paper)
+                MacEditorialRule.ink
 
                 // Tab content
                 switch docDetailTab {
@@ -1061,78 +1090,59 @@ struct TraceMacDocumentsView: View {
 
 struct DocListRow: View {
     let doc: TraceMacDocument
+    var isSelected: Bool = false
 
+    /// The row grammar (D260): the type badge (a document's colour identity,
+    /// kept), the title in serif with the date at right, then where it is
+    /// filed — category, and the project or endeavor when there is one — and
+    /// its tags as faint caps. Hairline beneath; canvas wash when selected.
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                // **The document's own icon and colour, not its file kind.**
-                //
-                // This row drew a red `doc.fill` for every PDF and a blue
-                // `photo` for every image, which is renderer drift of the exact
-                // kind [[feedback_trace_renderer_drift]] records: Satchel's list
-                // on the phone has drawn `SatchelDocumentMark` — the real icon
-                // and tint — since it shipped, and the Mac never learned.
-                //
-                // It went unnoticed while the icon was decoration. Session 72
-                // made it the subject and gave colour a meaning, retyped the
-                // whole corpus, and David looked at this list and said *"i dont
-                // see any change in the icons for mac"* — correctly, because
-                // this row could not show one. A file kind is the least
-                // interesting true thing about a document, and it is already
-                // legible from the preview beside it.
-                MacIconBadge(icon: doc.resolvedIcon.sfSymbol,
-                             tint: MacPalette.documentTint(doc.resolvedTint),
-                             size: .compact)
-                Text(doc.title)
-                    .font(.body)
-                    .lineLimit(1)
-            }
-            HStack(spacing: 4) {
-                Text(doc.category)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                // For Project/Place/Trip, show the linked note name as a subtitle
-                if let note = doc.linkedNote, !note.isEmpty {
-                    let noteName = note.components(separatedBy: "/").last?
-                        .replacingOccurrences(of: ".md", with: "") ?? note
-                    Text("·")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text(noteName)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+        let wash: Color = isSelected ? MacEditorialColor.canvas : Color.clear
+        let filed: String = filedLine
+        let tagLine: String = doc.tags.prefix(3).joined(separator: " \u{00B7} ")
+        HStack(alignment: .top, spacing: 12) {
+            MacIconBadge(icon: doc.resolvedIcon.sfSymbol,
+                         tint: MacPalette.documentTint(doc.resolvedTint),
+                         size: .compact)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(doc.title)
+                        .font(MacEditorialType.rowTitle)
+                        .foregroundStyle(MacEditorialColor.ink)
                         .lineLimit(1)
-                }
-                if let date = doc.created {
-                    Text("·")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text(date, format: .dateTime.month(.abbreviated).year())
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if !doc.tags.isEmpty {
-                HStack(spacing: 4) {
-                    // THE THIRD PLACE TAGS ARE DRAWN, and it was missed when
-                    // `private` went orange. David: *"the private tag is orange
-                    // in the file itself but the tag on the column is still
-                    // blue."* Three renderers, one rule — the tint function is
-                    // shared precisely so the next one cannot drift either.
-                    ForEach(doc.tags.prefix(3), id: \.self) { tag in
-                        let tint = DocChipsEditor.tint(for: tag, base: .accentColor)
-                        Text(tag)
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(tint.opacity(0.14))
-                            .foregroundStyle(tint)
-                            .clipShape(Capsule())
+                    Spacer(minLength: 8)
+                    if let date = doc.created {
+                        Text(date, format: .dateTime.day().month(.abbreviated))
+                            .editorialListLabel()
                     }
+                }
+                if !filed.isEmpty {
+                    Text(filed)
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if !tagLine.isEmpty {
+                    Text(tagLine)
+                        .editorialListLabel()
+                        .lineLimit(1)
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 10)
+        .padding(.horizontal, MacEditorialLayout.margin)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(wash)
+        .overlay(alignment: .bottom) { MacEditorialRule.hair }
+    }
+
+    private var filedLine: String {
+        var parts: [String] = []
+        if !doc.category.isEmpty { parts.append(doc.category) }
+        if let note = doc.linkedNote, !note.isEmpty { parts.append(noteName(from: note)) }
+        return parts.joined(separator: " \u{00B7} ")
     }
 }
 
@@ -2774,26 +2784,26 @@ struct MacProjectHubSidebar: View {
                     hubSection("Endeavors", count: endeavors.count, empty: "") {
                         ForEach(endeavors) { e in hubEndeavorRow(e) }
                     }
-                    Divider().padding(.vertical, 6)
+                    MacEditorialRule.hair.padding(.vertical, 6)
                 }
 
                 hubSection("Documents", count: linkedDocs.count,
                            empty: "Nothing filed yet.") {
                     ForEach(linkedDocs) { doc in hubDocRow(doc) }
                 }
-                Divider().padding(.vertical, 6)
+                MacEditorialRule.hair.padding(.vertical, 6)
 
                 hubSection("Notes", count: notes.count,
                            empty: "Type [[ in the note to link one.") {
                     ForEach(notes) { note in hubNoteRow(note) }
                 }
-                Divider().padding(.vertical, 6)
+                MacEditorialRule.hair.padding(.vertical, 6)
 
                 hubSection("People", count: people.count,
                            empty: "Nobody named yet.") {
                     ForEach(people, id: \.self) { name in hubPersonRow(name) }
                 }
-                Divider().padding(.vertical, 6)
+                MacEditorialRule.hair.padding(.vertical, 6)
 
                 hubSection("Places", count: places.count,
                            empty: "Nowhere named yet.") {
@@ -2830,19 +2840,24 @@ struct MacProjectHubSidebar: View {
                                            @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(title.uppercased())
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                // D256: the task inspector's field-label vocabulary, so the
+                // rail beside a project note reads like the rail beside a
+                // task or an endeavor rather than a tab strip that lost its
+                // tabs.
+                Text(title).editorialFieldLabel()
                 Spacer()
                 if count > 0 {
-                    Text("\(count)").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                    Text("\(count)")
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.faint)
                 }
             }
-            .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 4)
+            .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
 
             if count == 0 {
                 Text(empty)
-                    .font(.caption2).foregroundStyle(.tertiary)
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.faint)
                     .padding(.horizontal, 12).padding(.bottom, 6)
             } else {
                 content()
@@ -2863,7 +2878,7 @@ struct MacProjectHubSidebar: View {
                 Image(systemName: doc.isPDF ? "doc.fill" : doc.isImage ? "photo" : "doc.text")
                     .foregroundStyle(doc.isPDF ? .red : doc.isImage ? .blue : .secondary)
                     .font(.callout).frame(width: 18)
-                Text(doc.title).font(.callout).lineLimit(1).foregroundStyle(.primary)
+                Text(doc.title).font(MacEditorialType.fieldValue).lineLimit(1).foregroundStyle(MacEditorialColor.ink)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12).padding(.vertical, 3)
@@ -2886,7 +2901,7 @@ struct MacProjectHubSidebar: View {
                 Image(systemName: "suitcase.fill")
                     .foregroundStyle(Color.indigo)
                     .font(.callout).frame(width: 18)
-                Text(e.name).font(.callout).lineLimit(1).foregroundStyle(.primary)
+                Text(e.name).font(MacEditorialType.fieldValue).lineLimit(1).foregroundStyle(MacEditorialColor.ink)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12).padding(.vertical, 3)
@@ -2908,7 +2923,7 @@ struct MacProjectHubSidebar: View {
                     // (D64), read off the storage rather than picked again.
                     .foregroundStyle(Color(nsColor: MacMarkdownTextStorage.noteLinkColor))
                     .font(.callout).frame(width: 18)
-                Text(note.title).font(.callout).lineLimit(1).foregroundStyle(.primary)
+                Text(note.title).font(MacEditorialType.fieldValue).lineLimit(1).foregroundStyle(MacEditorialColor.ink)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12).padding(.vertical, 3)
@@ -2925,7 +2940,7 @@ struct MacProjectHubSidebar: View {
         } label: {
             HStack(spacing: 9) {
                 MacAvatar(name: name, size: .row, tint: .purple)
-                Text(name).font(.callout).lineLimit(1).foregroundStyle(.primary)
+                Text(name).font(MacEditorialType.fieldValue).lineLimit(1).foregroundStyle(MacEditorialColor.ink)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12).padding(.vertical, 3)
@@ -2947,7 +2962,7 @@ struct MacProjectHubSidebar: View {
                 MacIconBadge(icon: placeIcon(for: place?.category ?? ""),
                              tint: placeColor(for: place?.category ?? ""),
                              size: .compact)
-                Text(name).font(.callout).lineLimit(1).foregroundStyle(.primary)
+                Text(name).font(MacEditorialType.fieldValue).lineLimit(1).foregroundStyle(MacEditorialColor.ink)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12).padding(.vertical, 3)

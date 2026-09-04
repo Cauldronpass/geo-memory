@@ -12,8 +12,8 @@
 // is people-list / person / tabs, Satchel is doc-list / preview / metadata.
 // Three peer columns would have been a fourth layout in an app that just spent
 // a phase getting to one, and D8 never answered how you switch Endeavor. The
-// list answers it, and the status filter gets the same tab strip as everywhere
-// else.
+// list answers it. (The status tab strip that line originally described
+// became imminence sections in Session 83, D257.)
 //
 // Known cost, accepted: with one Endeavor on disk the list holds one row. That
 // is a fact about when we are looking, not about the shape.
@@ -43,12 +43,9 @@ import UniformTypeIdentifiers
 
 struct TraceMacEndeavorsView: View {
 
-    enum Filter: String, CaseIterable, Identifiable {
-        case active   = "Active"
-        case upcoming = "Upcoming"
-        case past     = "Past"
-        var id: String { rawValue }
-    }
+    // The Active / Upcoming / Past `Filter` enum lived here until Session 83
+    // (D257). The list now sorts by imminence — NOW, COMING, FINISHED — the
+    // way `DayflowEndeavorListSection` does, and only FINISHED folds.
 
     /// Set by `TraceMacContentView` so a rail row can open the record it names.
     /// Same handoff Directory and Satchel already use — a `Binding` consumed in
@@ -65,11 +62,11 @@ struct TraceMacEndeavorsView: View {
     /// Endeavor slug — the frontmatter `id:`, which is what `selectedID` keys
     /// on. Added Session 70 for global search.
     ///
-    /// It sets the **filter** as well as the selection, and it has to: the rail
-    /// shows one of Active / Upcoming / Past at a time, and setting `selectedID`
-    /// to a past trip while the filter says Active selects a row that is not on
-    /// screen. `selected` falls back to `filtered.first`, so the panel would
-    /// have opened the wrong Endeavor rather than none — a silent wrong answer,
+    /// It unfolds FINISHED as well as setting the selection (it used to move the
+    /// Active / Upcoming / Past filter, D257): setting `selectedID` to a past
+    /// trip while FINISHED is folded selects a row that is not on screen.
+    /// `selected` falls back to the first live row, so the panel would have
+    /// opened the wrong Endeavor rather than none — a silent wrong answer,
     /// which is worse than a visible failure.
     var deepLinkEndeavorID:  Binding<String?>? = nil
     var selectedSection:     Binding<MacSection?>? = nil
@@ -83,7 +80,14 @@ struct TraceMacEndeavorsView: View {
     @State private var resolveError: String? = nil
     @State private var showOtherVisits = false
     @State private var docStore: TraceMacDocumentStore?
-    @State private var filter: Filter = .active
+    /// FINISHED is folded by default (D257). Past and cancelled already sort
+    /// last, but "at the bottom" stops being enough the moment there are more
+    /// finished than live ones, which is the steady state of a list of trips.
+    @State private var showFinished = false
+    /// The TASKS section's composer and open card (D257). Same pair
+    /// `DocTasksPanel` keeps.
+    @State private var composingTask = false
+    @State private var openTaskID: String? = nil
     @State private var isDocDropTargeted = false
     /// Projects + Daily. Read once when the section appears; a note created
     /// while it is open shows up on the next visit, which is the same freshness
@@ -117,22 +121,26 @@ struct TraceMacEndeavorsView: View {
 
     private var all: [Endeavor] { store?.endeavors ?? [] }
 
-    private var filtered: [Endeavor] {
-        all.filter { e in
-            switch e.status() {
-            case .active:              return filter == .active
-            case .upcoming, .idea:     return filter == .upcoming
-            case .past, .cancelled:    return filter == .past
-            // On hold is neither coming nor done. It sits with Active, because
-            // the reason you paused it is the reason you still need to see it.
-            case .onHold:              return filter == .active
-            }
-        }
+    /// Running now, or paused. On hold sits with NOW because the reason you
+    /// paused it is the reason you still need to see it (carried over from the
+    /// old Active tab's rule).
+    private var now: [Endeavor] {
+        all.filter { [.active, .onHold].contains($0.status()) }.sorted(by: Self.imminence)
+    }
+    private var coming: [Endeavor] {
+        all.filter { [.upcoming, .idea].contains($0.status()) }.sorted(by: Self.imminence)
+    }
+    private var finished: [Endeavor] {
+        all.filter { [.past, .cancelled].contains($0.status()) }.sorted(by: Self.imminence)
+    }
+    /// `Endeavor.sortKey` — the phone's order, so the two lists agree.
+    private static func imminence(_ a: Endeavor, _ b: Endeavor) -> Bool {
+        a.sortKey() < b.sortKey()
     }
 
     private var selected: Endeavor? {
-        guard let selectedID else { return filtered.first }
-        return all.first { $0.id == selectedID } ?? filtered.first
+        guard let selectedID else { return now.first ?? coming.first ?? finished.first }
+        return all.first { $0.id == selectedID } ?? now.first ?? coming.first ?? finished.first
     }
 
     /// Visits inside the Endeavor's dates, inclusive of both ends.
@@ -262,37 +270,9 @@ struct TraceMacEndeavorsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // The `+` was suspected during the hit-testing hunt and is
-            // innocent — the cause was the cover image's unclipped hit area,
-            // see `coverBand`. Restored. `New Endeavor…` stays in the list's
-            // context menu as well, which is a better place for it anyway.
-            MacSectionHeader("Endeavors",
-                             action: MacHeaderButton(icon: "plus",
-                                                     help: "New endeavor") { showingNew = true }) {
-                MacTabStrip(options: Filter.allCases,
-                            selection: $filter) { $0.rawValue }
-            }
-
-            // Open questions band.
-            //
-            // David chose the surface himself: *"The endeavor active screen is
-            // the one place i think makes sense. its mainly blank because it
-            // defaults to the active tab and Im not in the middle of an active
-            // endeavor most times."*
-            //
-            // **Above the split, not inside the empty state**, so it is there
-            // whether or not an active endeavor happens to be selected. The
-            // empty-state placeholder only renders when nothing is selected,
-            // and a prompt that hides itself the moment he has one live trip is
-            // a prompt he would meet once a season.
-            //
-            // Active tab only. Past is where he goes to read what happened, and
-            // a nag bar over it would be answering a question he did not ask.
-            if filter == .active, !openDestinations.isEmpty {
-                openQuestionsBand
-                Divider()
-            }
-
+            // No `MacSectionHeader` and no tab strip since D257: the list
+            // column carries an Editorial masthead, the `+` is the capture
+            // square on it, and the open-questions block sits under the list.
             HStack(spacing: 0) {
                 listColumn
                 MacColumnResizer(width: $listWidth)
@@ -309,9 +289,9 @@ struct TraceMacEndeavorsView: View {
         }
         // **Which endeavor, not just "Endeavors".** Without this, back from a
         // document opened out of Megan's rail would return to the Endeavors
-        // section and land on whatever the filter selects first — near enough to
+        // section and land on whatever sorts first — near enough to
         // look intended and wrong enough to be useless. `selected` is derived
-        // (it falls back to `filtered.first`), so the id it resolves to is the
+        // (it falls back to the first live row), so the id it resolves to is the
         // one on screen, which is the one worth returning to.
         .onChange(of: selected?.id) { _, id in
             guard let id else { return }
@@ -321,10 +301,10 @@ struct TraceMacEndeavorsView: View {
             // endeavor. When i then pressed the back arrow nothing happened. I
             // had to press that back arrow a few times."*
             //
-            // `selected` is derived and falls back to `filtered.first`, which is
+            // `selected` is derived and falls back to the first live row, which is
             // the property that makes the comment above this work — and the
             // property that breaks it on arrival. Landing here from a document's
-            // Endeavor arrow, the rail renders once with the filter's first row
+            // Endeavor arrow, the rail renders once with the list's first row
             // selected, records THAT as a place, and only then does the deep-link
             // `.task` run `reveal` and move to the requested Endeavor. So the
             // back stack gains an Endeavor he never chose, sitting between where
@@ -348,6 +328,11 @@ struct TraceMacEndeavorsView: View {
             await store?.reload()
             await docStore?.reload()
             if notionService.visits.isEmpty { await notionService.fetchVisits() }
+            // TASKS (D257) reads `ReminderTaskStore.shared.allTasks`, and until
+            // now nothing on this screen loaded that store. Cold-opening
+            // Endeavors would have shown an empty section on an endeavor that
+            // has tasks — the D252 shape exactly. One EventKit read, local.
+            await ReminderTaskStore.shared.refreshAll()
         }
         // Search result → this rail. `reveal` already exists and already does
         // the whole job — it sets the filter from the Endeavor's own status and
@@ -387,66 +372,66 @@ struct TraceMacEndeavorsView: View {
     /// `skipped:` is a line in the endeavor's frontmatter — which is what makes
     /// no confirmation the right call rather than a risky one.
     private var openQuestionsBand: some View {
+        // D257: an accent rule and quiet caps, not an orange wash. Accent
+        // means "acting", and this block is the one place on the screen that
+        // is asking you to act.
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "questionmark.circle.fill")
-                    .foregroundStyle(.orange)
-                Text(openDestinations.count == 1
-                     ? "1 place from a finished endeavor has no visit logged"
-                     : "\(openDestinations.count) places from finished endeavors have no visit logged")
-                    .font(.system(.callout, weight: .medium))
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-
-            // Four, then a count. The band sits above the whole screen, and one
-            // that can grow without limit pushes the endeavors it is sitting on
-            // off the bottom. Resolving four reveals the next four.
+            MacEditorialRule.accent
+            Text(openDestinations.count == 1
+                 ? "1 place from a finished endeavor has no visit logged"
+                 : "\(openDestinations.count) places from finished endeavors have no visit logged")
+                .editorialQuietLabel()
+                .foregroundStyle(MacEditorialColor.accent)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
             ForEach(openDestinations.prefix(4)) { item in
-                HStack(spacing: 10) {
-                    Image(systemName: "mappin.circle.fill")
-                        .foregroundStyle(.secondary)
+                let canWent: Bool = placeRecord(for: item.placeName) != nil
+                let busy: Bool = resolving.contains(item.id)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(shortPlaceName(item.placeName))
-                            .font(MacType.row)
+                            .font(MacEditorialType.fieldValue)
+                            .foregroundStyle(MacEditorialColor.ink)
+                            .lineLimit(1)
                         Text("\(item.endeavor.name) · ended \(endedLine(item.endeavor))")
-                            .font(MacType.meta)
-                            .foregroundStyle(.secondary)
+                            .font(MacEditorialType.meta)
+                            .foregroundStyle(MacEditorialColor.faint)
+                            .lineLimit(1)
                     }
-                    Spacer()
-                    Button("Went") { Task { await resolveWent(item) } }
-                        .disabled(resolving.contains(item.id) || placeRecord(for: item.placeName) == nil)
-                        .help(placeRecord(for: item.placeName) == nil
-                              ? "No Place record named \(item.placeName)"
-                              : "Log a visit on \(endedLine(item.endeavor))")
-                    Button("Didn't go") { Task { await resolveSkipped(item) } }
-                        .disabled(resolving.contains(item.id))
+                    Spacer(minLength: 8)
+                    HStack(spacing: 10) {
+                        Button("Went") { Task { await resolveWent(item) } }
+                            .buttonStyle(.plain)
+                            .editorialQuietLabel()
+                            .foregroundStyle(canWent && !busy ? MacEditorialColor.muted : MacEditorialColor.hairline)
+                            .disabled(busy || !canWent)
+                            .help(canWent ? "Log a visit on \(endedLine(item.endeavor))"
+                                          : "No Place record named \(item.placeName)")
+                        Button("Didn't go") { Task { await resolveSkipped(item) } }
+                            .buttonStyle(.plain)
+                            .editorialQuietLabel()
+                            .foregroundStyle(busy ? MacEditorialColor.hairline : MacEditorialColor.muted)
+                            .disabled(busy)
+                    }
                 }
-                .padding(.horizontal, 14)
                 .padding(.vertical, 5)
             }
-
             if openDestinations.count > 4 {
                 Text("and \(openDestinations.count - 4) more")
-                    .font(MacType.meta)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 14)
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.faint)
                     .padding(.bottom, 4)
             }
-
             if let resolveError {
                 Text(resolveError)
-                    .font(MacType.meta)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 14)
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.accent)
                     .padding(.bottom, 4)
             }
         }
-        .padding(.bottom, 6)
+        .padding(.top, 18)
+        .padding(.bottom, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.10))
     }
 
     private func endedLine(_ e: Endeavor) -> String {
@@ -510,56 +495,49 @@ struct TraceMacEndeavorsView: View {
     /// silently never presents. Three sheets in this view means three different
     /// hosts, and the list is the one that outlives any single endeavor.
     private var listColumn: some View {
-        VStack(spacing: 0) {
-            if filtered.isEmpty {
-                MacEmptyState.list("flag", "Nothing \(filter.rawValue.lowercased())")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+        VStack(alignment: .leading, spacing: 0) {
+            MacEditorialMasthead(kicker: listKicker, title: "Endeavors")
+                .padding(.horizontal, MacEditorialLayout.margin)
+                .padding(.top, MacEditorialLayout.topMargin)
+            if all.isEmpty {
+                Text("Nothing yet. A trip, a renovation, anything with a start and an end.")
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.faint)
+                    .padding(.horizontal, MacEditorialLayout.margin)
+                    .padding(.top, 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     // New has to be reachable when the list is empty, which is
                     // exactly when you most want it.
                     .contentShape(Rectangle())
                     .contextMenu { Button("New Endeavor…") { showingNew = true } }
             } else {
-                List(filtered, id: \.id, selection: $selectedID) { e in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(e.name)
-                            .font(.system(.callout, weight: .medium))
-                            .lineLimit(1)
-                        Text(dateLine(e))
-                            .font(MacType.meta)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if !now.isEmpty {
+                            MacEditorialSectionLabel(text: "Now").padding(.top, 22)
+                            MacEditorialRule.ink
+                            ForEach(now) { e in endeavorRow(e) }
+                        }
+                        if !coming.isEmpty {
+                            MacEditorialSectionLabel(text: "Coming").padding(.top, 22)
+                            MacEditorialRule.ink
+                            ForEach(coming) { e in endeavorRow(e) }
+                        }
+                        if !finished.isEmpty {
+                            finishedFold
+                            if showFinished {
+                                ForEach(finished) { e in endeavorRow(e) }
+                            }
+                        }
+                        if !openDestinations.isEmpty { openQuestionsBand }
+                        Spacer(minLength: MacEditorialLayout.plusSize + MacEditorialLayout.plusInset * 2)
                     }
-                    .padding(.vertical, 2)
-                    .tag(e.id as String?)
-                    // Right-click on the row. David, 2026-08-04, after the
-                    // settings and cover chips on the cover band turned out to
-                    // be hard to find against a photograph: *"please add this
-                    // as a right click option as well on the card to the left."*
-                    //
-                    // The chips stay — they are where you look when you are
-                    // already reading the endeavor. This is where you look when
-                    // you are picking one, and on a Mac a list row that cannot
-                    // be right-clicked reads as inert.
-                    //
-                    // Both entries route to the same places the chips do, so
-                    // there is one implementation of each verb and no second
-                    // path to keep in step.
-                    .contextMenu {
-                        Button("New Endeavor…") { showingNew = true }
-                        Divider()
-                        Button("Endeavor Settings…") { settingsTarget = e }
-                        Button("Change Cover…")      { coverTarget = e }
-                        Divider()
-                        // Confirmed separately from the sheet's own Delete.
-                        // A destructive action reached by right-click, with no
-                        // sheet in front of it, is the one that most needs the
-                        // extra beat.
-                        Button("Delete…", role: .destructive) { deleteTarget = e }
-                    }
+                    .padding(.horizontal, MacEditorialLayout.margin)
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
             }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            MacEditorialPlus { showingNew = true }
         }
         .frame(width: listWidth)
         .confirmationDialog("Delete “\(deleteTarget?.name ?? "")”?",
@@ -602,22 +580,124 @@ struct TraceMacEndeavorsView: View {
                 }
             )
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(MacEditorialColor.paper)
     }
 
-    private func dateLine(_ e: Endeavor) -> String {
-        let f = DateFormatter(); f.dateFormat = "d MMM"
-        var out = ""
-        if let s = e.starts {
-            out = f.string(from: s)
-            if let en = e.ends, !Calendar.current.isDate(en, inSameDayAs: s) {
-                out += " – " + f.string(from: en)
+    /// The count, stated once at the top rather than on a tab strip.
+    private var listKicker: String {
+        let n: Int = all.count
+        if n == 0 { return "Nothing here" }
+        var parts: [String] = [n == 1 ? "1 endeavor" : "\(n) endeavors"]
+        if !now.isEmpty    { parts.append(now.count == 1 ? "1 now" : "\(now.count) now") }
+        if !coming.isEmpty { parts.append(coming.count == 1 ? "1 coming" : "\(coming.count) coming") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// FINISHED · n, folded. Same grammar as the agenda fold on a meeting row.
+    private var finishedFold: some View {
+        let glyph: String = showFinished ? "chevron.up" : "chevron.down"
+        return Button {
+            withAnimation(.easeInOut(duration: 0.16)) { showFinished.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Text("Finished \u{00B7} \(finished.count)")
+                    .editorialQuietLabel()
+                Image(systemName: glyph)
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(MacEditorialColor.faint)
+                Spacer(minLength: 0)
             }
+            .frame(height: 26)
+            .padding(.top, 18)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+    }
+
+    /// One row: name in serif, dates and destination muted, and a third line
+    /// that is the countdown in ACCENT for what is ahead or a faint summary
+    /// for what is done. Black, grey and one accent — no thumbnails, by
+    /// David's call (D257): at 44pt a landscape photo is a coloured blob, and
+    /// four random photo colours down a list break the register's one rule
+    /// about colour.
+    private func endeavorRow(_ e: Endeavor) -> some View {
+        let isSelected: Bool = selected?.id == e.id
+        let wash: Color = isSelected ? MacEditorialColor.canvas : Color.clear
+        let third: (text: String, tint: Color)? = rowThirdLine(e)
+        return Button {
+            selectedID = e.id
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(e.name)
+                    .font(MacEditorialType.rowTitle)
+                    .foregroundStyle(MacEditorialColor.ink)
+                    .lineLimit(1)
+                Text(rowSecondLine(e))
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.muted)
+                    .lineLimit(1)
+                if let third {
+                    Text(third.text)
+                        .editorialListLabel()
+                        .foregroundStyle(third.tint)
+                }
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, MacEditorialLayout.margin)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(wash)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, -MacEditorialLayout.margin)
+        .overlay(alignment: .bottom) { MacEditorialRule.hair }
+        // Right-click on the row. David, 2026-08-04, after the settings and
+        // cover chips on the cover band turned out to be hard to find against
+        // a photograph: *"please add this as a right click option as well on
+        // the card to the left."* Both entries route to the same places the
+        // band's pills do, so there is one implementation of each verb.
+        .contextMenu {
+            Button("New Endeavor…") { showingNew = true }
+            Divider()
+            Button("Endeavor Settings…") { settingsTarget = e }
+            Button("Change Cover…")      { coverTarget = e }
+            Divider()
+            // Confirmed separately from the sheet's own Delete. A destructive
+            // action reached by right-click, with no sheet in front of it, is
+            // the one that most needs the extra beat.
+            Button("Delete…", role: .destructive) { deleteTarget = e }
+        }
+    }
+
+    /// "20 – 28 Nov 2026 · Fort Collins, CO". Prose dates from the phone's own
+    /// phrasing (`endeavorDateLabel`), then the destination.
+    private func rowSecondLine(_ e: Endeavor) -> String {
+        var out = endeavorDateLabel(e)
         if let d = e.destination?.replacingOccurrences(of: ",", with: ", "), !d.isEmpty {
-            out += out.isEmpty ? d : " · \(d)"
+            out += " · " + d
         }
-        return out.isEmpty ? e.type : out
+        return out
+    }
+
+    /// Ahead: the countdown, accent. Done: what it left behind, faint. Running:
+    /// "Day 3 of 11", accent. Nothing for an idea with no dates.
+    private func rowThirdLine(_ e: Endeavor) -> (text: String, tint: Color)? {
+        switch e.status() {
+        case .upcoming, .active:
+            guard let c = endeavorCountdownLabel(e) else { return nil }
+            return (c, MacEditorialColor.accent)
+        case .past:
+            let places = e.places.count
+            let visitCount = visits(in: e).count
+            var parts: [String] = []
+            if places > 0     { parts.append(places == 1 ? "1 place" : "\(places) places") }
+            if visitCount > 0 { parts.append(visitCount == 1 ? "1 visit" : "\(visitCount) visits") }
+            guard !parts.isEmpty else { return nil }
+            return (parts.joined(separator: " · "), MacEditorialColor.faint)
+        case .onHold:    return ("On hold", MacEditorialColor.faint)
+        case .cancelled: return ("Cancelled", MacEditorialColor.faint)
+        case .idea:      return nil
+        }
     }
 
     // MARK: Detail
@@ -636,6 +716,7 @@ struct TraceMacEndeavorsView: View {
             // must own only what is below the fence.
             TraceMacNoteEditor(
                 relativePath: e.relativePath,
+                heading: "Endeavor note",
                 loadTransform: { EndeavorFile.splitRaw($0).body },
                 saveTransform: { edited, onDisk in
                     let fm = EndeavorFile.splitRaw(onDisk).frontmatter
@@ -666,6 +747,45 @@ struct TraceMacEndeavorsView: View {
     /// One constant, three call sites, so the band and its gradient and its
     /// frame cannot disagree — they were three separate `96`s before.
     private static let coverHeight: CGFloat = 160
+    /// The band with no photograph: tall enough for a kicker over a 34pt name.
+    private static let bareBandHeight: CGFloat = 96
+
+    /// "TRAVEL · 20 – 28 NOV 2026 · STARTS IN 78 DAYS". The type, the phone's
+    /// date phrasing, and the countdown when there is one. The status label
+    /// that used to sit beside the name is folded into this line: "on hold"
+    /// and "cancelled" are the only two the dates cannot say, and they are
+    /// said here.
+    private func bandKicker(_ e: Endeavor) -> String {
+        var parts: [String] = [e.type, endeavorDateLabel(e)]
+        if let c = endeavorCountdownLabel(e) { parts.append(c) }
+        else if e.status() == .onHold || e.status() == .cancelled { parts.append(e.status().label) }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// `MacEditorialPill`'s shape in the band's own tint: white over a
+    /// photograph, where the pill's hairline edge would vanish, and the
+    /// ordinary pill on bare paper.
+    @ViewBuilder
+    private func coverPill(_ label: String, onCover: Bool, action: @escaping () -> Void) -> some View {
+        if onCover {
+            Button(action: action) {
+                Text(label)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color.white.opacity(0.65), lineWidth: 1)
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            MacEditorialPill(label: label, action: action)
+        }
+    }
 
     /// One drag in progress. A struct rather than a tuple because `@State`
     /// wants something nameable, and `id` is here so a drag cannot bleed onto a
@@ -780,45 +900,41 @@ struct TraceMacEndeavorsView: View {
                     .allowsHitTesting(false)
                 coverDragTarget(e)
             } else {
-                Color(nsColor: .controlBackgroundColor).frame(height: 56)
+                MacEditorialColor.paper.frame(height: Self.bareBandHeight)
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(e.name).font(MacType.title)
-                Text(e.status().label)
-                    .macLabel()
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 4))
-                Spacer()
-                // On the band, because the band is the thing it changes. It
-                // reads on both states: over a photograph the material chip
-                // keeps it legible, and on the plain 56pt title row it is the
-                // only affordance saying a cover is possible at all.
-                Button { coverTarget = e } label: {
-                    Image(systemName: "photo")
-                        .font(MacGlyph.control)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(.thinMaterial, in: Capsule())
-                        .contentShape(Capsule())
+            // D257: the band is the masthead. Kicker over the name in the
+            // Editorial type; over a photograph in white, on bare paper in ink.
+            let hasCover: Bool = e.cover?.isEmpty == false
+            let textTint: Color = hasCover ? Color.white : MacEditorialColor.ink
+            let kickerTint: Color = hasCover ? Color.white.opacity(0.85) : MacEditorialColor.muted
+            HStack(alignment: .lastTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(bandKicker(e))
+                        .editorialKicker()
+                        .foregroundStyle(kickerTint)
+                        .lineLimit(1)
+                    Text(e.name)
+                        .font(MacEditorialType.masthead)
+                        .foregroundStyle(textTint)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
-                .help(e.cover?.isEmpty == false ? "Change cover" : "Add a cover")
-                Button { settingsTarget = e } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(MacGlyph.control)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(.thinMaterial, in: Capsule())
-                        .contentShape(Capsule())
+                Spacer(minLength: 8)
+                // On the band, because the band is the thing they change. Over
+                // a photograph the pills read in white; on bare paper they are
+                // the only affordance saying a cover is possible at all.
+                HStack(spacing: 7) {
+                    coverPill(hasCover ? "Cover" : "Add cover", onCover: hasCover) { coverTarget = e }
+                        .help(hasCover ? "Change cover" : "Add a cover")
+                    coverPill("Settings", onCover: hasCover) { settingsTarget = e }
+                        .help("Endeavor settings")
                 }
-                .buttonStyle(.plain)
-                .help("Endeavor settings")
             }
-            .foregroundStyle(e.cover?.isEmpty == false ? Color.white : Color.primary)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 9)
+            .padding(.horizontal, MacEditorialLayout.margin)
+            .padding(.bottom, 14)
         }
-        .frame(height: e.cover?.isEmpty == false ? Self.coverHeight : 56)
-        .overlay(alignment: .bottom) { Divider() }
+        .frame(height: e.cover?.isEmpty == false ? Self.coverHeight : Self.bareBandHeight)
+        .overlay(alignment: .bottom) { MacEditorialRule.ink }
         // Attached HERE, not beside `.sheet(isPresented: $showingNew)` on the
         // outer VStack. Two `.sheet` modifiers on the same view is a long-
         // standing SwiftUI coin flip — the later one wins and the earlier one
@@ -855,6 +971,9 @@ struct TraceMacEndeavorsView: View {
                 // So the ones the log names are the section, and the others sit
                 // behind a disclosure that states its own count. Nothing is
                 // hidden, but nothing unchosen is competing either.
+                tasksSection(e)
+                Divider().padding(.vertical, 6)
+
                 destinationsSection(e)
                 Divider().padding(.vertical, 6)
 
@@ -901,8 +1020,24 @@ struct TraceMacEndeavorsView: View {
             }
             .padding(.bottom, 12)
         }
-        .frame(width: 232)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(width: MacEditorialLayout.railWidth)
+        .background(MacEditorialColor.paper)
+        // The TASKS composer. Its own host, for the reason stated on
+        // `listColumn`: two `.sheet`s on one view is a coin flip.
+        .sheet(isPresented: $composingTask) {
+            // Inbox and undated, matching the phone's own endeavor task writer
+            // (`promoteEndeavorTask` in DayflowEndeavorViews): the endeavor IS
+            // the task's context, the way a document is on `DocTasksPanel`, and
+            // no when-decision has been made. The link is written for you —
+            // `[[<name>]]`, which is what both apps' endeavor screens search
+            // for — so the task cannot miss its endeavor. No rail: this + means
+            // "a task for this endeavor".
+            MacTaskComposer(defaultDate: nil,
+                            onAdded: { },
+                            defaultList: ReminderTaskStore.inboxListName,
+                            extraNoteLines: ["[[" + e.name + "]]"],
+                            onSwitch: nil)
+        }
         // Hosted on the rail — the fourth sheet in this view, and the fourth
         // distinct host view, per D36.
         .sheet(item: $addingDestinationTo) { target in
@@ -913,22 +1048,75 @@ struct TraceMacEndeavorsView: View {
         }
     }
 
+    /// A rail section's name: the task inspector's field-label vocabulary
+    /// (D257), with the count trailing. Same furniture as WHEN / LIST / REMIND.
     private func railHeader(_ title: String, _ count: Int) -> some View {
-        HStack {
-            Text(title).macLabel().foregroundStyle(.tertiary)
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).editorialFieldLabel()
             Spacer()
             if count > 0 {
-                Text("\(count)").font(MacType.metaEmphasis).foregroundStyle(.tertiary)
+                Text("\(count)")
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.faint)
             }
         }
-        .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 5)
+        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
     }
 
     private func railEmpty(_ text: String) -> some View {
         Text(text)
-            .font(MacType.meta)
-            .foregroundStyle(.tertiary)
+            .font(MacEditorialType.meta)
+            .foregroundStyle(MacEditorialColor.faint)
             .padding(.horizontal, 12).padding(.bottom, 4)
+    }
+
+    // MARK: Tasks on the endeavor (D257)
+
+    /// The phone's OPEN TASKS band (Session 78 round two), on the Mac at last.
+    /// Same query, spelled the same way: a task whose notes carry
+    /// `[[<endeavor name>]]`. Rows are `MacTaskRow`, the app's one task row.
+    private func linkedOpenTasks(_ e: Endeavor) -> [ThingsTask] {
+        ReminderTaskStore.shared.allTasks.filter {
+            ($0.notes ?? "").contains("[[\(e.name)]]")
+        }
+    }
+
+    @ViewBuilder
+    private func tasksSection(_ e: Endeavor) -> some View {
+        let tasks: [ThingsTask] = linkedOpenTasks(e)
+        HStack(alignment: .firstTextBaseline) {
+            Text("Tasks").editorialFieldLabel()
+            Spacer()
+            if !tasks.isEmpty {
+                Text("\(tasks.count)")
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.faint)
+            }
+            Button { composingTask = true } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(MacEditorialColor.faint)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("New task for this endeavor")
+        }
+        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
+        if tasks.isEmpty {
+            railEmpty("No tasks yet.")
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(tasks) { task in
+                    MacEditorialRule.hair
+                    MacTaskRow(task: task,
+                               isOpen: openTaskID == task.id,
+                               onToggle: { openTaskID = openTaskID == task.id ? nil : task.id },
+                               onChanged: { Task { await ReminderTaskStore.shared.refreshAll() } },
+                               trailing: .dateElseList)
+                }
+            }
+            .padding(.horizontal, 12)
+        }
     }
 
     /// A tick when the trip log already names this place, a `+` when it does
@@ -1002,12 +1190,10 @@ struct TraceMacEndeavorsView: View {
     /// active one on hold, would otherwise leave it behind a tab you are not
     /// looking at — which reads as the save having failed rather than as a tab
     /// being wrong. Shared by create and by save so the two cannot disagree.
+    /// Selects an endeavor and, if it is finished, unfolds FINISHED so the row
+    /// is on screen. (Used to set the Active / Upcoming / Past filter — D257.)
     private func reveal(_ e: Endeavor) {
-        switch e.status() {
-        case .upcoming, .idea:  filter = .upcoming
-        case .past, .cancelled: filter = .past
-        default:                filter = .active
-        }
+        if [.past, .cancelled].contains(e.status()) { showFinished = true }
         selectedID = e.id
     }
 
@@ -1639,7 +1825,7 @@ private struct MacEndeavorCover: View {
 /// **Dates are optional and the end is not defaulted to the start.** A dateless
 /// endeavor is legitimate; that is what `EndeavorStatus.idea` is for. Copying
 /// `starts` into `ends` would silently make every open-ended project a one-day
-/// event in the status filter.
+/// event in the list's imminence sections.
 ///
 /// **The name does not rename the file.** The slug is the identity, the path is
 /// where the bytes are, and moving the file to stay cosmetically in step would

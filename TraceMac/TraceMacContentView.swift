@@ -31,9 +31,13 @@ enum MacSection: String, CaseIterable, Identifiable {
     case today     = "Today"
     case upcoming  = "Upcoming"
     case tasks     = "Tasks"
-    /// One destination covering Daily, Weekly and Projects. The tab lives in
-    /// `TraceMacNotesView`'s own `@State` — see the note there for why.
-    case notes     = "Notes"
+    /// Was "Notes", covering Daily, Weekly and Projects. Session 83 (D254,
+    /// D255): Daily folded into Today's DAYS list, Weekly into that list's
+    /// week rules, so the one thing left is Projects and the row says so. The
+    /// CASE stays `notes` for the reason `inbox` gives below: nothing persists
+    /// a `MacSection` by rawValue, and renaming the case would churn every
+    /// call site for a label change.
+    case notes     = "Projects"
     /// D1 listed this row when the design was written; it never existed in
     /// code. Added Session 64, once there was something for it to open.
     case endeavors = "Endeavors"
@@ -67,7 +71,7 @@ enum MacSection: String, CaseIterable, Identifiable {
         case .today:     return "sun.max"
         case .upcoming:  return "calendar"
         case .tasks:     return "list.bullet"
-        case .notes:     return "book.pages"
+        case .notes:     return "folder"
         case .endeavors: return "flag"
         case .directory: return "person.2"
         case .activity:  return "figure.run"
@@ -94,7 +98,11 @@ struct TraceMacContentView: View {
     @Environment(NotionService.self) private var notionService
 
     @Binding var selectedSection: MacSection?
-    @State private var pendingHorizonsFile: String? = nil
+    /// A week (or day) for Today's DAYS list, set by the routes that used to
+    /// land on the Weekly tab. Consumed by `TraceMacTodayView`.
+    @State private var pendingDaysPick: MacDaysPick? = nil
+    /// Bare filename into the Projects list. Consumed by `TraceMacProjectsView`.
+    @State private var pendingProjectFile: String? = nil
     @State private var isDropTargeted = false
 
     // Deep-link handoffs. Session 63 (2026-08-02), Phase 1.
@@ -112,7 +120,8 @@ struct TraceMacContentView: View {
     // whenever the value changes — so it does not matter whether the view is
     // already up or arrives later. The view clears the binding when done.
     //
-    // Not a new idea: `pendingHorizonsFile` above has worked this way all along.
+    // Not a new idea: the Weekly tab's `pendingHorizonsFile` worked this way
+    // all along (retired in Session 83, its route now lands on Today's DAYS).
     // It was the one deep link with no timing hack in it, and it was the model
     // for these three.
     /// The day Today is showing. Held HERE rather than inside
@@ -173,7 +182,7 @@ struct TraceMacContentView: View {
     /// The Endeavors rail already keys its selection on that id; it just had no
     /// way to be told one from outside.
     @State private var pendingEndeavorID: String? = nil
-    /// Bare filename into the Inbox list, same shape as `pendingHorizonsFile`.
+    /// Bare filename into the Inbox list, same shape as `pendingProjectFile`.
     @State private var pendingInboxFile: String? = nil
     /// Set by the system-wide hot key on the one path that still needs the
     /// window (see `MacHotKeyCenter.fire`), consumed below.
@@ -213,8 +222,7 @@ struct TraceMacContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openHorizonsFile)) { note in
             if let filename = note.userInfo?["filename"] as? String {
-                selectedSection = .notes
-                pendingHorizonsFile = filename
+                routeWeekFile(filename)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .selectDocument)) { note in
@@ -244,9 +252,31 @@ struct TraceMacContentView: View {
                 // Before this, an unmatched name fell out of the `if` and **did
                 // nothing at all** — the link still rendered, so it looked live
                 // and went nowhere, which is worse than no link.
-                selectedSection = .notes
-                pendingNotePath = note.relativePath
+                routeNote(note.relativePath)
+            } else if MacDaysList.dayFormatter.date(from: name) != nil {
+                // A date-shaped name is a DAY whether or not its file exists
+                // yet: `linkableNotes()` lists only days that have a file, and
+                // Today creates the file on the first keystroke. Session 83,
+                // found alongside the week case below.
+                routeNote(NoteStore.dailyFolder + "/" + name + ".md")
+            } else if routeWeekFile(name + ".md") {
+                // `[[2026-W35]]`. Week notes are not in `linkableNotes()` (that
+                // list is Projects + Daily, per D49, and is shared with the
+                // phone), so before Session 83 this name fell out of the `if`
+                // and the link went nowhere — David: "once it looked like a
+                // link it never went anywhere." `routeWeekFile` is its own
+                // shape test; a name that is not `YYYY-Www` returns false
+                // and falls through as before.
             }
+        }
+        // `pendingNotePath` is still WRITTEN by the Endeavors rail's linked-note
+        // rows (`deepLinkNotePath`), which used to hand it to the Notes tab
+        // container. Nothing consumes it there any more, so it is consumed
+        // here, the same way, and routed by folder.
+        .onChange(of: pendingNotePath) { _, path in
+            guard let path else { return }
+            pendingNotePath = nil
+            routeNote(path)
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToRecord)) { note in
             guard let type = note.userInfo?["type"] as? String,
@@ -513,6 +543,42 @@ struct TraceMacContentView: View {
         openSearchResult(request.destination, query: request.query)
     }
 
+    /// Where a note by container-relative path lives now that the Notes tab
+    /// container is gone (Session 83). A day note is a DAY, so it opens on
+    /// Today; a project note opens in Projects; a week note opens in Today's
+    /// DAYS list with its rule picked. Anything else is ignored rather than
+    /// guessed at — `linkableNotes()` only ever produces these folders.
+    private func routeNote(_ path: String) {
+        let filename = (path as NSString).lastPathComponent
+        if path.hasPrefix(NoteStore.dailyFolder + "/") {
+            let key = filename.replacingOccurrences(of: ".md", with: "")
+            if let day = MacDaysList.dayFormatter.date(from: key) {
+                dayInView = Calendar.current.startOfDay(for: day)
+                selectedSection = .today
+            }
+        } else if path.hasPrefix(NoteStore.projectsFolder + "/") {
+            selectedSection = .notes
+            pendingProjectFile = filename
+        } else if path.hasPrefix("Notes/Horizons/") {
+            routeWeekFile(filename)
+        }
+    }
+
+    /// "2026-W35.md" → Today, DAYS, Week 35 picked. A filename that is not an
+    /// ISO week (the old Horizons folder also held month notes) opens nothing,
+    /// which is what the Weekly tab did with its calendar header for those.
+    @discardableResult
+    private func routeWeekFile(_ filename: String) -> Bool {
+        let stem = filename.replacingOccurrences(of: ".md", with: "")
+        let parts = stem.split(separator: "-")
+        guard parts.count == 2, let year = Int(parts[0]),
+              parts[1].hasPrefix("W"), let week = Int(parts[1].dropFirst()),
+              (1...53).contains(week) else { return false }
+        pendingDaysPick = .week(year: year, week: week)
+        selectedSection = .today
+        return true
+    }
+
     private func openSearchResult(_ destination: MacSearchDestination, query: String) {
         // Recorded here because this is the single funnel every routed jump
         // already passes through — wikilinks, backlink rows, document chips,
@@ -522,11 +588,9 @@ struct TraceMacContentView: View {
         if destination != .preview { navigator.record(.record(destination)) }
         switch destination {
         case .dailyOrProjectNote(let path):
-            selectedSection = .notes
-            pendingNotePath = path
+            routeNote(path)
         case .weeklyNote(let filename):
-            selectedSection = .notes
-            pendingHorizonsFile = filename
+            routeWeekFile(filename)
         case .inboxNote(let filename):
             selectedSection = .inbox
             pendingInboxFile = filename
@@ -928,7 +992,8 @@ struct TraceMacContentView: View {
         case .today, nil:
             TraceMacTodayView(date: $dayInView,
                               onOpenPlace: { openSearchResult(.place($0), query: "") },
-                              onOpenNote: { openSearchResult(.dailyOrProjectNote($0), query: "") })
+                              onOpenNote: { openSearchResult(.dailyOrProjectNote($0), query: "") },
+                              deepLinkDaysPick: $pendingDaysPick)
                 .environment(noteStore)
                 .environment(notionService)
         case .upcoming:
@@ -953,8 +1018,7 @@ struct TraceMacContentView: View {
                 // would have shipped as a crash on opening a linked task here.
                 .environment(noteStore)
         case .notes:
-            TraceMacNotesView(deepLinkFile: $pendingHorizonsFile,
-                              deepLinkNotePath: $pendingNotePath)
+            TraceMacProjectsView(deepLinkFile: $pendingProjectFile)
                 .environment(noteStore)
                 .environment(notionService)
         case .endeavors:

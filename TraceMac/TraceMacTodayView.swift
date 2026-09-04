@@ -53,11 +53,12 @@ struct TraceMacTodayView: View {
     /// Opens a daily or project note — the agenda's note rows (D246). REQUIRED,
     /// not defaulted like `onOpenPlace`: see the note on `MacMeetingRow`'s four.
     let onOpenNote: (String) -> Void
+    /// A week note (or a day) to open in DAYS, set by `TraceMacContentView`
+    /// for the routes that used to land on the Weekly tab (D255). Consumed and
+    /// cleared here, the `pendingHorizonsFile` shape.
+    var deepLinkDaysPick: Binding<MacDaysPick?>? = nil
 
     @State private var events: [NextCalendarEvent] = []
-    @State private var noteText: String = ""
-    @State private var noteLoadedKey: String = ""
-    @State private var saveTask: Task<Void, Never>? = nil
     @State private var newTaskTitle: String = ""
     /// The one task whose card is open (D190) — at most one at a time, so
     /// opening a second closes the first without either row having to know
@@ -88,13 +89,18 @@ struct TraceMacTodayView: View {
     /// Everything hanging off it is unchanged: the accent rule, the Escape
     /// handler, and collapsing an open card when attention moves here (D206).
     @State private var noteFocused = false
+
+    /// DAYS (D254, D255). While true THE DAY column is the running list of
+    /// days, grouped by week, and the note column shows whatever the list has
+    /// picked — a day's note or a week's. Off, nothing about this screen is
+    /// different from before the list existed; that was the design's first
+    /// requirement ("today (the concept)" stays a day).
+    @State private var daysMode = false
+    @State private var daysPick: MacDaysPick? = nil
     /// The editor's command channel. The day note has no toolbar, but
     /// `MacTextEditor` requires one, and an unused instance is cheaper than a
     /// second initialiser on a shared component.
     @State private var noteActions = MacEditorActions()
-    /// ⇧⌘Y. Off by default; the same key the menu command writes.
-    @AppStorage(MacNoteToolbarSetting.key) private var showNoteToolbar = false
-    @State private var showNoteInfo = false
     /// The task being dragged. Set when the drag STARTS, which is why the rows
     /// use `.onDrag` rather than `.draggable`: the newer modifier has no
     /// start callback, and without knowing what is in flight a row cannot say
@@ -131,8 +137,10 @@ struct TraceMacTodayView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            dayColumn
-                .frame(width: MacEditorialLayout.dayColumnWidth)
+            Group {
+                if daysMode { daysColumn } else { dayColumn }
+            }
+            .frame(width: MacEditorialLayout.dayColumnWidth)
             Rectangle()
                 .fill(MacEditorialColor.hairline)
                 .frame(width: 1)
@@ -141,6 +149,15 @@ struct TraceMacTodayView: View {
         }
         .background(MacEditorialColor.paper)
         .task(id: dayKey) { await load() }
+        // Any change of day — a day word, the month grid, the arrow keys —
+        // is an answer to "which day", and the list was only a way of asking.
+        .onChange(of: date) { _, _ in daysMode = false }
+        .task(id: deepLinkDaysPick?.wrappedValue) {
+            guard let pick = deepLinkDaysPick?.wrappedValue else { return }
+            daysPick = pick
+            daysMode = true
+            deepLinkDaysPick?.wrappedValue = nil
+        }
     }
 
     // MARK: - Keys and formatting
@@ -226,7 +243,6 @@ struct TraceMacTodayView: View {
         await MacCalendarChoices.shared.load()
         events = await CalendarService.shared.fetchDayEvents(for: date)
         await store.refreshAll()
-        loadNote()
     }
 
     // MARK: - THE DAY column
@@ -237,11 +253,7 @@ struct TraceMacTodayView: View {
                 // Yesterday / today / tomorrow are most of where a task
                 // actually goes, and they are already on screen — no calendar
                 // to open first (D231).
-                MacEditorialDayNav(date: $date,
-                                   onDropTask: { id, day in
-                                       moveTask(id, to: day)
-                                       return true
-                                   })
+                dayNav
                 MacEditorialMasthead(kicker: mastheadKicker,
                                      numeral: mastheadNumeral,
                                      weekday: mastheadWeekday,
@@ -279,6 +291,44 @@ struct TraceMacTodayView: View {
             .padding(.horizontal, MacEditorialLayout.margin)
             .padding(.top, MacEditorialLayout.topMargin)
         }
+    }
+
+    /// One nav for both modes, so the four words never differ between them.
+    private var dayNav: some View {
+        MacEditorialDayNav(date: $date,
+                           onDropTask: { id, day in
+                               moveTask(id, to: day)
+                               return true
+                           },
+                           onDays: { daysMode = true },
+                           daysActive: daysMode,
+                           onPickDay: { daysMode = false })
+    }
+
+    // MARK: - DAYS column (D254)
+
+    /// The running list in the day column's place. The nav stays at the top
+    /// exactly where the day mode draws it, so pressing DAYS moves nothing
+    /// above the masthead; the masthead, search and rows are the list's own.
+    private var daysColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            dayNav
+                .padding(.horizontal, MacEditorialLayout.margin)
+                .padding(.top, MacEditorialLayout.topMargin)
+            MacDaysList(pick: $daysPick,
+                        onOpenDay: { day in
+                            date = day          // `onChange(of: date)` leaves the list
+                            daysMode = false    // and this covers "double-click today"
+                        })
+        }
+    }
+
+    /// What the note column shows: the day, or whatever the list picked.
+    private var noteRelativePath: String {
+        daysMode ? (daysPick?.relativePath ?? notePath) : notePath
+    }
+    private var noteHeading: String {
+        daysMode ? (daysPick?.heading ?? "Day note") : "Day note"
     }
 
     @ViewBuilder
@@ -739,74 +789,32 @@ struct TraceMacTodayView: View {
 
     private var noteColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 2) {
-                MacEditorialSectionLabel(text: "Day note")
-                Spacer(minLength: 8)
-                noteHeaderControls
-            }
-            // **The rule goes accent while the note has the keyboard.**
+            // **The shared note view, not the bare editor** (D258, Session 83).
             //
-            // David: "the issue was that i was in the Day Note section of the
-            // Today screen and from there the arrows did not work." The
-            // behaviour is correct — arrows must move the caret while you are
-            // typing, and `MacEditorialArrowKeys` stands down for exactly that
-            // reason — but it happened SILENTLY. This pane is large, pale and
-            // often empty, so a caret sitting in it is invisible, and four keys
-            // stopped working with nothing on screen to explain why.
+            // Session 80 put `MacTextEditor` here directly and gave it its own
+            // heading, floating bar and ⓘ box. That left this column with no
+            // `[[` suggestions (the callback was never wired), a toolbar that
+            // differed from the one project notes drew over the same editor,
+            // and — found in testing the first fix — heading controls no other
+            // note had. All of it is `TraceMacNoteEditor`'s job now: it loads
+            // and saves the file, draws the heading with its `B I U` and ⓘ,
+            // the accent rule, the floating bar and the suggestion pills, and
+            // reports focus back up (this screen still needs the fact, for
+            // the card collapse and Escape below). `relativePath` follows the
+            // day, so a day switch is a reload inside the editor.
             //
-            // Accent already means "active, or acting" everywhere in this app,
-            // so one rule changing colour is the whole fix: the day nav is not
-            // broken, it is somewhere else, and now you can see where.
-            Group {
-                if noteFocused { MacEditorialRule.accent } else { MacEditorialRule.ink }
-            }
-            // **The real editor** (Session 80). Was a plain `TextEditor`, which
-            // meant the day note was the only writing surface in the app with
-            // no markdown: no headings, no bold, no `[[wikilinks]]`, and no
-            // clickable checkboxes — while the phone's day note had all four.
-            //
-            // `MacTextEditor` is the same component the journal uses, not a
-            // second one written beside it. That mattered enough to make it
-            // non-private: this project has paid twice for two renderers of one
-            // format (iOS vs Mac markdown, and the note-prose test that lived
-            // privately inside `MacTaskRow`).
-            //
-            // `noteTitles` is left empty here deliberately. It only decides
-            // whether a wikilink paints as a NOTE link or a RECORD link, and
-            // building it costs two directory reads — the journal rebuilds it
-            // when a link session opens, which is a cost that screen has a
-            // reason to pay and this one does not. Links still work; they are
-            // just one colour.
-            // `maxHeight: .infinity` and NO trailing `Spacer`. `MacTextEditor`
-            // adopts whatever height it is proposed and never reports a minimum
-            // (see its `sizeThatFits`), so a Spacer competing for the same
-            // space would win it entirely and leave the editor one line tall.
-            // `TextEditor` expanded on its own and did not care; this does.
-            MacTextEditor(text: $noteText,
-                          actions: noteActions,
-                          onFocusChange: { focused in noteFocused = focused })
-                .padding(.top, 12)
+            // `noteActions` is still passed in so this screen keeps a command
+            // channel to the live editor (`externalActions`); nothing uses it
+            // today, and it costs nothing to keep the seam.
+            TraceMacNoteEditor(relativePath: noteRelativePath,
+                               heading: noteHeading,
+                               headingInset: 0,
+                               externalActions: noteActions,
+                               onFocusChange: { focused in noteFocused = focused })
                 .frame(maxHeight: .infinity)
-                .onChange(of: noteText) { _, _ in scheduleSave() }
         }
         .padding(.horizontal, MacEditorialLayout.margin)
         .padding(.top, MacEditorialLayout.topMargin)
-        // **Floating, not stacked** (Session 80, second pass). David, with a
-        // Bear screenshot: "there if i hit shift command y the tool bar floats
-        // up above the canvas sheet."
-        //
-        // The first version sat in the VStack under the editor, which meant the
-        // editor gave up 34 points to it — the text did not JUMP, but the
-        // writing area shrank and grew as focus came and went. An overlay takes
-        // nothing: the page is the page, and the bar is a thing resting on top
-        // of it.
-        //
-        // Bottom-centred over the pane, the way Bear does it, so it sits where
-        // your hand already is and never covers the line you are writing (which
-        // is at the top of a note that is still short).
-        .overlay(alignment: .bottom) {
-            if showNoteToolbar { noteBar }
-        }
         .contentShape(Rectangle())
         // Covers the label and the empty space below the editor. It does NOT
         // cover the editor itself: `TextEditor` is an `NSTextView`, AppKit
@@ -897,185 +905,6 @@ struct TraceMacTodayView: View {
         }
     }
 
-    /// The two controls in the corner of the DAY NOTE heading.
-    ///
-    /// Session 80, from a Bear screenshot: "there is a B/I/U icon on the top
-    /// right of the area that when clicked brings up the same floating format
-    /// bar but it also has the table of contents, statistics, and backlinks in
-    /// that information box."
-    ///
-    /// **Two buttons rather than Bear's one.** Bear's `ⓘ` opens a panel that
-    /// happens to contain the formatting controls as well. Here the formatting
-    /// bar already exists as a thing that floats over the page, and folding it
-    /// into a popover would mean two ways to summon one bar with different
-    /// behaviour. So `B I U` toggles the bar — the same state ⇧⌘Y writes, so
-    /// the button and the key are the same switch, not two — and `ⓘ` is only
-    /// the information.
-    ///
-    /// In the heading rather than floating over the page, because these are
-    /// about the note as a whole. The floating bar acts on the words you are
-    /// writing; these two describe the document. Different scope, different
-    /// place.
-    private var noteHeaderControls: some View {
-        HStack(spacing: 1) {
-            Button { showNoteToolbar.toggle() } label: {
-                Text("B I U")
-                    .font(.system(size: 9.5, weight: .bold))
-                    .tracking(0.5)
-                    .foregroundStyle(showNoteToolbar ? MacEditorialColor.accent
-                                                     : MacEditorialColor.faint)
-                    .frame(height: 22)
-                    .padding(.horizontal, 5)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Formatting bar (\u{21e7}\u{2318}Y)")
-
-            Button { showNoteInfo.toggle() } label: {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MacEditorialColor.faint)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("About this note")
-            .popover(isPresented: $showNoteInfo, arrowEdge: .bottom) { noteInfo }
-        }
-    }
-
-    /// What the note is made of. Deliberately small — David: "minimal is fine
-    /// now and we can iterate on it later."
-    ///
-    /// Contents, then counts. Both are read straight off `noteText`, which
-    /// costs one pass over a document that is at most a screen or two; no index,
-    /// no cache, nothing to invalidate. A day note is not big enough to earn
-    /// machinery, and building some would be answering a scale question nobody
-    /// has asked.
-    ///
-    /// **Backlinks are absent on purpose.** `NoteStore.findWikilinkMentions` can
-    /// answer "what links to X" and Bear shows exactly that — but a day note's X
-    /// is a date, and it is not clear what linking to a date means in this vault
-    /// yet. Shipping a section that is empty for every note is worse than not
-    /// shipping it. Noted in the backlog with the question that has to be
-    /// answered first.
-    private var noteInfo: some View {
-        let lines = noteText.split(separator: "\n", omittingEmptySubsequences: false)
-        let headings = lines.filter { $0.hasPrefix("#") }.map(String.init)
-        let words = noteText.split(whereSeparator: { $0.isWhitespace }).count
-        let open = lines.filter { $0.hasPrefix("\u{2610} ") }.count
-        let done = lines.filter { $0.hasPrefix("\u{2611} ") }.count
-
-        return VStack(alignment: .leading, spacing: 0) {
-            Text("Contents").editorialFieldLabel()
-            if headings.isEmpty {
-                Text("No headings")
-                    .font(MacEditorialType.meta)
-                    .foregroundStyle(MacEditorialColor.faint)
-                    .padding(.top, 4)
-            } else {
-                ForEach(Array(headings.enumerated()), id: \.offset) { _, heading in
-                    let depth = heading.prefix(while: { $0 == "#" }).count
-                    Text(heading.drop(while: { $0 == "#" || $0 == " " }))
-                        .font(MacEditorialType.fieldValue)
-                        .foregroundStyle(MacEditorialColor.ink)
-                        .lineLimit(1)
-                        // Indent by level, so a note with structure looks like
-                        // it has structure.
-                        .padding(.leading, CGFloat(max(0, depth - 1)) * 12)
-                        .padding(.vertical, 2)
-                }
-            }
-
-            MacEditorialRule.hair.padding(.vertical, 10)
-
-            Text("Statistics").editorialFieldLabel()
-            statRow("Words", "\(words)")
-            statRow("Characters", "\(noteText.count)")
-            if open + done > 0 {
-                statRow("To do", "\(open)")
-                statRow("Done", "\(done)")
-            }
-        }
-        .padding(16)
-        .frame(width: 230, alignment: .leading)
-    }
-
-    private func statRow(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(MacEditorialType.meta)
-                .foregroundStyle(MacEditorialColor.muted)
-            Spacer(minLength: 12)
-            Text(value)
-                .font(MacEditorialType.time)
-                .foregroundStyle(MacEditorialColor.ink)
-        }
-        .frame(height: 20)
-    }
-
-    /// The formatting bar: a capsule floating over the page, toggled by ⇧⌘Y or
-    /// by the `B I U` button in the heading.
-    ///
-    /// Session 80. Answering the constraint David set at the start of this
-    /// work: *"the most important thing is a sense of joy using the app"* and
-    /// *"i do not want clutter"*.
-    ///
-    /// **Toggled, not focus-gated.** The first version showed itself whenever
-    /// the note had the keyboard, which was my answer to "no clutter". A toggle
-    /// is his answer — the Bear model he asked for — and it is the better one
-    /// twice over: it is a decision he makes rather than a rule inferred on his
-    /// behalf, and it persists, so a bar turned on last week is on this morning.
-    ///
-    /// **Floating, not stacked.** It sat under the editor at first, which meant
-    /// the writing area shrank and grew as the bar came and went. The text never
-    /// jumped, which is what I had optimised for, but the page changed size. An
-    /// overlay takes nothing: the page is the page and the bar rests on it.
-    ///
-    /// Bottom-centred, where Bear puts it — near your hand, and never over the
-    /// line you are writing, which on a short note is near the top.
-    ///
-    /// **Seven buttons, not thirteen**, grouped by a divider into block-level
-    /// (heading, checkbox, bullet) and inline (bold, italic, highlight, link).
-    /// `MacEditorCommand` offers indent, outdent, date, timestamp and more, and
-    /// the journal's bar carries most of them; a day note is tick, heading,
-    /// stress, link.
-    ///
-    /// Nothing here is exclusive — every command is still reachable by typing,
-    /// and the checkbox has its own shorthand (D218). The bar is
-    /// discoverability, not capability, which is why hiding it costs nothing.
-    private var noteBar: some View {
-        HStack(spacing: 1) {
-            barButton("textformat.size", "Heading") { noteActions.execute(.heading) }
-            barButton("checkmark.square", "Checkbox") { noteActions.execute(.checkbox) }
-            barButton("list.bullet", "Bullet") { noteActions.execute(.bullet) }
-            Divider().frame(height: 15).padding(.horizontal, 4)
-            barButton("bold", "Bold") { noteActions.execute(.bold) }
-            barButton("italic", "Italic") { noteActions.execute(.italic) }
-            barButton("highlighter", "Highlight") { noteActions.execute(.highlight) }
-            barButton("link", "Link") { noteActions.execute(.link) }
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
-        .background(MacEditorialColor.paper, in: Capsule())
-        .overlay { Capsule().strokeBorder(MacEditorialColor.hairline, lineWidth: 1) }
-        .shadow(color: .black.opacity(0.13), radius: 10, y: 3)
-        .padding(.bottom, 18)
-    }
-
-    private func barButton(_ icon: String, _ help: String,
-                           action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(MacEditorialColor.muted)
-                .frame(width: 28, height: 24)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-
     /// Hands the keyboard back from the day note.
     ///
     /// **Setting the flag is no longer enough.** With `@FocusState`, writing
@@ -1093,26 +922,4 @@ struct TraceMacTodayView: View {
 
     private var notePath: String { "Calendar/\(dayKey).md" }
 
-    private func loadNote() {
-        let key = dayKey
-        let text = (try? noteStore.readFile(notePath)) ?? ""
-        noteText = text
-        noteLoadedKey = key
-    }
-
-    /// Debounced save. The guard on `noteLoadedKey` is what stops the day
-    /// switching from writing the OUTGOING day's text into the incoming day's
-    /// file: `noteText` changes twice on a switch (cleared, then filled), and
-    /// only the second one belongs to the day now on screen.
-    private func scheduleSave() {
-        guard noteLoadedKey == dayKey else { return }
-        saveTask?.cancel()
-        let path = notePath
-        let body = noteText
-        saveTask = Task {
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            guard !Task.isCancelled else { return }
-            try? noteStore.writeFile(path, content: body)
-        }
-    }
 }

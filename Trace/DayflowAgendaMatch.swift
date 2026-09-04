@@ -204,12 +204,34 @@ enum DayflowAgendaMatch {
         let heading = "## \(f.string(from: startDate))"
 
         if store.fileExists(path) {
-            let existing = (try? store.readFile(path)) ?? ""
-            guard !existing.contains(heading) else { return path }
-            let grown = existing.hasSuffix("\n")
-                ? existing + "\n\(heading)\n\n"
-                : existing + "\n\n\(heading)\n\n"
-            do { try store.writeFile(path, content: grown) } catch { return nil }
+            var existing = (try? store.readFile(path)) ?? ""
+            // **A note that exists without its person link gets one** (Session
+            // 83). Only the create branch below ever wrote `[[person]]`, so a
+            // note made any other way — the Mac's `+` PROJECT NOTE door, the
+            // phone, Obsidian — never carried it, and the rail, the row mark
+            // and Mentioned In all missed it. David, on Kosta's note: "Kosta
+            // is not in the rail for people." Inserted under the title line
+            // (or at the top when there is none), once, only when the title
+            // resolves to a person or place and the body does not already
+            // link them anywhere.
+            var changed = false
+            if let matched = name(forTitle: title), !existing.contains("[[\(matched)]]") {
+                let link = "\n[[\(matched)]]\n"
+                if existing.hasPrefix("# "), let titleEnd = existing.firstIndex(of: "\n") {
+                    existing.insert(contentsOf: link, at: existing.index(after: titleEnd))
+                } else {
+                    existing = link.dropFirst() + "\n" + existing
+                }
+                changed = true
+            }
+            if !existing.contains(heading) {
+                existing = existing.hasSuffix("\n")
+                    ? existing + "\n\(heading)\n\n"
+                    : existing + "\n\n\(heading)\n\n"
+                changed = true
+            }
+            guard changed else { return path }
+            do { try store.writeFile(path, content: existing) } catch { return nil }
             return path
         }
 

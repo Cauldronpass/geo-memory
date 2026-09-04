@@ -40,7 +40,12 @@ enum MacPlace: Hashable, Sendable {
         case .section(let value): return value
         case .record(let destination):
             switch destination {
-            case .dailyOrProjectNote, .weeklyNote, .preview: return .notes
+            // Session 83: a week note opens in Today's DAYS list. A day note
+            // does too, but `.dailyOrProjectNote` cannot tell a day from a
+            // project without its folder, so it keeps the Projects answer —
+            // only the back-stack collapse is affected, and only for day notes.
+            case .dailyOrProjectNote, .preview: return .notes
+            case .weeklyNote:                   return .today
             case .inboxNote:                                 return .inbox
             case .person, .place:                            return .directory
             case .endeavor:                                  return .endeavors

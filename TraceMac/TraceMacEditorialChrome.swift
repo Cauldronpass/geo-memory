@@ -242,6 +242,17 @@ struct MacEditorialDayNav: View {
     /// cheaper than the calendar for the common case.
     var onDropTask: ((String, Date) -> Bool)? = nil
 
+    /// DAYS (D254). Set apart at the right of the three day words. Present
+    /// only when a host offers the running list; nil draws nothing, so
+    /// Upcoming and any other host are untouched.
+    var onDays: (() -> Void)? = nil
+    /// True while the host is showing the list. The three day words stand
+    /// down (none is "the one you are on") and DAYS takes the ink.
+    var daysActive: Bool = false
+    /// Fired after a day word sets `date`, whether or not the date changed —
+    /// pressing TODAY while already on today must still leave the list.
+    var onPickDay: (() -> Void)? = nil
+
     /// Which word a task is hovering over, so it can shade.
     @State private var targeted: Int? = nil
 
@@ -253,13 +264,29 @@ struct MacEditorialDayNav: View {
             word("Today", offset: 0)
             word("Tomorrow", offset: 1)
             Spacer(minLength: 0)
+            if let onDays { daysWord(onDays) }
         }
         .padding(.bottom, 12)
     }
 
+    private func daysWord(_ action: @escaping () -> Void) -> some View {
+        let weight: Font.Weight = daysActive ? .bold : .semibold
+        let tint: Color = daysActive ? MacEditorialColor.accent : MacEditorialColor.faint
+        return Text("Days")
+            .font(.system(size: 10, weight: weight))
+            .textCase(.uppercase)
+            .tracking(1.6)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .onTapGesture { action() }
+            .help("Every day, newest first")
+    }
+
     private func word(_ label: String, offset: Int) -> some View {
         let target: Date = dayOffset(offset)
-        let active: Bool = cal.isDate(date, inSameDayAs: target)
+        let active: Bool = !daysActive && cal.isDate(date, inSameDayAs: target)
         let weight: Font.Weight = active ? .bold : .semibold
         let over: Bool = targeted == offset
         // Ink while a task hovers, so the word you are about to drop on reads
@@ -277,7 +304,7 @@ struct MacEditorialDayNav: View {
             .padding(.vertical, 3)
             .background(fill, in: RoundedRectangle(cornerRadius: 3))
             .contentShape(Rectangle())
-            .onTapGesture { date = target }
+            .onTapGesture { date = target; onPickDay?() }
             .modifier(DayWordDrop(enabled: onDropTask != nil,
                                   accept: { id in onDropTask?(id, target) ?? false },
                                   targeted: { on in targeted = on ? offset : (targeted == offset ? nil : targeted) }))
@@ -304,6 +331,48 @@ private struct DayWordDrop: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+// MARK: - Tab words over a masthead (D260)
+
+/// A section that is several rooms — Activity is Billiards / Fitness /
+/// Photos, Archive is People / Notes — wears its tabs as quiet caps words
+/// above the masthead, the day-nav grammar, accent on the one you are in.
+/// The kicker names the section, the title names the tab, so "ACTIVITY /
+/// Billiards" reads the way "SEPTEMBER / 3 Thursday" does. Replaces the old
+/// `MacSectionHeader` + `MacTabStrip` row on those screens; nothing below
+/// the masthead's rule is this view's business.
+struct MacEditorialTabMasthead<Tab: Hashable>: View {
+
+    let kicker: String
+    let tabs: [Tab]
+    @Binding var selection: Tab
+    let label: (Tab) -> String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 22) {
+                ForEach(tabs, id: \.self) { tab in
+                    let on: Bool = tab == selection
+                    Text(label(tab))
+                        .font(.system(size: 10, weight: on ? .bold : .semibold))
+                        .textCase(.uppercase)
+                        .tracking(1.6)
+                        .foregroundStyle(on ? MacEditorialColor.accent : MacEditorialColor.faint)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                        .onTapGesture { selection = tab }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 12)
+            MacEditorialMasthead(kicker: kicker, title: label(selection))
+        }
+        .padding(.horizontal, MacEditorialLayout.margin)
+        .padding(.top, MacEditorialLayout.topMargin)
+        .background(MacEditorialColor.paper)
     }
 }
 
