@@ -93,6 +93,43 @@ enum DayflowAgendaMatch {
         #endif
     }
 
+    /// Publish the Mac's seeded guess to iCloud, once, so the phone inherits
+    /// it (Session 84, D265).
+    ///
+    /// **The bug this closes is invisible from the Mac.** `seededOwnerName` is
+    /// a macOS-only fallback, so the Mac has always stripped David's own name
+    /// from a meeting title whether or not anyone visited Settings, and the
+    /// phone never has. "David <> Kosta Catch up" therefore matched Kosta on
+    /// the Mac and matched NOBODY on the phone, which is the exact case D241
+    /// was written for: four of eleven meetings in a day are him plus one
+    /// other person, and two candidates means no match.
+    ///
+    /// Settings made it worse rather than better. Its field seeds from
+    /// `ownerNames`, which returns the guess, so the row READS "David" on a
+    /// Mac that has never stored anything. It looks configured. Nothing is
+    /// written until you press Return in a field you have no reason to touch.
+    ///
+    /// **Only ABSENCE is a gap.** A key that exists is an answer, including an
+    /// empty one: clearing the field is a deliberate "do not strip my name",
+    /// and re-publishing the guess over it would be the app arguing with the
+    /// user every launch. So this checks for the key's existence, not for a
+    /// non-empty value.
+    ///
+    /// Idempotent and cheap: after the first launch that writes, every later
+    /// call returns on the first guard.
+    static func publishSeededOwnerNameIfNeeded() {
+        #if os(macOS)
+        let kv = NSUbiquitousKeyValueStore.default
+        guard kv.object(forKey: ownerKey) == nil,
+              UserDefaults.standard.object(forKey: ownerKey) == nil else { return }
+        let seed = seededOwnerName
+        guard !seed.isEmpty else { return }
+        kv.set(seed, forKey: ownerKey)
+        kv.synchronize()
+        UserDefaults.standard.set(seed, forKey: ownerKey)
+        #endif
+    }
+
     private static var ownerWords: Set<String> {
         Set(ownerNames.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
     }

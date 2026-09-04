@@ -96,12 +96,18 @@ struct TraceMacSettingsView: View {
             Section("You") {
                 TextField("Your name, as it appears in meeting titles", text: $ownerNames)
                     .onSubmit { DayflowAgendaMatch.ownerNames = ownerNames }
+                    // Return is not the only way a person leaves a text field.
+                    // Typing a name and closing Settings used to discard it
+                    // silently, which on a Mac that already reads correctly
+                    // from its own fallback is a change with no visible effect
+                    // either way (D265).
                 Text("""
                      Meetings called things like "David <> Kosta Catch up" name \
                      two people, and the agenda matcher refuses to guess between \
                      two candidates. Telling it which one is you leaves exactly \
                      one, so the meeting finds the right person. Separate several \
-                     spellings with commas. Press Return to save.
+                     spellings with commas. Saved when you press Return or \
+                     close Settings, and the phone inherits it through iCloud.
                      """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -172,6 +178,16 @@ struct TraceMacSettingsView: View {
         .formStyle(.grouped)
         .frame(width: 420)
         .padding()
+        // Compared, not written blindly: an untouched field holds whatever
+        // the getter returned on appear, and rewriting that would turn a
+        // GUESS into a stored answer just because Settings was opened, which
+        // is the one thing `publishSeededOwnerNameIfNeeded` is careful not to
+        // do behind the user (D265).
+        .onDisappear {
+            if ownerNames != DayflowAgendaMatch.ownerNames {
+                DayflowAgendaMatch.ownerNames = ownerNames
+            }
+        }
         .onAppear {
             // Seeded from the matcher, which owns the KVS pair. On a Mac that
             // has never been told, this shows the guess made from the account's

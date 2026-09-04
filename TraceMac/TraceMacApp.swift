@@ -50,6 +50,12 @@ struct TraceMacApp: App {
                 .environment(noteStore)
                 .environment(notionService)
                 .frame(minWidth: 900, minHeight: 600)
+                // D265 — the agenda matcher's owner name is a macOS-only
+                // fallback, so the Mac has always had one and the phone never
+                // did. Publishing it here means the phone inherits it without
+                // anyone having to know the Settings field exists. Writes at
+                // most once, and never over a value that has been set.
+                .task { DayflowAgendaMatch.publishSeededOwnerNameIfNeeded() }
         }
         .defaultSize(width: 1200, height: 750)
         .windowResizability(.contentMinSize)
