@@ -1,7 +1,7 @@
 // MacBookingSheet.swift
 // One sheet for every Kind of booking, create and edit (D267, Session 86).
 //
-// **One sheet, not seven.** The thirteen Notion columns never change; only the
+// **One sheet, not seven.** The fourteen Notion columns never change; only the
 // words on the labels do, and those come from `BookingKind.labels(for:)` in
 // Models.swift so the phone's sheet can reuse them rather than re-deriving a
 // second set that drifts.
@@ -36,6 +36,15 @@ struct MacBookingSheet: View {
     var onDelete: ((Booking) async throws -> Void)? = nil
     /// Creates a person in Notion and returns them. Nil hides the offer.
     var onAddPerson: ((String) async throws -> Person)? = nil
+    /// True when the `+` that opened this sheet was the LEDGER's rather than
+    /// the schedule band's (D268, Session 87).
+    ///
+    /// It seeds three things and nothing else: no date, Kind `Other`, Status
+    /// `Quoted`. A ledger row is defined by having a cost and no date, so a
+    /// `+` on QUOTES that opened a dated Flight would be asking for the one
+    /// shape the band it came from cannot show. Every field stays editable;
+    /// this is a starting point, not a mode.
+    var newRowIsLedger: Bool = false
 
     @Environment(\.dismiss) private var dismiss
 
@@ -53,6 +62,7 @@ struct MacBookingSheet: View {
     @State private var confirmation = ""
     @State private var costText     = ""
     @State private var booked       = false
+    @State private var status: String? = nil
     @State private var notes        = ""
 
     @State private var personQuery  = ""
@@ -163,6 +173,23 @@ struct MacBookingSheet: View {
         )
     }
 
+    /// Notion's three Status options, in the order a quote moves through them.
+    private static let statuses = [BookingStatus.quoted,
+                                   BookingStatus.accepted,
+                                   BookingStatus.declined]
+
+    /// Optional Status as a non-optional selection, with `""` meaning none.
+    ///
+    /// SwiftUI can tag an optional, but every call site then has to spell
+    /// `String?.none` and one that forgets silently shows an empty picker.
+    /// Mapping in one place is cheaper than remembering.
+    private var statusBinding: Binding<String> {
+        Binding(
+            get: { status ?? "" },
+            set: { status = $0.isEmpty ? nil : $0 }
+        )
+    }
+
     private var writtenName: String {
         BookingKind.writtenName(kind: kind, provider: provider, number: number,
                                 from: from, to: to,
@@ -242,6 +269,16 @@ struct MacBookingSheet: View {
                     TextField("Confirmation", text: $confirmation)
                     TextField("Cost", text: $costText)
                     Toggle("Booked", isOn: $booked)
+                    // **Offered on every Kind, not only on a ledger row.**
+                    // Whether a booking is a ledger line is a fact about its
+                    // date and its cost, and both are editable in this sheet;
+                    // a control that appeared and vanished as those changed
+                    // would be chrome flickering under the hand that caused
+                    // it. A flight simply leaves it at None.
+                    Picker("Status", selection: statusBinding) {
+                        Text("None").tag("")
+                        ForEach(Self.statuses, id: \.self) { Text($0).tag($0) }
+                    }
                     TextField("Notes", text: $notes, axis: .vertical)
                 }
 
@@ -301,6 +338,16 @@ struct MacBookingSheet: View {
                 if offeredPeople.count == 1, let only = offeredPeople.first {
                     whoIDs = [only.id]
                 }
+                // Written to `kind` directly and NOT through `kindBinding`.
+                // The binding carries the clear-on-group-change rule, which is
+                // a rule about what the USER does; D267's bug was that same
+                // rule firing on the sheet's own seeding and wiping fields it
+                // had just filled.
+                if newRowIsLedger {
+                    hasDate = false
+                    kind    = "Other"
+                    status  = BookingStatus.initial
+                }
                 return
             }
             kind         = kinds.contains(b.kind) ? b.kind : "Other"
@@ -317,6 +364,7 @@ struct MacBookingSheet: View {
             confirmation = b.confirmation ?? ""
             costText     = b.cost.map { String(format: "%g", $0) } ?? ""
             booked       = b.booked
+            status       = b.status
             notes        = b.notes ?? ""
         }
     }
@@ -365,7 +413,8 @@ struct MacBookingSheet: View {
                 confirmation: confirmation,
                 notes: notes,
                 cost: parsedCost,
-                booked: booked)
+                booked: booked,
+                status: status)
     }
 
     private func addPerson(named name: String) {

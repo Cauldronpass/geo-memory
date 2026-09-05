@@ -309,15 +309,55 @@ struct Endeavor: Identifiable, Hashable {
     /// "run of show"**, which is host language and would read oddly for an
     /// evening you are a guest at.
     ///
-    /// Project and Decision return nil for now. Their bands are the punch list
-    /// and the ledger, which are not built; until they are, those types show
-    /// the note alone, which is exactly the screen they have today.
+    /// Project reads SCHEDULE too. A project has dated things on it - a site
+    /// visit, a delivery, an inspection - and D268's table puts the schedule
+    /// third in its body, after the punch list and the quotes. The band is the
+    /// same band; only its position in the body differs.
+    ///
+    /// Decision returns nil. A decision is a comparison, not a calendar: its
+    /// one band is the ledger below.
     var scheduleBandLabel: String? {
         switch type.lowercased() {
-        case "travel":                 return "Itinerary"
-        case "milestone", "gathering": return "Schedule"
-        default:                       return nil
+        case "travel":                            return "Itinerary"
+        case "milestone", "gathering", "project": return "Schedule"
+        default:                                  return nil
         }
+    }
+
+    /// What the body's LEDGER band is CALLED for this type, or nil when this
+    /// type does not compare anything (D268).
+    ///
+    /// The ledger is the other band shape: **a Bookings row with a cost and no
+    /// date**. Project calls it QUOTES and Decision calls it OPTIONS, and they
+    /// are the same rows drawn the same way - the type decides the NAME and the
+    /// ORDER, never what a row IS. That is the same move D267 made one level
+    /// down, where the sheet's labels follow the Kind and the columns do not.
+    ///
+    /// Travel, Milestone and Gathering return nil, and that is what keeps an
+    /// undated costed row visible on a trip: with no ledger to move to, it
+    /// stays in the itinerary's Undated bucket exactly as it does today. A rule
+    /// that pulled it out unconditionally would make a real Notion row appear
+    /// on no screen at all.
+    var ledgerBandLabel: String? {
+        switch type.lowercased() {
+        case "project":  return "Quotes"
+        case "decision": return "Options"
+        default:         return nil
+        }
+    }
+
+    /// Whether the punch list is drawn in the BODY rather than on the rail
+    /// (D268, Session 87).
+    ///
+    /// D268's table: a project is lived punch list, quotes, schedule, note. The
+    /// tasks are the first thing about it, and on the rail they were the first
+    /// thing about every endeavor, which is a different claim. Nothing is drawn
+    /// in both places - the rail skips this section for the type that moves it,
+    /// which is standing warning FIVE's shape.
+    ///
+    /// It is the same function drawing in either place, not a second one.
+    var bodyLeadsWithTasks: Bool {
+        type.lowercased() == "project"
     }
 
     /// Inclusive length in days, nil when either end is missing.

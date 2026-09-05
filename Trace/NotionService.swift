@@ -2073,7 +2073,8 @@ class NotionService {
             confirmation: richText(props["Confirmation"]),
             notes:        richText(props["Notes"]),
             cost:         (props["Cost"] as? [String: Any])?["number"] as? Double,
-            booked:       checkbox(props["Booked"])
+            booked:       checkbox(props["Booked"]),
+            status:       select(props["Status"])
         )
     }
 
@@ -2099,7 +2100,7 @@ class NotionService {
     // `bookingDays` sorts what it returns, so an appended row lands in the
     // right day without the array being ordered.
 
-    /// The thirteen columns, built once, for both create and update.
+    /// The fourteen columns, built once, for both create and update.
     ///
     /// **Every column is written every time, including the empty ones.** A
     /// property omitted from a Notion PATCH is left as it was, so clearing a
@@ -2114,6 +2115,16 @@ class NotionService {
             "Who":      ["relation": b.whoIDs.map { ["id": $0] }],
             "Booked":   ["checkbox": b.booked]
         ]
+
+        // Status is the ledger's column and it is written every time for the
+        // same reason as the rest: a select omitted from a PATCH keeps its old
+        // option, so clearing one in the sheet would silently not clear it.
+        // `["select": NSNull()]` is how Notion is told there is nothing here.
+        if let status = b.status, !status.isEmpty {
+            props["Status"] = ["select": ["name": status]]
+        } else {
+            props["Status"] = ["select": NSNull()]
+        }
 
         if let cost = b.cost { props["Cost"] = ["number": cost] }
         else                 { props["Cost"] = ["number": NSNull()] }

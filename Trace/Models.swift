@@ -754,6 +754,56 @@ struct Booking: Identifiable, Codable {
     var notes: String?
     var cost: Double?
     var booked: Bool
+    /// The ledger's own state: Quoted, Accepted, Declined, or nil (D268,
+    /// Session 87).
+    ///
+    /// **Not `booked` under another name.** `booked` says a reservation is
+    /// confirmed and its false state is a to-do - NOT BOOKED is the row you are
+    /// looking for on an itinerary. A ledger asks a different question with
+    /// three answers, and a checkbox cannot say which of the last two a false
+    /// means: a declined quote and an undecided one would look identical.
+    ///
+    /// An open String for `kind`'s reason (D10): a select option added in
+    /// Notion must render rather than crash. `BookingStatus` below is total
+    /// over it.
+    var status: String?
+}
+
+/// What a ledger row's Status MEANS, total over `String`.
+///
+/// Three cases and a default, for `BookingKind`'s reason: Status is a Notion
+/// select and a fourth option can be added to it in ten seconds. Nothing here
+/// switches exhaustively over an enum, so a new word renders as "no opinion"
+/// rather than crashing or needing a migration.
+enum BookingStatus {
+
+    static let quoted   = "Quoted"
+    static let accepted = "Accepted"
+    static let declined = "Declined"
+
+    /// The one Notion writes for a new ledger row. A quote arrives quoted.
+    static let initial  = quoted
+
+    static func isAccepted(_ status: String?) -> Bool {
+        (status ?? "").lowercased() == accepted.lowercased()
+    }
+
+    static func isDeclined(_ status: String?) -> Bool {
+        (status ?? "").lowercased() == declined.lowercased()
+    }
+
+    /// What the ledger row prints at its right, or nil for nothing.
+    ///
+    /// **Quoted prints nothing, deliberately.** It is the resting state of
+    /// every row in the band, and a column that says the same word on every
+    /// line is a column that says nothing. Accepted and Declined are the
+    /// exceptions, and an exception is what a right-hand column is for - the
+    /// same argument D267 settled for NOT BOOKED.
+    static func rowLabel(_ status: String?) -> String? {
+        if isAccepted(status) { return accepted }
+        if isDeclined(status) { return declined }
+        return nil
+    }
 }
 
 /// The glyph and the colour for a booking's Kind.

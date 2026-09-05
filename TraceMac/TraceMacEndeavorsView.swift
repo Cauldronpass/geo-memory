@@ -750,6 +750,18 @@ struct TraceMacEndeavorsView: View {
     private func detail(_ e: Endeavor) -> some View {
         VStack(spacing: 0) {
             coverBand(e)
+            // **The body in the order the endeavor is lived** (D268).
+            //
+            // Project: punch list, quotes, schedule, then the note. Every other
+            // type has neither a punch list in the body nor a ledger, and both
+            // of those bands draw nothing when their own label is nil, so this
+            // one ordering serves all five types with no switch over any of
+            // them. The type decides the ORDER and the NAMES; it never decides
+            // what a row is.
+            if e.bodyLeadsWithTasks {
+                tasksSection(e, placement: .body)
+            }
+            ledgerSection(e)
             itinerarySection(e)
                 // The popover below anchors to this block, so it has to be a
                 // view the layout can point at rather than a bare call.
@@ -800,7 +812,8 @@ struct TraceMacEndeavorsView: View {
                             },
                             onAddPerson: { name in
                                 try await notionService.addPerson(name: name)
-                            })
+                            },
+                            newRowIsLedger: target.isLedger)
         }
         .confirmationDialog("Delete “\(deletingBooking?.name ?? "")”?",
                             isPresented: Binding(get: { deletingBooking != nil },
@@ -1058,8 +1071,13 @@ struct TraceMacEndeavorsView: View {
                 // So the ones the log names are the section, and the others sit
                 // behind a disclosure that states its own count. Nothing is
                 // hidden, but nothing unchosen is competing either.
-                tasksSection(e)
-                Divider().padding(.vertical, 6)
+                // Project draws its punch list in the BODY (D268), so the
+                // rail does not draw it as well. Nothing is on one screen
+                // twice, which is standing warning FIVE's shape.
+                if !e.bodyLeadsWithTasks {
+                    tasksSection(e, placement: .rail)
+                    Divider().padding(.vertical, 6)
+                }
 
                 destinationsSection(e)
                 Divider().padding(.vertical, 6)
@@ -1168,41 +1186,85 @@ struct TraceMacEndeavorsView: View {
         }
     }
 
+    /// Where a section is being drawn, which decides its chrome and nothing
+    /// else (D268, Session 87).
+    private enum SectionPlacement { case rail, body }
+
+    /// The punch list, on the rail for four types and in the BODY for Project
+    /// (D268).
+    ///
+    /// **One function drawn in two places, not two functions.** The query, the
+    /// rows, the `+` and the empty case are the same code in both arms; only
+    /// the chrome forks, because the rail's grammar is a field label at 12pt
+    /// padding and the body's is a section label over an ink rule at the
+    /// editorial margin. Writing it twice is how the two would come to disagree
+    /// about what a task on an endeavor is - standing warning FIVE.
+    ///
+    /// **It is called Tasks in both places.** D268 names the SHAPE a punch
+    /// list, the way it names the other two a schedule and a ledger, and none
+    /// of those three words is what the screen says either: the screen says
+    /// ITINERARY, SCHEDULE, QUOTES, OPTIONS. Tasks is what this app calls a
+    /// task everywhere else, and a second name for it on one type would be the
+    /// drift, not the polish.
     @ViewBuilder
-    private func tasksSection(_ e: Endeavor) -> some View {
+    private func tasksSection(_ e: Endeavor, placement: SectionPlacement) -> some View {
         let tasks: [ThingsTask] = linkedOpenTasks(e)
-        HStack(alignment: .firstTextBaseline) {
-            Text("Tasks").editorialFieldLabel()
-            Spacer()
-            if !tasks.isEmpty {
-                Text("\(tasks.count)")
-                    .font(MacEditorialType.meta)
-                    .foregroundStyle(MacEditorialColor.faint)
+        switch placement {
+        case .rail:
+            HStack(alignment: .firstTextBaseline) {
+                Text("Tasks").editorialFieldLabel()
+                Spacer()
+                if !tasks.isEmpty {
+                    Text("\(tasks.count)")
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.faint)
+                }
+                Button { composingTask = true } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("New task for this endeavor")
             }
-            Button { composingTask = true } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(MacEditorialColor.faint)
-                    .contentShape(Rectangle())
+            .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
+            if tasks.isEmpty {
+                railEmpty("No tasks yet.")
+            } else {
+                taskRows(tasks).padding(.horizontal, 12)
             }
-            .buttonStyle(.plain)
-            .help("New task for this endeavor")
-        }
-        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
-        if tasks.isEmpty {
-            railEmpty("No tasks yet.")
-        } else {
+        case .body:
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(tasks) { task in
-                    MacEditorialRule.hair
-                    MacTaskRow(task: task,
-                               isOpen: openTaskID == task.id,
-                               onToggle: { openTaskID = openTaskID == task.id ? nil : task.id },
-                               onChanged: { Task { await ReminderTaskStore.shared.refreshAll() } },
-                               trailing: .dateElseList)
+                bandHeader("Tasks",
+                           count: tasks.count,
+                           help: "New task for this endeavor") {
+                    composingTask = true
+                }
+                if tasks.isEmpty {
+                    bandEmpty("Nothing on the list yet.")
+                } else {
+                    taskRows(tasks)
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, MacEditorialLayout.margin)
+            .padding(.top, 18)
+            .padding(.bottom, 18)
+        }
+    }
+
+    /// The rows themselves, identical in both placements. `MacTaskRow` is the
+    /// app's one task row and this is the one list of them on this screen.
+    private func taskRows(_ tasks: [ThingsTask]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(tasks) { task in
+                MacEditorialRule.hair
+                MacTaskRow(task: task,
+                           isOpen: openTaskID == task.id,
+                           onToggle: { openTaskID = openTaskID == task.id ? nil : task.id },
+                           onChanged: { Task { await ReminderTaskStore.shared.refreshAll() } },
+                           trailing: .dateElseList)
+            }
         }
     }
 
@@ -1619,8 +1681,17 @@ struct TraceMacEndeavorsView: View {
     }
 
     private func itineraryEntries(_ e: Endeavor) -> [ItineraryEntry] {
+        // **A row belongs to one band, never to two** (D268, warning FIVE).
+        //
+        // When this endeavor HAS a ledger, its ledger lines come out of the
+        // schedule band. When it does not, an undated costed row stays here in
+        // the Undated bucket exactly as it does today. Filtering it out
+        // unconditionally would make a real Notion row appear on no screen at
+        // all - see `Endeavor.ledgerBandLabel`.
+        let hasLedger: Bool = e.ledgerBandLabel != nil
         var out: [ItineraryEntry] = []
         for booking in notionService.bookings(for: e.id) {
+            if hasLedger, isLedgerRow(booking) { continue }
             out.append(ItineraryEntry(booking: booking, isEnd: false))
             if spansDays(booking) {
                 out.append(ItineraryEntry(booking: booking, isEnd: true))
@@ -1711,6 +1782,24 @@ struct TraceMacEndeavorsView: View {
         return parts.joined(separator: " · ")
     }
 
+    /// The LEDGER row's second line.
+    ///
+    /// **The provider is dropped when it is already the headline.** On Kind
+    /// `Other` - which is what a quote usually is - `writtenName` builds the
+    /// Name from the provider and the To, so a quote with only a provider is
+    /// named after it, and `itinerarySub` would then print that same word
+    /// directly underneath its own headline. The itinerary band never hits
+    /// this because a journey's name leads with its number and a stay's ends
+    /// in a night count.
+    private func ledgerSub(_ b: Booking, headline: String) -> String {
+        var parts: [String] = []
+        let provider = (b.provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !provider.isEmpty, provider != headline { parts.append(provider) }
+        let who = bookingWho(b)
+        if !who.isEmpty { parts.append(who) }
+        return parts.joined(separator: " · ")
+    }
+
     /// A cost, or nothing. Zero is not a price, it is an empty field.
     private func bookingCost(_ b: Booking) -> String {
         guard let cost = b.cost, cost > 0 else { return "" }
@@ -1725,16 +1814,25 @@ struct TraceMacEndeavorsView: View {
     /// Which booking the sheet is for.
     private enum BookingTarget: Identifiable {
         case new
+        /// A `+` pressed on the LEDGER band rather than the schedule band.
+        /// The same sheet and the same fourteen columns; only three seeds
+        /// differ, and every one of them stays editable.
+        case newLedger
         case edit(Booking)
         var id: String {
             switch self {
             case .new:          return "new"
+            case .newLedger:    return "new-ledger"
             case .edit(let b):  return b.id
             }
         }
         var booking: Booking? {
             if case .edit(let b) = self { return b }
             return nil
+        }
+        var isLedger: Bool {
+            if case .newLedger = self { return true }
+            return false
         }
     }
 
@@ -1759,14 +1857,218 @@ struct TraceMacEndeavorsView: View {
         NSWorkspace.shared.open(url)
     }
 
+    // MARK: The body's shared chrome (D268, Session 87)
+
+    /// A band header in the body's own grammar: the label, a count when there
+    /// is one, a `+`, and the ink rule under it.
+    ///
+    /// **One function for all three body bands.** Two headers that looked the
+    /// same and were written twice would drift the first time either of them
+    /// changed, and the drift would be invisible until both were on screen at
+    /// once - which, on a Project, they are. Standing warning FIVE.
+    private func bandHeader(_ label: String,
+                            count: Int,
+                            help: String,
+                            add: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(label).editorialSectionLabel()
+                Spacer(minLength: 8)
+                if count > 0 {
+                    Text("\(count)")
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .padding(.trailing, 10)
+                }
+                Button(action: add) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(help)
+            }
+            .padding(.bottom, 6)
+            MacEditorialRule.ink
+        }
+    }
+
+    /// A band's own empty line, at the body's margin rather than the rail's.
+    private func bandEmpty(_ text: String) -> some View {
+        Text(text)
+            .font(MacEditorialType.meta)
+            .foregroundStyle(MacEditorialColor.faint)
+            .padding(.top, 10)
+    }
+
+    // MARK: The ledger band (D268, Session 87)
+
+    /// **A Bookings row with a cost and no date is a ledger line** (D268).
+    ///
+    /// No new database, no new model, and no switch on the endeavor's type to
+    /// decide what a row IS: the row's own two fields decide, and the type only
+    /// decides whether there is a band to put it in.
+    ///
+    /// Zero is not a cost, it is an empty field. `bookingCost` has said so
+    /// since Session 86; this is the same rule asked as a question.
+    private func isLedgerRow(_ b: Booking) -> Bool {
+        b.start == nil && (b.cost ?? 0) > 0
+    }
+
+    /// This endeavor's ledger rows, cheapest first.
+    ///
+    /// **Cheapest first rather than accepted first.** A ledger is read to
+    /// compare, and prices out of order are work the reader does twice. The
+    /// accepted row is found by its wash rather than by its position, which is
+    /// also why it does not jump to the top the moment it is chosen and move
+    /// the row under the pointer.
+    private func ledgerRows(_ e: Endeavor) -> [Booking] {
+        notionService.bookings(for: e.id)
+            .filter(isLedgerRow)
+            .sorted {
+                let a = $0.cost ?? 0
+                let b = $1.cost ?? 0
+                if a != b { return a < b }
+                return $0.name < $1.name
+            }
+    }
+
+    /// QUOTES or OPTIONS, in the body (D268).
+    ///
+    /// **The same three empty states as the schedule band, off the same
+    /// `bookingsLoad`.** Idle and loading draw nothing, so no heading flashes
+    /// in before the answer; `.failed` says so, because the likeliest first
+    /// failure of this feature is the app's integration not being connected to
+    /// the database, which returns nothing, and "No quotes yet." about a
+    /// project with four of them is a report of absence indistinguishable from
+    /// the record not existing.
+    ///
+    /// **No fold.** The schedule band caps at two days because a nine-day trip
+    /// has more days than the note can spare. A ledger is the three or four
+    /// things being compared, and hiding some of them hides the comparison.
+    @ViewBuilder
+    private func ledgerSection(_ e: Endeavor) -> some View {
+        let state: NotionLoadState = notionService.bookingsLoad
+        let settled: Bool = state == .loaded || state == .failed
+        let rows: [Booking] = ledgerRows(e)
+        // "Quotes" -> "quote", "Options" -> "option", for the `+` tooltip.
+        let one: String = String((e.ledgerBandLabel ?? "").dropLast()).lowercased()
+        if let bandLabel = e.ledgerBandLabel, settled {
+            VStack(alignment: .leading, spacing: 0) {
+                bandHeader(bandLabel,
+                           count: rows.count,
+                           help: "Add a \(one) to \(e.name)") {
+                    bookingTarget = .newLedger
+                }
+                if state == .failed {
+                    bandEmpty("Notion did not answer.")
+                } else if rows.isEmpty {
+                    bandEmpty("No \(bandLabel.lowercased()) yet.")
+                } else {
+                    ForEach(rows) { b in ledgerRow(b) }
+                }
+            }
+            .padding(.horizontal, MacEditorialLayout.margin)
+            .padding(.top, 18)
+            .padding(.bottom, 18)
+        }
+    }
+
+    /// One ledger row: glyph, name over provider, cost right-aligned, state at
+    /// the right.
+    ///
+    /// **The accepted row carries a faint accent wash.** David's brief: a
+    /// decision that has been made should be visible without reading three
+    /// prices. 0.06 rather than the 0.12 this app washes a HOVERED row with -
+    /// at 0.12 the chosen quote and the row under the pointer would be the same
+    /// colour, and the one that means something would be the one that does not.
+    ///
+    /// **A declined row is dimmed, not struck through and not dropped.** It is
+    /// part of the comparison: what it cost is why the accepted one was chosen.
+    /// The same 0.55 a past itinerary row reads at.
+    ///
+    /// **A quoted row says nothing at the right.** It is the resting state of
+    /// the band, and a column that prints the same word on every line is a
+    /// column that says nothing - the argument D267 settled for NOT BOOKED.
+    /// The state column keeps its width either way so the costs stay aligned.
+    ///
+    /// **`Booked` is not shown here and Status is not shown on an itinerary
+    /// row.** They answer different questions: whether a reservation is
+    /// confirmed, and which of three things was chosen.
+    ///
+    /// The row opens the SAME `MacBookingSheet` the schedule band opens. There
+    /// is one editor for a Bookings row because there is one Bookings row.
+    ///
+    /// Every colour and condition is a typed `let` before the view, the D260
+    /// rule.
+    private func ledgerRow(_ b: Booking) -> some View {
+        let tint: Color = MacPalette.documentTint(BookingKind.tint(for: b.kind))
+        let glyph: String = BookingKind.glyph(for: b.kind)
+        let headline: String = b.name.isEmpty ? b.kind : b.name
+        let sub: String = ledgerSub(b, headline: headline)
+        let cost: String = bookingCost(b)
+        let accepted: Bool = BookingStatus.isAccepted(b.status)
+        let declined: Bool = BookingStatus.isDeclined(b.status)
+        let stateLabel: String = BookingStatus.rowLabel(b.status) ?? ""
+        let stateColor: Color = accepted ? MacEditorialColor.accent : MacEditorialColor.muted
+        let wash: Color = accepted ? MacEditorialColor.accent.opacity(0.06) : Color.clear
+        return VStack(spacing: 0) {
+            Button { bookingTarget = .edit(b) } label: {
+                HStack(spacing: 12) {
+                    MacIconBadge(icon: glyph, tint: tint, size: .compact)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(headline)
+                            .font(MacEditorialType.taskTitle)
+                            .foregroundStyle(MacEditorialColor.ink)
+                            .lineLimit(1)
+                        if !sub.isEmpty {
+                            Text(sub)
+                                .font(MacEditorialType.meta)
+                                .foregroundStyle(MacEditorialColor.muted)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 16)
+                    Text(cost)
+                        .font(MacEditorialType.time)
+                        .foregroundStyle(MacEditorialColor.ink)
+                        .frame(width: 96, alignment: .trailing)
+                    Text(stateLabel)
+                        .font(MacEditorialType.fieldLabel)
+                        .textCase(.uppercase)
+                        .tracking(MacEditorialType.fieldTracking)
+                        .foregroundStyle(stateColor)
+                        .frame(width: 78, alignment: .trailing)
+                }
+                .padding(.vertical, 7)
+                .padding(.horizontal, 6)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            MacEditorialRule.hair
+        }
+        .background(wash)
+        .opacity(declined ? 0.55 : 1)
+        .contextMenu {
+            Button("Edit…") { bookingTarget = .edit(b) }
+            Button("Open in Notion") { openBookingInNotion(b) }
+            Divider()
+            Button("Delete…", role: .destructive) { deletingBooking = b }
+        }
+    }
+
     /// ITINERARY, at the top of the endeavor body (D268).
     ///
     /// **The type chooses whether this band appears, and what it is called**
-    /// (D268). Travel reads ITINERARY; Milestone and Gathering read SCHEDULE,
-    /// because a run of show is a schedule in hours rather than days and needs
-    /// no new components. Project and Decision lead with the punch list and the
-    /// ledger, which are not built, so they show the note alone — exactly the
-    /// screen they have today.
+    /// (D268). Travel reads ITINERARY; Milestone, Gathering and Project read
+    /// SCHEDULE, because a run of show is a schedule in hours rather than days
+    /// and needs no new components. Project draws it THIRD, under its punch
+    /// list and its quotes, which is the order a project is lived; the band
+    /// itself is unchanged.
+    ///
+    /// Decision has no schedule band at all. A decision is a comparison rather
+    /// than a calendar, and its one band is the ledger above.
     ///
     /// **It draws a header even with no rows.** The door to the FIRST booking
     /// cannot live inside a section that only appears once a booking exists.
@@ -1786,37 +2088,16 @@ struct TraceMacEndeavorsView: View {
         let hidden: Int = days.count - shown.count
         if let bandLabel = e.scheduleBandLabel, settled {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text(bandLabel).editorialSectionLabel()
-                    Spacer(minLength: 8)
-                    if count > 0 {
-                        Text("\(count)")
-                            .font(MacEditorialType.meta)
-                            .foregroundStyle(MacEditorialColor.faint)
-                            .padding(.trailing, 10)
-                    }
-                    Button { bookingTarget = .new } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(MacEditorialColor.faint)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Add a booking to \(e.name)")
+                bandHeader(bandLabel,
+                           count: count,
+                           help: "Add a booking to \(e.name)") {
+                    bookingTarget = .new
                 }
-                .padding(.bottom, 6)
-                MacEditorialRule.ink
 
                 if state == .failed {
-                    Text("Notion did not answer.")
-                        .font(MacEditorialType.meta)
-                        .foregroundStyle(MacEditorialColor.faint)
-                        .padding(.top, 10)
+                    bandEmpty("Notion did not answer.")
                 } else if days.isEmpty {
-                    Text("Nothing booked yet.")
-                        .font(MacEditorialType.meta)
-                        .foregroundStyle(MacEditorialColor.faint)
-                        .padding(.top, 10)
+                    bandEmpty("Nothing booked yet.")
                 } else {
                     ForEach(shown) { day in
                         itineraryDayLead(day)
