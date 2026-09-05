@@ -249,6 +249,21 @@ struct Endeavor: Identifiable, Hashable {
 
     var isTravel: Bool { type.caseInsensitiveCompare("Travel") == .orderedSame }
 
+    /// The type's glyph, and its tint as a `DocumentTint`.
+    ///
+    /// D268: **the type gets its own glyph and tint, in the list and beside the
+    /// masthead, and nowhere else.** Until now the only place an endeavor's
+    /// type showed on the Mac was the kicker over the cover photograph, which
+    /// is the one place it is hardest to read, and the list said nothing at
+    /// all. David: *"how can i tell the type of endeavor by looking at each?"*
+    ///
+    /// The pair is the phone's, unchanged: `DayflowEndeavorViews` has drawn an
+    /// indigo airplane and a green hammer since Session 78. Here rather than in
+    /// either view, so the five types D268 names arrive in ONE place rather
+    /// than in a Mac copy and a phone copy that drift.
+    var typeGlyph: String { isTravel ? "airplane" : "hammer" }
+    var typeTint: DocumentTint { isTravel ? .indigo : .green }
+
     /// Inclusive length in days, nil when either end is missing.
     var dayCount: Int? {
         guard let starts, let ends else { return nil }

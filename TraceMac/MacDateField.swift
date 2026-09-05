@@ -43,6 +43,10 @@ struct MacDateField: View {
 
     let label: String
     @Binding var date: Date
+    /// Adds a time to the button's text and an hour-and-minute picker under the
+    /// month. Off by default: an endeavor's start and end are days, and only a
+    /// booking needs the clock.
+    var includesTime: Bool = false
 
     @State private var showing = false
 
@@ -55,27 +59,91 @@ struct MacDateField: View {
         return f
     }()
 
+    /// `9:05 AM`, when the field carries one.
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "h:mm a"
+        return f
+    }()
+
+    /// The grid's binding, which **keeps the time when the day changes.**
+    ///
+    /// `MacEditorialMonthGrid` hands back the day you clicked, and every
+    /// existing caller wanted exactly that because a task's date is a day. A
+    /// booking's is not: picking 21 November for a 4pm check-in must not turn
+    /// it into midnight. So the picked day and the held time are merged here,
+    /// at the one call site that carries a clock, rather than by changing what
+    /// the grid means for its three other callers.
+    private var dayBinding: Binding<Date> {
+        Binding(
+            get: { date },
+            set: { picked in
+                guard includesTime else { date = picked; return }
+                let cal = Calendar.current
+                let time = cal.dateComponents([.hour, .minute], from: date)
+                var day = cal.dateComponents([.year, .month, .day], from: picked)
+                day.hour = time.hour
+                day.minute = time.minute
+                date = cal.date(from: day) ?? picked
+            }
+        )
+    }
+
+    private var buttonText: String {
+        let day = Self.formatter.string(from: date)
+        guard includesTime else { return day }
+        return day + " · " + Self.timeFormatter.string(from: date)
+    }
+
     var body: some View {
         LabeledContent(label) {
             Button {
                 showing = true
             } label: {
-                Text(Self.formatter.string(from: date))
+                Text(buttonText)
                     .font(MacType.body)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.bordered)
             .popover(isPresented: $showing, arrowEdge: .bottom) {
-                DatePicker("", selection: $date, displayedComponents: .date)
-                    .datePickerStyle(.graphical)
-                    .labelsHidden()
-                    .padding(10)
-                    // The popover has no Done button on purpose. A graphical
-                    // picker commits on the click that selects the day, so a
-                    // confirm step would be a second click for a decision
-                    // already made — and the binding has already written by the
-                    // time anyone could press it.
-                    .onChange(of: date) { _, _ in showing = false }
+                VStack(alignment: .leading, spacing: 10) {
+                    // **`MacEditorialMonthGrid`, not `DatePicker(.graphical)`.**
+                    // David, comparing this popover with the task card's Pick
+                    // day: *"the calendar picker works great but the theme
+                    // doesnt match the rest of the app."* He is right, and it
+                    // is the exact drift that grid's own comment warns about:
+                    // the task card, the compose rail and Today all draw one
+                    // month through one component, and this was a fourth
+                    // drawing of the same thing in Apple's dress rather than
+                    // the app's. It is also Monday-first via `Calendar.traceWeek`,
+                    // which the system picker is not.
+                    MacEditorialMonthGrid(selected: dayBinding)
+                    if includesTime {
+                        MacEditorialRule.hair
+                        HStack(spacing: 10) {
+                            Text("Time").editorialFieldLabel()
+                            DatePicker("", selection: $date, displayedComponents: .hourAndMinute)
+                                .labelsHidden()
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+                .padding(14)
+                .background(MacEditorialColor.paper)
+                // **The date-only popover closes on the click that picks a day;
+                // the date-and-time one does not.** A graphical picker commits
+                // on that click, so a confirm step would be a second click for
+                // a decision already made. With a time field under it there is
+                // a second decision still to make, and closing on the first
+                // would put the time out of reach — so that popover dismisses
+                // the way every macOS popover does, by clicking away from it.
+                // No Done button either way: it would be chrome for one case
+                // and a redundant click for the other.
+                .onChange(of: date) { _, _ in
+                    guard !includesTime else { return }
+                    showing = false
+                }
             }
         }
     }

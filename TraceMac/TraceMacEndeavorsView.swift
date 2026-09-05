@@ -84,6 +84,13 @@ struct TraceMacEndeavorsView: View {
     /// and reports no minimum (Session 80), so an uncapped band would eat the
     /// note it sits above.
     @State private var itineraryExpanded = false
+    /// The booking sheet's one target. **One host, not two** (D36): a `.new`
+    /// and an `.edit` presented by two `.sheet` modifiers on one view is a coin
+    /// flip, so the two cases are one optional.
+    @State private var bookingTarget: BookingTarget? = nil
+    /// The row awaiting a Delete confirmation from the context menu. The
+    /// sheet has its own; this is the right-click path.
+    @State private var deletingBooking: Booking? = nil
     @State private var docStore: TraceMacDocumentStore?
     /// FINISHED is folded by default (D257). Past and cancelled already sort
     /// last, but "at the bottom" stops being enough the moment there are more
@@ -644,20 +651,40 @@ struct TraceMacEndeavorsView: View {
         return Button {
             selectedID = e.id
         } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(e.name)
-                    .font(MacEditorialType.rowTitle)
-                    .foregroundStyle(MacEditorialColor.ink)
-                    .lineLimit(1)
-                Text(rowSecondLine(e))
-                    .font(MacEditorialType.meta)
-                    .foregroundStyle(MacEditorialColor.muted)
-                    .lineLimit(1)
-                if let third {
-                    Text(third.text)
-                        .editorialListLabel()
-                        .foregroundStyle(third.tint)
+            HStack(alignment: .top, spacing: 10) {
+                // D268. The only place the type showed was the kicker over the
+                // cover photograph, which is where it is hardest to read, and
+                // the list said nothing at all.
+                MacIconBadge(icon: e.typeGlyph,
+                             tint: MacPalette.documentTint(e.typeTint),
+                             size: .compact)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    // **The glyph was not enough.** David, looking at two
+                    // Travel endeavors both wearing an airplane: *"the type of
+                    // endeavor is not there as far as i can see it."* A badge
+                    // makes a list scannable by shape once you know what the
+                    // shapes mean, and nothing on the screen said. The word
+                    // does, and it is the one that survives D268's five types
+                    // where five glyphs would have to be learned.
+                    Text(e.type)
+                        .editorialGroupLabel()
+                        .foregroundStyle(MacPalette.documentTint(e.typeTint))
+                    Text(e.name)
+                        .font(MacEditorialType.rowTitle)
+                        .foregroundStyle(MacEditorialColor.ink)
+                        .lineLimit(1)
+                    Text(rowSecondLine(e))
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.muted)
+                        .lineLimit(1)
+                    if let third {
+                        Text(third.text)
+                            .editorialListLabel()
+                            .foregroundStyle(third.tint)
+                    }
                 }
+                Spacer(minLength: 0)
             }
             .padding(.vertical, 10)
             .padding(.horizontal, MacEditorialLayout.margin)
@@ -724,6 +751,9 @@ struct TraceMacEndeavorsView: View {
         VStack(spacing: 0) {
             coverBand(e)
             itinerarySection(e)
+                // The popover below anchors to this block, so it has to be a
+                // view the layout can point at rather than a bare call.
+                .id("itinerary-" + e.id)
             // The **shared** editor, not a second one. `TraceMacNoteEditor`
             // already carries wikilink autocomplete with live suggestions,
             // the formatting toolbar, and a one-second debounced save; it was
@@ -746,6 +776,45 @@ struct TraceMacEndeavorsView: View {
             .id(e.id)
         }
         .frame(maxWidth: .infinity)
+        // **A popover, not a sheet.** David: *"could you make it so that if i
+        // click outside of the edit screen the edit screen is dismissed? I may
+        // hit cancel but i have found myself just clicking away and nothing
+        // happens."*
+        //
+        // A macOS sheet is document-modal: it covers the window and never sees
+        // a click outside, by design, because the point of a sheet is that you
+        // answer it. Nothing happening was not a bug I could patch — it was the
+        // wrong container. A popover dismisses the way he expected, and the
+        // discard is what he asked for: nothing is written until Save.
+        //
+        // Anchored to the itinerary rather than to the window, so the editor
+        // points at the thing it edits.
+        .popover(item: $bookingTarget, arrowEdge: .leading) { target in
+            MacBookingSheet(endeavor: e,
+                            existing: target.booking,
+                            people: notionService.people,
+                            endeavorPeople: railPeople(e).map(\.name),
+                            onSave: { draft in try await saveBooking(draft) },
+                            onDelete: { booking in
+                                try await notionService.deleteBooking(id: booking.id)
+                            },
+                            onAddPerson: { name in
+                                try await notionService.addPerson(name: name)
+                            })
+        }
+        .confirmationDialog("Delete “\(deletingBooking?.name ?? "")”?",
+                            isPresented: Binding(get: { deletingBooking != nil },
+                                                 set: { if !$0 { deletingBooking = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                guard let booking = deletingBooking else { return }
+                deletingBooking = nil
+                Task { try? await notionService.deleteBooking(id: booking.id) }
+            }
+            Button("Cancel", role: .cancel) { deletingBooking = nil }
+        } message: {
+            Text("Archives the page in Notion. Recoverable from Notion's trash, not from here.")
+        }
     }
 
     /// Height of the cover band.
@@ -1292,9 +1361,18 @@ struct TraceMacEndeavorsView: View {
         }
         .sheet(item: $addingPersonTo) { target in
             MacAddPersonSheet(endeavor: target,
-                              people: notionService.people) { name in
-                attachPerson(name, to: target)
-            }
+                              people: notionService.people,
+                              onAdd: { name in attachPerson(name, to: target) },
+                              // The Mac could not make a person; its empty
+                              // state said "Add them in Directory first" while
+                              // `NotionService.addPerson` had existed for
+                              // sessions and the phone's billiards wizard was
+                              // already calling it. Warning FIVE: one verb,
+                              // two behaviours, decided by which screen you
+                              // happened to be on.
+                              onCreate: { name in
+                                  try await notionService.addPerson(name: name)
+                              })
         }
     }
 
@@ -1442,21 +1520,47 @@ struct TraceMacEndeavorsView: View {
     // an `NSViewRepresentable` around an `NSTextView`, so a row cannot sit in
     // the flowing text.
     //
-    // Bookings only this session. Destinations are named in D268 as moving too,
-    // and they are NOT moved here: those rows carry a skipped state, a remove,
-    // an attach and a click through to the Place, and moving four behaviours is
-    // a second change, not a rider on this one.
+    // Bookings only. Destinations are named in D268 as moving too, and they are
+    // NOT moved here: those rows carry a skipped state, a remove, an attach and
+    // a click through to the Place, and moving four behaviours is a second
+    // change, not a rider on this one.
 
-    /// One day's bookings, in the order the band draws them.
+    /// One line on the itinerary, which is not the same thing as one booking.
+    ///
+    /// **A booking whose end falls on a later day makes two lines.** David, on
+    /// a hotel: *"when i have dates that extend past one day it is only showing
+    /// the first day not the last day as well to check out."*
+    ///
+    /// A calendar draws a multi-day thing as a bar across its grid. A list of
+    /// days has no grid to cross, so an itinerary splits it — which is also the
+    /// more useful answer: on the morning you leave, "check out, 11:00" is what
+    /// you need at that moment, and a row filed four days earlier does not
+    /// surface it. The same split covers a car picked up on the 20th and
+    /// dropped on the 28th, and a red-eye that lands the next day, with no new
+    /// rule for either.
+    ///
+    /// **Deliberately NOT a line on every day between.** Trip apps often carry
+    /// a "staying at" context line through the middle days. Here the fold shows
+    /// two days, and those lines would push real events out of the visible part
+    /// of a nine-day trip to say something the check-in line already said.
+    private struct ItineraryEntry: Identifiable {
+        let booking: Booking
+        /// The far end of something that spans days.
+        let isEnd: Bool
+        var date: Date? { isEnd ? booking.end : booking.start }
+        var id: String { isEnd ? booking.id + "·end" : booking.id }
+    }
+
+    /// One day's entries, in the order the band draws them.
     ///
     /// Keyed on the day rather than the date, because the label IS the
-    /// identity: two rows on 20 November are one group whatever their times.
-    /// Undated rows share the key `undated`, carry no numeral, and sort last.
+    /// identity. Undated rows share the key `undated`, carry no numeral, and
+    /// sort last.
     private struct BookingDay: Identifiable {
         let id: String
         let numeral: String
         let label: String
-        let bookings: [Booking]
+        let entries: [ItineraryEntry]
     }
 
     /// How many days the band shows before folding. Two, because on the morning
@@ -1494,28 +1598,48 @@ struct TraceMacEndeavorsView: View {
         return f
     }()
 
-    /// Dated rows by start ascending, undated last, ties broken by name so the
-    /// order does not shuffle between redraws.
-    private func bookingIsBefore(_ a: Booking, _ b: Booking) -> Bool {
-        switch (a.start, b.start) {
-        case let (x?, y?): return x == y ? a.name < b.name : x < y
-        case (_?, nil):    return true
-        case (nil, _?):    return false
-        case (nil, nil):   return a.name < b.name
+    /// Does this booking end on a later day than it starts.
+    private func spansDays(_ b: Booking) -> Bool {
+        guard let start = b.start, let end = b.end else { return false }
+        return !Calendar.current.isDate(start, inSameDayAs: end)
+    }
+
+    /// Dated entries by their own date ascending, undated last, ties broken by
+    /// name and then by which end it is, so the order never shuffles.
+    private func entryIsBefore(_ a: ItineraryEntry, _ b: ItineraryEntry) -> Bool {
+        switch (a.date, b.date) {
+        case let (x?, y?):
+            if x != y { return x < y }
+            if a.booking.name != b.booking.name { return a.booking.name < b.booking.name }
+            return !a.isEnd && b.isEnd
+        case (_?, nil): return true
+        case (nil, _?): return false
+        case (nil, nil): return a.booking.name < b.booking.name
         }
     }
 
-    /// This endeavor's bookings, grouped by the start's day.
+    private func itineraryEntries(_ e: Endeavor) -> [ItineraryEntry] {
+        var out: [ItineraryEntry] = []
+        for booking in notionService.bookings(for: e.id) {
+            out.append(ItineraryEntry(booking: booking, isEnd: false))
+            if spansDays(booking) {
+                out.append(ItineraryEntry(booking: booking, isEnd: true))
+            }
+        }
+        return out.sorted(by: entryIsBefore)
+    }
+
+    /// This endeavor's entries, grouped by their own day.
     private func bookingDays(_ e: Endeavor) -> [BookingDay] {
-        let rows: [Booking] = notionService.bookings(for: e.id).sorted(by: bookingIsBefore)
+        let rows: [ItineraryEntry] = itineraryEntries(e)
         var order: [String] = []
-        var buckets: [String: [Booking]] = [:]
+        var buckets: [String: [ItineraryEntry]] = [:]
         var numerals: [String: String] = [:]
         var labels: [String: String] = [:]
-        for b in rows {
+        for entry in rows {
             let key: String
-            if let start = b.start {
-                let day = Calendar.current.startOfDay(for: start)
+            if let date = entry.date {
+                let day = Calendar.current.startOfDay(for: date)
                 key = Self.bookingDayKey.string(from: day)
                 numerals[key] = Self.bookingDayNumeral.string(from: day)
                 labels[key] = Self.bookingDayWord.string(from: day)
@@ -1525,29 +1649,45 @@ struct TraceMacEndeavorsView: View {
                 labels[key] = "Undated"
             }
             if buckets[key] == nil { order.append(key) }
-            buckets[key, default: []].append(b)
+            buckets[key, default: []].append(entry)
         }
         return order.map {
             BookingDay(id: $0,
                        numeral: numerals[$0] ?? "",
                        label: labels[$0] ?? "",
-                       bookings: buckets[$0] ?? [])
+                       entries: buckets[$0] ?? [])
         }
     }
 
-    /// The times in a row's own column.
+    /// The time in an entry's own column.
     ///
-    /// **The full form, not Session 86's `9:05a – 12:40p`.** That compression
-    /// existed to buy back six characters on a 248pt rail, and the body has
-    /// nothing to buy them with. Compression is spent where space is short.
+    /// **A range only when both ends are the same day.** A spanning booking
+    /// gets one time per line, because each line is a moment rather than a
+    /// duration: the hotel's check-in row read "10:13 AM – 10:13 AM" before
+    /// this, which is a range that says nothing.
+    ///
+    /// The full form, not Session 86's `9:05a`. That compression bought six
+    /// characters on a 248pt rail and the body has nothing to buy them with.
     /// A dated booking with no clock time reads "All day" rather than blank:
     /// the column is there either way, and an empty cell looks like a bug.
-    private func bookingTimes(_ b: Booking) -> String {
-        guard let start = b.start else { return "" }
+    private func entryTime(_ entry: ItineraryEntry) -> String {
+        let b = entry.booking
+        guard let date = entry.date else { return "" }
         guard b.hasTime else { return "All day" }
-        let opening = Self.bookingTime.string(from: start)
-        guard let end = b.end else { return opening }
-        return opening + " – " + Self.bookingTime.string(from: end)
+        if !entry.isEnd, let start = b.start, let end = b.end, !spansDays(b) {
+            return Self.bookingTime.string(from: start) + " – " + Self.bookingTime.string(from: end)
+        }
+        return Self.bookingTime.string(from: date)
+    }
+
+    /// "Check in" / "Check out", "Pick up" / "Drop off", in the kind's own
+    /// words. Only on a booking that spans days, where one line of two needs to
+    /// say which one it is. `BookingKind.labels` already holds this vocabulary
+    /// for the sheet; it is the same question asked in a different place.
+    private func entryQualifier(_ entry: ItineraryEntry) -> String {
+        guard spansDays(entry.booking) else { return "" }
+        let labels = BookingKind.labels(for: entry.booking.kind)
+        return entry.isEnd ? labels.end : labels.start
     }
 
     /// First names, resolved from Notion People by relation id.
@@ -1582,57 +1722,116 @@ struct TraceMacEndeavorsView: View {
         return hidden == 1 ? "+ 1 more day" : "+ \(hidden) more days"
     }
 
+    /// Which booking the sheet is for.
+    private enum BookingTarget: Identifiable {
+        case new
+        case edit(Booking)
+        var id: String {
+            switch self {
+            case .new:          return "new"
+            case .edit(let b):  return b.id
+            }
+        }
+        var booking: Booking? {
+            if case .edit(let b) = self { return b }
+            return nil
+        }
+    }
+
+    /// Create or update, decided by whether the draft carries an id.
+    ///
+    /// The sheet does not know which it is doing and should not: it builds a
+    /// `Booking` and hands it over. An empty id is the only difference, and it
+    /// is the model's own fact rather than a flag someone has to remember.
+    private func saveBooking(_ draft: Booking) async throws {
+        if draft.id.isEmpty {
+            try await notionService.createBooking(draft)
+        } else {
+            try await notionService.updateBooking(draft)
+        }
+    }
+
+    /// Notion's own page URL. Ids come back hyphenated and the web form has no
+    /// hyphens; both resolve, but the clean one is what Notion itself copies.
+    private func openBookingInNotion(_ b: Booking) {
+        let compact = b.id.replacingOccurrences(of: "-", with: "")
+        guard let url = URL(string: "https://www.notion.so/\(compact)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     /// ITINERARY, at the top of the endeavor body (D268).
     ///
-    /// **Nothing is drawn when there is nothing to draw.** Not a header over an
-    /// empty space above the note: an endeavor with no bookings gets exactly the
-    /// screen it has today. `.failed` is the one exception and it earns it —
-    /// "Notion did not answer." is a different statement from "there are none",
-    /// which is the reason `bookingsLoad` has three states at all.
+    /// **Travel only, for now.** D268 says the type chooses which bands appear,
+    /// and `isTravel` is the only type test the model has while the list is
+    /// still Travel and Project. A project gets exactly the screen it has
+    /// today, which is the point.
     ///
-    /// No `+` yet, and no click: the sheet is the next session. A door that is
-    /// drawn and does not open is worse than no door.
+    /// **It draws a header even with no rows.** The door to the FIRST booking
+    /// cannot live inside a section that only appears once a booking exists.
+    /// Idle and loading still draw nothing, so the heading does not flash in
+    /// before the answer. `.failed` still says so, because "Notion did not
+    /// answer." is a different statement from "there are none".
+    ///
+    /// The count is of ENTRIES, not bookings, so it agrees with the number of
+    /// lines on screen. A four-night hotel is two of them.
     @ViewBuilder
     private func itinerarySection(_ e: Endeavor) -> some View {
         let state: NotionLoadState = notionService.bookingsLoad
+        let settled: Bool = state == .loaded || state == .failed
         let days: [BookingDay] = bookingDays(e)
-        let count: Int = days.reduce(0) { $0 + $1.bookings.count }
+        let count: Int = days.reduce(0) { $0 + $1.entries.count }
         let shown: [BookingDay] = itineraryExpanded ? days : Array(days.prefix(Self.itineraryDayCap))
         let hidden: Int = days.count - shown.count
-        if state == .failed {
+        if e.isTravel, settled {
             VStack(alignment: .leading, spacing: 0) {
-                MacEditorialSectionLabel(text: "Itinerary")
-                MacEditorialRule.ink
-                Text("Notion did not answer.")
-                    .font(MacEditorialType.meta)
-                    .foregroundStyle(MacEditorialColor.faint)
-                    .padding(.top, 10)
-            }
-            .padding(.horizontal, MacEditorialLayout.margin)
-            .padding(.top, 18)
-            // ENDEAVOR NOTE's heading row carries no top padding of its own, so
-            // without this the last itinerary hairline and the next section
-            // label sit nine points apart and read as one crowded block.
-            .padding(.bottom, 18)
-        } else if state == .loaded, !days.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                MacEditorialSectionLabel(text: "Itinerary", trailing: "\(count)")
-                MacEditorialRule.ink
-                ForEach(shown) { day in
-                    itineraryDayLead(day)
-                    ForEach(day.bookings) { booking in itineraryRow(booking) }
-                }
-                if hidden > 0 || itineraryExpanded {
-                    Button { itineraryExpanded.toggle() } label: {
-                        Text(itineraryFoldLabel(hidden))
-                            .font(MacEditorialType.quietLabel)
-                            .textCase(.uppercase)
-                            .tracking(MacEditorialType.quietTracking)
-                            .foregroundStyle(MacEditorialColor.muted)
-                            .padding(.top, 10)
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text("Itinerary").editorialSectionLabel()
+                    Spacer(minLength: 8)
+                    if count > 0 {
+                        Text("\(count)")
+                            .font(MacEditorialType.meta)
+                            .foregroundStyle(MacEditorialColor.faint)
+                            .padding(.trailing, 10)
+                    }
+                    Button { bookingTarget = .new } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(MacEditorialColor.faint)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .help("Add a booking to \(e.name)")
+                }
+                .padding(.bottom, 6)
+                MacEditorialRule.ink
+
+                if state == .failed {
+                    Text("Notion did not answer.")
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .padding(.top, 10)
+                } else if days.isEmpty {
+                    Text("Nothing booked yet.")
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .padding(.top, 10)
+                } else {
+                    ForEach(shown) { day in
+                        itineraryDayLead(day)
+                        ForEach(day.entries) { entry in itineraryRow(entry) }
+                    }
+                    if hidden > 0 || itineraryExpanded {
+                        Button { itineraryExpanded.toggle() } label: {
+                            Text(itineraryFoldLabel(hidden))
+                                .font(MacEditorialType.quietLabel)
+                                .textCase(.uppercase)
+                                .tracking(MacEditorialType.quietTracking)
+                                .foregroundStyle(MacEditorialColor.muted)
+                                .padding(.top, 10)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             .padding(.horizontal, MacEditorialLayout.margin)
@@ -1663,71 +1862,98 @@ struct TraceMacEndeavorsView: View {
         .padding(.bottom, 2)
     }
 
-    /// One booking at full width.
+    /// One entry at full width.
     ///
     /// Four columns rather than the rail's two, which is the entire point of
     /// the move: the time gets its own column, the name and its provider get
     /// the middle, and the confirmation, the cost and NOT BOOKED sit at the
     /// right without competing for the name's width.
     ///
+    /// **NOT BOOKED shows on the opening entry only.** Being booked is a fact
+    /// about the whole reservation, and saying it twice for one hotel doubles
+    /// an alarm without doubling the information. The cost is the same
+    /// argument: a price is not paid twice.
+    ///
     /// Every colour and condition is a typed `let` before the view, the D260
-    /// rule. Not a `Button`: the edit sheet arrives next session.
-    private func itineraryRow(_ b: Booking) -> some View {
+    /// rule.
+    private func itineraryRow(_ entry: ItineraryEntry) -> some View {
+        let b: Booking = entry.booking
         let tint: Color = MacPalette.documentTint(BookingKind.tint(for: b.kind))
         let glyph: String = BookingKind.glyph(for: b.kind)
         // A hand-added row can reach Notion with no Name. The kind is a poorer
         // headline than "UA 1642 · DEN → ORD" and a much better one than a
         // blank line where the subject should be.
         let headline: String = b.name.isEmpty ? b.kind : b.name
+        let qualifier: String = entryQualifier(entry)
         let sub: String = itinerarySub(b)
-        let time: String = bookingTimes(b)
+        let time: String = entryTime(entry)
         let confirmation: String = b.confirmation ?? ""
-        let cost: String = bookingCost(b)
-        let isPast: Bool = (b.end ?? b.start).map { $0 < Date() } ?? false
-        let showNotBooked: Bool = !b.booked
+        let cost: String = entry.isEnd ? "" : bookingCost(b)
+        let isPast: Bool = (entry.date).map { $0 < Date() } ?? false
+        let showNotBooked: Bool = !b.booked && !entry.isEnd
         return VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                MacIconBadge(icon: glyph, tint: tint, size: .compact)
-                Text(time)
-                    .font(MacEditorialType.time)
-                    .foregroundStyle(MacEditorialColor.muted)
-                    .frame(width: 148, alignment: .leading)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(headline)
-                        .font(MacEditorialType.taskTitle)
-                        .foregroundStyle(MacEditorialColor.ink)
-                        .lineLimit(1)
-                    if !sub.isEmpty {
-                        Text(sub)
-                            .font(MacEditorialType.meta)
-                            .foregroundStyle(MacEditorialColor.muted)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 16)
-                if !confirmation.isEmpty {
-                    Text(confirmation)
+            Button { bookingTarget = .edit(b) } label: {
+                HStack(spacing: 12) {
+                    MacIconBadge(icon: glyph, tint: tint, size: .compact)
+                    Text(time)
                         .font(MacEditorialType.time)
                         .foregroundStyle(MacEditorialColor.muted)
+                        .frame(width: 148, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(headline)
+                                .font(MacEditorialType.taskTitle)
+                                .foregroundStyle(MacEditorialColor.ink)
+                                .lineLimit(1)
+                            if !qualifier.isEmpty {
+                                Text(qualifier)
+                                    .font(MacEditorialType.listLabel)
+                                    .textCase(.uppercase)
+                                    .tracking(MacEditorialType.listTracking)
+                                    .foregroundStyle(MacEditorialColor.faint)
+                                    .fixedSize()
+                            }
+                        }
+                        if !sub.isEmpty {
+                            Text(sub)
+                                .font(MacEditorialType.meta)
+                                .foregroundStyle(MacEditorialColor.muted)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 16)
+                    if !confirmation.isEmpty {
+                        Text(confirmation)
+                            .font(MacEditorialType.time)
+                            .foregroundStyle(MacEditorialColor.muted)
+                    }
+                    if !cost.isEmpty {
+                        Text(cost)
+                            .font(MacEditorialType.time)
+                            .foregroundStyle(MacEditorialColor.faint)
+                    }
+                    // Accent, because this is the row he is looking for.
+                    if showNotBooked {
+                        Text("Not booked")
+                            .font(MacEditorialType.fieldLabel)
+                            .textCase(.uppercase)
+                            .tracking(MacEditorialType.fieldTracking)
+                            .foregroundStyle(MacEditorialColor.accent)
+                    }
                 }
-                if !cost.isEmpty {
-                    Text(cost)
-                        .font(MacEditorialType.time)
-                        .foregroundStyle(MacEditorialColor.faint)
-                }
-                // Accent, because this is the row he is looking for.
-                if showNotBooked {
-                    Text("Not booked")
-                        .font(MacEditorialType.fieldLabel)
-                        .textCase(.uppercase)
-                        .tracking(MacEditorialType.fieldTracking)
-                        .foregroundStyle(MacEditorialColor.accent)
-                }
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 7)
+            .buttonStyle(.plain)
             MacEditorialRule.hair
         }
         .opacity(isPast ? 0.55 : 1)
+        .contextMenu {
+            Button("Edit…") { bookingTarget = .edit(b) }
+            Button("Open in Notion") { openBookingInNotion(b) }
+            Divider()
+            Button("Delete…", role: .destructive) { deletingBooking = b }
+        }
     }
 
     /// Places attached to this endeavor, ahead of any visit.
@@ -2605,9 +2831,27 @@ struct MacAddPersonSheet: View {
     let endeavor: Endeavor
     let people: [Person]
     let onAdd: (String) -> Void
+    /// Creates the person in Notion and returns them. Nil hides the offer.
+    var onCreate: ((String) async throws -> Person)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var creating = false
+    @State private var failure: String? = nil
+
+    /// The typed name, when it is worth offering to create.
+    ///
+    /// Two characters, because one is a typo. Nothing offered when the name
+    /// already exists: that person is in `matches` and picking them is right.
+    private var createName: String? {
+        guard onCreate != nil else { return nil }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2 else { return nil }
+        guard !people.contains(where: {
+            $0.name.localizedCaseInsensitiveCompare(q) == .orderedSame
+        }) else { return nil }
+        return q
+    }
 
     private var matches: [Person] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2627,7 +2871,39 @@ struct MacAddPersonSheet: View {
 
             TextField("Search your people", text: $query)
                 .textFieldStyle(.roundedBorder)
-                .padding(.horizontal, 20).padding(.bottom, 12)
+                .padding(.horizontal, 20).padding(.bottom, 8)
+
+            if let createName {
+                Button {
+                    guard let onCreate else { return }
+                    creating = true
+                    failure = nil
+                    Task {
+                        do {
+                            _ = try await onCreate(createName)
+                            onAdd(createName)
+                            dismiss()
+                        } catch {
+                            failure = error.localizedDescription
+                            creating = false
+                        }
+                    }
+                } label: {
+                    Label("Add “\(createName)” to your people",
+                          systemImage: "person.badge.plus")
+                        .font(MacType.row)
+                }
+                .buttonStyle(.link)
+                .disabled(creating)
+                .padding(.horizontal, 20).padding(.bottom, 10)
+            }
+
+            if let failure {
+                Text(failure)
+                    .font(MacType.meta)
+                    .foregroundStyle(MacEditorialColor.accent)
+                    .padding(.horizontal, 20).padding(.bottom, 8)
+            }
 
             Divider()
 

@@ -796,4 +796,116 @@ enum BookingKind {
         default:           return .gray
         }
     }
+
+
+    // MARK: What a Kind means for the sheet (D267)
+
+    /// Journeys move you between two places; stays put you at one. `Other` is
+    /// neither and is its own group on purpose.
+    ///
+    /// This is the rule David chose for what happens when the Kind changes
+    /// mid-edit: **keep a value when it still means the same thing.** Flight to
+    /// Shuttle keeps DEN and ORD, because a shuttle has a From and a To exactly
+    /// like a flight. Flight to Hotel clears them, because offering "ORD" as
+    /// the name of a hotel is worse than an empty field.
+    enum Group { case journey, stay, other }
+
+    static func group(for kind: String) -> Group {
+        switch kind.lowercased() {
+        case "flight", "shuttle", "train", "car rental": return .journey
+        case "hotel", "parking":                         return .stay
+        default:                                         return .other
+        }
+    }
+
+    /// What the sheet's fields are CALLED for this kind. The thirteen columns
+    /// underneath never change; only these words do (D267).
+    ///
+    /// `from` is optional because a hotel has no From. A nil label means the
+    /// field is not shown at all, rather than shown with a word that does not
+    /// apply to it.
+    struct Labels {
+        let start: String
+        let end: String
+        let from: String?
+        let to: String
+        let provider: String
+        let number: String
+    }
+
+    static func labels(for kind: String) -> Labels {
+        switch kind.lowercased() {
+        case "flight":
+            return Labels(start: "Departs", end: "Arrives", from: "From", to: "To",
+                          provider: "Airline", number: "Flight")
+        case "hotel":
+            return Labels(start: "Check in", end: "Check out", from: nil, to: "Where",
+                          provider: "Brand", number: "Room")
+        case "car rental":
+            return Labels(start: "Pick up", end: "Drop off", from: "Pick up at", to: "Drop off at",
+                          provider: "Company", number: "Reservation")
+        case "parking":
+            return Labels(start: "Starts", end: "Ends", from: nil, to: "Where",
+                          provider: "Operator", number: "Space")
+        default:
+            return Labels(start: "Starts", end: "Ends", from: "From", to: "To",
+                          provider: "Provider", number: "Number")
+        }
+    }
+
+    /// The Name the APP writes, so it is never typed and never drifts from the
+    /// fields it describes (D267).
+    ///
+    /// **Descriptive rather than short.** Session 86 nearly wrote a rule for
+    /// abbreviating these, because "Landline · Fort Collins → DEN" clipped on
+    /// the 248pt rail. D268 moved the rows into the body at full width and the
+    /// clipping went with it, so the reason to abbreviate is gone. Fixing the
+    /// data to suit a layout that has since changed is how a name ends up
+    /// wrong everywhere to look right in one place.
+    static func writtenName(kind: String,
+                            provider: String,
+                            number: String,
+                            from: String,
+                            to: String,
+                            start: Date?,
+                            end: Date?) -> String {
+        let provider = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+        let number   = number.trimmingCharacters(in: .whitespacesAndNewlines)
+        let from     = from.trimmingCharacters(in: .whitespacesAndNewlines)
+        let to       = to.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        func joined(_ parts: [String]) -> String {
+            parts.filter { !$0.isEmpty }.joined(separator: " · ")
+        }
+
+        let name: String
+        switch group(for: kind) {
+        case .journey:
+            // "UA 1642 · DEN → ORD", and "Landline · Fort Collins → DEN" for a
+            // shuttle that has a provider and no number.
+            let lead  = number.isEmpty ? provider : number
+            let route = from.isEmpty || to.isEmpty ? joined([from, to]) : "\(from) → \(to)"
+            name = joined([lead, route])
+        case .stay:
+            // "Lakemore Resort · 7 nights".
+            // Falls through to the kind. David created a hotel with neither
+            // a Brand nor a Where and got a row headed "4 nights", which reads
+            // as a fragment rather than a subject.
+            let lead = provider.isEmpty ? (to.isEmpty ? kind : to) : provider
+            let nights: Int = {
+                guard let start, let end else { return 0 }
+                let cal = Calendar.current
+                let days = cal.dateComponents([.day],
+                                              from: cal.startOfDay(for: start),
+                                              to: cal.startOfDay(for: end)).day ?? 0
+                return max(days, 0)
+            }()
+            name = nights > 0 ? joined([lead, nights == 1 ? "1 night" : "\(nights) nights"]) : lead
+        case .other:
+            name = joined([provider, to])
+        }
+        // Never empty. A row with no subject on screen is worse than one named
+        // after its kind.
+        return name.isEmpty ? kind : name
+    }
 }

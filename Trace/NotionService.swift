@@ -2088,6 +2088,112 @@ class NotionService {
         }
     }
 
+    // MARK: - Bookings, writing (D267)
+    //
+    // **None of these three touch `bookingsLoad`.** A failed WRITE is not a
+    // failed LOAD, and conflating them would put "Notion did not answer." over
+    // an itinerary that is on screen and perfectly good. The sheet reports its
+    // own failure; the band reports the state of the fetch.
+    //
+    // Nothing re-sorts `bookings` either. `bookings(for:)` filters it and
+    // `bookingDays` sorts what it returns, so an appended row lands in the
+    // right day without the array being ordered.
+
+    /// The thirteen columns, built once, for both create and update.
+    ///
+    /// **Every column is written every time, including the empty ones.** A
+    /// property omitted from a Notion PATCH is left as it was, so clearing a
+    /// confirmation by deleting the text would silently keep the old value. An
+    /// empty `rich_text` array and `NSNull` are how you say "there is nothing
+    /// here" rather than "I did not mention it".
+    private func bookingProps(_ b: Booking) -> [String: Any] {
+        var props: [String: Any] = [
+            "Name":     ["title": [["text": ["content": b.name]]]],
+            "Kind":     ["select": ["name": b.kind]],
+            "Endeavor": ["rich_text": [["text": ["content": b.endeavorID]]]],
+            "Who":      ["relation": b.whoIDs.map { ["id": $0] }],
+            "Booked":   ["checkbox": b.booked]
+        ]
+
+        if let cost = b.cost { props["Cost"] = ["number": cost] }
+        else                 { props["Cost"] = ["number": NSNull()] }
+
+        if let start = b.start {
+            var value: [String: Any] = ["start": bookingDateString(start, withTime: b.hasTime)]
+            if let end = b.end { value["end"] = bookingDateString(end, withTime: b.hasTime) }
+            props["Date"] = ["date": value]
+        } else {
+            props["Date"] = ["date": NSNull()]
+        }
+
+        let texts: [(String, String?)] = [
+            ("From", b.from), ("To", b.to), ("Provider", b.provider),
+            ("Number", b.number), ("Confirmation", b.confirmation), ("Notes", b.notes)
+        ]
+        for (column, value) in texts {
+            let text = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            props[column] = ["rich_text": text.isEmpty ? [] : [["text": ["content": text]]]]
+        }
+        return props
+    }
+
+    /// Notion wants a bare date for a date and an offset timestamp for a time.
+    ///
+    /// `localDateString` already handles the first, and its own comment says
+    /// why: a UTC timestamp makes Notion truncate an evening entry to the next
+    /// day. The timestamp form has to carry the zone for exactly that reason.
+    private func bookingDateString(_ date: Date, withTime: Bool) -> String {
+        guard withTime else { return localDateString(from: date) }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        f.timeZone = TimeZone.current
+        return f.string(from: date)
+    }
+
+    /// Creates the page and returns its id.
+    ///
+    /// **What is stored is what came back, not what was sent.** The POST
+    /// response is a full page object, so it goes through `parseBooking` like
+    /// any fetched row. A select Notion normalised or a relation it rejected
+    /// then shows on the rail as Notion actually holds it, rather than as the
+    /// sheet hoped.
+    @discardableResult
+    func createBooking(_ b: Booking) async throws -> String {
+        let body: [String: Any] = [
+            "parent": ["database_id": bookingsDBID],
+            "properties": bookingProps(b)
+        ]
+        let data = try await post("\(baseURL)/pages", body: body)
+        guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let created = parseBooking(result) else {
+            throw NotionError.apiError(0, "createBooking: could not parse the new page")
+        }
+        await MainActor.run { bookings.append(created) }
+        return created.id
+    }
+
+    func updateBooking(_ b: Booking) async throws {
+        let data = try await patch("\(baseURL)/pages/\(b.id)",
+                                   body: ["properties": bookingProps(b)])
+        guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let updated = parseBooking(result) else {
+            throw NotionError.apiError(0, "updateBooking: could not parse the updated page")
+        }
+        await MainActor.run {
+            if let i = bookings.firstIndex(where: { $0.id == b.id }) { bookings[i] = updated }
+        }
+    }
+
+    /// Archives the page, which is what Notion's own delete does.
+    ///
+    /// Reversible from Notion's trash and invisible from here, which is why the
+    /// sheet asks before calling it. David chose a confirm over an undo bar:
+    /// deleting a booking is rare and deliberate.
+    func deleteBooking(id: String) async throws {
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["archived": true])
+        await MainActor.run { bookings.removeAll { $0.id == id } }
+    }
+
     private func title(_ prop: Any?) -> String? {
         guard let p = prop as? [String: Any],
               let arr = p["title"] as? [[String: Any]] else { return nil }
