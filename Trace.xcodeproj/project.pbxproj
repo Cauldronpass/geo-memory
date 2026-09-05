@@ -130,6 +130,7 @@
 				DayflowFlagStore.swift,
 				DayflowMeetingColors.swift,
 				Endeavor.swift,
+				EndeavorPhrasing.swift,
 				GeofenceManager.swift,
 				GooglePlacesService.swift,
 				IOSDocumentStore.swift,
@@ -275,6 +276,7 @@
 				DayflowMeetingColors.swift,
 				DocumentSearchPredicate.swift,
 				Endeavor.swift,
+				EndeavorPhrasing.swift,
 				GeofenceManager.swift,
 				GooglePlacesService.swift,
 				MacLocalIntelligence.swift,
@@ -1648,7 +1650,7 @@
 				CODE_SIGN_ENTITLEMENTS = TraceMac/TraceMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 70;
+				CURRENT_PROJECT_VERSION = 71;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1696,7 +1698,7 @@
 				CODE_SIGN_ENTITLEMENTS = TraceMac/TraceMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 70;
+				CURRENT_PROJECT_VERSION = 71;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;

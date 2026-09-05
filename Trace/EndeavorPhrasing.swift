@@ -1,19 +1,19 @@
-// MacEndeavorPhrasing.swift
-// The phone's endeavor date phrasing, on the Mac. Mac-only target.
+// EndeavorPhrasing.swift
+// Shared by Dayflow, TraceMac and Trace. Compiled into all three.
 //
-// Session 83 (2026-09-03), D257. `endeavorDateLabel` and
-// `endeavorCountdownLabel` live in `Dayflow/DayflowEndeavorViews.swift`, which
-// TraceMac cannot see, and the Endeavors list needs the same words the phone
-// uses ("20 – 28 Nov 2026", "Starts in 78 days") so the two lists agree.
+// `endeavorDateLabel` and `endeavorCountdownLabel`, the prose an endeavor's
+// dates are read as. They lived in `Dayflow/DayflowEndeavorViews.swift` and,
+// from Session 83 (D257), a byte-for-byte second copy lived in
+// `TraceMac/MacEndeavorPhrasing.swift` because TraceMac cannot see the Dayflow
+// folder and the two endeavor lists have to agree word for word.
 //
-// **This is a byte-for-byte copy of the Dayflow block, sliced from that file
-// by a script rather than retyped.** It exists only because moving the two
-// functions into `Trace/` needs `membershipExceptions` entries for Dayflow and
-// TraceMac, which is a pbxproj edit, which needs Xcode closed. At the next
-// Xcode-closed window: move this block to `Trace/EndeavorPhrasing.swift`,
-// delete it from BOTH `DayflowEndeavorViews.swift` and this file, and add the
-// two membership entries. Until then, a change to one must be made to both —
-// the backlog carries the item.
+// Session 88 moved them here and deleted both copies. The move needed
+// `membershipExceptions` entries for Dayflow and TraceMac, which is a
+// `project.pbxproj` edit, which needs Xcode quit — that window is the only
+// reason the duplicate survived five sessions.
+//
+// The block below was sliced out of `DayflowEndeavorViews.swift` by script and
+// not retyped.
 
 import SwiftUI
 
