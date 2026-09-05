@@ -345,13 +345,6 @@ enum MacEditorialLayout {
     /// backlog entry stands.
     static let railWidth: CGFloat = 280
 
-    /// **Dead as of Session 87: declared here, referenced nowhere.** The
-    /// comment below claimed the Tasks inspector, and Tasks reads `railWidth`.
-    /// Kept only so a future session sees this note rather than the name; the
-    /// name alone was read as evidence twice in one session and is now standing
-    /// warning THIRTEEN. Delete at the next tidy.
-    static let inspectorWidth: CGFloat = 348
-
     /// A list column beside a note — Projects (D256). Narrower than THE DAY's
     /// reading measure, wider than a rail: a title, a first line and a date
     /// need the room; a column of meetings needs more.

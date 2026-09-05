@@ -1171,9 +1171,16 @@ struct TraceMacEndeavorsView: View {
                 let inLog  = visits(in: e).filter {  logNames($0, in: e) }
                 let others = visits(in: e).filter { !logNames($0, in: e) }
 
-                railHeader("Visits", inLog.count)
+                // **"Trip log", not "Visits"** (D278). PLACES in the body
+                // already lists where he went; this section reads as a second
+                // copy of that list until you notice it is the only thing in
+                // the app that WRITES the log. The old name described the data
+                // it is built from, which is a fact about the file; the new one
+                // describes what you do here, which is the only reason it earns
+                // rail space beside a band that shows the same check-ins.
+                railHeader("Trip log", inLog.count)
                 if inLog.isEmpty {
-                    railEmpty("No visits are named in the log yet.")
+                    railEmpty("Nothing written up yet.")
                 } else {
                     ForEach(inLog) { v in visitRow(v, in: e) }
                 }
@@ -1455,12 +1462,13 @@ struct TraceMacEndeavorsView: View {
     /// How wide the popover makes the open card.
     ///
     /// **Measured, not borrowed, and the borrowed number was invented.** The
-    /// first attempt used `MacEditorialLayout.inspectorWidth` (348) on the
+    /// first attempt used a constant called `inspectorWidth` (348) on the
     /// reasoning that the Documents room hosts this card in a 348pt inspector.
-    /// It does not. `inspectorWidth` is declared once in `MacEditorial.swift`
-    /// and referenced nowhere in the app; `DocTasksPanel` sits in the wide
-    /// detail column. That number was read off a constant's NAME, which is
-    /// warning THREE with the artefact one grep away.
+    /// It did not: that constant was declared once and referenced nowhere, and
+    /// `DocTasksPanel` sits in the wide detail column. The number was read off
+    /// a constant's NAME, which is warning THREE with the artefact one grep
+    /// away. The constant itself was deleted in Session 87; this note stays
+    /// because the mistake is repeatable and the evidence for it is not.
     ///
     /// It was also too small twice over: `card` carries its own `.padding(18)`,
     /// so a 348 frame leaves 312 of content, and 400 left 364, and both wrapped.

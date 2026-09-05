@@ -903,6 +903,66 @@ enum BookingKind {
         }
     }
 
+    /// One field of the booking sheet and what it is, in this Kind's own words.
+    ///
+    /// Lives here rather than in the view for the reason `labels`, `group` and
+    /// `writtenName` do: the phone's sheet has to say the same thing, and help
+    /// text authored twice is help text that disagrees with itself the first
+    /// time a field changes.
+    struct FieldHelp: Identifiable {
+        let label: String
+        let text: String
+        var id: String { label }
+    }
+
+    /// The booking sheet's fields, in the sheet's order, with what each is
+    /// (D278, Session 87).
+    ///
+    /// David: *"a little i for information about every field to explain what it
+    /// is if i ever forget this."*
+    ///
+    /// **Written per Kind because the labels are.** Six of these are renamed by
+    /// `labels(for:)` — Departs/Check in, From/Pick up at, Airline/Brand — and
+    /// help text that said "Airline" on a hotel would be worse than none. The
+    /// list is built from the same `Labels` the sheet renders, so the two
+    /// cannot describe different fields.
+    ///
+    /// **Where a field's meaning is really a rule about somewhere else, it is
+    /// said in one clause** — a cost with no date makes a ledger row, Status is
+    /// three-valued because a quote is. That is the part you forget while
+    /// looking at the sheet, and the sheet is where you are.
+    static func help(for kind: String) -> [FieldHelp] {
+        let l = labels(for: kind)
+        var nameParts = [l.provider, l.number]
+        if let from = l.from { nameParts.append(from) }
+        nameParts.append(l.to)
+        let builtFrom = nameParts.joined(separator: ", ")
+
+        var out: [FieldHelp] = [
+            FieldHelp(label: "Kind", text: "Which of the seven this is. It changes what the fields below are CALLED and nothing else — the same fourteen columns are saved either way."),
+            FieldHelp(label: "Who", text: "Who is on it. This endeavor's people are listed first; the search finds anyone else in People, and offers to create a name it does not know."),
+            FieldHelp(label: "Has a date", text: "Off saves no date at all. A row with a cost and no date is what the QUOTES band on the endeavor is built from, so this is the switch between an itinerary line and a quote you are still choosing."),
+            FieldHelp(label: "Include times", text: "Off saves the day without an hour. For a hotel night, or anything where the time is not the point."),
+            FieldHelp(label: l.start, text: "When it begins."),
+            FieldHelp(label: l.end, text: "When it ends. The toggle above removes it for a booking with only one end.")
+        ]
+        if let from = l.from {
+            out.append(FieldHelp(label: from, text: "Where it starts from."))
+        }
+        out += [
+            FieldHelp(label: l.to, text: "Where it goes — or, for a stay, where it is."),
+            FieldHelp(label: l.provider, text: "Who is providing it. On a quote this is the contractor."),
+            FieldHelp(label: l.number, text: "Their reference for the thing itself — the one printed on the ticket or the door. On a quote it is the job number."),
+            FieldHelp(label: "Confirmation", text: "The booking reference you would read out on the phone. Separate from \(l.number) because the two are rarely the same string."),
+            FieldHelp(label: "Cost", text: "What it costs. A cost with no date is what puts the row in QUOTES rather than on the schedule."),
+            FieldHelp(label: "Booked", text: "Whether it is actually reserved. On an itinerary the row you are looking for is the UNbooked one, which is why this stays a plain checkbox."),
+            FieldHelp(label: "Status", text: "Quoted, Accepted or Declined, for an option you are still deciding between. A checkbox has two states and a quote has three, which is why this is not Booked. Leave it None on anything already settled."),
+            FieldHelp(label: "Notes", text: "Anything else."),
+            FieldHelp(label: "Will save as", text: "The Name the app writes for you, built from \(builtFrom). It is the one field you cannot type, shown here so it is never a surprise.")
+        ]
+        return out
+    }
+
     /// The Name the APP writes, so it is never typed and never drifts from the
     /// fields it describes (D267).
     ///

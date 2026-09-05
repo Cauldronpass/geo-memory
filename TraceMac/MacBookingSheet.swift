@@ -66,6 +66,7 @@ struct MacBookingSheet: View {
     @State private var notes        = ""
 
     @State private var personQuery  = ""
+    @State private var showingHelp  = false
     @State private var saving       = false
     @State private var confirmingDelete = false
     @State private var failure: String? = nil
@@ -197,12 +198,81 @@ struct MacBookingSheet: View {
                                 end: hasDate && hasEnd ? end : nil)
     }
 
+    /// Field help (D278). David, testing D269: *"one thing to add in a future
+    /// build is a little i for information about every field to explain what it
+    /// is if i ever forget this."*
+    ///
+    /// **One card in the header, not an `i` on every row.** Six of the labels
+    /// are rewritten by Kind — Departs/Check in, From/Pick up at, Airline/Brand
+    /// — so a per-field tooltip would have to be written seven times, or once
+    /// in words that fit none of the seven. The backlog's first suggestion was
+    /// `.help()` on each label, decided by looking rather than in advance; a
+    /// tooltip is also invisible until you already suspect there is something
+    /// to hover, which is the opposite of what "if i ever forget this" asks
+    /// for. One visible `i` answers it and touches no field's layout, which is
+    /// worth something in a Form that renders `LabeledContent` and `TextField`
+    /// differently.
+    ///
+    /// **The words are in `BookingKind.help(for:)`, not here**, the rule
+    /// `labels`, `group` and `writtenName` already follow — Dayflow's sheet
+    /// gets the same text instead of a second copy that drifts. The view keeps
+    /// only the presentation.
+    ///
+    /// Rows are DATA. Sixteen entries, seventeen when the Kind has a From, and
+    /// a `ViewBuilder` takes ten; as views this compiles as a type error about
+    /// argument count that says nothing about the real limit.
+    private var helpCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("What each field is")
+                .font(MacType.heading)
+            Text("The wording follows the Kind. These are the words for \(shortKind(kind)).")
+                .font(MacType.meta)
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+                .padding(.bottom, 12)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(BookingKind.help(for: kind)) { entry in
+                        helpRow(entry.label, entry.text)
+                    }
+                }
+            }
+            .frame(maxHeight: 420)
+        }
+        .padding(18)
+        .frame(width: 400)
+    }
+
+    private func helpRow(_ label: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(MacType.rowEmphasis)
+            Text(text)
+                .font(MacType.meta)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 10)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(isEdit ? "Edit Booking · \(endeavor.name)" : "New Booking · \(endeavor.name)")
-                .font(MacType.heading)
-                .lineLimit(1)
-                .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
+            HStack(spacing: 8) {
+                Text(isEdit ? "Edit Booking · \(endeavor.name)" : "New Booking · \(endeavor.name)")
+                    .font(MacType.heading)
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                Button { showingHelp = true } label: {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("What each field is")
+                .popover(isPresented: $showingHelp, arrowEdge: .bottom) { helpCard }
+            }
+            .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
 
             Form {
                 Section {
