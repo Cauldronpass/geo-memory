@@ -79,6 +79,11 @@ struct TraceMacEndeavorsView: View {
     @State private var resolving: Set<String> = []
     @State private var resolveError: String? = nil
     @State private var showOtherVisits = false
+    /// The itinerary's fold. Collapsed shows the next two days with
+    /// something on them; `MacTextEditor` takes whatever height it is offered
+    /// and reports no minimum (Session 80), so an uncapped band would eat the
+    /// note it sits above.
+    @State private var itineraryExpanded = false
     @State private var docStore: TraceMacDocumentStore?
     /// FINISHED is folded by default (D257). Past and cancelled already sort
     /// last, but "at the bottom" stops being enough the moment there are more
@@ -718,6 +723,7 @@ struct TraceMacEndeavorsView: View {
     private func detail(_ e: Endeavor) -> some View {
         VStack(spacing: 0) {
             coverBand(e)
+            itinerarySection(e)
             // The **shared** editor, not a second one. `TraceMacNoteEditor`
             // already carries wikilink autocomplete with live suggestions,
             // the formatting toolbar, and a one-second debounced save; it was
@@ -984,9 +990,6 @@ struct TraceMacEndeavorsView: View {
                 // behind a disclosure that states its own count. Nothing is
                 // hidden, but nothing unchosen is competing either.
                 tasksSection(e)
-                Divider().padding(.vertical, 6)
-
-                bookingsSection(e)
                 Divider().padding(.vertical, 6)
 
                 destinationsSection(e)
@@ -1426,18 +1429,39 @@ struct TraceMacEndeavorsView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: Bookings on the endeavor (D266, D267)
+    // MARK: The itinerary, in the body (D268)
+    //
+    // Session 86 drew these on the rail and David looked at the result: *"most
+    // of what I will be wanting to look at is the details of the flights,
+    // hotels, where I might go for dinner. They seem to be buried on the rail
+    // itself."* The rail is 248pt and the body is about 900, and the body was
+    // holding five empty headings. **The body holds what HAPPENS on the
+    // endeavor; the rail holds what is ATTACHED to it** (D268).
+    //
+    // Above the editor rather than inside it: the note body is `MacTextEditor`,
+    // an `NSViewRepresentable` around an `NSTextView`, so a row cannot sit in
+    // the flowing text.
+    //
+    // Bookings only this session. Destinations are named in D268 as moving too,
+    // and they are NOT moved here: those rows carry a skipped state, a remove,
+    // an attach and a click through to the Place, and moving four behaviours is
+    // a second change, not a rider on this one.
 
-    /// One day's bookings, in the order the rail draws them.
+    /// One day's bookings, in the order the band draws them.
     ///
     /// Keyed on the day rather than the date, because the label IS the
     /// identity: two rows on 20 November are one group whatever their times.
-    /// Undated rows share the key `undated` and sort last.
+    /// Undated rows share the key `undated`, carry no numeral, and sort last.
     private struct BookingDay: Identifiable {
         let id: String
+        let numeral: String
         let label: String
         let bookings: [Booking]
     }
+
+    /// How many days the band shows before folding. Two, because on the morning
+    /// you leave, the next two days with something on them are the whole answer.
+    private static let itineraryDayCap = 2
 
     private static let bookingDayKey: DateFormatter = {
         let f = DateFormatter()
@@ -1445,15 +1469,28 @@ struct TraceMacEndeavorsView: View {
         return f
     }()
 
-    private static let bookingDayLabel: DateFormatter = {
+    private static let bookingDayNumeral: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "E d MMM"
+        f.dateFormat = "d"
+        return f
+    }()
+
+    private static let bookingDayWord: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEEE, MMMM"
         return f
     }()
 
     private static let bookingTime: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "h:mm a"
+        return f
+    }()
+
+    private static let bookingMoney: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .currency
+        f.maximumFractionDigits = 0
         return f
     }()
 
@@ -1473,68 +1510,50 @@ struct TraceMacEndeavorsView: View {
         let rows: [Booking] = notionService.bookings(for: e.id).sorted(by: bookingIsBefore)
         var order: [String] = []
         var buckets: [String: [Booking]] = [:]
+        var numerals: [String: String] = [:]
         var labels: [String: String] = [:]
         for b in rows {
             let key: String
-            let label: String
             if let start = b.start {
                 let day = Calendar.current.startOfDay(for: start)
                 key = Self.bookingDayKey.string(from: day)
-                label = Self.bookingDayLabel.string(from: day)
+                numerals[key] = Self.bookingDayNumeral.string(from: day)
+                labels[key] = Self.bookingDayWord.string(from: day)
             } else {
                 key = "undated"
-                label = "Undated"
+                numerals[key] = ""
+                labels[key] = "Undated"
             }
-            if buckets[key] == nil {
-                order.append(key)
-                labels[key] = label
-            }
+            if buckets[key] == nil { order.append(key) }
             buckets[key, default: []].append(b)
         }
         return order.map {
-            BookingDay(id: $0, label: labels[$0] ?? "", bookings: buckets[$0] ?? [])
+            BookingDay(id: $0,
+                       numeral: numerals[$0] ?? "",
+                       label: labels[$0] ?? "",
+                       bookings: buckets[$0] ?? [])
         }
     }
 
-    private static let bookingClock: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "h:mm"
-        return f
-    }()
-
-    /// "9:05a". The compact spelling, and only where it is paid for.
+    /// The times in a row's own column.
     ///
-    /// A row carrying two times also carries who is on the booking and the
-    /// confirmation code, and at 248pt the full form pushed the code off the
-    /// end — `9:05 AM – 12:40 PM · Hannah · K7…`, losing the six characters
-    /// read at a counter. `9:05a` is the brief's own spelling for the same
-    /// value and the ordinary timetable convention. The meridiem is kept, not
-    /// dropped: an AM flight and a PM flight are not interchangeable.
-    private func bookingCompactTime(_ d: Date) -> String {
-        let isMorning: Bool = Calendar.current.component(.hour, from: d) < 12
-        return Self.bookingClock.string(from: d) + (isMorning ? "a" : "p")
-    }
-
-    /// The times on a row's second line. Empty for a bare date: `start` is
-    /// non-nil for those and would otherwise print midnight.
-    ///
-    /// One time keeps the full form. A lone `6:30a` reads worse than a lone
-    /// `6:30 AM`, and a row with one time has the width to spare — the
-    /// compression exists to buy space, so it is spent only where space is
-    /// short.
+    /// **The full form, not Session 86's `9:05a – 12:40p`.** That compression
+    /// existed to buy back six characters on a 248pt rail, and the body has
+    /// nothing to buy them with. Compression is spent where space is short.
+    /// A dated booking with no clock time reads "All day" rather than blank:
+    /// the column is there either way, and an empty cell looks like a bug.
     private func bookingTimes(_ b: Booking) -> String {
-        guard b.hasTime, let start = b.start else { return "" }
-        guard let end = b.end else { return Self.bookingTime.string(from: start) }
-        return bookingCompactTime(start) + " – " + bookingCompactTime(end)
+        guard let start = b.start else { return "" }
+        guard b.hasTime else { return "All day" }
+        let opening = Self.bookingTime.string(from: start)
+        guard let end = b.end else { return opening }
+        return opening + " – " + Self.bookingTime.string(from: end)
     }
 
     /// First names, resolved from Notion People by relation id.
     ///
-    /// **An id that resolves to nobody is skipped, not printed.** The rail's
-    /// other two orphan cases say "not in your places" and "not in your people"
-    /// because there the name IS the row; here the people are one fragment of a
-    /// second line, and a raw UUID sitting inside "9:05 AM · … · K7Q2LM" is
-    /// noise no one can act on.
+    /// **An id that resolves to nobody is skipped, not printed.** A raw UUID in
+    /// the middle of a second line is noise no one can act on.
     private func bookingWho(_ b: Booking) -> String {
         let names: [String] = b.whoIDs.compactMap { id in
             notionService.people.first { $0.id == id }?.name
@@ -1543,114 +1562,171 @@ struct TraceMacEndeavorsView: View {
                     .joined(separator: ", ")
     }
 
-    private func bookingMeta(_ b: Booking) -> String {
+    /// The row's second line: who provides it and who is on it.
+    private func itinerarySub(_ b: Booking) -> String {
         var parts: [String] = []
-        let times = bookingTimes(b)
-        if !times.isEmpty { parts.append(times) }
+        if let provider = b.provider, !provider.isEmpty { parts.append(provider) }
         let who = bookingWho(b)
         if !who.isEmpty { parts.append(who) }
-        if let confirmation = b.confirmation, !confirmation.isEmpty {
-            parts.append(confirmation)
-        }
         return parts.joined(separator: " · ")
     }
 
-    /// BOOKINGS, second on the rail under Tasks (D267).
+    /// A cost, or nothing. Zero is not a price, it is an empty field.
+    private func bookingCost(_ b: Booking) -> String {
+        guard let cost = b.cost, cost > 0 else { return "" }
+        return Self.bookingMoney.string(from: NSNumber(value: cost)) ?? ""
+    }
+
+    private func itineraryFoldLabel(_ hidden: Int) -> String {
+        if itineraryExpanded { return "Show fewer days" }
+        return hidden == 1 ? "+ 1 more day" : "+ \(hidden) more days"
+    }
+
+    /// ITINERARY, at the top of the endeavor body (D268).
     ///
-    /// **No `+` until piece two.** The brief drew one and the starter offered
-    /// to disable it; a control's weight follows what is behind it (Session 64,
-    /// on this same rail), and behind this one is nothing until the sheet
-    /// exists. A door that is drawn and does not open is worse than no door.
+    /// **Nothing is drawn when there is nothing to draw.** Not a header over an
+    /// empty space above the note: an endeavor with no bookings gets exactly the
+    /// screen it has today. `.failed` is the one exception and it earns it —
+    /// "Notion did not answer." is a different statement from "there are none",
+    /// which is the reason `bookingsLoad` has three states at all.
     ///
-    /// **Three empty states, not one.** `.idle` and `.loading` draw nothing
-    /// rather than flashing "No bookings yet." before the first fetch returns,
-    /// and `.failed` says the answer is unknown instead of claiming there are
-    /// none. See `bookingsLoad`.
+    /// No `+` yet, and no click: the sheet is the next session. A door that is
+    /// drawn and does not open is worse than no door.
     @ViewBuilder
-    private func bookingsSection(_ e: Endeavor) -> some View {
+    private func itinerarySection(_ e: Endeavor) -> some View {
+        let state: NotionLoadState = notionService.bookingsLoad
         let days: [BookingDay] = bookingDays(e)
         let count: Int = days.reduce(0) { $0 + $1.bookings.count }
-        let state: NotionLoadState = notionService.bookingsLoad
-        HStack(alignment: .firstTextBaseline) {
-            Text("Bookings").editorialFieldLabel()
-            Spacer()
-            if count > 0 {
-                Text("\(count)")
+        let shown: [BookingDay] = itineraryExpanded ? days : Array(days.prefix(Self.itineraryDayCap))
+        let hidden: Int = days.count - shown.count
+        if state == .failed {
+            VStack(alignment: .leading, spacing: 0) {
+                MacEditorialSectionLabel(text: "Itinerary")
+                MacEditorialRule.ink
+                Text("Notion did not answer.")
                     .font(MacEditorialType.meta)
                     .foregroundStyle(MacEditorialColor.faint)
+                    .padding(.top, 10)
             }
-        }
-        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
-        switch state {
-        case .idle, .loading:
-            EmptyView()
-        case .failed:
-            railEmpty("Notion did not answer.")
-        case .loaded:
-            if days.isEmpty {
-                railEmpty("No bookings yet.")
-            } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(days) { day in
-                        Text(day.label)
-                            .editorialGroupLabel()
-                            .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 2)
-                        ForEach(day.bookings) { booking in bookingRow(booking) }
+            .padding(.horizontal, MacEditorialLayout.margin)
+            .padding(.top, 18)
+            // ENDEAVOR NOTE's heading row carries no top padding of its own, so
+            // without this the last itinerary hairline and the next section
+            // label sit nine points apart and read as one crowded block.
+            .padding(.bottom, 18)
+        } else if state == .loaded, !days.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                MacEditorialSectionLabel(text: "Itinerary", trailing: "\(count)")
+                MacEditorialRule.ink
+                ForEach(shown) { day in
+                    itineraryDayLead(day)
+                    ForEach(day.bookings) { booking in itineraryRow(booking) }
+                }
+                if hidden > 0 || itineraryExpanded {
+                    Button { itineraryExpanded.toggle() } label: {
+                        Text(itineraryFoldLabel(hidden))
+                            .font(MacEditorialType.quietLabel)
+                            .textCase(.uppercase)
+                            .tracking(MacEditorialType.quietTracking)
+                            .foregroundStyle(MacEditorialColor.muted)
+                            .padding(.top, 10)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
             }
+            .padding(.horizontal, MacEditorialLayout.margin)
+            .padding(.top, 18)
+            // ENDEAVOR NOTE's heading row carries no top padding of its own, so
+            // without this the last itinerary hairline and the next section
+            // label sit nine points apart and read as one crowded block.
+            .padding(.bottom, 18)
         }
     }
 
-    /// One booking, in `personRow`'s shape with `destinationRow`'s tinted glyph.
+    /// The day's own heading. A heavy serif numeral, because a day is the
+    /// structure of a trip and the rail's 9pt caption could not say so.
     ///
-    /// **Not a `Button`.** Clicking opens the edit sheet in piece two; until it
-    /// exists the row is a plain `HStack`, so nothing on screen offers
-    /// something that is not there.
+    /// No hairline beside the label: a `Rectangle` has no baseline to align to
+    /// in a `firstTextBaseline` row, and the rows below already carry hairlines.
+    private func itineraryDayLead(_ day: BookingDay) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            if !day.numeral.isEmpty {
+                Text(day.numeral)
+                    .font(MacEditorialType.dayNumeral)
+                    .foregroundStyle(MacEditorialColor.ink)
+            }
+            Text(day.label).editorialGroupLabel()
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 14)
+        .padding(.bottom, 2)
+    }
+
+    /// One booking at full width.
+    ///
+    /// Four columns rather than the rail's two, which is the entire point of
+    /// the move: the time gets its own column, the name and its provider get
+    /// the middle, and the confirmation, the cost and NOT BOOKED sit at the
+    /// right without competing for the name's width.
     ///
     /// Every colour and condition is a typed `let` before the view, the D260
-    /// rule. This file is past 2,300 lines and its neighbour has already tipped
-    /// the type-checker.
-    private func bookingRow(_ b: Booking) -> some View {
+    /// rule. Not a `Button`: the edit sheet arrives next session.
+    private func itineraryRow(_ b: Booking) -> some View {
         let tint: Color = MacPalette.documentTint(BookingKind.tint(for: b.kind))
         let glyph: String = BookingKind.glyph(for: b.kind)
         // A hand-added row can reach Notion with no Name. The kind is a poorer
         // headline than "UA 1642 · DEN → ORD" and a much better one than a
         // blank line where the subject should be.
         let headline: String = b.name.isEmpty ? b.kind : b.name
-        let meta: String = bookingMeta(b)
+        let sub: String = itinerarySub(b)
+        let time: String = bookingTimes(b)
+        let confirmation: String = b.confirmation ?? ""
+        let cost: String = bookingCost(b)
         let isPast: Bool = (b.end ?? b.start).map { $0 < Date() } ?? false
         let showNotBooked: Bool = !b.booked
-        return HStack(spacing: 9) {
-            MacIconBadge(icon: glyph, tint: tint, size: .compact)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(headline).font(MacType.row).lineLimit(1)
-                if !meta.isEmpty {
-                    Text(meta)
-                        .font(MacType.meta)
-                        .foregroundStyle(.secondary)
+        return VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                MacIconBadge(icon: glyph, tint: tint, size: .compact)
+                Text(time)
+                    .font(MacEditorialType.time)
+                    .foregroundStyle(MacEditorialColor.muted)
+                    .frame(width: 148, alignment: .leading)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(headline)
+                        .font(MacEditorialType.taskTitle)
+                        .foregroundStyle(MacEditorialColor.ink)
                         .lineLimit(1)
+                    if !sub.isEmpty {
+                        Text(sub)
+                            .font(MacEditorialType.meta)
+                            .foregroundStyle(MacEditorialColor.muted)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 16)
+                if !confirmation.isEmpty {
+                    Text(confirmation)
+                        .font(MacEditorialType.time)
+                        .foregroundStyle(MacEditorialColor.muted)
+                }
+                if !cost.isEmpty {
+                    Text(cost)
+                        .font(MacEditorialType.time)
+                        .foregroundStyle(MacEditorialColor.faint)
+                }
+                // Accent, because this is the row he is looking for.
+                if showNotBooked {
+                    Text("Not booked")
+                        .font(MacEditorialType.fieldLabel)
+                        .textCase(.uppercase)
+                        .tracking(MacEditorialType.fieldTracking)
+                        .foregroundStyle(MacEditorialColor.accent)
                 }
             }
-            Spacer(minLength: 0)
-            // **The right column carries the exception and nothing else.**
-            // D267 put the date here, and on the brief's wide mockup that was
-            // free. On the real 232pt rail it cost about 90 points to say one
-            // new thing, and the second line — the one carrying who is on the
-            // booking and the confirmation code, which is what you read at the
-            // counter — truncated at "9:05 AM – 12:40 PM · H…". The start time
-            // was already the first thing on that line and the date is already
-            // the group label above the row, so what was removed here was said
-            // twice elsewhere. Amended under D267, Session 86.
-            if showNotBooked {
-                Text("Not booked")
-                    .font(MacEditorialType.fieldLabel)
-                    .textCase(.uppercase)
-                    .tracking(MacEditorialType.fieldTracking)
-                    .foregroundStyle(MacEditorialColor.accent)
-            }
+            .padding(.vertical, 7)
+            MacEditorialRule.hair
         }
-        .padding(.horizontal, 12).padding(.vertical, 3)
         .opacity(isPast ? 0.55 : 1)
     }
 
