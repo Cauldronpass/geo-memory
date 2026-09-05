@@ -63,7 +63,7 @@ private let discoverLinkedPath = "Drafts/discover-linked.txt"
 private enum ResearchDestination: String, CaseIterable, Identifiable {
     case inbox = "Inbox"
     case today = "Today"
-    case project = "Project"
+    case project = "Note"
     var id: String { rawValue }
 }
 
@@ -1602,7 +1602,7 @@ private struct ResearchProcessSheet: View {
                 .onChange(of: destination) { _, _ in confirmedProject = "" }
 
                 if destination == .project {
-                    Section("Project") {
+                    Section("Note") {
                         if !confirmedProject.isEmpty {
                             HStack {
                                 Text(confirmedProject).bold()
@@ -1674,7 +1674,7 @@ private struct ResearchLoadNoteSheet: View {
                     }
                 }
                 if !projects.isEmpty {
-                    Section("Projects") {
+                    Section("Notes") {
                         ForEach(projects, id: \.self) { name in
                             Button {
                                 onSelect("Notes/Projects/\(name).md", name)

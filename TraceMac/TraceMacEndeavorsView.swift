@@ -96,9 +96,13 @@ struct TraceMacEndeavorsView: View {
     /// last, but "at the bottom" stops being enough the moment there are more
     /// finished than live ones, which is the steady state of a list of trips.
     @State private var showFinished = false
-    /// The TASKS section's composer and open card (D257). Same pair
-    /// `DocTasksPanel` keeps.
-    @State private var composingTask = false
+    /// Which task sheet is showing, and the open card (D257).
+    ///
+    /// **One optional, not two booleans** (D36, and `bookingTarget`'s reason
+    /// three sections down): the attach chooser hands over to the composer, and
+    /// two `.sheet`s racing each other to present is a coin flip. Swapping the
+    /// value of one host swaps the content.
+    @State private var taskSheet: TaskSheet? = nil
     @State private var openTaskID: String? = nil
     @State private var isDocDropTargeted = false
     /// Projects + Daily. Read once when the section appears; a note created
@@ -859,7 +863,61 @@ struct TraceMacEndeavorsView: View {
         var parts: [String] = [e.type, endeavorDateLabel(e)]
         if let c = endeavorCountdownLabel(e) { parts.append(c) }
         else if e.status() == .onHold || e.status() == .cancelled { parts.append(e.status().label) }
+        else if let figure = typeFigure(e) { parts.append(figure) }
         return parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// The type's own computed figure for the kicker, or nil (D268).
+    ///
+    /// **The countdown wins whenever there is one, and this is the fallback.**
+    /// D268's table gave every type a figure of its own - "items on the
+    /// schedule" for Milestone, "guests" for Gathering - and that table was
+    /// written before the types existed. It is wrong: a wedding twelve days out
+    /// wants "Starts in 12 days", not "4 items on the schedule". Replacing a
+    /// countdown with a count on anything that has a real date is a downgrade,
+    /// so the general rule is the countdown when there is one and the type's own
+    /// count when there is not. That makes D268's own line - "the countdown
+    /// becomes one case of a general rule" - literally true.
+    ///
+    /// In practice this fires for Project and Decision, which are the two types
+    /// that usually carry no dates at all and whose kicker was reading
+    /// "PROJECT · NO DATES YET" - two segments, the second an apology. Milestone
+    /// and Gathering keep their countdown and get no count, which is the honest
+    /// consequence rather than two branches that never fire.
+    ///
+    /// **On hold and cancelled still beat the figure.** They are the two things
+    /// the dates cannot say, and a cancelled project should read CANCELLED
+    /// rather than how much of it is left.
+    ///
+    /// **It is "n tasks open", not D268's "4 of 11 done".** Warning FOUR, asked
+    /// before it was used: `linkedOpenTasks` reads `ReminderTaskStore.allTasks`,
+    /// which is filled by `predicateForIncompleteReminders` - the store holds
+    /// only INCOMPLETE reminders, and says so in its own comment. There is no
+    /// denominator to print without a second EventKit query against completed
+    /// reminders, which is its own piece of work and is in the backlog. A
+    /// fraction whose bottom half is invented is worse than a count.
+    ///
+    /// Nil at zero rather than "0 tasks open": on a project with nothing on it
+    /// yet, the absence is not a figure worth a third of the line.
+    private func typeFigure(_ e: Endeavor) -> String? {
+        switch e.type.lowercased() {
+        case "project":
+            let n = linkedOpenTasks(e).count
+            guard n > 0 else { return nil }
+            return n == 1 ? "1 task open" : "\(n) tasks open"
+        case "decision":
+            // Open = neither accepted nor declined, which covers both Quoted
+            // and a row nobody has given a status yet. `BookingStatus` is total
+            // over `String`, so a fourth option typed into Notion counts as
+            // open rather than crashing or vanishing.
+            let n = ledgerRows(e).filter {
+                !BookingStatus.isAccepted($0.status) && !BookingStatus.isDeclined($0.status)
+            }.count
+            guard n > 0 else { return nil }
+            return n == 1 ? "1 option open" : "\(n) options open"
+        default:
+            return nil
+        }
     }
 
     /// `MacEditorialPill`'s shape in the band's own tint: white over a
@@ -1129,19 +1187,32 @@ struct TraceMacEndeavorsView: View {
         .background(MacEditorialColor.paper)
         // The TASKS composer. Its own host, for the reason stated on
         // `listColumn`: two `.sheet`s on one view is a coin flip.
-        .sheet(isPresented: $composingTask) {
-            // Inbox and undated, matching the phone's own endeavor task writer
-            // (`promoteEndeavorTask` in DayflowEndeavorViews): the endeavor IS
-            // the task's context, the way a document is on `DocTasksPanel`, and
-            // no when-decision has been made. The link is written for you —
-            // `[[<name>]]`, which is what both apps' endeavor screens search
-            // for — so the task cannot miss its endeavor. No rail: this + means
-            // "a task for this endeavor".
-            MacTaskComposer(defaultDate: nil,
-                            onAdded: { },
-                            defaultList: ReminderTaskStore.inboxListName,
-                            extraNoteLines: ["[[" + e.name + "]]"],
-                            onSwitch: nil)
+        .sheet(item: $taskSheet) { which in
+            switch which {
+            case .attach:
+                // **The + means "put a task on this endeavor"**, which has
+                // always had two answers and only ever offered one. David:
+                // *"there is no way to add one that already exists."*
+                MacTaskAttachSheet(
+                    endeavorName: e.name,
+                    link: endeavorLink(e),
+                    tasks: ReminderTaskStore.shared.allTasks,
+                    onAttach: { picked in await attachTasks(picked, to: e) },
+                    onNewTask: { taskSheet = .compose })
+            case .compose:
+                // Inbox and undated, matching the phone's own endeavor task
+                // writer (`promoteEndeavorTask` in DayflowEndeavorViews): the
+                // endeavor IS the task's context, the way a document is on
+                // `DocTasksPanel`, and no when-decision has been made. The link
+                // is written for you — `[[<name>]]`, which is what both apps'
+                // endeavor screens search for — so the task cannot miss its
+                // endeavor. No rail: this + means "a task for this endeavor".
+                MacTaskComposer(defaultDate: nil,
+                                onAdded: { },
+                                defaultList: ReminderTaskStore.inboxListName,
+                                extraNoteLines: [endeavorLink(e)],
+                                onSwitch: nil)
+            }
         }
         // Hosted on the rail — the fourth sheet in this view, and the fourth
         // distinct host view, per D36.
@@ -1181,8 +1252,14 @@ struct TraceMacEndeavorsView: View {
     /// Same query, spelled the same way: a task whose notes carry
     /// `[[<endeavor name>]]`. Rows are `MacTaskRow`, the app's one task row.
     private func linkedOpenTasks(_ e: Endeavor) -> [ThingsTask] {
-        ReminderTaskStore.shared.allTasks.filter {
-            ($0.notes ?? "").contains("[[\(e.name)]]")
+        // `endeavorLink`, not a fourth spelling of the same brackets. The
+        // query, the composer's seeded note, the chooser's already-attached
+        // filter and the remover all have to agree about what a link looks
+        // like, or a task is offered for attaching and then does not appear
+        // after it is attached (warning FIVE).
+        let link = endeavorLink(e)
+        return ReminderTaskStore.shared.allTasks.filter {
+            ($0.notes ?? "").contains(link)
         }
     }
 
@@ -1219,32 +1296,55 @@ struct TraceMacEndeavorsView: View {
                         .font(MacEditorialType.meta)
                         .foregroundStyle(MacEditorialColor.faint)
                 }
-                Button { composingTask = true } label: {
+                Button { taskSheet = .attach } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(MacEditorialColor.faint)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("New task for this endeavor")
+                .help("Add a task to this endeavor")
             }
             .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
             if tasks.isEmpty {
-                railEmpty("No tasks yet.")
+                // **The empty line IS the door.** A control's weight follows
+                // what is behind it, and behind this one is the only way to put
+                // a task here. The `+` is 10pt at the right edge of a 248pt
+                // rail, which David's own window was clipping off screen
+                // entirely — and his verdict on this exact control on
+                // 2026-08-02 was *"I missed it entirely."*
+                Button { taskSheet = .attach } label: {
+                    Text("No tasks yet. Add one.")
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .padding(.horizontal, 12).padding(.bottom, 4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             } else {
-                taskRows(tasks).padding(.horizontal, 12)
+                taskRows(tasks, in: e, placement: .rail).padding(.horizontal, 12)
             }
         case .body:
             VStack(alignment: .leading, spacing: 0) {
                 bandHeader("Tasks",
                            count: tasks.count,
-                           help: "New task for this endeavor") {
-                    composingTask = true
+                           help: "Add a task to this endeavor") {
+                    taskSheet = .attach
                 }
                 if tasks.isEmpty {
-                    bandEmpty("Nothing on the list yet.")
+                    // The door, for the reason given on the rail arm, and more
+                    // so here: in the body the `+` is a page-width away from
+                    // the label it belongs to.
+                    Button { taskSheet = .attach } label: {
+                        Text("Nothing on the list yet. Add a task.")
+                            .font(MacEditorialType.meta)
+                            .foregroundStyle(MacEditorialColor.faint)
+                            .padding(.top, 10)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 } else {
-                    taskRows(tasks)
+                    taskRows(tasks, in: e, placement: .body)
                 }
             }
             .padding(.horizontal, MacEditorialLayout.margin)
@@ -1255,17 +1355,190 @@ struct TraceMacEndeavorsView: View {
 
     /// The rows themselves, identical in both placements. `MacTaskRow` is the
     /// app's one task row and this is the one list of them on this screen.
-    private func taskRows(_ tasks: [ThingsTask]) -> some View {
+    private func taskRows(_ tasks: [ThingsTask],
+                          in e: Endeavor,
+                          placement: SectionPlacement) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(tasks) { task in
                 MacEditorialRule.hair
                 MacTaskRow(task: task,
-                           isOpen: openTaskID == task.id,
+                           // **The card expands inline in the BODY and opens in
+                           // a popover on the RAIL** (Session 87). Not two
+                           // layouts: one card, at the one width it was drawn
+                           // for. See `cardPopover`.
+                           isOpen: placement == .body && openTaskID == task.id,
                            onToggle: { openTaskID = openTaskID == task.id ? nil : task.id },
                            onChanged: { Task { await ReminderTaskStore.shared.refreshAll() } },
-                           trailing: .dateElseList)
+                           // **On the rail the title takes the whole row and
+                           // two lines of it.** At 248 points the date label
+                           // costs about a third of the width, and a row that
+                           // says TOMORROW about a task you cannot identify has
+                           // spent that width on the wrong half. The date is a
+                           // click away in the card. The body is ~900 points
+                           // and keeps both.
+                           trailing: placement == .rail ? .hidden : .dateElseList,
+                           titleLines: placement == .rail ? 2 : 1)
+                    .popover(isPresented: cardPopover(for: task, placement: placement),
+                             arrowEdge: .leading) {
+                        // The SAME row, forced open, at a width its own two
+                        // footer rows actually fit in. The collapsed row stays
+                        // on the rail behind it.
+                        //
+                        // `noteStore` is re-injected rather than assumed.
+                        // `MacTaskRow` reads it as a non-optional
+                        // `@Environment(NoteStore.self)`, which is a crash and
+                        // not a blank view if a presentation does not carry it.
+                        MacTaskRow(task: task,
+                                   isOpen: true,
+                                   onToggle: { openTaskID = nil },
+                                   onChanged: { Task { await ReminderTaskStore.shared.refreshAll() } },
+                                   trailing: .dateElseList)
+                            .frame(minWidth: Self.taskCardWidth, maxWidth: 560)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .environment(noteStore)
+                    }
+                    // **Attaching has to be reversible from inside the app.**
+                    // Session 72's rule, David's own: a recorded judgement has
+                    // to be visible to be challenged. Attaching the wrong task
+                    // is one wrong click, and without this the only way back is
+                    // editing the notes by hand in Apple's Reminders.
+                    //
+                    // On the row where this view draws it, NOT on `MacTaskRow`
+                    // itself. Removal from an endeavor is meaningless on Today
+                    // or in the Inbox, and putting it on the shared row would
+                    // be one verb with two meanings (warning FIVE).
+                    .contextMenu {
+                        Button("Remove from \(e.name)") {
+                            Task { _ = await detachTask(task, from: e) }
+                        }
+                    }
             }
         }
+    }
+
+    /// How wide the popover makes the open card.
+    ///
+    /// **Measured, not borrowed, and the borrowed number was invented.** The
+    /// first attempt used `MacEditorialLayout.inspectorWidth` (348) on the
+    /// reasoning that the Documents room hosts this card in a 348pt inspector.
+    /// It does not. `inspectorWidth` is declared once in `MacEditorial.swift`
+    /// and referenced nowhere in the app; `DocTasksPanel` sits in the wide
+    /// detail column. That number was read off a constant's NAME, which is
+    /// warning THREE with the artefact one grep away.
+    ///
+    /// It was also too small twice over: `card` carries its own `.padding(18)`,
+    /// so a 348 frame leaves 312 of content, and 400 left 364, and both wrapped.
+    ///
+    /// What the two footer rows need, at 12.5pt system:
+    ///
+    ///   * `pills` - four `MacEditorialPill`s, each its label plus 26 points of
+    ///     horizontal padding, with three 7pt gaps: Today 62, Tomorrow 83,
+    ///     Pick day 79, Delete 68, so about **313**.
+    ///   * `verbs` - three `MacEditorialVerb`s, each a 12pt glyph, a 6pt gap,
+    ///     the label and 12 points of padding, with two 20pt gaps, then the
+    ///     list menu: Done 60, Anytime 78, Someday 82, "Personal" about 63, so
+    ///     about **323** with the `Spacer` at zero.
+    ///
+    /// **A floor, not a width, because measuring it by hand did not work.**
+    /// 348 wrapped both rows; 400 still wrapped `verbs` ("Anyti/me",
+    /// "Someda/y"). Two arithmetic estimates in a row came out low, which means
+    /// the estimate is the problem: `Menu(.borderlessButton)` and SF's real
+    /// advances are not things to compute from a font size on a Friday.
+    ///
+    /// So SwiftUI measures instead. With `minWidth` and no fixed width the
+    /// popover takes the widest ideal width its content actually has, which IS
+    /// the `verbs` row, and grows past 400 when it needs to. The floor stops it
+    /// coming out narrow if every row's ideal collapses; the 560 ceiling stops
+    /// a long title's text field running away with it.
+    private static let taskCardWidth: CGFloat = 400
+
+    /// Whether the open card is showing as a popover for this row.
+    ///
+    /// **The endeavor rail is the only host in the app that draws this card
+    /// narrow.** Checked rather than asserted: Today, Tasks and Upcoming are
+    /// full-width rooms, `DocTasksPanel` is in the Documents room's wide detail
+    /// column, and the meeting card is in the list column at 400. `railWidth`
+    /// is 248, and at that size the field labels take a fixed 74pt column
+    /// leaving about 150
+    /// for the value, and the footer's four pills need roughly 260 points in
+    /// 224 - so the values truncate and every pill folds to one character per
+    /// line. David: *"the task details are all cramped when i open it."*
+    ///
+    /// **A popover rather than a compact layout.** The card is one component
+    /// with one layout, and it is drawn at eight call sites; a second narrow
+    /// arm would be one thing looking two ways (warning FIVE) and would have to
+    /// be maintained by everyone who touches the card. What is wrong here is
+    /// the container, not the card - the same call D267 made when the booking
+    /// sheet became a popover, and clicking away to dismiss is the behaviour
+    /// David asked for there.
+    ///
+    /// **Not applied in the body.** A Project's band is about 900 points wide,
+    /// where the card renders as designed and inline expansion is better than a
+    /// floating panel. The rule is the width the container can offer, not which
+    /// screen it is.
+    ///
+    /// The setter only handles dismissal. A rule about what the USER does
+    /// belongs on the control, and this binding is the control (warning
+    /// ELEVEN).
+    private func cardPopover(for task: ThingsTask,
+                             placement: SectionPlacement) -> Binding<Bool> {
+        Binding(
+            get: { placement == .rail && openTaskID == task.id },
+            set: { shown in
+                if !shown, openTaskID == task.id { openTaskID = nil }
+            }
+        )
+    }
+
+    // MARK: Attaching an existing task (Session 87)
+
+    /// The line an endeavor writes into a task's notes. One definition, used by
+    /// the writer, the remover and the chooser's already-attached filter, so
+    /// they cannot come to disagree about what a link looks like.
+    private func endeavorLink(_ e: Endeavor) -> String { "[[" + e.name + "]]" }
+
+    /// Appends the link to each task's notes, preserving everything already
+    /// there.
+    ///
+    /// **Read-modify-write, never a bare set.** Notes carry machinery from
+    /// other features — `satchel:doc:` markers, the person-capture marker — and
+    /// writing a fresh string would delete them silently.
+    ///
+    /// `setNotes` rather than `update`: the latter is a routing function that
+    /// recomputes list and date rules and, for a task in the Inbox or Someday,
+    /// clears the due date and the alarms even when passed no date. Attaching
+    /// has no opinion about when a task is due.
+    private func attachTasks(_ tasks: [ThingsTask], to e: Endeavor) async -> Bool {
+        let link = endeavorLink(e)
+        var allOK = true
+        for task in tasks {
+            let existing = task.notes ?? ""
+            guard !existing.contains(link) else { continue }
+            let merged = existing.isEmpty ? link : existing + "\n" + link
+            let ok = await ReminderTaskStore.shared.setNotes(taskID: task.id, notes: merged)
+            if !ok { allOK = false }
+        }
+        return allOK
+    }
+
+    /// Removes the link, leaving the rest of the notes alone.
+    ///
+    /// A line that is nothing but the link is dropped. A link sitting inside a
+    /// line someone typed is cut out of it and the rest of that line is kept —
+    /// deleting a whole line because it happens to mention an endeavor would
+    /// throw away prose the user wrote.
+    @discardableResult
+    private func detachTask(_ task: ThingsTask, from e: Endeavor) async -> Bool {
+        let link = endeavorLink(e)
+        let existing = task.notes ?? ""
+        guard existing.contains(link) else { return true }
+        let kept = existing
+            .components(separatedBy: "\n")
+            .filter { $0.trimmingCharacters(in: .whitespaces) != link }
+            .map { $0.replacingOccurrences(of: link, with: "") }
+            .joined(separator: "\n")
+        return await ReminderTaskStore.shared.setNotes(taskID: task.id, notes: kept)
     }
 
     /// A tick when the trip log already names this place, a `+` when it does
@@ -1811,6 +2084,17 @@ struct TraceMacEndeavorsView: View {
         return hidden == 1 ? "+ 1 more day" : "+ \(hidden) more days"
     }
 
+    /// Which task sheet the TASKS band is showing (Session 87).
+    ///
+    /// `attach` is the chooser over existing tasks; `compose` is the composer
+    /// for a new one. The chooser reaches the composer by setting this, never
+    /// by presenting a sheet of its own.
+    private enum TaskSheet: String, Identifiable {
+        case attach
+        case compose
+        var id: String { rawValue }
+    }
+
     /// Which booking the sheet is for.
     private enum BookingTarget: Identifiable {
         case new
@@ -2076,14 +2360,24 @@ struct TraceMacEndeavorsView: View {
     /// before the answer. `.failed` still says so, because "Notion did not
     /// answer." is a different statement from "there are none".
     ///
-    /// The count is of ENTRIES, not bookings, so it agrees with the number of
-    /// lines on screen. A four-night hotel is two of them.
+    /// **The count is of BOOKINGS, not lines** (Session 87). It was entries
+    /// until David asked why Thanksgiving said 6 when he had booked five
+    /// things. A hotel is one reservation drawn on two lines for the same
+    /// reason a flight has a departure and an arrival: the second line is a
+    /// rendering decision, not a second thing bought.
+    ///
+    /// Session 86 justified counting entries with "so it agrees with the number
+    /// of lines on screen", and that was already false in the default state -
+    /// the fold shows two days and the count counts all of them, so on
+    /// Thanksgiving collapsed it agreed with neither the four lines visible nor
+    /// the five bookings made. A number should be a fact about the trip rather
+    /// than about the layout.
     @ViewBuilder
     private func itinerarySection(_ e: Endeavor) -> some View {
         let state: NotionLoadState = notionService.bookingsLoad
         let settled: Bool = state == .loaded || state == .failed
         let days: [BookingDay] = bookingDays(e)
-        let count: Int = days.reduce(0) { $0 + $1.entries.count }
+        let count: Int = Set(days.flatMap { $0.entries.map(\.booking.id) }).count
         let shown: [BookingDay] = itineraryExpanded ? days : Array(days.prefix(Self.itineraryDayCap))
         let hidden: Int = days.count - shown.count
         if let bandLabel = e.scheduleBandLabel, settled {

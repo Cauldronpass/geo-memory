@@ -309,10 +309,47 @@ enum MacEditorialLayout {
     /// a day that stretches to fill a widescreen monitor stops being a column.
     static let dayColumnWidth: CGFloat = 524
 
-    /// The month rail on Today and Upcoming.
-    static let railWidth: CGFloat = 248
+    /// The right-hand rail. **Read by exactly three screens** - Tasks, PROJECTS
+    /// and Endeavors - so a change here moves all three together, which is the
+    /// point: the chrome belongs to the thing, not the screen (warning FIVE).
+    ///
+    /// The old comment said "the month rail on Today and Upcoming", which named
+    /// two screens that do not read this and omitted all three that do.
+    ///
+    /// **The Projects one is easy to miss and easy to misname.** It is the
+    /// project hub sidebar beside the note editor, and it lives in
+    /// `TraceMacJournalView.swift` - a legacy filename holding
+    /// `TraceMacProjectsView`. There is no `TraceMacJournalView` struct in the
+    /// app and no Journal in the sidebar. The backlog called this screen
+    /// "Journal" and Session 87 repeated it before checking: warning THIRTEEN,
+    /// a name read as evidence.
+    ///
+    /// **280, up from 248 (Session 87).** David, Session 86: *"Id like to be
+    /// able to expand and contract the width of the rail."* The backlog's own
+    /// advice was to try the one-line version first, because a persisted width
+    /// plus a drag handle plus a clamp plus double-click-to-reset, across three
+    /// rooms, is a real feature and this is one number. 248 was chosen when the
+    /// rail held one-line rows; it now hosts task rows, booking rows and
+    /// destination rows, and every one of Session 87's three layout complaints
+    /// was a symptom of it.
+    ///
+    /// **Not a fix for anything already fixed.** The task card still opens in a
+    /// popover, because 280 is nowhere near the ~325 that card's footer needs.
+    /// The endeavor rail's task title still takes two lines with no date label,
+    /// because a real title - "Install moms shelf in her bathroom" - is about
+    /// 255 points of 15.5pt serif and 280 minus the row's padding and badge is
+    /// not enough for it either. A row has to read correctly at whatever width
+    /// the app opens at; this buys comfort, not correctness.
+    ///
+    /// If 280 settles it, the drag handle is not needed. If it does not, the
+    /// backlog entry stands.
+    static let railWidth: CGFloat = 280
 
-    /// The task inspector on Tasks.
+    /// **Dead as of Session 87: declared here, referenced nowhere.** The
+    /// comment below claimed the Tasks inspector, and Tasks reads `railWidth`.
+    /// Kept only so a future session sees this note rather than the name; the
+    /// name alone was read as evidence twice in one session and is now standing
+    /// warning THIRTEEN. Delete at the next tidy.
     static let inspectorWidth: CGFloat = 348
 
     /// A list column beside a note — Projects (D256). Narrower than THE DAY's

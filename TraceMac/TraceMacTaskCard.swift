@@ -93,7 +93,40 @@ struct MacTaskRow: View {
     /// Declared last so no existing call site's argument order moves.
     var trailing: TrailingLabel = .list
 
-    enum TrailingLabel { case list, date, dateElseList }
+    /// How many lines the COLLAPSED row's title may take (Session 87).
+    ///
+    /// One everywhere except a rail. The task rooms are hundreds of points
+    /// wide, so a title fits on a line and a second one would only add air.
+    /// The endeavor rail is 248 and a real title - "Install moms shelf in her
+    /// bathroom" - reaches the ellipsis after four words. David, twice: *"the
+    /// task name itself in the rail is still too short to know what it is
+    /// without clicking."*
+    ///
+    /// **A parameter, not a fork.** This row already takes `isToday`,
+    /// `completed` and `trailing` for exactly this reason: the row is one
+    /// component that its host tells about the context. Declared last, so no
+    /// existing call site's memberwise argument order moves.
+    var titleLines: Int = 1
+
+    /// Every endeavor's name, so the row can mark a task that is on one
+    /// (Session 87). David: *"could you add a small icon indicator when i look
+    /// at the task that is in an endeavor."*
+    ///
+    /// **Handed in, not looked up.** `EndeavorFile.nameIndex` reads the
+    /// endeavor files, which is fine once per screen and unaffordable once per
+    /// row - these are drawn dozens at a time, the same reason `docStore` is
+    /// built lazily. Empty by default, so a host that has no opinion draws no
+    /// mark and nothing changes for it.
+    var endeavorNames: Set<String> = []
+
+    /// What the row's trailing slot says.
+    ///
+    /// `hidden` is the narrow-host answer (Session 87): on a 248pt rail the
+    /// date label takes about a third of the row, and a row that says TOMORROW
+    /// about a task you cannot identify has spent its width on the wrong half.
+    /// The date is still one click away in the card. Named `hidden` rather than
+    /// `none` so it can never be read as `Optional.none` at a call site.
+    enum TrailingLabel { case list, date, dateElseList, hidden }
 
     @State private var draftTitle: String = ""
     @State private var draftNotes: String = ""
@@ -114,6 +147,10 @@ struct MacTaskRow: View {
     /// link exists, so a card with no documents pays nothing — this row is
     /// drawn dozens at a time.
     @State private var docStore: TraceMacDocumentStore? = nil
+    /// Name to id, loaded when the CARD opens, for the Linked chip's jump.
+    /// The row's `endeavorNames` answers membership; this answers "which one",
+    /// and only one card is open at a time so it can afford the read.
+    @State private var endeavorIndex: [String: String] = [:]
     @State private var pickingRemind: Bool = false
     /// Seeded from the task's existing alarm when there is one, otherwise 9am
     /// on its due day — a default nobody has to correct as often as "now".
@@ -142,14 +179,17 @@ struct MacTaskRow: View {
                 .foregroundStyle(completed ? MacEditorialColor.muted
                                            : MacEditorialColor.ink)
                 .strikethrough(completed, color: MacEditorialColor.faint)
-                .lineLimit(1)
+                .lineLimit(titleLines)
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { open() }
             carriedMark
             Spacer(minLength: 8)
             trailingMarks
         }
-        .frame(height: 42)
+        // `minHeight`, not `height`: a two-line title has to be allowed to make
+        // the row taller. At `titleLines: 1`, which is every existing call
+        // site, the row is 42 exactly as before.
+        .frame(minHeight: 42)
         .contentShape(Rectangle())
         .onTapGesture { open() }
     }
@@ -315,6 +355,21 @@ struct MacTaskRow: View {
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(MacEditorialColor.faint)
         }
+        // **The flag, because the sidebar already calls an endeavor a flag**
+        // (`MacSection.endeavors` -> "flag"). A mark that reuses the room's own
+        // glyph needs no learning. Not the endeavor's TYPE glyph: D268 bounded
+        // those to the endeavors list and the masthead, and an airplane on a
+        // task row would read as "travel task" rather than "on a trip".
+        //
+        // Faint, not accent. The bolt beside the title is accent because it is
+        // a control you fire; this is a fact about the task, and the carried
+        // mark's own rule is that a passive mark should not scold.
+        if let endeavor = linkedEndeavorName {
+            Image(systemName: "flag")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(MacEditorialColor.faint)
+                .help(endeavor)
+        }
         if let alarm = task.alarmTimeString {
             Text(alarm)
                 .font(MacEditorialType.time)
@@ -335,6 +390,8 @@ struct MacTaskRow: View {
             } else if let list = task.list {
                 Text(list).editorialListLabel()
             }
+        case .hidden:
+            EmptyView()
         }
     }
 
@@ -451,6 +508,11 @@ struct MacTaskRow: View {
             draftNotes = strippedNotes
             editingTitle = false
             exitCommitted = false
+            // Only when there is a wikilink to resolve, so a card with none
+            // reads no endeavor files - `docStore`'s rule, for its reason.
+            if endeavorIndex.isEmpty, (task.notes ?? "").contains("[[") {
+                endeavorIndex = EndeavorFile.nameIndex(from: noteStore)
+            }
         }
         // **The backstop, and the only thing that can catch a click outside.**
         // That collapse is the HOST's — Today clears `openTaskID` when the day
@@ -718,6 +780,11 @@ struct MacTaskRow: View {
             tint = MacEditorialColor.accent
             help = "Open in Directory"
             open = { openRecord(type: "place", id: id) }
+        case .endeavor(let id):
+            glyph = "flag"
+            tint = MacEditorialColor.accent
+            help = "Open in Endeavors"
+            open = { openRecord(type: "endeavor", id: id) }
         case .unknown:
             glyph = "tag"
             tint = MacEditorialColor.faint
@@ -727,6 +794,18 @@ struct MacTaskRow: View {
         return MacTaskLinkChip(glyph: glyph, tint: tint, label: name,
                                dim: record.isUnknown, help: help,
                                onOpen: open, onUnlink: { toggleWikilink(name) })
+    }
+
+    /// The endeavor this task names, or nil.
+    ///
+    /// Nil the moment `endeavorNames` is empty, so a host that passes nothing
+    /// pays nothing: no regex, no scan. `wikilinkTargets` is `NoteStore`'s own
+    /// parser, the same one that finds these links everywhere else - a second
+    /// regex here would be a second opinion about what a link is.
+    private var linkedEndeavorName: String? {
+        guard !endeavorNames.isEmpty,
+              let notes = task.notes, notes.contains("[[") else { return nil }
+        return NoteStore.wikilinkTargets(in: notes).first { endeavorNames.contains($0) }
     }
 
     /// What a `[[Name]]` actually points at.
@@ -739,6 +818,12 @@ struct MacTaskRow: View {
     private enum LinkedRecord {
         case person(String)
         case place(String)
+        /// Session 87. Before this, `[[Thanksgiving 2026]]` fell through to
+        /// `.unknown` and the card said **"Not in People or Places"** about an
+        /// endeavor that exists, with no way to open it. Same class as
+        /// `personRow` calling Hannah "not in your people" in Session 86: a
+        /// screen reporting an absence it cannot distinguish from ignorance.
+        case endeavor(String)
         case unknown
         var isUnknown: Bool { if case .unknown = self { true } else { false } }
     }
@@ -749,6 +834,12 @@ struct MacTaskRow: View {
         }
         if let place = NotionService.shared.places.first(where: { $0.name == name }) {
             return .place(place.id)
+        }
+        // AFTER person and place, so the precedence documented above is
+        // untouched: both stores still answer a name the same way they always
+        // did, and this only catches what used to fall through.
+        if let id = endeavorIndex[name] {
+            return .endeavor(id)
         }
         return .unknown
     }

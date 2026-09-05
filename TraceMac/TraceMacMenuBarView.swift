@@ -7,7 +7,7 @@ import SwiftUI
 enum MenuBarDestination: String, CaseIterable {
     case daily   = "Daily Note"
     case inbox   = "Inbox"
-    case project = "Project"
+    case project = "Note"
     case agenda  = "Person Agenda"
 }
 
@@ -50,7 +50,7 @@ struct TraceMacMenuBarView: View {
 
             // Secondary picker (Project or Person)
             if destination == .project {
-                Picker("Project", selection: $selectedProject) {
+                Picker("Note", selection: $selectedProject) {
                     Text("Pick a project…").tag(String?.none)
                     ForEach(projects, id: \.self) { p in
                         Text(p.replacingOccurrences(of: ".md", with: "")).tag(String?.some(p))

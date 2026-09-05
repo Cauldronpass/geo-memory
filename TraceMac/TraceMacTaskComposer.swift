@@ -740,7 +740,7 @@ enum MacNewKind: String, CaseIterable, Identifiable {
         case .task:        "Task"
         case .person:      "Person"
         case .endeavor:    "Endeavor"
-        case .projectNote: "Project note"
+        case .projectNote: "Note"
         }
     }
 

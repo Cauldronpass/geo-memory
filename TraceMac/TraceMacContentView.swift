@@ -31,13 +31,30 @@ enum MacSection: String, CaseIterable, Identifiable {
     case today     = "Today"
     case upcoming  = "Upcoming"
     case tasks     = "Tasks"
-    /// Was "Notes", covering Daily, Weekly and Projects. Session 83 (D254,
-    /// D255): Daily folded into Today's DAYS list, Weekly into that list's
-    /// week rules, so the one thing left is Projects and the row says so. The
-    /// CASE stays `notes` for the reason `inbox` gives below: nothing persists
-    /// a `MacSection` by rawValue, and renaming the case would churn every
-    /// call site for a label change.
-    case notes     = "Projects"
+    /// **"Notes" again, as of Session 87 (D271), and the case name was right
+    /// all along.**
+    ///
+    /// Session 83 (D254, D255) folded Daily into Today's DAYS list and Weekly
+    /// into that list's week rules and renamed this row "Projects", on the
+    /// reasoning that Projects was the one thing left. That was a rename by
+    /// ELIMINATION rather than by description, and it did not survive contact
+    /// with what the folder actually holds: David's own example is a standing
+    /// note about Rivian, a topic he writes on over time, which is neither a
+    /// day, a week, nor a project.
+    ///
+    /// **And D268 gave Endeavors a `Project` TYPE.** So "Projects" in the
+    /// sidebar meant standalone topic notes while "Project" in the endeavor
+    /// picker meant an actual project - one word, two meanings, two screens,
+    /// which is warning FIVE at the level of vocabulary. That collision did not
+    /// exist when Session 83 chose the name.
+    ///
+    /// The room's own kicker has said "n notes" the whole time.
+    ///
+    /// The FOLDER stays `Notes/Projects`: it is read from about twenty-five
+    /// places across all four targets, and two apps disagreeing about a path
+    /// file things into nothing (D266's warning about the endeavor slug). The
+    /// name is legacy; see `NoteStore.projectsFolder`.
+    case notes     = "Notes"
     /// D1 listed this row when the design was written; it never existed in
     /// code. Added Session 64, once there was something for it to open.
     case endeavors = "Endeavors"

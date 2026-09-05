@@ -44,7 +44,19 @@ extension Notification.Name {
 // MARK: - Mac daily move sheet
 
 struct MacDailyMoveSheet: View {
-    let sourceDate: Date
+
+    /// The day the content is coming FROM, or nil when it is not coming from a
+    /// day at all (Session 87, D272).
+    ///
+    /// It was non-optional and it is used in exactly one place: the guard that
+    /// stops you moving a day's writing onto the same day. A note in the NOTES
+    /// room or a capture in TO FILE has no date and needs no such guard, and
+    /// requiring one is what kept this sheet unreachable from both of them.
+    ///
+    /// The type's name says "Daily" because that is where it was born. It is
+    /// not renamed: the struct is referenced by name in one place and a rename
+    /// buys nothing a comment does not.
+    let sourceDate: Date?
     let sourceContent: String
     let onMoved: () -> Void
 
@@ -58,7 +70,7 @@ struct MacDailyMoveSheet: View {
             switch self {
             case .day:     return "Another Day"
             case .visit:   return "Visit"
-            case .project: return "Project"
+            case .project: return "Note"
             case .horizon: return "Horizon"
             case .place:   return "Place"
             }
@@ -75,7 +87,9 @@ struct MacDailyMoveSheet: View {
     }
 
     @State private var dest: Dest = .day
-    @State private var targetDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+    /// Seeded in `onAppear` from the source, not here: this initialiser cannot
+    /// see `sourceDate`. The stored value is only a placeholder.
+    @State private var targetDate = Date()
     @State private var showDatePopover = false
     @State private var selectedVisit: Visit? = nil
     @State private var selectedPlace: Place? = nil
@@ -93,6 +107,14 @@ struct MacDailyMoveSheet: View {
     }()
 
     private var canMove: Bool {
+        // **Nothing to move is never movable** (Session 87, D272). Cheap, and
+        // it would have turned the bug above from silent data loss into a
+        // disabled button: the sheet came up with no source text, wrote an
+        // empty destination, and the source applied its remainder anyway.
+        // A guard at the verb catches whatever else ever goes wrong upstream.
+        guard !sourceContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
         switch dest {
         case .day:               return !isSameAsSource
         case .visit:             return selectedVisit != nil
@@ -102,52 +124,58 @@ struct MacDailyMoveSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Move Content").font(.title3.weight(.semibold))
-                Spacer()
-                Button("Cancel") { dismiss() }
-            }
-            .padding(.horizontal, 20).padding(.vertical, 16)
-            Divider()
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Move Content")
+                .font(MacType.heading)
+                .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
 
-            // Destination type pills
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Dest.allCases, id: \.rawValue) { d in
-                        Button {
+            // **A word row, not capsules in a horizontal ScrollView.** The
+            // pills were Apple's accent blue and the row scrolled, so "Place"
+            // sat half off the edge and read as broken rather than scrollable
+            // (David: *"the menu for the move content is cut off"*). This is
+            // `MacEditorialTabMasthead`'s grammar - small caps, accent for the
+            // one that is on - which fits all five at this width with nothing
+            // to scroll.
+            HStack(spacing: 18) {
+                ForEach(Dest.allCases, id: \.rawValue) { d in
+                    let on: Bool = dest == d
+                    Text(d.label)
+                        .font(.system(size: 10, weight: on ? .bold : .semibold))
+                        .textCase(.uppercase)
+                        .tracking(1.4)
+                        .foregroundStyle(on ? MacEditorialColor.accent : MacEditorialColor.faint)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
                             dest = d
                             selectedVisit = nil; selectedPlace = nil
                             selectedFile = nil; searchText = ""
-                        } label: {
-                            Label(d.label, systemImage: d.icon)
-                                .font(.subheadline.weight(dest == d ? .semibold : .regular))
-                                .padding(.horizontal, 12).padding(.vertical, 7)
-                                .background(
-                                    dest == d ? Color.accentColor
-                                              : Color(nsColor: .controlBackgroundColor),
-                                    in: Capsule()
-                                )
-                                .foregroundStyle(dest == d ? .white : .primary)
                         }
-                        .buttonStyle(.plain)
-                    }
                 }
-                .padding(.horizontal, 16).padding(.vertical, 10)
+                Spacer(minLength: 0)
             }
-            Divider()
+            .padding(.horizontal, 20).padding(.bottom, 8)
+            MacEditorialRule.ink.padding(.horizontal, 20)
 
-            // Content preview
-            Text(sourceContent.prefix(200))
-                .font(.callout).foregroundStyle(.secondary)
-                .lineLimit(4)
-                .padding(12)
+            // **A labelled line, not a box.** It was a bordered rectangle with
+            // `lineLimit(4)`, so a one-line capture got four lines of empty
+            // frame and read as a control you were meant to do something with.
+            // David: *"its a large rectangle for no reason i can tell."* It is
+            // not a field and not a container - it is the app saying what it is
+            // about to move, so it says MOVING and then the words, sized to the
+            // words.
+            if !sourceContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Moving").editorialFieldLabel()
+                    Text(sourceContent.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.muted)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .controlBackgroundColor),
-                            in: RoundedRectangle(cornerRadius: 8))
-                .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 4)
+                .padding(.horizontal, 20).padding(.top, 12)
+            }
 
-            // Destination-specific picker
             Group {
                 switch dest {
                 case .day:     dayPicker
@@ -157,47 +185,166 @@ struct MacDailyMoveSheet: View {
                 case .place:   placeList
                 }
             }
+            .frame(maxHeight: .infinity)
 
             if let err = errorMessage {
-                Text(err).font(.caption).foregroundStyle(.red)
-                    .padding(.horizontal, 20).padding(.bottom, 4)
+                Text(err)
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.accent)
+                    .padding(.horizontal, 20).padding(.bottom, 6)
             }
 
-            Spacer(minLength: 0)
             Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 if isMoving {
-                    ProgressView().controlSize(.small).padding(.trailing, 4)
+                    ProgressView().controlSize(.small).padding(.leading, 6)
                 } else {
                     Button("Move") { Task { await performMove() } }
-                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
                         .disabled(!canMove)
                 }
             }
-            .padding(16)
+            .padding(.horizontal, 20).padding(.vertical, 12)
         }
-        .frame(width: 440, height: 560)
+        // 520, up from 440: five destination words and the app's own month grid
+        // both want more than the old sheet had, and a sheet has no column to
+        // fit inside.
+        .frame(width: 520, height: 620)
         .task(id: dest) { await loadFilesForDest() }
+        .onAppear {
+            // **The source day plus one when there is one; today when there is
+            // not** (Session 87, D272).
+            //
+            // It used to be `Date() + 1 day` unconditionally, which was right
+            // when this sheet only moved leftovers off today's note and wrong
+            // the moment it started moving things out of captures and topic
+            // notes. David pressed Move meaning today and it aimed at tomorrow.
+            //
+            // A day note still gets tomorrow, because moving a paragraph onto
+            // the day it is already on is the one thing `isSameAsSource`
+            // refuses.
+            if let sourceDate {
+                targetDate = Calendar.current.date(byAdding: .day, value: 1, to: sourceDate)
+                    ?? sourceDate
+            } else {
+                targetDate = Calendar.current.startOfDay(for: Date())
+            }
+        }
+    }
+
+    // MARK: Shared row grammar (Session 87, D272)
+
+    /// One destination row, in the app's own row shape rather than a `List`'s.
+    private func moveRow(_ title: String, sub: String? = nil, icon: String,
+                         selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(selected ? MacEditorialColor.accent
+                                              : MacEditorialColor.faint)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(MacEditorialType.taskTitle)
+                        .foregroundStyle(MacEditorialColor.ink)
+                        .lineLimit(1)
+                    if let sub, !sub.isEmpty {
+                        Text(sub)
+                            .font(MacEditorialType.meta)
+                            .foregroundStyle(MacEditorialColor.muted)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(MacEditorialColor.accent)
+                }
+            }
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The search line above a list.
+    ///
+    /// **A glyph and a rule, because plain text is not a field.** It was a bare
+    /// `TextField` with no border, copied from the NOTES room where it sits
+    /// under a masthead and its shape is obvious. In the middle of a sheet it
+    /// read as a caption - so the one affordance that reveals "create a new
+    /// note", typing in it, was invisible. David: *"there is no way to create a
+    /// new note that i can see."* There was; it looked like a label.
+    private func moveSearch(_ prompt: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MacEditorialColor.faint)
+                TextField(prompt, text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.ink)
+            }
+            MacEditorialRule.hair
+        }
+        .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 6)
+    }
+
+    private func moveEmpty(_ text: String) -> some View {
+        Text(text)
+            .font(MacEditorialType.meta)
+            .foregroundStyle(MacEditorialColor.faint)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: Day picker
 
+    /// False when there is no source day. Moving a topic note's paragraph onto
+    /// Tuesday is not a no-op, so nothing needs blocking.
     private var isSameAsSource: Bool {
-        Calendar.current.isDate(targetDate, inSameDayAs: sourceDate)
+        guard let sourceDate else { return false }
+        return Calendar.current.isDate(targetDate, inSameDayAs: sourceDate)
     }
 
+    /// **`MacEditorialMonthGrid`, not Apple's `DatePicker`.** The second time
+    /// this exact swap has been made: `MacDateField` drew Apple's month until
+    /// D267, on David's *"we have used a simple graphic of a month in the past
+    /// so i just click the date."* Here he said it again, of this sheet -
+    /// *"we need to use the larger calendar with my Trace theme."*
+    ///
+    /// It is the same grid the task card's Pick day, the composer's When picker
+    /// and Upcoming all draw, so it is Monday-first via `Calendar.traceWeek`
+    /// where the system picker is not, and it is the app's type and colour
+    /// rather than the system accent.
+    ///
+    /// **Warning FIVE, twice over.** Apple's month appearing where the app's
+    /// month belongs is one thing drawn two ways; finding it in a second place
+    /// after fixing the first is the shape that warning is about.
     private var dayPicker: some View {
-        VStack(spacing: 4) {
-            DatePicker("", selection: $targetDate, displayedComponents: .date)
-                .datePickerStyle(.graphical)
-                .padding(.horizontal, 16)
-                .frame(maxWidth: 360)
+        VStack(spacing: 10) {
+            MacEditorialMonthGrid(selected: $targetDate)
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+            // **The chosen day in words.** A highlighted cell in a month grid
+            // is easy to read past - David pressed Move believing he had chosen
+            // today. The destination is the one thing this sheet must not leave
+            // to inference.
             if isSameAsSource {
-                Text("Same as source — pick a different date.")
-                    .font(.caption).foregroundStyle(.red)
+                Text("Same as the note it is coming from. Pick another day.")
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.accent)
+            } else {
+                Text("Moving to \(targetDate.formatted(.dateTime.weekday(.wide).day().month(.wide)))")
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.muted)
             }
+            Spacer(minLength: 0)
         }
     }
 
@@ -210,60 +357,95 @@ struct MacDailyMoveSheet: View {
     }
 
     private var visitList: some View {
-        VStack(spacing: 0) {
-            TextField("Search visits", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal, 20).padding(.top, 8)
-            List(filteredVisits) { visit in
-                Button { selectedVisit = visit } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(visit.placeName).foregroundStyle(.primary)
-                            Text(visit.date.formatted(.dateTime.month(.abbreviated).day().year()))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if selectedVisit?.id == visit.id {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+        VStack(alignment: .leading, spacing: 0) {
+            moveSearch("Search visits")
+            if filteredVisits.isEmpty {
+                moveEmpty("Nothing matches.")
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(filteredVisits) { visit in
+                            MacEditorialRule.hair
+                            moveRow(visit.placeName,
+                                    sub: visit.date.formatted(.dateTime.month(.abbreviated).day().year()),
+                                    icon: "checkmark.circle",
+                                    selected: selectedVisit?.id == visit.id) {
+                                selectedVisit = visit
+                            }
                         }
                     }
-                    .contentShape(Rectangle())
+                    .padding(.horizontal, 20)
                 }
-                .buttonStyle(.plain)
             }
         }
     }
 
     // MARK: Project / general file list
 
+    /// The typed name, when it is worth offering to CREATE a note (Session 87,
+    /// D272). David: *"the choice to move content to a note should allow me to
+    /// create a note if i want rather than just add to an existing."*
+    ///
+    /// **Only here, and he is right that it is only here.** A visit is a Notion
+    /// record of something that happened and the move appends to it - there is
+    /// nothing to create. A place has coordinates, a category and a Google id;
+    /// minting one as a side effect of filing a paragraph would record a
+    /// location that does not exist. A horizon offers this week and this month,
+    /// which are derived from the date and always valid.
+    ///
+    /// **And creation already happened, silently, everywhere.** `appendToFile`
+    /// writes whether or not the file is there, so moving to an unwritten week
+    /// note, an empty day or a place with no note file has always created one.
+    /// The only thing missing was a way to NAME one, which is exactly the case
+    /// a note is in and the others are not.
+    ///
+    /// Two characters, because one is a typo. Nothing offered when the name
+    /// already exists: that note is in the list and picking it is the right
+    /// move. `MacBookingSheet`'s "Add ... to your people" is the same shape for
+    /// the same reason.
+    private var createNoteName: String? {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2, !q.contains("/"), !q.hasPrefix(".") else { return nil }
+        guard !files.contains(where: {
+            $0.replacingOccurrences(of: ".md", with: "")
+                .localizedCaseInsensitiveCompare(q) == .orderedSame
+        }) else { return nil }
+        return q
+    }
+
     private func fileListView(subfolder: String) -> some View {
-        VStack(spacing: 0) {
-            TextField("Search", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal, 20).padding(.top, 8)
-            if files.isEmpty {
-                Spacer()
-                Text("No files found.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
+        let filtered = files.filter {
+            searchText.isEmpty || $0.localizedCaseInsensitiveContains(searchText)
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            moveSearch("Search notes, or type a new name")
+            if filtered.isEmpty && createNoteName == nil {
+                moveEmpty(files.isEmpty ? "No notes yet. Type a name to make one."
+                                        : "Nothing matches. Type two characters to make one.")
             } else {
-                let filtered = files.filter {
-                    searchText.isEmpty || $0.localizedCaseInsensitiveContains(searchText)
-                }
-                List(filtered, id: \.self) { file in
-                    Button { selectedFile = file } label: {
-                        HStack {
-                            Image(systemName: "doc.text").foregroundStyle(.secondary)
-                            Text(file.replacingOccurrences(of: ".md", with: "")).foregroundStyle(.primary)
-                            Spacer()
-                            if selectedFile == file {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        // First, so the answer to "it is not in this list" is
+                        // the first thing under the field you just typed in.
+                        if let createNoteName {
+                            MacEditorialRule.hair
+                            moveRow("New note \u{201c}\(createNoteName)\u{201d}",
+                                    sub: "Created when you press Move",
+                                    icon: "plus.circle",
+                                    selected: selectedFile == createNoteName + ".md") {
+                                selectedFile = createNoteName + ".md"
                             }
                         }
-                        .contentShape(Rectangle())
+                        ForEach(filtered, id: \.self) { file in
+                            MacEditorialRule.hair
+                            moveRow(file.replacingOccurrences(of: ".md", with: ""),
+                                    icon: "doc.text",
+                                    selected: selectedFile == file) {
+                                selectedFile = file
+                            }
+                        }
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 20)
                 }
             }
         }
@@ -287,42 +469,34 @@ struct MacDailyMoveSheet: View {
     }
 
     private var horizonListView: some View {
-        List {
-            Section("This Period") {
+        let past = files.filter { $0 != currentWeekFile && $0 != currentMonthFile }.sorted(by: >)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("This period").editorialFieldLabel().padding(.top, 12).padding(.bottom, 4)
+                MacEditorialRule.hair
                 horizonRow(file: currentWeekFile,
                            label: "Week \(Self.isoCal.component(.weekOfYear, from: Date()))",
                            icon: "calendar.badge.clock")
+                MacEditorialRule.hair
                 horizonRow(file: currentMonthFile,
                            label: Date().formatted(.dateTime.month(.wide).year()),
                            icon: "calendar")
-            }
-            let past = files.filter { $0 != currentWeekFile && $0 != currentMonthFile }.sorted(by: >)
-            if !past.isEmpty {
-                Section("Past") {
+                if !past.isEmpty {
+                    Text("Past").editorialFieldLabel().padding(.top, 14).padding(.bottom, 4)
                     ForEach(past, id: \.self) { file in
+                        MacEditorialRule.hair
                         horizonRow(file: file,
                                    label: file.replacingOccurrences(of: ".md", with: ""),
                                    icon: "doc.text")
                     }
                 }
             }
+            .padding(.horizontal, 20)
         }
     }
 
     private func horizonRow(file: String, label: String, icon: String) -> some View {
-        Button { selectedFile = file } label: {
-            HStack {
-                Image(systemName: icon).foregroundStyle(.secondary)
-                Text(label).foregroundStyle(.primary)
-                Spacer()
-                if selectedFile == file {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(Color.accentColor).fontWeight(.semibold)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        moveRow(label, icon: icon, selected: selectedFile == file) { selectedFile = file }
     }
 
     // MARK: Place list
@@ -335,33 +509,26 @@ struct MacDailyMoveSheet: View {
     }
 
     private var placeList: some View {
-        VStack(spacing: 0) {
-            TextField("Search places", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal, 20).padding(.top, 8)
+        VStack(alignment: .leading, spacing: 0) {
+            moveSearch("Search places")
             if notionService.places.isEmpty {
-                Spacer()
-                Text("No places loaded.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
+                // Not "there are none": an unfetched Places array cannot be
+                // told from an empty one, which is standing warning TWELVE.
+                moveEmpty("Places have not loaded.")
             } else {
-                List(filteredPlaces) { place in
-                    Button { selectedPlace = place } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(place.name).foregroundStyle(.primary)
-                                if !place.city.isEmpty {
-                                    Text(place.city).font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            if selectedPlace?.id == place.id {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(Color.accentColor).fontWeight(.semibold)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(filteredPlaces) { place in
+                            MacEditorialRule.hair
+                            moveRow(place.name,
+                                    sub: place.city,
+                                    icon: "mappin.and.ellipse",
+                                    selected: selectedPlace?.id == place.id) {
+                                selectedPlace = place
                             }
                         }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 20)
                 }
             }
         }
@@ -609,7 +776,8 @@ struct TraceMacProjectsView: View {
                     let notePath = "\(subfolder)/\(file)"
                     HStack(spacing: 0) {
                         TraceMacNoteEditor(relativePath: notePath,
-                                           heading: "Project note",
+                                           heading: "Note",
+                                           showMoveButton: true,
                                            onSaved: {
                                                hubReload += 1
                                                Task { await refreshRow(file) }
@@ -680,10 +848,10 @@ struct TraceMacProjectsView: View {
 
     private var listColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            MacEditorialMasthead(kicker: kicker, title: "Projects")
+            MacEditorialMasthead(kicker: kicker, title: "Notes")
                 .padding(.horizontal, MacEditorialLayout.margin)
                 .padding(.top, MacEditorialLayout.topMargin)
-            TextField("Search projects", text: $searchText)
+            TextField("Search notes", text: $searchText)
                 .textFieldStyle(.plain)
                 .font(MacEditorialType.meta)
                 .foregroundStyle(MacEditorialColor.ink)
@@ -846,8 +1014,8 @@ struct TraceMacProjectsView: View {
 
     private var newNoteSheet: some View {
         VStack(spacing: 16) {
-            Text("New Project").font(.headline)
-            TextField("Project name", text: $newNoteName)
+            Text("New Note").font(.headline)
+            TextField("Note name", text: $newNoteName)
                 .textFieldStyle(.roundedBorder).frame(width: 280)
                 .onSubmit { createNote() }
             HStack {
@@ -862,7 +1030,7 @@ struct TraceMacProjectsView: View {
 
     private var renameSheet: some View {
         VStack(spacing: 16) {
-            Text("Rename Project").font(.headline)
+            Text("Rename Note").font(.headline)
             TextField("Name", text: $renameDraft)
                 .textFieldStyle(.roundedBorder).frame(width: 280)
                 .onSubmit { renameNote() }
@@ -994,6 +1162,24 @@ struct TraceMacNoteEditor: View {
     /// inset the way Today's column does; a host that already pads the whole
     /// column (Today) passes 0.
     var headingInset: CGFloat = MacEditorialLayout.margin
+    /// Whether this editor offers **Move** in its heading row (Session 87,
+    /// D272 - it was the window toolbar first, and did not appear there).
+    ///
+    /// **It was `false` at every one of the nine call sites**, so the button,
+    /// `onMoveRequest` and `MacDailyMoveSheet` were all unreachable — a written,
+    /// working feature nobody could open. David: *"i dont see the day note move
+    /// sheet."* He could not.
+    ///
+    /// True on the three LOOSE-note surfaces: the day note on Today, the NOTES
+    /// room, and TO FILE. Those are notes about a time or a topic, and moving a
+    /// paragraph out of one into another is the filing move the app is built
+    /// around — a capture in TO FILE is meant to end up in a note.
+    ///
+    /// False on notes attached to a RECORD — a place, a person, an endeavor, a
+    /// Satchel document, the archive. Those notes describe the thing they hang
+    /// off; lifting their prose somewhere else is not a verb any of those
+    /// screens needs, and offering it on all nine would be a control added
+    /// because it was cheap rather than because it was wanted.
     var showMoveButton: Bool = false
     var moveSourceDate: Date? = nil
 
@@ -1025,12 +1211,53 @@ struct TraceMacNoteEditor: View {
     /// `MacTextEditor`, for an owner that draws a focus signal (Today's accent
     /// rule). D258.
     var onFocusChange: ((Bool) -> Void)? = nil
+    /// Fired when a Move took the WHOLE note and left this file empty
+    /// (Session 87, D272).
+    ///
+    /// **The editor reports; the host decides.** A capture in TO FILE that has
+    /// been moved into a note is consumed — an empty one is litter in the room
+    /// whose whole job is to reach zero — but the file list lives in
+    /// `TraceMacInboxView`, which owns the selection and the reload. An editor
+    /// deleting a file out from under its own host is how a list ends up
+    /// showing a row that is not there.
+    ///
+    /// **Not offered for the NOTES room, deliberately.** `linkableNotes()`
+    /// returns exactly that room's files plus the daily notes, so every note
+    /// there is a `[[wikilink]]` target: deleting one because it was emptied
+    /// would break every inbound link silently. A capture is in no such list,
+    /// has a generated filename nobody chose, and emptying is recoverable in a
+    /// way a deleted name is not — with no selection being the default state,
+    /// deletion would be one accidental click away. David's call, on those
+    /// grounds: TO FILE only.
+    ///
+    /// Declared last, so no existing call site's memberwise argument order
+    /// moves.
+    var onMovedAway: (() -> Void)? = nil
 
     @Environment(NoteStore.self)     private var noteStore
     @Environment(NotionService.self) private var notionService
 
     @State private var content        = ""
     @State private var saveTask: Task<Void, Never>? = nil
+    /// Set when this note's FILE has been handed to the host to delete
+    /// (Session 87, D272). While it is true nothing writes.
+    ///
+    /// **A mute, not a cancel, because cancelling loses a race.** The first
+    /// attempt cancelled the pending save before handing over, and the file
+    /// still came back: `onMoved` assigns `content`, which fires
+    /// `.onChange(of: content)`, which calls `scheduleSave` — AFTER the cancel
+    /// has run. A second later that task wrote the deleted file back as 0
+    /// bytes, and TO FILE showed a row titled `2026-09-05-144852.md`, because
+    /// `loadFiles` falls back to the filename when there is no content.
+    ///
+    /// Chasing the arming paths one at a time is what produced two wrong fixes.
+    /// There are three of them today — `onChange`, `applyToBody`, the Save
+    /// button — and any future one would reopen this. So the guard is at the
+    /// two functions that actually write, where every path has to pass.
+    ///
+    /// Cleared when the editor loads a note, so an instance reused for another
+    /// file is not permanently muted.
+    @State private var fileIsGone = false
     /// AppKit's first-responder fact, kept here for the heading's rule.
     @State private var focused = false
     @State private var showNoteInfo = false
@@ -1049,10 +1276,31 @@ struct TraceMacNoteEditor: View {
     private var noteTitleSet: Set<String> {
         Set(linkableNotes.map { $0.title.lowercased() })
     }
-    // Move sheet state
-    @State private var showMoveSheet   = false
-    @State private var moveContent     = ""
-    @State private var postMoveContent = ""
+    /// What a Move is carrying — the text that leaves and the text that stays
+    /// (Session 87, D272).
+    ///
+    /// **One item, not three pieces of state, and that is the whole bug fix.**
+    /// It was `showMoveSheet: Bool` plus `moveContent` plus `postMoveContent`,
+    /// all set in one closure. `.sheet(isPresented:)` builds its content from
+    /// the view value it captured, and the sheet came up with `moveContent`
+    /// still `""` — no MOVING label, an empty write to the destination, and the
+    /// selection gone from the source because `postMoveContent` was applied
+    /// later, from settled state, and worked. **Data loss**: David lost "note on
+    /// pricing to move".
+    ///
+    /// `.sheet(item:)` cannot do that. The content is derived from the item it
+    /// was presented with, so the payload and the presentation cannot disagree.
+    /// `bookingTarget` in `TraceMacEndeavorsView` is the same shape for the same
+    /// reason, and D36 says it in one line: one host, not two.
+    private struct MoveRequest: Identifiable {
+        let id = UUID()
+        /// The selection, or the whole note when there was none.
+        let text: String
+        /// What is left behind. Empty means the note was taken whole.
+        let remaining: String
+    }
+
+    @State private var moveRequest: MoveRequest? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1099,9 +1347,8 @@ struct TraceMacNoteEditor: View {
                               return true
                           },
                           onMoveRequest: showMoveButton ? { textToMove, remaining in
-                              moveContent     = textToMove
-                              postMoveContent = remaining
-                              showMoveSheet   = true
+                              moveRequest = MoveRequest(text: textToMove,
+                                                        remaining: remaining)
                           } : nil,
                           onPasteImage: { data in storeImage(data) != nil },
                           noteTitles: noteTitleSet)
@@ -1147,6 +1394,7 @@ struct TraceMacNoteEditor: View {
             // Also here, not only when a `[[` session opens: the colour has to be
             // right for links already in the note the moment it appears, and
             // nobody types anything to open a note they are only reading.
+            fileIsGone = false
             linkableNotes = noteStore.linkableNotes()
             await loadContent()
         }
@@ -1163,44 +1411,79 @@ struct TraceMacNoteEditor: View {
                 Task { await loadContent() }
             }
         }
+        // **Save only.** Move and Timestamp used to live here behind
+        // `if showMoveButton`, and after Session 87 turned that flag on at
+        // three call sites they still did not appear - Save rendered from the
+        // same block and they did not. Rather than guess a third time at why
+        // conditional `ToolbarContent` behaves that way on macOS, the controls
+        // moved to where this file says they belong.
+        //
+        // Move is now in `noteHeaderControls`, whose own comment states the
+        // rule: those controls "are about the note as a whole. The floating bar
+        // acts on the words you are writing; these two describe the document."
+        // Moving a note somewhere else is about the note as a whole. The window
+        // toolbar was never the right home for it; it was just the first one.
+        //
+        // Timestamp is not re-homed. It inserts at the caret, which is the
+        // floating bar's scope, and it has been unreachable for as long as Move
+        // was without anyone missing it. One `barButton("clock", "Timestamp")`
+        // in `noteBar` brings it back when it is wanted.
         .toolbar {
             ToolbarItem {
                 Button("Save") { saveNow() }
                     .keyboardShortcut("s", modifiers: .command)
             }
-            if showMoveButton {
-                ToolbarItem {
-                    Button {
-                        editorActions.execute(.timestamp)
-                    } label: {
-                        Label("Timestamp", systemImage: "clock")
-                    }
-                    .help("Insert timestamp (HH:MM AM)")
-                }
-                ToolbarItem {
-                    Button {
-                        editorActions.execute(.requestMove)
-                    } label: {
-                        Label("Move", systemImage: "arrow.up.right.square")
-                    }
-                    .help("Move selection (or whole note) to another destination")
-                }
-            }
         }
-        .sheet(isPresented: $showMoveSheet) {
-            if let date = moveSourceDate ?? parsedDate(from: relativePath) {
-                MacDailyMoveSheet(
-                    sourceDate: date,
-                    sourceContent: moveContent,
-                    onMoved: {
-                        content = postMoveContent
-                        scheduleSave(content: postMoveContent)
+        // **No `if let` around this** (Session 87, D272). It used to require a
+        // parseable date in the path, so pressing Move on anything but a day
+        // note presented an EMPTY sheet - and since no call site ever passed
+        // `showMoveButton: true`, nobody could press it at all. A door that
+        // opens onto nothing is worse than no door; a door nobody can reach is
+        // just dead code. The date is optional now and the sheet works without
+        // one.
+        .sheet(item: $moveRequest) { request in
+            MacDailyMoveSheet(
+                sourceDate: moveSourceDate ?? parsedDate(from: relativePath),
+                sourceContent: request.text,
+                onMoved: {
+                    content = request.remaining
+                    // **Consumed: do not save, and cancel anything already
+                    // armed** (Session 87, D272).
+                    //
+                    // The first version saved and then handed over, on the
+                    // reasoning that "writing it empty on the way is harmless".
+                    // The immediate write is. The PENDING one is not:
+                    // `scheduleSave` arms a one-second `Task`, the host deletes
+                    // the file, and a second later that task fires `saveNow()`
+                    // and `writeFile` puts the file back - empty, so `loadFiles`
+                    // falls back to the filename and a row called
+                    // `2026-09-05-144244.md` appears in TO FILE. David found it
+                    // on the first real move.
+                    //
+                    // A cancel is needed as well as a skip, because the user was
+                    // typing in this note moments ago and that save is already
+                    // armed. **A file about to be deleted must have no writes in
+                    // flight**, which is a different statement from "do not
+                    // write now".
+                    let consumed = onMovedAway != nil
+                        && request.remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    if consumed {
+                        // Mute first, then cancel, then hand over. The mute is
+                        // what holds: the `content` assignment above has already
+                        // queued an `.onChange` that will call `scheduleSave`
+                        // after this closure returns.
+                        fileIsGone = true
+                        saveTask?.cancel()
+                        saveTask = nil
+                        onMovedAway?()
+                    } else {
+                        scheduleSave(content: request.remaining)
                         saveNow()
                     }
-                )
-                .environment(noteStore)
-                .environment(notionService)
-            }
+                }
+            )
+            .environment(noteStore)
+            .environment(notionService)
         }
     }
 
@@ -1255,6 +1538,21 @@ struct TraceMacNoteEditor: View {
     /// place.
     private var noteHeaderControls: some View {
         HStack(spacing: 1) {
+            // **First, and only on a loose note** (Session 87, D272). Leftmost
+            // because it is the one control here that changes where the words
+            // LIVE rather than how they look or what the note contains.
+            if showMoveButton {
+                Button { editorActions.execute(.requestMove) } label: {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MacEditorialColor.faint)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Move the selection, or the whole note, somewhere else")
+            }
+
             Button { showNoteToolbar.toggle() } label: {
                 Text("B I U")
                     .font(.system(size: 9.5, weight: .bold))
@@ -1438,6 +1736,7 @@ struct TraceMacNoteEditor: View {
     }
 
     private func scheduleSave(content: String) {
+        guard !fileIsGone else { return }
         saveTask?.cancel()
         saveTask = Task {
             try? await Task.sleep(for: .seconds(1))
@@ -1495,6 +1794,7 @@ struct TraceMacNoteEditor: View {
     }
 
     private func saveNow() {
+        guard !fileIsGone else { return }
         let out: String
         if let saveTransform {
             let onDisk = (try? noteStore.readFile(relativePath)) ?? ""

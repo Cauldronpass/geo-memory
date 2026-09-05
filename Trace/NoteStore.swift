@@ -947,6 +947,16 @@ class NoteStore {
     //
     // It is also legible outside the app: a folder in Obsidian and in Files.
 
+    /// **The folder name is legacy. This is the NOTES room** (D271, Session
+    /// 87): standalone topic notes, not projects. The Mac sidebar row, the
+    /// masthead, the Archive sub-tab and every create/rename label say "Note"
+    /// now; the path does not, because it is read from about twenty-five places
+    /// across TraceMac, the iOS app, Dayflow and Satchel, and two apps
+    /// disagreeing about a path file things into nothing (D266's warning about
+    /// the endeavor slug).
+    ///
+    /// Do not read this constant's name as a fact about what the room holds -
+    /// standing warning THIRTEEN, which Session 87 earned twice in one day.
     static let projectsFolder = "Notes/Projects"
     static let archivedProjectsFolder = "Notes/Projects/Archive"
     /// Daily notes are NOT under `Notes/`. They are a sibling top-level folder in

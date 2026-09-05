@@ -143,7 +143,12 @@ struct TraceMacApp: App {
                 Button("Satchel")   { selectedSection = .documents }
                     .keyboardShortcut("5", modifiers: .command)
                 Divider()
-                Button("Inbox")     { selectedSection = .inbox }
+                // "To File", not "Inbox". Session 79's D186 renamed this row
+                // precisely to free the word Inbox for the Reminders task pool
+                // inside TASKS, and this menu command was missed — so it said
+                // Inbox and landed you on To File for six sessions. Same class
+                // as the sidebar saying Projects while this menu said Notes.
+                Button("To File")   { selectedSection = .inbox }
                     .keyboardShortcut("6", modifiers: .command)
                 // ⌘0 / Home removed Session 64 with the Home section (D21).
                 // Nothing takes ⌘0: leaving a shortcut bound to the nearest

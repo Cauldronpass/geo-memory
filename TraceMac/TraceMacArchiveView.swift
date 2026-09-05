@@ -261,7 +261,7 @@ private struct ArchivedNotesView: View {
     @Environment(NoteStore.self) private var noteStore
 
     enum NoteSubTab: String, CaseIterable {
-        case projects = "Projects"
+        case projects = "Notes"
         case places   = "Places"
         case horizons = "Horizons"
     }

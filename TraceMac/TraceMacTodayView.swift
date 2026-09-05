@@ -42,6 +42,10 @@ import AppKit
 struct TraceMacTodayView: View {
 
     @Environment(NoteStore.self) private var noteStore
+    /// Every endeavor's name, for the row's endeavor flag (Session 87).
+    /// Loaded once when this screen appears; `MacTaskRow` is handed the set
+    /// rather than reaching for one, because rows are drawn dozens at a time.
+    @State private var endeavorNames: Set<String> = []
 
     /// Owned by `TraceMacContentView` so the arrow-key monitor can move it and
     /// so the day survives leaving the section and coming back.
@@ -149,6 +153,7 @@ struct TraceMacTodayView: View {
         }
         .background(MacEditorialColor.paper)
         .task(id: dayKey) { await load() }
+        .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
         // Any change of day — a day word, the month grid, the arrow keys —
         // is an answer to "which day", and the list was only a way of asking.
         .onChange(of: date) { _, _ in daysMode = false }
@@ -397,7 +402,8 @@ struct TraceMacTodayView: View {
                                onToggle: { toggle(task) },
                                onChanged: { refresh() },
                                onMoved: { day in noteMove(to: day) },
-                               isToday: isToday)
+                               isToday: isToday,
+                               endeavorNames: endeavorNames)
                         // **`.onDrag`, not `.draggable`**, for one reason: it
                         // fires when the drag BEGINS. `.draggable` does not,
                         // and a row cannot slide out of the way for something
@@ -809,6 +815,7 @@ struct TraceMacTodayView: View {
             TraceMacNoteEditor(relativePath: noteRelativePath,
                                heading: noteHeading,
                                headingInset: 0,
+                               showMoveButton: true,
                                externalActions: noteActions,
                                onFocusChange: { focused in noteFocused = focused })
                 .frame(maxHeight: .infinity)

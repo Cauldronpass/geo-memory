@@ -105,6 +105,7 @@ struct TraceMacTasksView: View {
         }
         .background(MacEditorialColor.paper)
         .task(id: loadToken) { await load() }
+        .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
         .task(id: tab) { await load() }
         // **Both the id AND the store's count**, via `MacDeepLinkKey`. A link
         // arriving before the store has fetched would find nothing in
@@ -273,7 +274,8 @@ struct TraceMacTasksView: View {
                                    isOpen: openTaskID == task.id,
                                    onToggle: { toggle(task) },
                                    onChanged: { reload() },
-                                   onMoved: { day in noteMove(to: day) })
+                                   onMoved: { day in noteMove(to: day) },
+                                   endeavorNames: endeavorNames)
                         MacEditorialRule.hair
                     }
                 }
@@ -314,7 +316,8 @@ struct TraceMacTasksView: View {
                            isOpen: false,
                            onToggle: { },
                            onChanged: { reload() },
-                           completed: true)
+                           completed: true,
+                           endeavorNames: endeavorNames)
                 MacEditorialRule.hair
             }
         }
@@ -450,7 +453,8 @@ struct TraceMacTasksView: View {
                            onToggle: { toggle(task) },
                            onChanged: { reload() },
                            onMoved: { day in noteMove(to: day) },
-                           trailing: .date)
+                           trailing: .date,
+                           endeavorNames: endeavorNames)
                 MacEditorialRule.hair
             }
         }
@@ -486,6 +490,11 @@ struct TraceMacTasksView: View {
         guard let start = cal.date(byAdding: .day, value: -logbookDays, to: end) else { return }
         logbook = await store.fetchCompleted(from: start, to: end)
     }
+
+    /// Every endeavor's name, for the row's endeavor flag (Session 87).
+    /// Loaded once when this screen appears; `MacTaskRow` is handed the set
+    /// rather than reaching for one, because rows are drawn dozens at a time.
+    @State private var endeavorNames: Set<String> = []
 
     private func reload() { loadToken += 1 }
 

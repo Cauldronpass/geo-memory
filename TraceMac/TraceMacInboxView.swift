@@ -52,7 +52,37 @@ struct TraceMacInboxView: View {
             Group {
                 if let file = selectedFile {
                     TraceMacNoteEditor(relativePath: "Notes/Inbox/\(file.filename)",
-                                       heading: "To file note")
+                                       heading: "To file note",
+                                       showMoveButton: true,
+                                       // Moving the whole of a capture into a
+                                       // note CONSUMES it. `deleteFile` is the
+                                       // same one the row's own Delete uses,
+                                       // so the list, the selection and the
+                                       // file cannot disagree about what just
+                                       // happened.
+                                       // **A capture's title IS its first
+                                       // line** - `loadFiles` takes the first
+                                       // non-empty line and strips the `#`. So
+                                       // renaming one is editing that line, and
+                                       // it only LOOKED impossible because this
+                                       // list never re-read: `createFile`
+                                       // inserts the row optimistically and
+                                       // nothing refreshed it, so the file said
+                                       // one thing and the row said another.
+                                       //
+                                       // The NOTES room has done this since it
+                                       // was written (`refreshRow` on save);
+                                       // this list was the one that did not.
+                                       //
+                                       // **Order matters here and it bit once.**
+                                       // `TraceMacNoteEditor` declares `onSaved`
+                                       // before `onFocusChange` and
+                                       // `onMovedAway` after it, so a
+                                       // memberwise call has to list them in
+                                       // that order. Written backwards first
+                                       // time and the compiler said so.
+                                       onSaved: { Task { await loadFiles() } },
+                                       onMovedAway: { deleteFile(file) })
                         .environment(noteStore)
                 } else {
                     Text(files.isEmpty ? "Nothing here. Captures from the phone and the menu bar land in this list."

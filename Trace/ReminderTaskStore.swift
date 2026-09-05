@@ -517,6 +517,41 @@ final class ReminderTaskStore {
         return reminder.alarms?.compactMap(\.absoluteDate).first
     }
 
+    /// Set a task's notes and nothing else (Session 87).
+    ///
+    /// **Deliberately not `update(notes:)`.** That function is a routing
+    /// function: it recomputes `destinationRefusesDates` from the task's
+    /// current list, and for a task in the Inbox or Someday that flips
+    /// `clearDate` to true and nils out `dueDateComponents` AND `alarms` even
+    /// when the caller passed no date at all. It also re-derives the due
+    /// components from any date it IS passed, which moves a lead-time alarm
+    /// onto the due day - its own comment says a lead-time gap does not
+    /// survive a plain redate.
+    ///
+    /// Attaching a task to an endeavor writes one line into its notes. It has
+    /// no opinion about when the task is due, which list it belongs to, or
+    /// whether it should ring, and a function that touches those is the wrong
+    /// tool however carefully its arguments are chosen. This one fetches, sets
+    /// notes, saves and refetches.
+    ///
+    /// Empty notes are written as nil, matching `update`, because an empty
+    /// string and no notes are the same statement and Reminders shows the
+    /// difference.
+    func setNotes(taskID: String, notes: String) async -> Bool {
+        guard await ensureAccess(),
+              let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder else { return false }
+        let trimmed = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        reminder.notes = trimmed.isEmpty ? nil : notes
+        do {
+            try store.save(reminder, commit: true)
+            await fetch()
+            return true
+        } catch {
+            lastError = "Could not save the reminder. \(error.localizedDescription)"
+            return false
+        }
+    }
+
     func update(taskID: String, title: String, date: Date?, clearDate: Bool,
                 list: String?, notes: String? = nil, remindAt: Date? = nil,
                 clearRemind: Bool = false) async -> Bool {

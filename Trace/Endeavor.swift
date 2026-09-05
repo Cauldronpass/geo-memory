@@ -1052,6 +1052,24 @@ extension EndeavorFile {
     /// answer to "is this visit in an endeavor" when the notes cannot be read
     /// is the same shape as "no" for that purpose. Callers that need to tell
     /// the two apart should ask `noteStore.hasAccess` themselves.
+    /// Every endeavor's name mapped to its id (Session 87).
+    ///
+    /// One definition, two callers with different needs: a task ROW only wants
+    /// to know whether a `[[wikilink]]` names an endeavor, and an open CARD
+    /// wants the id so its chip can navigate. Two lookups built separately
+    /// would be two answers to "is this an endeavor", and the row would
+    /// eventually flag something the card could not open.
+    ///
+    /// Not cached here. `loadAll` reads the endeavor files, which is cheap
+    /// enough once per screen and far too much once per row, so the callers
+    /// hold the result and the row is handed a set rather than reaching for
+    /// one.
+    static func nameIndex(from noteStore: NoteStore) -> [String: String] {
+        var out: [String: String] = [:]
+        for endeavor in loadAll(from: noteStore) { out[endeavor.name] = endeavor.id }
+        return out
+    }
+
     static func loadAll(from noteStore: NoteStore) -> [Endeavor] {
         guard noteStore.hasAccess else { return [] }
         let files = (try? noteStore.listFiles(in: folder)) ?? []

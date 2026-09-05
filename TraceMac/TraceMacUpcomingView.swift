@@ -97,6 +97,7 @@ struct TraceMacUpcomingView: View {
         }
         .background(MacEditorialColor.paper)
         .task(id: loadToken) { await load() }
+        .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
     }
 
     // MARK: - Masthead
@@ -271,7 +272,8 @@ struct TraceMacUpcomingView: View {
                 MacTaskRow(task: task,
                            isOpen: openTaskID == task.id,
                            onToggle: { toggle(task) },
-                           onChanged: { reload() })
+                           onChanged: { reload() },
+                           endeavorNames: endeavorNames)
                     // **The payload is the task id, a plain `String`.** A
                     // custom `Transferable` would be the tidy answer and buys
                     // nothing here: the drag never leaves this window, and the
@@ -423,6 +425,11 @@ struct TraceMacUpcomingView: View {
         }
         eventsByDay = gathered
     }
+
+    /// Every endeavor's name, for the row's endeavor flag (Session 87).
+    /// Loaded once when this screen appears; `MacTaskRow` is handed the set
+    /// rather than reaching for one, because rows are drawn dozens at a time.
+    @State private var endeavorNames: Set<String> = []
 
     private func reload() { loadToken += 1 }
 

@@ -690,7 +690,7 @@ struct TraceMacDocumentsView: View {
                         icon: "folder",
                         label: activeProject.flatMap { p in
                             projectList.first { $0.path == p }?.name
-                        } ?? "Project",
+                        } ?? "Note",
                         isActive: activeProject != nil,
                         onClear: { activeProject = nil }
                     ) {
@@ -698,7 +698,7 @@ struct TraceMacDocumentsView: View {
                     }
                     .popover(isPresented: $showingProjectFilter, arrowEdge: .bottom) {
                         DocFilterPickerPopover(
-                            title: "Filter by Project",
+                            title: "Filter by Note",
                             items: projectList.map(\.name),
                             selected: activeProject.flatMap { p in projectList.first { $0.path == p }?.name },
                             onSelect: { name in
@@ -1183,7 +1183,7 @@ struct DocNotePanel: View {
                 Image(systemName: "note.text.badge.plus")
                     .font(.system(size: 44, weight: .thin))
                     .foregroundStyle(.tertiary)
-                Text("No project note linked")
+                Text("No note linked")
                     .font(.headline)
                     .foregroundStyle(.secondary)
                 Text("Link this document to a project to start writing notes that are shared across all documents in that project.")
@@ -1192,7 +1192,7 @@ struct DocNotePanel: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 280)
                 HStack(spacing: 12) {
-                    Button("Link to project…") {
+                    Button("Link to note…") {
                         showingNotePicker = true
                     }
                     .buttonStyle(.borderedProminent)
@@ -1504,7 +1504,8 @@ struct DocMetadataPanel: View {
             // is a question the picker can answer from the path and the person
             // filing should not have to answer twice.
             LinkedNotePickerSheet(current: linkedNote,
-                                  filterFolders: ["Notes/Projects", "Notes/Places"]) { picked in
+                                  filterFolders: ["Notes/Projects", "Notes/Places"],
+                                  allowCreate: true) { picked in
                 linkedNote = picked
                 save()
             }
@@ -2495,7 +2496,14 @@ struct DocChipsEditor: View {
 struct LinkedNotePickerSheet: View {
     let current: String
     var filterFolders: [String]? = nil   // nil = show all; set to restrict to specific subfolders
-    var allowCreate: Bool = false         // when true, show "New project…" creation row
+    /// When true, the sheet can make a note rather than only pick one.
+    ///
+    /// **Both doors into this picker set it** (Session 87, D272). There are two
+    /// — the NOTE tab's empty state and the metadata panel's link row — and
+    /// only the first could create, so the same verb behaved differently
+    /// depending on which panel you came from. David went in the other door and
+    /// reported the feature missing. Warning FIVE.
+    var allowCreate: Bool = false
     let onSelect: (String) -> Void
 
     @Environment(NoteStore.self) private var noteStore
@@ -2503,14 +2511,32 @@ struct LinkedNotePickerSheet: View {
     @State private var items: [(folder: String, path: String, name: String)] = []
     @State private var searchText = ""
     @State private var newProjectName = ""
+    /// The day a document can be filed to (Session 87, D272).
+    @State private var pickedDay = Calendar.current.startOfDay(for: Date())
     @State private var isCreating = false
     @State private var createError: String? = nil
 
     private let allFolders = ["Notes/Projects", "Notes/Places", "Notes/Horizons"]
     private var folders: [String] { filterFolders ?? allFolders }
 
-    // Folder shown in the "New project…" row — first filtered folder, or "Notes/Projects"
+    /// Where a new one is made: the first filtered folder, which is always the
+    /// notes folder. Deliberately never Places — a place is a Notion record
+    /// with coordinates and a category, and this sheet files documents.
     private var createFolder: String { folders.first ?? "Notes/Projects" }
+
+    /// What a folder is CALLED, as against what it is named on disk
+    /// (Session 87, D271). `Notes/Projects` holds standalone topic notes and
+    /// the room is called NOTES; the path is legacy and stays, so the label has
+    /// to be mapped rather than derived. This section header was printing the
+    /// last path component and saying "Projects".
+    private func folderLabel(_ folder: String) -> String {
+        switch folder {
+        case "Notes/Projects": return "Notes"
+        case "Notes/Places":   return "Places"
+        case "Notes/Horizons": return "Horizons"
+        default:               return folder.components(separatedBy: "/").last ?? folder
+        }
+    }
 
     private var filtered: [(folder: String, path: String, name: String)] {
         searchText.isEmpty ? items : items.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
@@ -2519,14 +2545,19 @@ struct LinkedNotePickerSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                // Create new row — shown at top when allowCreate and showing a single folder (Projects)
-                if allowCreate && folders.count == 1 {
-                    Section("New project") {
+                // Create new row, at the top so the answer to "it is not in
+                // this list" sits under the field you just searched in.
+                //
+                // No longer gated on `folders.count == 1`: the metadata panel's
+                // door passes Notes and Places, and a new one always goes to
+                // `createFolder`, which is the notes folder either way.
+                if allowCreate {
+                    Section("New note") {
                         HStack(spacing: 8) {
                             Image(systemName: "plus.circle.fill")
                                 .foregroundStyle(Color.accentColor)
                                 .font(.body)
-                            TextField("Project name…", text: $newProjectName)
+                            TextField("Note name…", text: $newProjectName)
                                 .textFieldStyle(.plain)
                                 .onSubmit { createAndSelect() }
                             if isCreating {
@@ -2544,11 +2575,46 @@ struct LinkedNotePickerSheet: View {
                     }
                 }
 
+                // **A day, from the app's own month** (Session 87, D272).
+                //
+                // David filed a receipt to 2026-09-04 from the phone and the Mac
+                // rendered it as a pill perfectly - only this picker could not
+                // SET one. I had said day notes were not linkable anywhere,
+                // which was wrong: they were not linkable HERE.
+                //
+                // A month grid, not a fourth folder. `Calendar/` holds one file
+                // per day since the app was installed, so listing it would be
+                // three hundred dated filenames and "2026-09-04" is not how
+                // anyone looks for a day.
+                //
+                // The file is created if it does not exist, so filing to a day
+                // you never wrote in is not a dead link. Same rule the Move
+                // sheet follows.
+                Section("Day") {
+                    MacEditorialMonthGrid(selected: $pickedDay)
+                    Button {
+                        let f = DateFormatter()
+                        f.locale = Locale(identifier: "en_US_POSIX")
+                        f.dateFormat = "yyyy-MM-dd"
+                        let stamp = f.string(from: pickedDay)
+                        let path  = "Calendar/\(stamp).md"
+                        if !noteStore.fileExists(path) {
+                            try? noteStore.writeFile(path, content: "# \(stamp)\n\n")
+                        }
+                        onSelect(path)
+                        dismiss()
+                    } label: {
+                        Label("File to \(pickedDay.formatted(.dateTime.weekday(.wide).day().month(.wide)))",
+                              systemImage: "calendar")
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 // Existing notes
                 ForEach(folders, id: \.self) { folder in
                     let group = filtered.filter { $0.folder == folder }
                     if !group.isEmpty {
-                        Section(folder.components(separatedBy: "/").last ?? folder) {
+                        Section(folderLabel(folder)) {
                             ForEach(group, id: \.path) { item in
                                 Button {
                                     onSelect(item.path)
