@@ -249,20 +249,76 @@ struct Endeavor: Identifiable, Hashable {
 
     var isTravel: Bool { type.caseInsensitiveCompare("Travel") == .orderedSame }
 
+    /// The five types the app offers (D268).
+    ///
+    /// **Still an open string on the model (D10).** This is the OFFERED list,
+    /// not a closed set: a type typed by hand into frontmatter still parses,
+    /// still displays, and must never be quietly rewritten to one of these.
+    ///
+    /// D10 held the list at two on the reasoning that a type changed no
+    /// behaviour, so a third would be "a filing decision with no consequence".
+    /// D268's body band ended that: the type now decides what you see, which is
+    /// why the list is chosen deliberately here and then closed.
+    ///
+    /// **Gathering, not Hosting.** David: *"if i am going to my parents for
+    /// dinner and have a few things to consider on that, it is not me hosting
+    /// it."* Hosting names your role; Gathering names the thing, and the shape
+    /// is the same either way — a schedule in hours rather than days.
+    ///
+    /// **Milestone is for the occasion you do NOT travel for.** A week away at
+    /// a wedding is a trip with events on it, and typing it Milestone would
+    /// take it out of Satchel's packing Kit (`isKitRelevant` guards on
+    /// `isTravel`) and hide the cover section on the phone, for a word.
+    static let offeredTypes = ["Travel", "Milestone", "Gathering", "Project", "Decision"]
+
     /// The type's glyph, and its tint as a `DocumentTint`.
     ///
     /// D268: **the type gets its own glyph and tint, in the list and beside the
-    /// masthead, and nowhere else.** Until now the only place an endeavor's
-    /// type showed on the Mac was the kicker over the cover photograph, which
-    /// is the one place it is hardest to read, and the list said nothing at
-    /// all. David: *"how can i tell the type of endeavor by looking at each?"*
+    /// masthead, and nowhere else.** Travel and Project keep the phone's own
+    /// indigo airplane and green hammer, unchanged since Session 78.
     ///
-    /// The pair is the phone's, unchanged: `DayflowEndeavorViews` has drawn an
-    /// indigo airplane and a green hammer since Session 78. Here rather than in
-    /// either view, so the five types D268 names arrive in ONE place rather
-    /// than in a Mac copy and a phone copy that drift.
-    var typeGlyph: String { isTravel ? "airplane" : "hammer" }
-    var typeTint: DocumentTint { isTravel ? .indigo : .green }
+    /// An unrecognised type gets a dashed circle in gray rather than falling
+    /// through to the hammer. A type the app does not know should look like one,
+    /// not like a Project.
+    var typeGlyph: String {
+        switch type.lowercased() {
+        case "travel":    return "airplane"
+        case "milestone": return "star"
+        case "gathering": return "person.2"
+        case "project":   return "hammer"
+        case "decision":  return "arrow.triangle.branch"
+        default:          return "circle.dashed"
+        }
+    }
+
+    var typeTint: DocumentTint {
+        switch type.lowercased() {
+        case "travel":    return .indigo
+        case "milestone": return .rose
+        case "gathering": return .amber
+        case "project":   return .green
+        case "decision":  return .teal
+        default:          return .gray
+        }
+    }
+
+    /// What the body's schedule band is CALLED for this type, or nil when this
+    /// type does not lead with one (D268).
+    ///
+    /// Travel reads ITINERARY. Milestone and Gathering read SCHEDULE — **not
+    /// "run of show"**, which is host language and would read oddly for an
+    /// evening you are a guest at.
+    ///
+    /// Project and Decision return nil for now. Their bands are the punch list
+    /// and the ledger, which are not built; until they are, those types show
+    /// the note alone, which is exactly the screen they have today.
+    var scheduleBandLabel: String? {
+        switch type.lowercased() {
+        case "travel":                 return "Itinerary"
+        case "milestone", "gathering": return "Schedule"
+        default:                       return nil
+        }
+    }
 
     /// Inclusive length in days, nil when either end is missing.
     var dayCount: Int? {

@@ -1761,10 +1761,12 @@ struct TraceMacEndeavorsView: View {
 
     /// ITINERARY, at the top of the endeavor body (D268).
     ///
-    /// **Travel only, for now.** D268 says the type chooses which bands appear,
-    /// and `isTravel` is the only type test the model has while the list is
-    /// still Travel and Project. A project gets exactly the screen it has
-    /// today, which is the point.
+    /// **The type chooses whether this band appears, and what it is called**
+    /// (D268). Travel reads ITINERARY; Milestone and Gathering read SCHEDULE,
+    /// because a run of show is a schedule in hours rather than days and needs
+    /// no new components. Project and Decision lead with the punch list and the
+    /// ledger, which are not built, so they show the note alone — exactly the
+    /// screen they have today.
     ///
     /// **It draws a header even with no rows.** The door to the FIRST booking
     /// cannot live inside a section that only appears once a booking exists.
@@ -1782,10 +1784,10 @@ struct TraceMacEndeavorsView: View {
         let count: Int = days.reduce(0) { $0 + $1.entries.count }
         let shown: [BookingDay] = itineraryExpanded ? days : Array(days.prefix(Self.itineraryDayCap))
         let hidden: Int = days.count - shown.count
-        if e.isTravel, settled {
+        if let bandLabel = e.scheduleBandLabel, settled {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text("Itinerary").editorialSectionLabel()
+                    Text(bandLabel).editorialSectionLabel()
                     Spacer(minLength: 8)
                     if count > 0 {
                         Text("\(count)")
@@ -2387,11 +2389,24 @@ private struct MacEndeavorCover: View {
 /// everything dropped on the Satchel rail.
 struct MacEndeavorSheet: View {
 
-    /// `Travel` and `Project`, matching `DayflowEndeavorViews`' own two. Not an
-    /// enum: `type` is a free string on the model and on disk, and closing it
-    /// here would make a hand-edited third value unparseable on the Mac and
-    /// fine on the phone.
-    private let types = ["Travel", "Project"]
+    /// The five offered types, from the model (D268). Not an enum: `type` is a
+    /// free string on disk, and closing it here would make a hand-edited sixth
+    /// value unparseable on the Mac and fine on the phone.
+    ///
+    /// **Plus whatever this endeavor already is.** Until Session 86 the picker
+    /// seeded `types.contains(e.type) ? e.type : types[0]`, so opening Settings
+    /// on an endeavor whose type was not in the list showed **Travel**, and the
+    /// next Save wrote it — silent data loss on a field with no undo, and it
+    /// would have fired the first time D268's new types met this sheet.
+    /// Dayflow did not do this and instead showed an empty picker: one field,
+    /// two screens, two different wrong answers (warnings FIVE and EIGHT).
+    private var types: [String] {
+        var out = Endeavor.offeredTypes
+        if let existing, !existing.type.isEmpty, !out.contains(existing.type) {
+            out.append(existing.type)
+        }
+        return out
+    }
 
     /// Nil creates, non-nil edits.
     let existing: Endeavor?
@@ -2502,7 +2517,9 @@ struct MacEndeavorSheet: View {
             }
             seeded      = true
             name        = e.name
-            type        = types.contains(e.type) ? e.type : types[0]
+            // Verbatim. `types` already carries an unrecognised value, so
+            // there is nothing to fall back to and nothing to lose.
+            type        = e.type
             destination = e.destination ?? ""
             hasStart    = e.starts != nil
             hasEnd      = e.ends   != nil

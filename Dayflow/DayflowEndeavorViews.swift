@@ -37,11 +37,25 @@ private extension EndeavorStatus {
 }
 
 private extension Endeavor {
-    var typeTint: Color {
-        isTravel ? Color(red: 0.345, green: 0.337, blue: 0.839)   // indigo
-                 : Color(red: 0.141, green: 0.541, blue: 0.239)   // green
+    /// The shared `typeTint` (a `DocumentTint`) in the phone's own colours.
+    ///
+    /// The mapping is here and the CHOICE is on the model, so adding a type is
+    /// one edit in `Endeavor.swift` rather than one here and one on the Mac
+    /// that drift. The indigo and the green are the exact literals this
+    /// extension has carried since Session 78.
+    var typeColor: Color {
+        switch typeTint {
+        case .indigo: return Color(red: 0.345, green: 0.337, blue: 0.839)
+        case .green:  return Color(red: 0.141, green: 0.541, blue: 0.239)
+        case .rose:   return Color(red: 0.812, green: 0.184, blue: 0.467)
+        case .amber:  return Color(red: 0.788, green: 0.463, blue: 0.039)
+        case .teal:   return Color(red: 0.173, green: 0.478, blue: 0.471)
+        case .blue:   return Color(red: 0.039, green: 0.518, blue: 1.000)
+        case .red:    return Color(red: 0.843, green: 0.000, blue: 0.082)
+        case .gray:   return Color(red: 0.420, green: 0.420, blue: 0.439)
+        }
     }
-    var glyph: String { isTravel ? "airplane" : "hammer" }
+    var glyph: String { typeGlyph }
 }
 
 // MARK: - Date phrasing
@@ -371,12 +385,12 @@ struct DayflowEndeavorListSection: View {
                 EndeavorCoverImage(path: cover, height: 42, cornerRadius: 11, width: 42)
             } else {
                 RoundedRectangle(cornerRadius: 11)
-                    .fill(e.typeTint.opacity(0.14))
+                    .fill(e.typeColor.opacity(0.14))
                     .frame(width: 42, height: 42)
                     .overlay(
                         Image(systemName: e.glyph)
                             .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(e.typeTint)
+                            .foregroundStyle(e.typeColor)
                     )
             }
 
@@ -864,7 +878,7 @@ struct DayflowEndeavorView: View {
                     Text(e.type.uppercased())
                         .font(.system(size: 10, weight: .bold))
                         .tracking(2.2)
-                        .foregroundStyle(e.typeTint)
+                        .foregroundStyle(e.typeColor)
                     Text(status.label.uppercased())
                         .font(.system(size: 10, weight: .bold))
                         .tracking(2.2)
@@ -2043,11 +2057,21 @@ struct DayflowEndeavorDetailsSheet: View {
     /// and a day trip does not. After one tap it is theirs and stops moving.
     @State private var stampTouched = false
 
-    /// D10 — day one is Travel and Project. `Event` was considered and
-    /// deliberately left out until David has used the system: it changes no
-    /// behaviour, so it would be a filing decision with no consequence.
-    /// `type` is an open string in the model, so adding one later is a word.
-    private let types = ["Travel", "Project"]
+    /// D10 held this at Travel and Project because a type changed no behaviour.
+    /// D268's body band ended that, and the list is now the model's five.
+    ///
+    /// **Plus whatever this endeavor already is.** The Mac's sheet used to fall
+    /// back to `types[0]` for an unrecognised value and write it on the next
+    /// Save; this one seeds verbatim and showed an empty picker instead. Both
+    /// were wrong and neither would have surfaced until a real endeavor was
+    /// retyped. Carrying the value keeps the picker honest on both.
+    private var types: [String] {
+        var out = Endeavor.offeredTypes
+        if let existing, !existing.type.isEmpty, !out.contains(existing.type) {
+            out.append(existing.type)
+        }
+        return out
+    }
 
     var body: some View {
         NavigationStack {
