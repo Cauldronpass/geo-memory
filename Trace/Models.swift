@@ -713,3 +713,87 @@ struct BilliardsSession: Identifiable, Codable {
     var visitID: String?
     var matchNumber: Int?
 }
+
+
+// MARK: - Bookings (D266)
+
+/// One row of the Bookings database: a flight, a shuttle, a hotel, a car, a
+/// parking reservation. ONE database for every kind rather than one per kind
+/// (D266) - the columns are nearly identical, and it is one fetch and one rail
+/// section instead of six.
+///
+/// Keyed to its endeavor by the SLUG, `Endeavor.id`, which is never edited
+/// after creation (D9). Not by name: the name is editable, and a rename would
+/// orphan every row silently.
+struct Booking: Identifiable, Codable {
+    let id: String
+    /// Written by the app in piece two from Provider, Number, From and To, so
+    /// it is never typed and never drifts from the fields it describes. A
+    /// hand-added row may carry anything, including nothing.
+    var name: String
+    /// An open String, not an enum, for `Endeavor.type`'s reason (D10): a Kind
+    /// option added in Notion must render rather than crash. Both functions
+    /// over it in `BookingKind` are total, with a default.
+    var kind: String
+    /// The endeavor slug, matched exactly against `Endeavor.id`.
+    var endeavorID: String
+    /// Notion relation ids into the People database, like `Visit.peopleIDs`.
+    var whoIDs: [String]
+    var start: Date?
+    var end: Date?
+    /// Whether Notion's `start` carried a clock time rather than being a bare
+    /// date. A date-only booking still has a real `start`, so `start != nil`
+    /// cannot answer this, and a row that asked it would print "12:00 AM" as
+    /// if midnight meant something.
+    var hasTime: Bool
+    var from: String?
+    var to: String?
+    var provider: String?
+    var number: String?
+    var confirmation: String?
+    var notes: String?
+    var cost: Double?
+    var booked: Bool
+}
+
+/// The glyph and the colour for a booking's Kind.
+///
+/// Both are total functions over `String` with a default, deliberately. Kind is
+/// a Notion select and an option can be added to it in ten seconds; a `switch`
+/// over an enum would make that a crash or a migration.
+enum BookingKind {
+
+    /// An SF Symbol. Anything unrecognised gets a ticket, which is honest: it
+    /// is a booking of some sort and we do not know which.
+    static func glyph(for kind: String) -> String {
+        switch kind.lowercased() {
+        case "flight":     return "airplane"
+        case "shuttle":    return "bus"
+        case "train":      return "tram"
+        case "hotel":      return "bed.double"
+        case "car rental": return "car"
+        case "parking":    return "parkingsign"
+        default:           return "ticket"
+        }
+    }
+
+    /// A `DocumentTint`, because both platforms already map those eight to
+    /// colours and a ninth palette would be a ninth thing to keep in step.
+    ///
+    /// **Parking is teal, not amber.** The brief asked for an orange shuttle
+    /// and an amber parking sign, and `DocumentTint` has exactly one warm case,
+    /// `amber`, which the Mac renders as orange. The shuttle keeps it, because
+    /// that is the row on the mockup that was approved; parking takes the one
+    /// unused case rather than becoming the shuttle's twin.
+    static func tint(for kind: String) -> DocumentTint {
+        switch kind.lowercased() {
+        case "flight":     return .blue
+        case "shuttle":    return .amber
+        case "train":      return .red
+        case "hotel":      return .indigo
+        case "car rental": return .green
+        case "parking":    return .teal
+        default:           return .gray
+        }
+    }
+}

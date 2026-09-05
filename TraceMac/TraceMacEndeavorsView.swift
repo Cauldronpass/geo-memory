@@ -328,6 +328,18 @@ struct TraceMacEndeavorsView: View {
             await store?.reload()
             await docStore?.reload()
             if notionService.visits.isEmpty { await notionService.fetchVisits() }
+            // BOOKINGS resolves Who to FIRST NAMES out of `notionService.people`,
+            // and nothing on this screen loaded People until now - `railPeople`
+            // reads the same array and prints "not in your people" beside a
+            // name it could not resolve, which on a cold open was a false
+            // statement about a person who is in there. Same class as the
+            // `ReminderTaskStore` line below, found by following D266's Who.
+            if notionService.people.isEmpty { await notionService.fetchPeople() }
+            // `.isEmpty` here is a cost control, not an existence test: it
+            // stops a second fetch on every redraw, and a failed first fetch
+            // deliberately retries when this `.task` runs again. The existence
+            // test is `bookingsLoad`, which is what the section switches on.
+            if notionService.bookings.isEmpty { await notionService.fetchBookings() }
             // TASKS (D257) reads `ReminderTaskStore.shared.allTasks`, and until
             // now nothing on this screen loaded that store. Cold-opening
             // Endeavors would have shown an empty section on an endeavor that
@@ -974,6 +986,9 @@ struct TraceMacEndeavorsView: View {
                 tasksSection(e)
                 Divider().padding(.vertical, 6)
 
+                bookingsSection(e)
+                Divider().padding(.vertical, 6)
+
                 destinationsSection(e)
                 Divider().padding(.vertical, 6)
 
@@ -1293,7 +1308,16 @@ struct TraceMacEndeavorsView: View {
                     // Shown, not hidden, matching `destinationRow`: renaming in
                     // Notion orphans the attachment, and a row that quietly
                     // disappears is worse than one that says why it will not open.
-                    if row.person == nil {
+                    // **Said only when People actually LOADED.** Offline,
+                    // `notionService.people` is empty, every attached name
+                    // fails to resolve, and this line told David that Hannah
+                    // Weiss is not in his people while she plainly is — a
+                    // report of absence indistinguishable from the record not
+                    // existing, which is the exact bug `bookingsLoad` was given
+                    // three states to avoid one section below. Session 70 put
+                    // those three states on `peopleLoad`; this row never asked.
+                    // Found on David's screen, Session 86.
+                    if row.person == nil, notionService.peopleLoad == .loaded {
                         Text("not in your people")
                             .font(MacType.meta).foregroundStyle(.tertiary)
                     }
@@ -1400,6 +1424,234 @@ struct TraceMacEndeavorsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: Bookings on the endeavor (D266, D267)
+
+    /// One day's bookings, in the order the rail draws them.
+    ///
+    /// Keyed on the day rather than the date, because the label IS the
+    /// identity: two rows on 20 November are one group whatever their times.
+    /// Undated rows share the key `undated` and sort last.
+    private struct BookingDay: Identifiable {
+        let id: String
+        let label: String
+        let bookings: [Booking]
+    }
+
+    private static let bookingDayKey: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private static let bookingDayLabel: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "E d MMM"
+        return f
+    }()
+
+    private static let bookingTime: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm a"
+        return f
+    }()
+
+    /// Dated rows by start ascending, undated last, ties broken by name so the
+    /// order does not shuffle between redraws.
+    private func bookingIsBefore(_ a: Booking, _ b: Booking) -> Bool {
+        switch (a.start, b.start) {
+        case let (x?, y?): return x == y ? a.name < b.name : x < y
+        case (_?, nil):    return true
+        case (nil, _?):    return false
+        case (nil, nil):   return a.name < b.name
+        }
+    }
+
+    /// This endeavor's bookings, grouped by the start's day.
+    private func bookingDays(_ e: Endeavor) -> [BookingDay] {
+        let rows: [Booking] = notionService.bookings(for: e.id).sorted(by: bookingIsBefore)
+        var order: [String] = []
+        var buckets: [String: [Booking]] = [:]
+        var labels: [String: String] = [:]
+        for b in rows {
+            let key: String
+            let label: String
+            if let start = b.start {
+                let day = Calendar.current.startOfDay(for: start)
+                key = Self.bookingDayKey.string(from: day)
+                label = Self.bookingDayLabel.string(from: day)
+            } else {
+                key = "undated"
+                label = "Undated"
+            }
+            if buckets[key] == nil {
+                order.append(key)
+                labels[key] = label
+            }
+            buckets[key, default: []].append(b)
+        }
+        return order.map {
+            BookingDay(id: $0, label: labels[$0] ?? "", bookings: buckets[$0] ?? [])
+        }
+    }
+
+    private static let bookingClock: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm"
+        return f
+    }()
+
+    /// "9:05a". The compact spelling, and only where it is paid for.
+    ///
+    /// A row carrying two times also carries who is on the booking and the
+    /// confirmation code, and at 248pt the full form pushed the code off the
+    /// end — `9:05 AM – 12:40 PM · Hannah · K7…`, losing the six characters
+    /// read at a counter. `9:05a` is the brief's own spelling for the same
+    /// value and the ordinary timetable convention. The meridiem is kept, not
+    /// dropped: an AM flight and a PM flight are not interchangeable.
+    private func bookingCompactTime(_ d: Date) -> String {
+        let isMorning: Bool = Calendar.current.component(.hour, from: d) < 12
+        return Self.bookingClock.string(from: d) + (isMorning ? "a" : "p")
+    }
+
+    /// The times on a row's second line. Empty for a bare date: `start` is
+    /// non-nil for those and would otherwise print midnight.
+    ///
+    /// One time keeps the full form. A lone `6:30a` reads worse than a lone
+    /// `6:30 AM`, and a row with one time has the width to spare — the
+    /// compression exists to buy space, so it is spent only where space is
+    /// short.
+    private func bookingTimes(_ b: Booking) -> String {
+        guard b.hasTime, let start = b.start else { return "" }
+        guard let end = b.end else { return Self.bookingTime.string(from: start) }
+        return bookingCompactTime(start) + " – " + bookingCompactTime(end)
+    }
+
+    /// First names, resolved from Notion People by relation id.
+    ///
+    /// **An id that resolves to nobody is skipped, not printed.** The rail's
+    /// other two orphan cases say "not in your places" and "not in your people"
+    /// because there the name IS the row; here the people are one fragment of a
+    /// second line, and a raw UUID sitting inside "9:05 AM · … · K7Q2LM" is
+    /// noise no one can act on.
+    private func bookingWho(_ b: Booking) -> String {
+        let names: [String] = b.whoIDs.compactMap { id in
+            notionService.people.first { $0.id == id }?.name
+        }
+        return names.compactMap { $0.split(separator: " ").first.map(String.init) }
+                    .joined(separator: ", ")
+    }
+
+    private func bookingMeta(_ b: Booking) -> String {
+        var parts: [String] = []
+        let times = bookingTimes(b)
+        if !times.isEmpty { parts.append(times) }
+        let who = bookingWho(b)
+        if !who.isEmpty { parts.append(who) }
+        if let confirmation = b.confirmation, !confirmation.isEmpty {
+            parts.append(confirmation)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// BOOKINGS, second on the rail under Tasks (D267).
+    ///
+    /// **No `+` until piece two.** The brief drew one and the starter offered
+    /// to disable it; a control's weight follows what is behind it (Session 64,
+    /// on this same rail), and behind this one is nothing until the sheet
+    /// exists. A door that is drawn and does not open is worse than no door.
+    ///
+    /// **Three empty states, not one.** `.idle` and `.loading` draw nothing
+    /// rather than flashing "No bookings yet." before the first fetch returns,
+    /// and `.failed` says the answer is unknown instead of claiming there are
+    /// none. See `bookingsLoad`.
+    @ViewBuilder
+    private func bookingsSection(_ e: Endeavor) -> some View {
+        let days: [BookingDay] = bookingDays(e)
+        let count: Int = days.reduce(0) { $0 + $1.bookings.count }
+        let state: NotionLoadState = notionService.bookingsLoad
+        HStack(alignment: .firstTextBaseline) {
+            Text("Bookings").editorialFieldLabel()
+            Spacer()
+            if count > 0 {
+                Text("\(count)")
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.faint)
+            }
+        }
+        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
+        switch state {
+        case .idle, .loading:
+            EmptyView()
+        case .failed:
+            railEmpty("Notion did not answer.")
+        case .loaded:
+            if days.isEmpty {
+                railEmpty("No bookings yet.")
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(days) { day in
+                        Text(day.label)
+                            .editorialGroupLabel()
+                            .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 2)
+                        ForEach(day.bookings) { booking in bookingRow(booking) }
+                    }
+                }
+            }
+        }
+    }
+
+    /// One booking, in `personRow`'s shape with `destinationRow`'s tinted glyph.
+    ///
+    /// **Not a `Button`.** Clicking opens the edit sheet in piece two; until it
+    /// exists the row is a plain `HStack`, so nothing on screen offers
+    /// something that is not there.
+    ///
+    /// Every colour and condition is a typed `let` before the view, the D260
+    /// rule. This file is past 2,300 lines and its neighbour has already tipped
+    /// the type-checker.
+    private func bookingRow(_ b: Booking) -> some View {
+        let tint: Color = MacPalette.documentTint(BookingKind.tint(for: b.kind))
+        let glyph: String = BookingKind.glyph(for: b.kind)
+        // A hand-added row can reach Notion with no Name. The kind is a poorer
+        // headline than "UA 1642 · DEN → ORD" and a much better one than a
+        // blank line where the subject should be.
+        let headline: String = b.name.isEmpty ? b.kind : b.name
+        let meta: String = bookingMeta(b)
+        let isPast: Bool = (b.end ?? b.start).map { $0 < Date() } ?? false
+        let showNotBooked: Bool = !b.booked
+        return HStack(spacing: 9) {
+            MacIconBadge(icon: glyph, tint: tint, size: .compact)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(headline).font(MacType.row).lineLimit(1)
+                if !meta.isEmpty {
+                    Text(meta)
+                        .font(MacType.meta)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            // **The right column carries the exception and nothing else.**
+            // D267 put the date here, and on the brief's wide mockup that was
+            // free. On the real 232pt rail it cost about 90 points to say one
+            // new thing, and the second line — the one carrying who is on the
+            // booking and the confirmation code, which is what you read at the
+            // counter — truncated at "9:05 AM – 12:40 PM · H…". The start time
+            // was already the first thing on that line and the date is already
+            // the group label above the row, so what was removed here was said
+            // twice elsewhere. Amended under D267, Session 86.
+            if showNotBooked {
+                Text("Not booked")
+                    .font(MacEditorialType.fieldLabel)
+                    .textCase(.uppercase)
+                    .tracking(MacEditorialType.fieldTracking)
+                    .foregroundStyle(MacEditorialColor.accent)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 3)
+        .opacity(isPast ? 0.55 : 1)
     }
 
     /// Places attached to this endeavor, ahead of any visit.

@@ -37,6 +37,8 @@ enum NotionCollection: String, CaseIterable, Sendable {
     case visits
     case places
     case people
+    /// D266. Bookings for every endeavor, one query, filtered in memory.
+    case bookings
 
     /// How old a cached copy may be before a returning window refetches it.
     var staleAfter: TimeInterval {
@@ -48,6 +50,9 @@ enum NotionCollection: String, CaseIterable, Sendable {
         case .places: return 15 * 60
         // A person is added a few times a month, and it is the largest query.
         case .people: return 60 * 60
+        // Edited by hand in Notion while the window is open - the airline
+        // moves a flight and he retypes it there, not here.
+        case .bookings: return 5 * 60
         }
     }
 }
@@ -66,6 +71,20 @@ class NotionService {
     /// would be noise. Not persisted either — a relaunch refetches anyway.
     @ObservationIgnored private var fetchedAt: [NotionCollection: Date] = [:]
 
+    /// A collection's load state, where it has one. `visits` has none.
+    ///
+    /// Warning ONE: this makes the THIRD switch over `NotionCollection`
+    /// (`staleAfter`, `refreshStale`, this), and `allCases` is still read in
+    /// exactly one place. Grepped, counted, all three exhaustive.
+    private func loadState(of collection: NotionCollection) -> NotionLoadState? {
+        switch collection {
+        case .visits:   return nil
+        case .places:   return placesLoad
+        case .people:   return peopleLoad
+        case .bookings: return bookingsLoad
+        }
+    }
+
     /// Seconds since `collection` last loaded, or `nil` if it never has.
     func age(of collection: NotionCollection) -> TimeInterval? {
         fetchedAt[collection].map { Date().timeIntervalSince($0) }
@@ -78,17 +97,36 @@ class NotionService {
     /// fetch it on appear, and doing it here as well would pull People and
     /// Visits on every activation for screens that may never be opened.
     ///
+    /// **A collection whose last attempt FAILED is not skipped**, added Session
+    /// 86. See the comment in the loop: the assumption above — that the screens
+    /// re-fetch on appear — holds only while a screen is being appeared at, and
+    /// a network that comes back does not appear anything.
+    ///
     /// Sequential rather than `async let`. These are three queries of at most a
     /// few hundred rows, they only run when something is actually stale, and
     /// nobody is waiting on them — the window is already on screen with the last
     /// good answer in it.
     func refreshStale() async {
         for collection in NotionCollection.allCases {
-            guard let age = age(of: collection), age > collection.staleAfter else { continue }
+            // **Asked-and-failed is not never-asked.** `fetchedAt` is stamped
+            // only on success, so a collection whose fetch failed has a nil age
+            // and the staleness guard below skips it forever. That is how
+            // BOOKINGS stayed on "Notion did not answer." after the network came
+            // back on David's screen, Session 86: the rail was pinned to a
+            // failure that had already stopped being true, and only leaving the
+            // screen and returning — which rebuilds the view and re-runs its
+            // `.task` — recovered it. A NEVER-loaded collection is still
+            // skipped, for the reason above. A FAILED one is retried whatever
+            // its age, because this is the moment we are back and can ask.
+            let retryAfterFailure: Bool = loadState(of: collection) == .failed
+            if !retryAfterFailure {
+                guard let age = age(of: collection), age > collection.staleAfter else { continue }
+            }
             switch collection {
             case .visits: await fetchVisits()
             case .places: await fetchPlaces()
             case .people: await fetchPeople()
+            case .bookings: await fetchBookings()
             }
         }
     }
@@ -110,6 +148,19 @@ class NotionService {
     /// words on screen. A failed fetch must never read as "still loading" — that
     /// is a spinner that never stops.
     private(set) var peopleLoad: NotionLoadState = .idle
+
+    /// Every booking, for every endeavor (D266).
+    var bookings: [Booking] = []
+    /// Has the Bookings fetch finished, and how did it end.
+    ///
+    /// Three states for `peopleLoad`'s reason, and here it is the whole point.
+    /// `bookings.isEmpty` cannot tell "not fetched" from "none", and the most
+    /// likely first failure of this feature is the app's Notion integration not
+    /// being connected to the new database - which returns nothing. Without
+    /// this the rail would say "No bookings yet." about an endeavor with four
+    /// flights on it, a report of absence indistinguishable from the record not
+    /// existing.
+    private(set) var bookingsLoad: NotionLoadState = .idle
     
     var recentInteractions: [Interaction] = []
     var workouts: [Workout] = []
@@ -127,6 +178,7 @@ class NotionService {
     private let billiardsDBID      = "b2dac41eca9c4a898bf914639950e3d0"
     private let dayNotesDBID       = "da0768bf98ae4ab09e341a80131d4b52"
     private let interactionsDBID   = "aba9fb80603141188861c12abc95dcad"
+    private let bookingsDBID       = "dc9ffe25aedc4cb4b5a7a9885a55acef"
     private let notionVersion = "2022-06-28"
     private let baseURL = "https://api.notion.com/v1"
 
@@ -1950,6 +2002,90 @@ class NotionService {
             status: select(props["Status"]) ?? "Unlinked",
             photoURL: (props["Photo URL"] as? [String: Any])?["url"] as? String
         )
+    }
+
+    // MARK: - Bookings (D266)
+
+    /// Every booking, for every endeavor. One query, filtered per endeavor in
+    /// memory by `bookings(for:)` - the shape `linkedOpenTasks` uses on
+    /// `allTasks`, and for the same reason: the table is a few dozen rows and a
+    /// per-endeavor query would refetch on every selection change.
+    func fetchBookings() async {
+        if bookingsLoad != .loaded { bookingsLoad = .loading }
+        do {
+            var all: [Booking] = []
+            var cursor: String? = nil
+            repeat {
+                var body: [String: Any] = [
+                    "sorts": [["property": "Date", "direction": "ascending"]],
+                    "page_size": 100
+                ]
+                if let cursor { body["start_cursor"] = cursor }
+                let data = try await post("\(baseURL)/databases/\(bookingsDBID)/query", body: body)
+                // `fetchVisits` force-casts here. A force cast inside a `do`
+                // crashes rather than throwing, so the one function whose job
+                // is to produce `.failed` would instead take the app down on
+                // the exact response it exists to report.
+                guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    throw NotionError.apiError(0, "fetchBookings: unexpected response")
+                }
+                let pages = result["results"] as? [[String: Any]] ?? []
+                all += pages.compactMap { parseBooking($0) }
+                cursor = result["has_more"] as? Bool == true ? result["next_cursor"] as? String : nil
+            } while cursor != nil
+            bookings = all
+            bookingsLoad = .loaded
+            // Stamped in the function that owns `bookings`, not at its call
+            // sites. `fetchVisits`' rule, for its reason.
+            fetchedAt[.bookings] = Date()
+        } catch {
+            self.error = error.localizedDescription
+            // A failed REFRESH does not throw away a good answer already on
+            // screen. Only a failure with nothing to keep reports failure.
+            if bookingsLoad != .loaded { bookingsLoad = .failed }
+        }
+    }
+
+    private func parseBooking(_ page: [String: Any]) -> Booking? {
+        guard let id    = page["id"] as? String,
+              let props = page["properties"] as? [String: Any] else { return nil }
+
+        let dateValue   = (props["Date"] as? [String: Any])?["date"] as? [String: Any]
+        let startString = dateValue?["start"] as? String
+        let endString   = dateValue?["end"] as? String
+
+        return Booking(
+            id:           id,
+            name:         title(props["Name"]) ?? "",
+            kind:         select(props["Kind"]) ?? "Other",
+            endeavorID:   richText(props["Endeavor"]) ?? "",
+            whoIDs:       ((props["Who"] as? [String: Any])?["relation"] as? [[String: Any]])?
+                              .compactMap { $0["id"] as? String } ?? [],
+            start:        startString.flatMap { notionDate(from: $0) },
+            end:          endString.flatMap { notionDate(from: $0) },
+            // Notion writes "2026-11-20" for a date and
+            // "2026-11-20T09:05:00.000-06:00" for a date with a time.
+            hasTime:      (startString?.count ?? 0) > 10,
+            from:         richText(props["From"]),
+            to:           richText(props["To"]),
+            provider:     richText(props["Provider"]),
+            number:       richText(props["Number"]),
+            confirmation: richText(props["Confirmation"]),
+            notes:        richText(props["Notes"]),
+            cost:         (props["Cost"] as? [String: Any])?["number"] as? Double,
+            booked:       checkbox(props["Booked"])
+        )
+    }
+
+    /// This endeavor's bookings, in memory.
+    ///
+    /// Trimmed on the row's side only: the slug comes from the note's
+    /// frontmatter and is clean, while a cell typed into Notion picks up a
+    /// trailing space more often than anyone expects.
+    func bookings(for endeavorID: String) -> [Booking] {
+        self.bookings.filter {
+            $0.endeavorID.trimmingCharacters(in: .whitespacesAndNewlines) == endeavorID
+        }
     }
 
     private func title(_ prop: Any?) -> String? {
