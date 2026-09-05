@@ -20,9 +20,9 @@
 // **What the four lists mean here.** Things had structural Inbox / Anytime /
 // Today / Upcoming. Reminders has lists and dates, nothing else, so:
 //   tasks         — due today or overdue, any list
-//   inboxTasks    — undated, in the Personal list (what he typed and has not
-//                   decided about; Satchel and Trace write dated items to the
-//                   Trace list, which never need "processing")
+//   inboxTasks    - undated, in the Inbox list (what he typed and has
+//                   not decided about; the Inbox is where a capture
+//                   naming no list lands, D262)
 //   anytimeTasks  — undated, every list (the browse view)
 //   upcomingTasks — dated after today, next 60 days
 // Reads every list — David: no shared household lists, "looking at them all
@@ -47,8 +47,14 @@ final class ReminderTaskStore {
 
     static let shared = ReminderTaskStore()
 
-    /// Where typed tasks go. Created on first write if missing. The Trace list
-    /// (`ReminderService.listName`) is what the apps write to.
+    /// The topical list for personal-life tasks, and the destination a
+    /// DATED capture graduates to (D225/D236). Created on first write if
+    /// missing.
+    ///
+    /// **No longer the fallback for a capture that names no list.** That
+    /// is the Inbox as of D262: falling back here is how a task David
+    /// never classified came to wear a list he never chose. The Trace
+    /// list (`ReminderService.listName`) is what the apps write to.
     static let personalListName = "Personal"
     /// The Inbox's dateless way out (Session 78): "not now" without a fake
     /// date. A real Reminders list — the only structure EventKit exposes
@@ -442,12 +448,24 @@ final class ReminderTaskStore {
         reminder.title = title
         if let notes, !notes.isEmpty { reminder.notes = notes }
         // Inbox and Someday are created on first use; anything else must
-        // already exist or the task falls back to Personal.
+        // already exist.
+        //
+        // **D262: naming no list means no where-decision was made, so the
+        // task goes to the Inbox.** This used to fall back to Personal,
+        // which is the whole of David's complaint in Session 84: a task he
+        // typed with no date and no list wore Personal, and he could not
+        // find it again. A DATED capture still lands in Personal, but by
+        // graduating through the rule directly below rather than by
+        // defaulting, which is the difference between a destination he
+        // chose and one that was assumed for him.
+        //
+        // Personal stays as the last resort for the case where the Inbox
+        // list itself cannot be made: a task must land somewhere.
         var destination = list.flatMap { name in
             (name == Self.inboxListName || name == Self.somedayListName)
                 ? ensureList(named: name)
                 : calendar(named: name)
-        } ?? personalList()
+        } ?? ensureList(named: Self.inboxListName) ?? personalList()
         // D225's graduation, at birth (Session 81). A capture carrying BOTH a
         // refusing list and a real date is two statements, and at creation the
         // date is always the USER'S (typed in the line) while the list is the

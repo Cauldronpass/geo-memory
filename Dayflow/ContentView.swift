@@ -305,18 +305,56 @@ struct ContentView: View {
                 // gesture you have to land on a glyph to start is a gesture
                 // nobody finds twice.
                 .contentShape(Rectangle())
+                // **One gesture, two axes, never both** (Session 84). David:
+                // *"what do you think about being able to left swipe on the
+                // today screen and right swipe to move between days."* Right
+                // idea, wrong surface: every task row and every meeting row in
+                // the body below already owns a horizontal drag (reveal and
+                // select on tasks, the task sheet on meetings), so a
+                // screen-level pager would make one finger movement mean two
+                // things depending on how far it travelled.
+                //
+                // The masthead has no horizontal gesture and is the part of the
+                // screen that STATES which day you are looking at, so the walk
+                // belongs here. Added to the EXISTING drag rather than as a
+                // second `.gesture`: two recognisers on one view is a
+                // competition, and the axis test that already guards the
+                // pull-down is exactly the test the walk needs.
+                //
+                // The day pill stays as the shortcut to three named days. This
+                // is the unbounded walk beside it, and it closes the half of
+                // the 2026-08-31 backlog item the pill left open: reaching a
+                // day that is not yesterday, today or tomorrow cost a chevron,
+                // a month grid and a tap.
                 .gesture(
                     DragGesture(minimumDistance: 30)
                         .onEnded { value in
                             let vertical = value.translation.height
                             let horizontal = value.translation.width
-                            guard vertical > 50,
-                                  vertical > abs(horizontal) * 1.5 else { return }
-                            // Session 78, D159 — the pull now opens Quick
-                            // Find (presented by DayflowRootView, over any
-                            // tab); TraceSearchView's cover retired with it.
-                            withAnimation(.spring(duration: 0.32)) {
-                                DayflowQuickFindRouter.shared.show = true
+                            // Session 78, D159 — the pull opens Quick Find
+                            // (presented by DayflowRootView, over any tab);
+                            // TraceSearchView's cover retired with it.
+                            if vertical > 50, vertical > abs(horizontal) * 1.5 {
+                                withAnimation(.spring(duration: 0.32)) {
+                                    DayflowQuickFindRouter.shared.show = true
+                                }
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                return
+                            }
+                            // The same 1.5x margin the row drags use, so a
+                            // diagonal does nothing rather than guessing.
+                            guard abs(horizontal) > 50,
+                                  abs(horizontal) > abs(vertical) * 1.5 else { return }
+                            // Swipe LEFT for the next day: the day you are on
+                            // leaves with your finger and the next one follows
+                            // it in. Unbounded in both directions, which is the
+                            // whole point of having it beside the pill.
+                            let step = horizontal < 0 ? 1 : -1
+                            let cal = Calendar.current
+                            guard let walked = cal.date(byAdding: .day, value: step,
+                                                        to: selectedDate) else { return }
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                selectedDate = cal.startOfDay(for: walked)
                             }
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         }

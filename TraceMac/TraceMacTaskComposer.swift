@@ -15,10 +15,24 @@
 //
 // The + is the opposite gesture. You are already in the app, you reached for a
 // button, and you have a screen in front of you. That is a considered add, so
-// it commits: **Personal by default**, with the list one click away.
+// every decision is on screen before you commit, with the list one click away.
 //
-// The rule that falls out: *a capture that cannot show you where it went must
-// not choose*; a capture that can show you, must.
+// The rule that fell out then: *a capture that cannot show you where it went
+// must not choose*; a capture that can show you, must.
+//
+// == D262 (Session 84) reverses the second half of that rule ==============
+//
+// The + committed to **Personal by default**, in David's own Session 80
+// words: "Hitting the plus symbol however should automatically put it to
+// personal if i dont do anything else." He reversed it himself in Session 84,
+// on evidence: a task typed with no date and no list wore a list he never
+// chose, and he could not find it again. **Showing you the destination is not
+// the same as choosing one for you**, and the old rule confused the two.
+//
+// So the list rests on THE INBOX and says so. A date, whether typed, picked,
+// or inherited from the screen the + was pressed on, moves the destination to
+// Personal and the row says that too, before you commit. Clearing the date
+// sends it back to the Inbox.
 //
 // ── Why this is a popover and not the inline row ─────────────────────────
 //
@@ -45,8 +59,9 @@ struct MacTaskComposer: View {
     /// passes `nil`. A typed date always wins over it.
     let defaultDate: Date?
     let onAdded: () -> Void
-    /// Which list to open on. `nil` keeps the + button's own default, Personal,
-    /// which is the considered-add rule this file is named for.
+    /// Which list to open on. `nil` means no list is pre-chosen, which
+    /// routes to the Inbox until a date or an explicit pick says otherwise
+    /// (D262). It is no longer a stand-in for Personal.
     ///
     /// A document passes the Inbox (D230): a task made from a document has made
     /// no when-decision yet, and the document is its context the way an agenda
@@ -69,7 +84,10 @@ struct MacTaskComposer: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var text = ""
-    @State private var list = ReminderTaskStore.personalListName
+    /// **`nil` is the resting state, not a missing value** (D262). No list
+    /// has been chosen, so `effectiveList` routes the task. A pick fills
+    /// this in and wins over the routing.
+    @State private var list: String? = nil
     @State private var seededList = false
     @State private var dateCleared = false
     @State private var saving = false
@@ -107,8 +125,45 @@ struct MacTaskComposer: View {
         return chosenDay ?? parsed.date ?? defaultDate
     }
 
+    /// Where the task will actually go, and what every row on screen shows.
+    /// An explicit pick wins; otherwise the same routing the capture card
+    /// on the phone has always used (D262): undated means no when-decision
+    /// was made, so the Inbox; a date is a decision, so Personal.
+    ///
+    /// `addTask` reaches the same answer on its own through D236's
+    /// graduation. This is the visible half of it, and the two must agree:
+    /// the row is a promise about where the task is about to land.
+    private var effectiveList: String {
+        if let list { return list }
+        return effectiveDate == nil
+            ? ReminderTaskStore.inboxListName
+            : ReminderTaskStore.personalListName
+    }
+
+    /// What the When row says when there is no date, and it is NOT always
+    /// the word Anytime (Session 84, David on the first build: "when i
+    /// clicked the X the When said Anytime. is that right?").
+    ///
+    /// It was not. **Anytime is a real state with a real meaning: undated,
+    /// in a topical list.** An Inbox task is undated AND has made no
+    /// where-decision, which is the opposite of Anytime, and a Someday task
+    /// has decided NOT now. Saying Anytime over all three taught the wrong
+    /// model on the one screen whose whole job is to show the model.
+    ///
+    /// Reads `effectiveList`, not the pick: the resting state IS the Inbox,
+    /// and that is exactly the case that was saying the wrong word.
+    private var undatedWord: String {
+        ReminderTaskStore.listRefusesDates(effectiveList) ? "No date" : "Anytime"
+    }
+
     /// Inbox and Someday hold no dates (D210). The rule lives on the store so
     /// this screen cannot drift from the four write paths that enforce it.
+    ///
+    /// **Reads the EXPLICIT pick, never `effectiveList`.** `effectiveDate`
+    /// consults this and `effectiveList` consults `effectiveDate`, so asking
+    /// the effective list here would be a cycle. It is also the right
+    /// answer: only a list you CHOSE can refuse you a date. The unchosen
+    /// state routes out of the way instead of blocking.
     private var listRefusesDates: Bool {
         ReminderTaskStore.listRefusesDates(list)
     }
@@ -277,9 +332,10 @@ struct MacTaskComposer: View {
 
     // MARK: - Rows
 
-    /// The whole reason the + exists as its own thing. Personal is selected,
-    /// not assumed: the value is on screen before you commit, so choosing
-    /// nothing is a decision you can see rather than one made for you.
+    /// The whole reason the + exists as its own thing: the destination is on
+    /// screen before you commit. It reads THE INBOX until a date or a pick
+    /// changes it, so choosing nothing is a visible outcome rather than a
+    /// silent one (D262).
     /// **Not a `Menu`.** The first version made the Menu itself the focusable
     /// thing, and David reported the obvious symptom: "when i highlight the
     /// list id like the down arrow to move through the options and that doesnt
@@ -297,7 +353,7 @@ struct MacTaskComposer: View {
     private var listRow: some View {
         row("List") {
             HStack(spacing: 5) {
-                Text(list)
+                Text(effectiveList)
                     .font(MacEditorialType.fieldValue)
                     .foregroundStyle(MacEditorialColor.ink)
                 Image(systemName: "chevron.down")
@@ -326,7 +382,7 @@ struct MacTaskComposer: View {
                                     .font(MacEditorialType.fieldValue)
                                     .foregroundStyle(MacEditorialColor.ink)
                                 Spacer(minLength: 12)
-                                if name == list {
+                                if name == effectiveList {
                                     Image(systemName: "checkmark")
                                         .font(.system(size: 9, weight: .bold))
                                         .foregroundStyle(MacEditorialColor.accent)
@@ -353,10 +409,10 @@ struct MacTaskComposer: View {
             // refuses you and one that explains itself.
             row("When") {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Anytime")
+                    Text(undatedWord)
                         .font(MacEditorialType.fieldValue)
                         .foregroundStyle(MacEditorialColor.faint)
-                    Text("\(list) holds no dates. Choose another list to schedule it.")
+                    Text("\(effectiveList) holds no dates. Choose another list to schedule it.")
                         .font(MacEditorialType.meta)
                         .foregroundStyle(MacEditorialColor.faint)
                 }
@@ -377,7 +433,7 @@ struct MacTaskComposer: View {
                     // focusable container rather than a Button — see the note
                     // on `listRow`. A Button here competed with `.focusable()`
                     // and the arrows never arrived.
-                    Text(day.map(Self.dayText) ?? "Anytime")
+                    Text(day.map(Self.dayText) ?? undatedWord)
                         .font(MacEditorialType.fieldValue)
                         // Accent when the date was CHOSEN, typed or picked; ink
                         // when it was inherited from the screen. The chosen one
@@ -588,7 +644,7 @@ struct MacTaskComposer: View {
     private func cycleList(_ step: Int) {
         let names = store.listNames
         guard !names.isEmpty else { return }
-        let at = names.firstIndex(of: list) ?? 0
+        let at = names.firstIndex(of: effectiveList) ?? 0
         let next = (at + step + names.count) % names.count
         list = names[next]
     }
@@ -632,7 +688,7 @@ struct MacTaskComposer: View {
         let line = parsed
         let day = effectiveDate
         let remind = effectiveRemind
-        let destination = list
+        let destination = effectiveList
         // Prose first, machinery after — the placement `rebuiltNotes` keeps and
         // `noteProse` strips.
         let notes: String? = {

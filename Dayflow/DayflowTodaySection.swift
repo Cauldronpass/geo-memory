@@ -982,7 +982,23 @@ struct DayflowMeetingTaskSheet: View {
     @State private var armed = false
     /// D175 round two — David: "It did not let me change the list away from
     /// Personal (is that a bug?)". It was a gap; the label is a menu now.
-    @State private var list: String = ReminderTaskStore.personalListName
+    ///
+    /// **`nil` is the resting state** (D262): no list chosen. A matched
+    /// meeting makes an undated task, which routes to the Inbox; an
+    /// unmatched one makes a dated task, which routes to Personal. The
+    /// label below says which, before you press Save.
+    @State private var list: String? = nil
+
+    /// An explicit pick wins; otherwise the app-wide routing. `matchedName`
+    /// is what decides the date in `save()`, so it decides this too, and
+    /// the two cannot drift apart.
+    private var effectiveList: String {
+        if let list { return list }
+        return matchedName == nil
+            ? ReminderTaskStore.personalListName
+            : ReminderTaskStore.inboxListName
+    }
+
     @FocusState private var focused: Bool
 
     private var matchedName: String? {
@@ -998,10 +1014,10 @@ struct DayflowMeetingTaskSheet: View {
 
     private var destinationLabel: String {
         if matchedName != nil {
-            return "LINKED TO \(linkName.uppercased()) \u{00B7} \(list.uppercased())"
+            return "LINKED TO \(linkName.uppercased()) \u{00B7} \(effectiveList.uppercased())"
         }
         let f = DateFormatter(); f.dateFormat = "EEE MMM d"
-        return "LINKED \u{00B7} \(f.string(from: event.startDate).uppercased()) \u{00B7} \(list.uppercased())"
+        return "LINKED \u{00B7} \(f.string(from: event.startDate).uppercased()) \u{00B7} \(effectiveList.uppercased())"
     }
 
     var body: some View {
@@ -1027,9 +1043,7 @@ struct DayflowMeetingTaskSheet: View {
             Rectangle().fill(Color.dayflowHairline).frame(height: 1)
             HStack {
                 Menu {
-                    ForEach(ReminderTaskStore.shared.listNames.filter {
-                        $0 != ReminderTaskStore.inboxListName
-                    }, id: \.self) { name in
+                    ForEach(ReminderTaskStore.shared.listNames, id: \.self) { name in
                         Button(name) { list = name }
                     }
                 } label: {
@@ -1074,7 +1088,7 @@ struct DayflowMeetingTaskSheet: View {
         guard !trimmed.isEmpty else { return }
         let matched = matchedName != nil
         let link = linkName
-        let destination = list
+        let destination = effectiveList
         focused = false
         dismiss()
         Task {
