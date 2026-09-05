@@ -185,6 +185,14 @@ struct TraceMacContentView: View {
 
     @State private var pendingPersonID: String? = nil
     @State private var pendingPlaceID: String? = nil
+    /// A Discover search asked for by the endeavor's Add-a-place sheet
+    /// (Session 87, D274). Same shape as the record deep links beside it.
+    @State private var pendingDiscoverQuery: String? = nil
+    /// The endeavor a Discover errand was started from, and the place it came
+    /// back with (Session 87, D275). Held here because the trip crosses two
+    /// sections and neither should have to know about the other.
+    @State private var discoverErrandEndeavor: String? = nil
+    @State private var pendingAttachPlace: String? = nil
     @State private var pendingDocumentPath: String? = nil
     /// The search text that produced `pendingDocumentPath`, so the PDF viewer
     /// can highlight it on the page. Cleared by the viewer, like every other
@@ -1042,6 +1050,9 @@ struct TraceMacContentView: View {
             TraceMacEndeavorsView(deepLinkPersonID: $pendingPersonID,
                                   deepLinkDocumentPath: $pendingDocumentPath,
                                   deepLinkPlaceID: $pendingPlaceID,
+                                  discoverErrand: $discoverErrandEndeavor,
+                                  deepLinkDiscoverQuery: $pendingDiscoverQuery,
+                                  deepLinkAttachPlace: $pendingAttachPlace,
                                   deepLinkNotePath: $pendingNotePath,
                                   deepLinkEndeavorID: $pendingEndeavorID,
                                   selectedSection: $selectedSection)
@@ -1049,7 +1060,19 @@ struct TraceMacContentView: View {
                 .environment(notionService)
         case .directory:
             TraceMacDirectoryView(deepLinkPersonID: $pendingPersonID,
-                                  deepLinkPlaceID:  $pendingPlaceID)
+                                  deepLinkPlaceID:  $pendingPlaceID,
+                                  deepLinkDiscoverQuery: $pendingDiscoverQuery,
+                                  onSavedPlace: { name in
+                                      // Only when he actually left an endeavor
+                                      // to get here. Saving a place from
+                                      // Discover on its own must not yank him
+                                      // somewhere he was not.
+                                      guard let endeavorID = discoverErrandEndeavor else { return }
+                                      discoverErrandEndeavor = nil
+                                      pendingAttachPlace = name
+                                      pendingEndeavorID  = endeavorID
+                                      selectedSection    = .endeavors
+                                  })
                 .environment(noteStore)
                 .environment(notionService)
         case .activity:

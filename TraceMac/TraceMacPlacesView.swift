@@ -24,6 +24,9 @@ struct TraceMacPlacesView: View {
     /// cleared. See the deep link note in `TraceMacContentView`.
     var deepLinkPlaceID: Binding<String?>? = nil
 
+    /// The place a right-click is asking to archive (Session 87, D275).
+    @State private var archiveCandidate: Place? = nil
+
     @Environment(NotionService.self) private var notionService
     @Environment(NoteStore.self)     private var noteStore
 
@@ -183,10 +186,35 @@ struct TraceMacPlacesView: View {
                 }
                 .padding(.vertical, 3)
                 .tag(place.id)
+                // The other door David asked for, on the row itself. Same verb
+                // and the same confirm as the Info tab, so the two cannot drift.
+                .contextMenu {
+                    Button("Archive…", role: .destructive) { archiveCandidate = place }
+                }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .background(Color(nsColor: .windowBackgroundColor))
+            .confirmationDialog(
+                "Archive \(archiveCandidate?.name ?? "")?",
+                isPresented: Binding(get: { archiveCandidate != nil },
+                                     set: { if !$0 { archiveCandidate = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Archive", role: .destructive) {
+                    if let place = archiveCandidate {
+                        archiveCandidate = nil
+                        Task { try? await notionService.archivePlace(place) }
+                    }
+                }
+                Button("Cancel", role: .cancel) { archiveCandidate = nil }
+            } message: {
+                // Warning NINE: the first version promised "stays in Archive,
+            // where it can be brought back", and the Mac's Archive room has
+            // only People and Notes. A sentence that names a place the app does
+            // not have is worse than no sentence.
+            Text("It is hidden everywhere in the app. The record stays in Notion and can be un-archived there.")
+            }
         }
     }
 
@@ -749,6 +777,8 @@ struct TraceMacPlaceDetail: View {
     @State private var enrichError:     String? = nil
     @State private var enrichCandidate: GooglePlace? = nil
     @State private var showingEnrichConfirm = false
+    /// The Info tab's Archive confirm (Session 87, D275).
+    @State private var showingArchiveConfirm = false
 
     private var livePlace: Place {
         notionService.places.first { $0.id == place.id } ?? place
@@ -1212,8 +1242,38 @@ struct TraceMacPlaceDetail: View {
                         .help("Open \(livePlace.name) in Maps")
                     }
                 }
+
+                // **Archive lives here as well as in the edit sheet** (Session
+                // 87, D275). `archivePlace` has existed for sessions and its
+                // only door was inside Edit, so David went looking for a way to
+                // remove a place and found none. A verb reachable only from
+                // inside another verb is reachable by nobody - the same shape
+                // as D272's Move button, which no call site ever turned on.
+                //
+                // Last in the Info tab, after the facts, because it is the one
+                // thing here that changes something rather than telling you
+                // something.
+                MacEditorialRule.hair
+                Button("Archive this place…") { showingArchiveConfirm = true }
+                    .buttonStyle(.plain)
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.accent)
             }
             .padding(20)
+        }
+        .confirmationDialog("Archive \(livePlace.name)?",
+                            isPresented: $showingArchiveConfirm,
+                            titleVisibility: .visible) {
+            Button("Archive", role: .destructive) {
+                Task { try? await notionService.archivePlace(livePlace) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            // Warning NINE: the first version promised "stays in Archive,
+            // where it can be brought back", and the Mac's Archive room has
+            // only People and Notes. A sentence that names a place the app does
+            // not have is worse than no sentence.
+            Text("It is hidden everywhere in the app. The record stays in Notion and can be un-archived there.")
         }
         // `presenting:` so the message can name what it is about to overwrite.
         // Enrich rewrites Name, Address, City and the coordinates, which is

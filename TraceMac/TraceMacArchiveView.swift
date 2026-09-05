@@ -24,8 +24,18 @@ struct TraceMacArchiveView: View {
     /// a Notion `isArchived` flag with a live toggle in the People view, and
     /// note archiving is the `Notes/Projects/Archive` subfolder built for
     /// Dayflow.
+    /// **Places joined in Session 87 (D275).** `archivePlace` had existed for
+    /// sessions with nowhere to see the result and nowhere to undo it, so
+    /// archiving a place read as losing it.
+    ///
+    /// Note the collision this room now has to keep straight: the Notes tab has
+    /// its own **Place notes** sub-tab, which is `Notes/Places/` — markdown
+    /// files ABOUT places. This tab is the Notion Place records themselves. The
+    /// sub-tab was renamed in the same change rather than leaving two things
+    /// called Places one click apart.
     enum ArchiveTab: String, CaseIterable {
         case people = "People"
+        case places = "Places"
         case notes  = "Notes"
     }
 
@@ -48,6 +58,9 @@ struct TraceMacArchiveView: View {
                 case .people:
                     ArchivedPeopleView()
                         .environment(notionService)
+                case .places:
+                    ArchivedPlacesView()
+                        .environment(notionService)
                 case .notes:
                     ArchivedNotesView()
                         .environment(noteStore)
@@ -69,6 +82,99 @@ struct TraceMacArchiveView: View {
 }
 
 // MARK: - Archived People
+
+/// The Notion places whose Status is Archived, and the way back.
+///
+/// **A list and one verb, deliberately.** The People tab carries a whole detail
+/// pane because an archived person still has a log and notes you might want to
+/// read. An archived place is a record you have put away; the only question is
+/// whether you want it back.
+private struct ArchivedPlacesView: View {
+
+    @Environment(NotionService.self) private var notionService
+
+    @State private var searchText = ""
+    @State private var restoring: String? = nil
+
+    private var rows: [Place] {
+        notionService.archivedPlaces.filter {
+            searchText.isEmpty
+                || $0.name.localizedCaseInsensitiveContains(searchText)
+                || $0.city.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            TextField("Search", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(MacEditorialType.meta)
+                .foregroundStyle(MacEditorialColor.ink)
+                .padding(.horizontal, MacEditorialLayout.margin)
+                .padding(.top, 14).padding(.bottom, 8)
+                .overlay(alignment: .bottom) {
+                    MacEditorialRule.hair.padding(.horizontal, MacEditorialLayout.margin)
+                }
+
+            if rows.isEmpty {
+                // Not "there are none": an unfetched Places array cannot be
+                // told from an empty one (warning TWELVE).
+                Text(notionService.placesLoad == .loaded
+                     ? (searchText.isEmpty ? "Nothing archived." : "Nothing matches.")
+                     : "Places have not loaded.")
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.faint)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(rows) { place in
+                            MacEditorialRule.hair
+                            HStack(spacing: 12) {
+                                MacIconBadge(icon: placeIcon(for: place.category),
+                                             tint: placeColor(for: place.category),
+                                             size: .compact)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(place.name)
+                                        .font(MacEditorialType.taskTitle)
+                                        .foregroundStyle(MacEditorialColor.ink)
+                                        .lineLimit(1)
+                                    if !place.city.isEmpty {
+                                        Text(place.city)
+                                            .font(MacEditorialType.meta)
+                                            .foregroundStyle(MacEditorialColor.muted)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer(minLength: 12)
+                                if restoring == place.id {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Button("Bring back") {
+                                        restoring = place.id
+                                        Task {
+                                            try? await notionService.unarchivePlace(place)
+                                            restoring = nil
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                    .font(MacEditorialType.meta)
+                                    .foregroundStyle(MacEditorialColor.accent)
+                                }
+                            }
+                            .padding(.vertical, 7)
+                        }
+                    }
+                    .padding(.horizontal, MacEditorialLayout.margin)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task {
+            if notionService.places.isEmpty { await notionService.fetchPlaces() }
+        }
+    }
+}
 
 private struct ArchivedPeopleView: View {
 
@@ -262,7 +368,7 @@ private struct ArchivedNotesView: View {
 
     enum NoteSubTab: String, CaseIterable {
         case projects = "Notes"
-        case places   = "Places"
+        case places   = "Place notes"
         case horizons = "Horizons"
     }
 

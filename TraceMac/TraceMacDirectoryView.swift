@@ -29,6 +29,12 @@ struct TraceMacDirectoryView: View {
     /// same handoff that already worked when these were separate sections.
     var deepLinkPersonID: Binding<String?>? = nil
     var deepLinkPlaceID:  Binding<String?>? = nil
+    /// A Discover search asked for from elsewhere (Session 87, D274). Non-nil
+    /// selects the Discover tab; `TraceMacDiscoverView` consumes and clears it.
+    var deepLinkDiscoverQuery: Binding<String?>? = nil
+    /// Passed through to Discover (Session 87, D275). Directory has no opinion
+    /// about it; it only owns which tab is showing.
+    var onSavedPlace: ((String) -> Void)? = nil
 
     @Environment(NoteStore.self)     private var noteStore
     @Environment(NotionService.self) private var notionService
@@ -62,7 +68,8 @@ struct TraceMacDirectoryView: View {
                     MacAllVisitsView()
                         .environment(notionService)
                 case .discover:
-                    TraceMacDiscoverView()
+                    TraceMacDiscoverView(deepLinkQuery: deepLinkDiscoverQuery,
+                                         onSavedPlace: onSavedPlace)
                         .environment(notionService)
                         .environment(noteStore)
                 }
@@ -77,6 +84,9 @@ struct TraceMacDirectoryView: View {
         }
         .task(id: deepLinkPlaceID?.wrappedValue) {
             if deepLinkPlaceID?.wrappedValue != nil { tab = .places }
+        }
+        .task(id: deepLinkDiscoverQuery?.wrappedValue) {
+            if deepLinkDiscoverQuery?.wrappedValue != nil { tab = .discover }
         }
     }
 }

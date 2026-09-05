@@ -55,6 +55,18 @@ struct TraceMacEndeavorsView: View {
     /// Added Session 66 for the Destinations rows. `TraceMacDirectoryView`
     /// already takes the same binding from the same `@State` in the container.
     var deepLinkPlaceID:     Binding<String?>? = nil
+    /// Which endeavor a Discover errand was started from (Session 87, D275).
+    /// `TraceMacContentView` holds it while the user is in Directory and uses
+    /// it to route the saved place back here.
+    var discoverErrand: Binding<String?>? = nil
+
+    /// Sends a search to Directory → Discover (Session 87, D274). Written by
+    /// the Add-a-place sheet when a place is not in Notion yet.
+    var deepLinkDiscoverQuery: Binding<String?>? = nil
+    /// A place saved in Discover that belongs on this endeavor (Session 87,
+    /// D275). Consumed with `deepLinkEndeavorID`, which selects the endeavor,
+    /// and cleared.
+    var deepLinkAttachPlace: Binding<String?>? = nil
     /// Added Session 67 for the Linked notes rows (D64). Container-relative path,
     /// consumed by `TraceMacNotesView`, which splits the folder off it to pick a
     /// tab.
@@ -371,6 +383,17 @@ struct TraceMacEndeavorsView: View {
                   let match = store?.endeavors.first(where: { $0.id == id }) else { return }
             reveal(match)
             deepLinkEndeavorID?.wrappedValue = nil
+            // **Finish the errand** (Session 87, D275). He left this endeavor to
+            // save a place that was not in Notion yet; coming back and making
+            // him press `+` and find it again would waste the trip.
+            //
+            // After `reveal`, so the endeavor is on screen when its list gains a
+            // row. `attach` no-ops on a name already there, so a second arrival
+            // cannot double it.
+            if let name = deepLinkAttachPlace?.wrappedValue, !name.isEmpty {
+                attach(name, to: match)
+                deepLinkAttachPlace?.wrappedValue = nil
+            }
         }
         // The other half of the watcher added to `NoteStore` this session: an
         // Endeavor note edited on the phone now reaches a Mac sitting on this
@@ -767,6 +790,8 @@ struct TraceMacEndeavorsView: View {
             }
             ledgerSection(e)
             itinerarySection(e)
+                .id("itinerary-band-" + e.id)
+            placesSection(e)
                 // The popover below anchors to this block, so it has to be a
                 // view the layout can point at rather than a bare call.
                 .id("itinerary-" + e.id)
@@ -1137,8 +1162,8 @@ struct TraceMacEndeavorsView: View {
                     Divider().padding(.vertical, 6)
                 }
 
-                destinationsSection(e)
-                Divider().padding(.vertical, 6)
+                // DESTINATIONS moved into the body as PLACES (D273). Nothing
+                // is drawn twice on one screen — warning FIVE.
 
                 linkedNotesSection(e)
                 Divider().padding(.vertical, 6)
@@ -1218,7 +1243,17 @@ struct TraceMacEndeavorsView: View {
         // distinct host view, per D36.
         .sheet(item: $addingDestinationTo) { target in
             MacAddDestinationSheet(endeavor: target,
-                                   places: notionService.places) { name in
+                                   places: notionService.places,
+                                   onDiscover: { query in
+                                       // Hand the typed words over and switch
+                                       // rooms. The sheet dismisses itself, so
+                                       // he lands on Discover with the search
+                                       // already run rather than on a sheet he
+                                       // has to close first.
+                                       deepLinkDiscoverQuery?.wrappedValue = query
+                                       discoverErrand?.wrappedValue = target.id
+                                       selectedSection?.wrappedValue = .directory
+                                   }) { name in
                 attach(name, to: target)
             }
         }
@@ -1721,7 +1756,7 @@ struct TraceMacEndeavorsView: View {
                 MacAvatar(name: row.name, size: .row, tint: .purple)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.name).font(MacType.row).lineLimit(1)
-                    // Shown, not hidden, matching `destinationRow`: renaming in
+                    // Shown, not hidden, matching `placeRow`: renaming in
                     // Notion orphans the attachment, and a row that quietly
                     // disappears is worse than one that says why it will not open.
                     // **Said only when People actually LOADED.** Offline,
@@ -2533,111 +2568,174 @@ struct TraceMacEndeavorsView: View {
         }
     }
 
-    /// Places attached to this endeavor, ahead of any visit.
-    ///
-    /// **The rail was entirely retrospective before this.** Visits, People and
-    /// Satchel are all records of things that happened. David asked for the
-    /// other half — *"How do i attach locations/places to my endeavor?"* — with
-    /// Lakemore Resort, a destination for a wedding weeks away that nobody has
-    /// checked into yet.
-    ///
-    /// It sits **above** Visits deliberately: where you are going comes before
-    /// where you went, and for an upcoming endeavor Visits is empty anyway.
-    ///
-    /// Rows rather than pills, matching Satchel and People. The rail is 232pt
-    /// and pills wrap badly in it — the same call as D26.
-    @ViewBuilder
-    private func destinationsSection(_ e: Endeavor) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Destinations").macLabel().foregroundStyle(.tertiary)
-                Spacer()
-                if !e.places.isEmpty {
-                    Text("\(e.places.count)")
-                        .font(MacType.metaEmphasis).foregroundStyle(.tertiary)
-                }
-                Button { addingDestinationTo = e } label: {
-                    Image(systemName: "plus")
-                        .font(MacGlyph.smallBold)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Add a destination to \(e.name)")
-            }
-            .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 5)
+    // MARK: PLACES (D273)
 
-            if e.places.isEmpty {
-                railEmpty("Nowhere attached yet.")
-            } else {
-                ForEach(e.places, id: \.self) { name in destinationRow(name, in: e) }
-            }
-        }
+    /// One place on this endeavor: planned, visited, or both.
+    ///
+    /// **Two rail sections were one thing in two tenses.** DESTINATIONS held
+    /// what David attached before a trip; VISITS held check-ins in the date
+    /// range. Attach Gibsons, check in at Gibsons, and you got a row in each
+    /// with nothing saying they were the same evening. David: *"I will add
+    /// places that i want to go... I also may go places during a trip that were
+    /// never on the destination place in the first place and then it appears in
+    /// the endeavor after the fact."* Both halves, one list.
+    private struct EndeavorPlace: Identifiable {
+        let name: String
+        /// In `Endeavor.places` — he put it there on purpose.
+        let attached: Bool
+        /// The earliest check-in inside the endeavor's dates, or nil.
+        let visitDate: Date?
+        /// Marked "didn't go".
+        let skipped: Bool
+        var id: String
     }
 
-    /// One attached destination.
+    /// The one key both this band and `openDestinations` match on.
     ///
-    /// **Skipped destinations are shown, dimmed and struck, not hidden.**
-    /// Session 72 gave the Active tab's band a "Didn't go" button that writes
-    /// `skipped:` to the endeavor, and then nothing in the app rendered that
-    /// key — so the answer was unreversible from inside the app and the file
-    /// looked identical to one that had never been asked. David's own rule from
-    /// the same day, about a Place record with no visible bucket: **a derived
-    /// or recorded judgement has to be visible to be challenged.** Same
-    /// mistake, made twice in one session, caught the second time by having
-    /// been caught the first.
+    /// Two matchers would eventually let the band say "went" about a place the
+    /// catch-up panel is still asking about, which is one word meaning two
+    /// things — the failure this session has already found four times.
+    private func placeKey(_ name: String) -> String {
+        shortPlaceName(name).lowercased()
+    }
+
+    /// Planned first, in the order he attached them, then anywhere he went that
+    /// he never planned.
     ///
-    /// The row keeps its normal target — a skipped place is still a place, and
-    /// clicking it should still open it — and gains "Went after all" in the
-    /// context menu beside Remove.
-    private func destinationRow(_ name: String, in e: Endeavor) -> some View {
-        let place = notionService.places.first {
-            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+    /// **"Went" is a check-in inside the trip's dates**, David's call, and the
+    /// same rule `openDestinations` already used to decide which destinations to
+    /// ask about after a trip. The trip log is untouched: it stays the thing he
+    /// writes by hand, not the thing that decides what happened.
+    ///
+    /// **Warning TWELVE is satisfied by the DEFAULT, not by a guard.** A place
+    /// with no matching check-in shows NOTHING, never "Didn't go" — that only
+    /// comes from `skipped`, which is stored rather than derived. So an
+    /// unfetched `visits` array costs an absent row, never a false statement.
+    private func endeavorPlaces(_ e: Endeavor) -> [EndeavorPlace] {
+        let tripVisits = visits(in: e)
+        var firstVisit: [String: Date] = [:]
+        for v in tripVisits {
+            let k = placeKey(v.placeName)
+            if let seen = firstVisit[k], seen <= v.date { continue }
+            firstVisit[k] = v.date
         }
-        let isSkipped = e.skippedPlaces.contains {
-            shortPlaceName($0).caseInsensitiveCompare(shortPlaceName(name)) == .orderedSame
+        let skipped = Set(e.skippedPlaces.map(placeKey))
+
+        var out: [EndeavorPlace] = []
+        var seen = Set<String>()
+        for name in e.places {
+            let k = placeKey(name)
+            guard seen.insert(k).inserted else { continue }
+            out.append(EndeavorPlace(name: name, attached: true,
+                                     visitDate: firstVisit[k],
+                                     skipped: skipped.contains(k), id: k))
         }
-        return Button {
-            guard let place else { return }
-            deepLinkPlaceID?.wrappedValue  = place.id
-            selectedSection?.wrappedValue  = .directory
-        } label: {
-            HStack(spacing: 9) {
-                MacIconBadge(icon: placeIcon(for: place?.category ?? ""),
-                             tint: placeColor(for: place?.category ?? ""),
-                             size: .compact)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(shortPlaceName(name))
-                        .font(MacType.row)
-                        .lineLimit(1)
-                        .strikethrough(isSkipped, color: .secondary)
-                        .foregroundStyle(isSkipped ? .secondary : .primary)
-                    // A name that no longer resolves is SHOWN, not hidden.
-                    // Renaming a Place in Notion orphans the attachment, and a
-                    // row that quietly disappears is worse than one that says
-                    // why it will not open.
-                    if place == nil {
-                        Text("not in your places")
-                            .font(MacType.meta).foregroundStyle(.tertiary)
-                    } else if isSkipped {
-                        // Says which answer was given, not merely that one was.
-                        Text("didn't go")
-                            .font(MacType.meta).foregroundStyle(.tertiary)
+        for v in tripVisits {
+            let k = placeKey(v.placeName)
+            guard seen.insert(k).inserted else { continue }
+            out.append(EndeavorPlace(name: v.placeName, attached: false,
+                                     visitDate: firstVisit[k],
+                                     skipped: false, id: k))
+        }
+        return out
+    }
+
+    /// PLACES, in the body under the schedule (D273).
+    ///
+    /// **Every type gets it, unlike the other two bands.** A trip has places, a
+    /// gathering happens somewhere, a project has a site. An empty band with a
+    /// `+` is a door; a type that silently cannot attach a place would be a
+    /// second rule to remember.
+    @ViewBuilder
+    private func placesSection(_ e: Endeavor) -> some View {
+        let rows: [EndeavorPlace] = endeavorPlaces(e)
+        VStack(alignment: .leading, spacing: 0) {
+            bandHeader("Places",
+                       count: rows.count,
+                       help: "Attach a place to \(e.name)") {
+                addingDestinationTo = e
+            }
+            if rows.isEmpty {
+                bandEmpty("Nowhere attached yet.")
+            } else {
+                ForEach(rows) { row in placeRow(row, in: e) }
+            }
+        }
+        .padding(.horizontal, MacEditorialLayout.margin)
+        .padding(.top, 18)
+        .padding(.bottom, 18)
+    }
+
+    /// One place: glyph, name, what it is, and whether he went.
+    ///
+    /// **All four of the rail row's behaviours survive the move**, which was the
+    /// condition for making it: the skipped mark, the "not in your places" line
+    /// for a name Notion has since renamed, the click through to the Place
+    /// record, and the context menu. The `+` came too.
+    ///
+    /// A row he never planned says so, quietly, rather than looking identical to
+    /// one he chose — and offers to attach itself.
+    private func placeRow(_ row: EndeavorPlace, in e: Endeavor) -> some View {
+        let place: Place? = placeRecord(for: row.name)
+        let tint: Color = placeColor(for: place?.category ?? "")
+        let glyph: String = placeIcon(for: place?.category ?? "")
+        let state: String = {
+            if row.skipped { return "Didn't go" }
+            if let d = row.visitDate {
+                return "Went · " + d.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+            }
+            return ""
+        }()
+        let sub: String = {
+            if place == nil { return "not in your places" }
+            if !row.attached { return "not on your list" }
+            return ""
+        }()
+        return VStack(spacing: 0) {
+            Button {
+                guard let place else { return }
+                deepLinkPlaceID?.wrappedValue = place.id
+                selectedSection?.wrappedValue = .directory
+            } label: {
+                HStack(spacing: 12) {
+                    MacIconBadge(icon: glyph, tint: tint, size: .compact)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(shortPlaceName(row.name))
+                            .font(MacEditorialType.taskTitle)
+                            .foregroundStyle(MacEditorialColor.ink)
+                            .strikethrough(row.skipped, color: MacEditorialColor.faint)
+                            .lineLimit(1)
+                        if !sub.isEmpty {
+                            Text(sub)
+                                .font(MacEditorialType.meta)
+                                .foregroundStyle(MacEditorialColor.faint)
+                                .lineLimit(1)
+                        }
                     }
+                    Spacer(minLength: 16)
+                    Text(state)
+                        .font(MacEditorialType.fieldLabel)
+                        .textCase(.uppercase)
+                        .tracking(MacEditorialType.fieldTracking)
+                        .foregroundStyle(MacEditorialColor.muted)
+                        .frame(width: 132, alignment: .trailing)
                 }
-                Spacer(minLength: 0)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12).padding(.vertical, 3)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            MacEditorialRule.hair
         }
-        .buttonStyle(.plain)
-        .opacity(isSkipped ? 0.75 : 1)
+        .opacity(row.skipped ? 0.55 : 1)
         .contextMenu {
-            if isSkipped {
-                Button("Went after all") { Task { await unskip(name, in: e) } }
+            if row.skipped {
+                Button("Went after all") { Task { await unskip(row.name, in: e) } }
             }
-            Button("Remove", role: .destructive) { remove(name, from: e) }
+            if row.attached {
+                Button("Remove", role: .destructive) { remove(row.name, from: e) }
+            } else {
+                Button("Add to this endeavor") { attach(row.name, to: e) }
+            }
         }
     }
 
@@ -3332,6 +3430,13 @@ struct MacAddDestinationSheet: View {
 
     let endeavor: Endeavor
     let places: [Place]
+    /// Takes the typed words to Directory → Discover (Session 87, D274).
+    /// David: *"if i have a place that is not in my database, can it take me to
+    /// the discover tab of the directory screen and fill in the search... only
+    /// if I pressed a button."* A button, never automatic — leaving a sheet on
+    /// your behalf because a search came up empty would be the app deciding
+    /// what you meant.
+    var onDiscover: ((String) -> Void)? = nil
     let onAdd: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -3360,11 +3465,28 @@ struct MacAddDestinationSheet: View {
 
             Group {
                 if matches.isEmpty {
-                    MacEmptyState.placeholder(
-                        "mappin.slash",
-                        query.isEmpty ? "Every place is already attached."
-                                      : "Nothing saved matches. Save it in Discover first.")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // The old copy said "Save it in Discover first" and offered
+                    // no way to get there. Advice you cannot act on is worse
+                    // than none.
+                    VStack(spacing: 12) {
+                        MacEmptyState.placeholder(
+                            "mappin.slash",
+                            query.isEmpty ? "Every place is already attached."
+                                          : "Nothing saved matches that.")
+                        if let onDiscover, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Button {
+                                onDiscover(query.trimmingCharacters(in: .whitespacesAndNewlines))
+                                dismiss()
+                            } label: {
+                                Label("Look for \u{201c}\(query)\u{201d} in Discover",
+                                      systemImage: "magnifyingglass")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(MacEditorialColor.accent)
+                            .font(MacEditorialType.meta)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(matches) { place in
                         Button {

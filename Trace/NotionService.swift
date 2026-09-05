@@ -64,6 +64,9 @@ class NotionService {
     var places: [Place] = []
     /// See `peopleLoad`. Same three states, same reason.
     private(set) var placesLoad: NotionLoadState = .idle
+    /// Places whose Notion Status is Archived. Never in `places` (Session 87,
+    /// D275) — the Archive room is the one screen that wants them.
+    private(set) var archivedPlaces: [Place] = []
 
     /// When each collection last came back from Notion successfully.
     ///
@@ -240,7 +243,37 @@ class NotionService {
                 allPlaces += pages.compactMap { parsePage($0) }
                 cursor = result["has_more"] as? Bool == true ? result["next_cursor"] as? String : nil
             } while cursor != nil
-            places = allPlaces
+            // **Archived places never enter the array** (Session 87, D275).
+            //
+            // `archivePlace` has existed for sessions and set a Notion select
+            // that only ONE screen in the whole app respected — the phone's
+            // Places list. Everywhere else, on both platforms, an archived
+            // place kept turning up: the Mac's Places list, every place picker,
+            // Discover's duplicate check, search. David archived one and it
+            // stayed in his list, which is the opposite of what the verb says.
+            //
+            // Filtered HERE rather than at each reader because there are twenty
+            // of them and a list of call sites is something you have to keep
+            // complete. The array now means "places you can use", which is what
+            // every one of those readers already assumed.
+            //
+            // Nothing on either platform shows archived places on purpose:
+            // there is no Places tab in the Mac's Archive room and no "show
+            // archived" toggle on the phone. `PlaceDetailView` states the
+            // intent — "Archived places are hidden from all views but not
+            // deleted" — so recovery is Notion, deliberately. The phone's own
+            // `status != "Archived"` filter is now a harmless no-op.
+            places = allPlaces.filter { $0.status != "Archived" }
+            // **Two arrays, each meaning one thing** (Session 87, D275).
+            //
+            // People do it the other way — archived people stay in `people`
+            // behind an `isArchived` flag and every reader filters — and that is
+            // exactly the pattern that failed here. Twenty readers of `places`
+            // and not one of them filtered, for sessions. So archived places get
+            // their own array instead of a flag nobody checks, and the Archive
+            // room reads it.
+            archivedPlaces = allPlaces.filter { $0.status == "Archived" }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             // Republish the widget's places feed on every fetch (Session 69).
             //
             // Here rather than at the call sites because this is the one function
@@ -553,8 +586,35 @@ class NotionService {
     func archivePlace(_ place: Place) async throws {
         let body: [String: Any] = ["properties": ["Status": ["select": ["name": "Archived"]]]]
         _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
-        if let i = places.firstIndex(where: { $0.id == place.id }) {
-            places[i].status = "Archived"
+        // Moved between the two arrays, not marked. The array holds usable
+        // places now, so a row that has just been archived does not belong in
+        // it — and setting a status nothing reads is how this went unnoticed
+        // for sessions.
+        places.removeAll { $0.id == place.id }
+        var moved = place
+        moved.status = "Archived"
+        if !archivedPlaces.contains(where: { $0.id == place.id }) {
+            archivedPlaces.append(moved)
+            archivedPlaces.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+    }
+
+    /// Brings an archived place back.
+    ///
+    /// **Restored as "Visited", which is a choice rather than a memory.** The
+    /// previous status is not stored anywhere, and "Visited" is what `addPlace`
+    /// defaults to — a place you have. The alternative, clearing the select,
+    /// would leave it out of the phone's "Want to Visit" filter and in a state
+    /// nothing else in the app produces.
+    func unarchivePlace(_ place: Place) async throws {
+        let body: [String: Any] = ["properties": ["Status": ["select": ["name": "Visited"]]]]
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: body)
+        archivedPlaces.removeAll { $0.id == place.id }
+        var moved = place
+        moved.status = "Visited"
+        if !places.contains(where: { $0.id == place.id }) {
+            places.append(moved)
+            places.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }
     }
 

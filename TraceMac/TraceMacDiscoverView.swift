@@ -70,6 +70,25 @@ private enum ResearchDestination: String, CaseIterable, Identifiable {
 // MARK: - Main view
 
 struct TraceMacDiscoverView: View {
+
+    /// A search handed in from somewhere else (Session 87, D274).
+    ///
+    /// Today's one caller is the endeavor's Add-a-place sheet. Its empty state
+    /// already said "save it in Discover first" and did not offer to take you
+    /// there. Consumed and cleared on arrival — the same handoff
+    /// `deepLinkPersonID` and `deepLinkPlaceID` already use.
+    var deepLinkQuery: Binding<String?>? = nil
+
+    /// Called with the place's name right after one is saved to Notion
+    /// (Session 87, D275).
+    ///
+    /// David: *"once i add the place and i was previously in the Places new add
+    /// screen for an endeavor, why cant it then add it to that endeavor... with
+    /// the action to bring me back to where i was?"* The errand he left on is
+    /// held by `TraceMacContentView`; this is only the report that it can be
+    /// finished. Discover itself knows nothing about endeavors and should not.
+    var onSavedPlace: ((String) -> Void)? = nil
+
     @Environment(NotionService.self) private var notion
     @Environment(NoteStore.self)     private var noteStore
 
@@ -129,6 +148,36 @@ struct TraceMacDiscoverView: View {
 
     private var savedGooglePlaceIDs: Set<String> {
         Set(notion.places.compactMap(\.googlePlaceID))
+    }
+
+    /// The Place record a result already is, or nil (Session 87, D276).
+    ///
+    /// Goes through `isAlreadySaved` rather than matching ids itself, so the
+    /// star on the row and the jump behind it can never disagree about what
+    /// "already saved" means.
+    ///
+    /// An ARCHIVED place is deliberately not found: `notion.places` no longer
+    /// holds one (D275), so a place you put away shows as unsaved and can be
+    /// added again — which is the honest answer, and the way back is
+    /// ARCHIVE → Places.
+    private func savedPlace(for result: GooglePlace) -> Place? {
+        guard isAlreadySaved(result) else { return nil }
+        return notion.places.first { $0.googlePlaceID == result.id }
+    }
+
+    /// The same post the task card's chips use, so the jump lands in the
+    /// navigator's history and Back works.
+    /// The callout's Open action, or nil when this result is not saved yet.
+    /// Written out rather than inlined at the call site so the optional
+    /// closure type is stated, not inferred.
+    private func openHandler(for result: GooglePlace) -> (() -> Void)? {
+        guard let place = savedPlace(for: result) else { return nil }
+        return { openSavedPlace(place) }
+    }
+
+    private func openSavedPlace(_ place: Place) {
+        NotificationCenter.default.post(name: .navigateToRecord, object: nil,
+                                        userInfo: ["type": "place", "id": place.id])
     }
 
     private func isAlreadySaved(_ result: GooglePlace) -> Bool {
@@ -317,6 +366,9 @@ struct TraceMacDiscoverView: View {
         .sheet(item: $pendingResult) { result in
             AddDiscoveredPlaceSheet(result: result) {
                 await notion.fetchPlaces()
+                // After the refetch, so whoever picks the errand up finds the
+                // place in `notionService.places` rather than racing it.
+                onSavedPlace?(result.name)
             }
             .environment(notion)
         }
@@ -383,6 +435,14 @@ struct TraceMacDiscoverView: View {
                     .textFieldStyle(.plain)
                     .onChange(of: searchText) { _, newValue in
                         scheduleSearch(newValue)
+                    }
+                    // Writing `searchText` is the whole handoff: the `onChange`
+                    // above runs the search, so this needs no second trigger and
+                    // cannot get out of step with typing.
+                    .task(id: deepLinkQuery?.wrappedValue) {
+                        guard let q = deepLinkQuery?.wrappedValue, !q.isEmpty else { return }
+                        searchText = q
+                        deepLinkQuery?.wrappedValue = nil
                     }
                 if isSearching {
                     ProgressView().scaleEffect(0.6)
@@ -664,8 +724,23 @@ struct TraceMacDiscoverView: View {
         let pin = DiscoverPin.search(result)
         return VStack(spacing: 0) {
             Button {
+                // **A starred result opens its record** (Session 87, D276).
+                // David: *"if i go into discover and type a search and see a
+                // place already in my database (it has a star), i should be
+                // able to click the result and it should bring me to that place
+                // record."* Selecting a pin to look at Google's copy of
+                // somewhere you already own is the less useful of the two.
+                //
+                // The map path is not lost. D277 moved the pin selection ahead
+                // of the branch, so both arms leave the pin chosen and centred:
+                // an unsaved result opens its callout as it always did, and a
+                // saved one leaves Discover with the pin set behind you, which
+                // is what Back comes home to.
                 selectedPin = pin
                 focusOn(result.coordinate)
+                if let saved = savedPlace(for: result) {
+                    openSavedPlace(saved)
+                }
             } label: {
                 SearchResultRow(result: result, isSaved: isAlreadySaved(result))
                     .padding(.horizontal, 12)
@@ -680,8 +755,20 @@ struct TraceMacDiscoverView: View {
         let pin = DiscoverPin.saved(place)
         return VStack(spacing: 0) {
             Button {
+                // **The row IS the record** (Session 87, D277). D276 gave the
+                // starred SEARCH row a door and left this one, the row drawn
+                // from `notion.places` itself, dropping a pin and nothing else.
+                // David clicked Passero here — category icon, not a star,
+                // because this is the Saved section — and went nowhere. Two
+                // rows for one place, one of them opening it.
+                //
+                // The pin is selected and centred BEFORE the jump, so Back
+                // lands on Discover with this place pinned and in view rather
+                // than on whatever the map was showing. That is the whole of
+                // what the old click did, kept.
                 selectedPin = pin
                 focusOn(place.coordinate)
+                openSavedPlace(place)
             } label: {
                 SavedPlaceRow(place: place)
                     .padding(.horizontal, 12)
@@ -748,6 +835,7 @@ struct TraceMacDiscoverView: View {
                     // Setting this presents the sheet — see the note on it.
                     pendingResult = result
                 },
+                onOpen: openHandler(for: result),
                 onDismiss: { selectedPin = nil },
                 onAddToResearch: { addSelectedToResearch() }
             )
@@ -1359,6 +1447,8 @@ private struct SearchResultInfoCard: View {
     @Binding var directionsOrigin: Place?
     let originChoices: [Place]
     let onAdd: () -> Void
+    /// Opens the Place record this result already is. Nil when it is not saved.
+    var onOpen: (() -> Void)? = nil
     let onDismiss: () -> Void
     let onAddToResearch: () -> Void
 
@@ -1415,7 +1505,13 @@ private struct SearchResultInfoCard: View {
                     .buttonStyle(.plain)
                     .help("Add to Research Notes")
                     if isSaved {
-                        Text("Saved").font(.caption2).foregroundStyle(.secondary)
+                        // Was a dead "Saved" label — the callout told you the
+                        // place was yours and gave you no way to reach it.
+                        // Advice you cannot act on, the same shape as the
+                        // Add-a-place sheet's "save it in Discover first".
+                        Button("Open") { onOpen?() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                     } else {
                         Button("Add") { onAdd() }
                             .buttonStyle(.borderedProminent)
