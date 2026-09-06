@@ -40,6 +40,7 @@ struct DayflowBacklinksView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var mentions: [NoteMention] = []
     @State private var isLoading = true
+    @State private var showingSort = false
     @State private var sortOrder: DayflowNoteSortOrder = .newest
 
     // Same three onward-navigation destinations DayflowNotesView.openResult
@@ -146,26 +147,29 @@ struct DayflowBacklinksView: View {
         .padding(.bottom, 4)
     }
 
+    /// A dialog, not a menu (D283). This view is only ever presented as a
+    /// sheet, and a `Menu` inside one does not present in this app.
+    ///
+    /// The current order moves into the dialog's TITLE rather than being a
+    /// checkmark on a row: an action sheet has no checked state, and a tick
+    /// drawn with `Label` there would be a control mimicking one it is not.
     private var sortMenu: some View {
-        Menu {
-            ForEach(DayflowNoteSortOrder.allCases) { order in
-                Button {
-                    sortOrder = order
-                } label: {
-                    if sortOrder == order {
-                        Label(order.rawValue, systemImage: "checkmark")
-                    } else {
-                        Text(order.rawValue)
-                    }
-                }
-            }
-        } label: {
+        Button { showingSort = true } label: {
             HStack(spacing: 3) {
                 Text(sortOrder.rawValue)
                 Image(systemName: "chevron.up.chevron.down")
             }
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .confirmationDialog("Sort \u{00B7} \(sortOrder.rawValue)",
+                            isPresented: $showingSort, titleVisibility: .visible) {
+            ForEach(DayflowNoteSortOrder.allCases) { order in
+                Button(order.rawValue) { sortOrder = order }
+            }
+            Button("Cancel", role: .cancel) { }
         }
     }
 

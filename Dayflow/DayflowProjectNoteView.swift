@@ -104,6 +104,9 @@ struct DayflowProjectNoteView: View {
     /// already typing.
     @State private var attachRequest: MarkdownAttachKind? = nil
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
+    /// A tapped name that opened nothing, and why (Session 88, D282).
+    @State private var wikiMiss: DayflowWikiMissNotice? = nil
+    @Environment(\.openURL) private var openURL
     /// Session 45 addendum 6 — set by MarkdownEditorView's onCaptureTap when a
     /// `[label](capture://open?id=ID)` marker is tapped. Same isPresented-Binding
     /// pattern as peekDate below (String isn't Identifiable, so not .sheet(item:)).
@@ -287,6 +290,7 @@ struct DayflowProjectNoteView: View {
         }
         .dayflowSkinBackground()
         .task { await load() }
+        .dayflowWikiMissAlert($wikiMiss)
         .sheet(item: $wikiLinkTarget) { target in
             NavigationStack {
                 // sourceNoteText: content — Session 28 AI-prefill, same reasoning as
@@ -654,16 +658,19 @@ struct DayflowProjectNoteView: View {
         return Array(results.prefix(8))
     }
 
+    /// Through the one resolver (D282).
+    ///
+    /// **This was case-sensitive and its `else` was empty**, so a tapped name
+    /// that matched nothing did nothing at all, and a note or an endeavor named
+    /// in this note's own prose could not be opened from it. The day peek is
+    /// the one thing kept local, because it exists here and not on every
+    /// screen.
     private func resolveWikiLink(_ name: String) {
-        if let date = DayflowRelatedNotesEngine.parseDailyNoteDate(name) {
-            peekDate = date
-            return
-        }
-        if let place = NotionService.shared.places.first(where: { $0.name == name }) {
-            wikiLinkTarget = .place(place)
-        } else if let person = NotionService.shared.people.first(where: { $0.name == name }) {
-            wikiLinkTarget = .person(person)
-        }
+        DayflowWikiLink.follow(name,
+                               openURL: openURL,
+                               onRecord: { wikiLinkTarget = $0 },
+                               onDailyNote: { peekDate = $0 },
+                               onMiss: { wikiMiss = $0 })
     }
 
     // MARK: Related Notes — add/remove (parsing/serialization/candidate
@@ -693,20 +700,42 @@ struct DayflowProjectNoteView: View {
             peekDate = date
         case .project(let name):
             openProjectTitle = name
+        // **Case-insensitive, and never silent** (D282). These were
+        // `if let` with no `else`, so a row naming a record whose case had
+        // drifted, or a record Notion had not delivered yet, was a row that
+        // did nothing when tapped - the same thing that made the destination
+        // pills look broken in Session 71.
+        //
+        // A failed lookup falls through to the shared resolver rather than to
+        // an error: the row already believes it knows what kind this is, and
+        // the resolver is the thing that can be wrong about that gracefully.
         case .person(let name):
-            if let person = NotionService.shared.people.first(where: { $0.name == name }) {
+            if let person = NotionService.shared.people.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }) {
                 wikiLinkTarget = .person(person)
+            } else {
+                resolveWikiLink(name)
             }
         case .place(let name):
-            if let place = NotionService.shared.places.first(where: { $0.name == name }) {
+            if let place = NotionService.shared.places.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }) {
                 wikiLinkTarget = .place(place)
+            } else {
+                resolveWikiLink(name)
             }
         case .visit(let id):
             if let visit = NotionService.shared.visits.first(where: { $0.id == id }) {
                 activeVisit = visit
+            } else {
+                wikiMiss = DayflowWikiMissNotice(name: "That visit", miss: .notFound)
             }
-        case .unknown:
-            break
+        // **`unknown` carries the name**, and it is how an endeavor reached
+        // these rows: nothing classified it, so the row did nothing at all.
+        // The resolver knows about endeavors now, so hand it over.
+        case .unknown(let name):
+            resolveWikiLink(name)
         }
     }
 }
@@ -720,8 +749,42 @@ struct DayflowProjectNoteView: View {
 /// and on the meeting's AGENDA line at once.
 struct DayflowNoteTaskSheet: View {
     let anchor: String
+    /// What to start the title as (Session 88).
+    ///
+    /// David, coming out of the attach chooser: *"i typed Added New Task and
+    /// then clicked the new task button. Instead of using my input text and
+    /// creating that task i just jumped to the new task editor without what i
+    /// was typing."* Correct, and the same errand D274 built on the Mac when
+    /// the Add-a-place sheet started handing its typed text to Discover: **a
+    /// handover that drops what you typed is a handover you pay for twice.**
+    ///
+    /// Defaulted, so the project note's own call site is unchanged.
+    var initialTitle: String = ""
+    /// Whether this sheet sizes ITSELF to a detent.
+    ///
+    /// **False when it shares a presentation with another sheet** (Session 88).
+    /// The endeavor's OPEN TASKS `+` opens a chooser and lets it hand over to
+    /// this composer *inside the same `.sheet`* - which is the right answer to
+    /// D36's two-sheets-race, but it means the presentation's detents would
+    /// change while it is on screen: the chooser is full height and this used
+    /// to declare 330 points. Mutating a live presentation's sizing is how a
+    /// sheet ends up stuck part way, and on the endeavor screen the row that
+    /// gets clipped is the one holding Done.
+    ///
+    /// David, after using the handover: *"it worked nice but now im stuck here
+    /// without being able to exit this endeavor."*
+    ///
+    /// The project note presents this composer on its own, where the compact
+    /// detent is right and nothing else shares the presentation, so it keeps
+    /// the default.
+    var compact: Bool = true
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
+    /// Seeded once. `.onAppear` can fire again, and re-seeding would overwrite
+    /// whatever had been typed since.
+    @State private var seededTitle = false
+    /// The due date, or nil. Set by the WHEN chips.
+    @State private var due: Date? = nil
     @State private var armed = false
     @State private var list: String = ReminderTaskStore.inboxListName
     @FocusState private var focused: Bool
@@ -756,22 +819,40 @@ struct DayflowNoteTaskSheet: View {
                     .onSubmit { save() }
             }
             Rectangle().fill(Color.dayflowHairline).frame(height: 1)
-            HStack {
-                Menu {
-                    ForEach(listOptions, id: \.self) { name in
-                        Button(name) { list = name }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("LINKED TO \(anchor.uppercased()) \u{00B7} \(list.uppercased())")
-                            .tracking(1.5)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 7, weight: .semibold))
-                    }
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.dayflowFaint)
-                    .contentShape(Rectangle())
+
+            DayflowChipStrip("LIST") {
+                ForEach(listOptions, id: \.self) { name in
+                    DayflowChip(name, selected: name == list) { list = name }
                 }
+            }
+
+            // **WHEN, which this composer never had at all.** David: *"i dont
+            // see a way to add a date."* A task made from an endeavor or a
+            // project note could only ever be dateless, so every one of them
+            // had to be reopened somewhere else to be scheduled.
+            //
+            // Three chips and a fourth that appears once a specific day is
+            // chosen. No "pick any day" control: `addTask` graduates a dated
+            // task out of a refusing list on its own (D225), and the two days
+            // that matter from a composer are today and tomorrow. Anything
+            // further out is a task you are filing, not scheduling, and the
+            // task's own edit sheet has the month grid.
+            DayflowChipStrip("WHEN") {
+                DayflowChip("No date", selected: due == nil) { due = nil }
+                DayflowChip("Today", selected: isSameDay(due, Self.dayStart(0))) {
+                    due = Self.dayStart(0)
+                }
+                DayflowChip("Tomorrow", selected: isSameDay(due, Self.dayStart(1))) {
+                    due = Self.dayStart(1)
+                }
+            }
+
+            HStack {
+                Text("LINKED TO \(anchor.uppercased()) \u{00B7} \(list.uppercased())")
+                    .font(.system(size: 10, weight: .medium))
+                    .tracking(1.5)
+                    .foregroundStyle(Color.dayflowFaint)
+                    .lineLimit(1)
                 Spacer()
                 Button { save() } label: {
                     Text("Save")
@@ -789,10 +870,14 @@ struct DayflowNoteTaskSheet: View {
             Spacer(minLength: 0)
         }
         .padding(20)
-        .presentationDetents([.height(230)])
+        .presentationDetents(compact ? [.height(330)] : [.large])
         .presentationBackground(Color.dayflowPaper)
         .interactiveDismissDisabled(!armed)
         .onAppear {
+            if !seededTitle {
+                seededTitle = true
+                title = initialTitle
+            }
             // The armed/focus timing pair every gesture-presented sheet in
             // this app uses (D175's sheet documents why).
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
@@ -800,16 +885,35 @@ struct DayflowNoteTaskSheet: View {
         }
     }
 
+
+
+    private static func dayStart(_ offset: Int) -> Date {
+        let cal = Calendar.current
+        return cal.date(byAdding: .day, value: offset,
+                        to: cal.startOfDay(for: Date())) ?? Date()
+    }
+
+    private func isSameDay(_ a: Date?, _ b: Date) -> Bool {
+        guard let a else { return false }
+        return Calendar.current.isDate(a, inSameDayAs: b)
+    }
+
     private func save() {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let destination = list
         let link = anchor
+        let when = due
         focused = false
         dismiss()
         Task {
+            // `date:` rather than `toToday:` even for today, so one path
+            // carries every choice. A dated task in a list that refuses dates
+            // graduates to Personal inside `addTask` (D225) rather than
+            // silently losing the date here.
             _ = await ReminderTaskStore.shared.addTask(
-                title: trimmed, list: destination, notes: "[[\(link)]]")
+                title: trimmed, date: when, list: destination, notes: "[[\(link)]]")
+            await ReminderTaskStore.shared.refreshAll()
         }
     }
 }

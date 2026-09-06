@@ -258,3 +258,66 @@ struct DayflowPencilIcon: Shape {
         return p
     }
 }
+
+
+// MARK: - Composer chips (Session 88, D283)
+//
+// **A control that presents nothing.** Inside the app's 230pt detent
+// composers a `Menu` never appeared at all and a `.confirmationDialog`
+// appeared and dropped straight back down - David: *"clicking the inbox to
+// change lists brings up the menu but then it quickly drops back down."* Two
+// mechanisms failing in the same container makes the container the problem,
+// so the third attempt presents nothing: the options are on the sheet.
+//
+// **Here rather than in either composer.** Both the note composer and the
+// meeting composer need them, and a chip pair written twice is two chip
+// designs a month from now - standing warning FIVE.
+
+struct DayflowChipStrip<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(1.4)
+                .foregroundStyle(Color.dayflowFaint)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) { content }
+            }
+        }
+    }
+}
+
+struct DayflowChip: View {
+    let label: String
+    let selected: Bool
+    let action: () -> Void
+
+    init(_ label: String, selected: Bool, action: @escaping () -> Void) {
+        self.label = label
+        self.selected = selected
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(1.0)
+                .foregroundStyle(selected ? Color.dayflowPaper : Color.dayflowMuted)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(selected ? Color.dayflowInk : Color.secondary.opacity(0.14),
+                            in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}

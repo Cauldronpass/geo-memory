@@ -49,7 +49,43 @@ struct DayflowTaskEditSheet: View {
     @State private var when: DayflowWhenValue
     @State private var list: String?
     @State private var notes: String
-    @State private var showWhenPicker = false
+    /// Which of this sheet's own sub-sheets is showing (Session 88, D283).
+    ///
+    /// **There were three `.sheet` modifiers on this one view**, and this
+    /// codebase already knows what that costs: *"two `.sheet` modifiers on one
+    /// view is a coin flip and the later one wins silently"* (the Mac's D36,
+    /// quoted in `DayflowEndeavorViews`). The date picker was declared first
+    /// and lost, which is why the Date row did nothing. One host, one
+    /// presentation, and adding a fourth is a case rather than a race.
+    @State private var subSheet: SubSheet? = nil
+    @State private var showingLinkKinds = false
+
+    private enum SubSheet: Identifiable {
+        case when
+        case link(DayflowTaskLinkKind)
+        case document
+        /// A place or a person opened FROM the Linked section.
+        case record(WikiLinkTarget)
+        /// An endeavor opened from the Linked section.
+        ///
+        /// **Presented here rather than routed to.** `dayflow://endeavor?id=`
+        /// asks the app to present a screen, and this sheet is already
+        /// presented, so the route was queued behind it and never arrived -
+        /// the console said so twice: *"Currently, only presenting a single
+        /// sheet is supported. The next sheet will be presented when the
+        /// currently presented sheet gets dismissed."* Opening it inside this
+        /// sheet needs no dismissal and no timing.
+        case endeavor(String)
+        var id: String {
+            switch self {
+            case .when:              return "when"
+            case .link(let kind):    return "link-" + kind.rawValue
+            case .document:          return "document"
+            case .record(let t):     return "record-" + t.id
+            case .endeavor(let id):  return "endeavor-" + id
+            }
+        }
+    }
     @State private var isSaving = false
     /// Session 78 — repeat, seeded from the live reminder on appearance
     /// (the init only gets the ThingsTask's `repeats` Bool, not the rule).
@@ -57,7 +93,6 @@ struct DayflowTaskEditSheet: View {
     @State private var initialRepeatRule: ReminderTaskStore.DayflowRepeatRule = .none
     /// Session 78 — link a person/place: appends their [[wikilink]] to the
     /// notes, which the task rows render as a tappable chip.
-    @State private var linkPicker: DayflowTaskLinkKind? = nil
     @State private var showWebLinkEntry = false
     /// Session 78 — the Reminder section (David: "i dont see the reminder
     /// option"). One datetime picker covers both the When card's cases: a
@@ -70,7 +105,14 @@ struct DayflowTaskEditSheet: View {
     /// `notes` text, resolved against the shared chip store the way the
     /// person/place chips resolve against Notion. No cached titles.
     @State private var chipStore = TraceSatchelChipStore.shared
-    @State private var showDocPicker = false
+    /// Every endeavor's name, loaded once when this sheet opens.
+    ///
+    /// One read per sheet, never per row: `EndeavorFile.nameIndex` walks the
+    /// endeavor files, which is cheap once and unaffordable repeatedly. The
+    /// same split the Mac's task card and task row already make.
+    @State private var endeavorNames: Set<String> = []
+    @State private var wikiMiss: DayflowWikiMissNotice? = nil
+    @Environment(\.openURL) private var openURL
     @State private var satchelUnavailable = false
     /// Session 81 (D239) — the SHORTCUT row's rename/add entry.
     @State private var showShortcutEntry = false
@@ -110,7 +152,7 @@ struct DayflowTaskEditSheet: View {
 
                 Section("Date") {
                     Button {
-                        showWhenPicker = true
+                        subSheet = .when
                     } label: {
                         HStack {
                             Text("Date").foregroundStyle(.primary)
@@ -122,19 +164,20 @@ struct DayflowTaskEditSheet: View {
                 }
 
                 Section("List") {
-                    Menu {
-                        Button("No List") { list = nil }
-                        Divider()
-                        ForEach(DayflowThingsAreas.displayNames, id: \.self) { name in
-                            Button(name) { list = name }
-                        }
-                    } label: {
-                        HStack {
-                            Text("List").foregroundStyle(.primary)
-                            Spacer()
-                            Text(list ?? "No List").foregroundStyle(.secondary)
+                    // **A push, not a menu** (Session 88, D281's second
+                    // instance). This was a `Menu` and it did not present at
+                    // all - David: *"looking at the task edit screen, the list
+                    // is not clickable."* Every other control in the same sheet
+                    // takes its taps, and the endeavor details sheet's Type
+                    // picker failed the same way the same day: **a menu inside
+                    // a sheet does not present in this app.**
+                    Picker("List", selection: listBinding) {
+                        Text("No List").tag("")
+                        ForEach(DayflowThingsAreas.displayNames, id: \.self) {
+                            Text($0).tag($0)
                         }
                     }
+                    .pickerStyle(.navigationLink)
                 }
 
                 Section("Reminder") {
@@ -152,17 +195,15 @@ struct DayflowTaskEditSheet: View {
                 }
 
                 Section("Repeat") {
-                    Menu {
+                    // Same fix as List above, and found by looking rather than
+                    // by being told: David reported List, and Repeat was the
+                    // identical construction in the identical sheet.
+                    Picker("Repeat", selection: $repeatRule) {
                         ForEach(ReminderTaskStore.DayflowRepeatRule.allCases, id: \.self) { rule in
-                            Button(rule.label) { repeatRule = rule }
-                        }
-                    } label: {
-                        HStack {
-                            Text("Repeat").foregroundStyle(.primary)
-                            Spacer()
-                            Text(repeatRule.label).foregroundStyle(.secondary)
+                            Text(rule.label).tag(rule)
                         }
                     }
+                    .pickerStyle(.navigationLink)
                     .disabled(dateless && repeatRule == .none)
                     if dateless && repeatRule != .none {
                         Text("A repeat needs a date to anchor to.")
@@ -172,12 +213,50 @@ struct DayflowTaskEditSheet: View {
                 }
 
                 Section("Linked") {
+                    // **`.borderless`, not `.plain`** (Session 88).
+                    //
+                    // David, on the row this session had just made tappable:
+                    // *"in the task editor, shouldnt the link be clickable? its
+                    // not."* It was a Button and it did nothing, because a
+                    // `Form` row containing MORE THAN ONE button stops routing
+                    // taps to `.plain` ones - the row wants to be the single
+                    // tap target and `.plain` does not opt out of that.
+                    // `.borderless` does.
+                    //
+                    // **Every row in this section has that shape**, and the
+                    // other two predate this session: the document row's open
+                    // button and the shortcut row's Run and Change have been
+                    // dead since D227 and D239 shipped them in Session 81.
+                    // Nobody noticed because a button that does nothing looks
+                    // exactly like a button you have not pressed.
+                    //
+                    // Sibling of D283: the control was fine and the container
+                    // decided otherwise, and the tell in both cases was that
+                    // several controls failed together while everything else
+                    // on the same screen worked.
                     ForEach(linkedNames, id: \.name) { link in
                         HStack(spacing: 8) {
                             Image(systemName: link.icon)
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
-                            Text(link.name)
+                            // **The row opens what it names** (warning
+                            // FOURTEEN). It listed the record and stopped,
+                            // which is worse than silence because it proves the
+                            // door could have been there. Through the one
+                            // resolver (D282), so a place, a person, a note and
+                            // an endeavor all open from here and an unresolved
+                            // name says why instead of doing nothing.
+                            //
+                            // This is also the door the row mark on Today,
+                            // Upcoming and Quick Find relies on: those marks are
+                            // passive by design, and the chain they end in is
+                            // tap the row, read the Linked section, open it.
+                            Button { resolveLink(link.name) } label: {
+                                Text(link.name)
+                                    .foregroundStyle(Color.dayflowInk)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.borderless)
                             Spacer()
                             Button {
                                 removeLink(link.name)
@@ -186,7 +265,7 @@ struct DayflowTaskEditSheet: View {
                                     .font(.system(size: 13))
                                     .foregroundStyle(.tertiary)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.borderless)
                         }
                     }
                     // Session 81 — the D227 document links, resolved live
@@ -205,7 +284,7 @@ struct DayflowTaskEditSheet: View {
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.borderless)
                             Spacer()
                             Button {
                                 removeDocumentLink(docPath)
@@ -214,7 +293,7 @@ struct DayflowTaskEditSheet: View {
                                     .font(.system(size: 13))
                                     .foregroundStyle(.tertiary)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.borderless)
                         }
                     }
                     // Session 81 (D239) — the SHORTCUT row: the decoded name,
@@ -234,7 +313,7 @@ struct DayflowTaskEditSheet: View {
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.borderless)
                             Spacer()
                             Button("Change") {
                                 shortcutText = shortcutName ?? ""
@@ -242,7 +321,7 @@ struct DayflowTaskEditSheet: View {
                             }
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
-                            .buttonStyle(.plain)
+                            .buttonStyle(.borderless)
                             Button {
                                 removeShortcut()
                             } label: {
@@ -250,40 +329,42 @@ struct DayflowTaskEditSheet: View {
                                     .font(.system(size: 13))
                                     .foregroundStyle(.tertiary)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.borderless)
                         }
                     }
-                    Menu {
-                        Button { linkPicker = .person } label: {
-                            Label("Person", systemImage: "person")
-                        }
-                        Button { linkPicker = .place } label: {
-                            Label("Place", systemImage: "mappin.and.ellipse")
-                        }
+                    // **A dialog, not a menu** (D283). This was a `Menu` and
+                    // it did not present - David, having tested it: *"they do
+                    // nothing thats true."* Fourth confirmed instance, and the
+                    // rule is now stated rather than suspected: a `Menu` inside
+                    // a sheet's content does not present in this app.
+                    // `.confirmationDialog` is not a sheet and presents fine
+                    // from inside one.
+                    Button { showingLinkKinds = true } label: {
+                        Label("Link a person, place, document or web address",
+                              systemImage: "link")
+                            .font(.system(size: 14))
+                    }
+                    .buttonStyle(.plain)
+                    .confirmationDialog("Link", isPresented: $showingLinkKinds,
+                                        titleVisibility: .visible) {
+                        Button("Person") { subSheet = .link(.person) }
+                        Button("Place") { subSheet = .link(.place) }
                         // Session 78 — David: "what about adding a link to an
                         // external web address...isnt that a third option?"
-                        Button { showWebLinkEntry = true } label: {
-                            Label("Web address", systemImage: "globe")
-                        }
+                        Button("Web address") { showWebLinkEntry = true }
                         // Session 81 — the fourth kind (D227): a Satchel
                         // document, linked by PATH via a marker line.
-                        Button { showDocPicker = true } label: {
-                            Label("Document", systemImage: "doc.text")
-                        }
+                        Button("Document") { subSheet = .document }
                         // Offered only when there is none — a task carries at
                         // most one shortcut, and the row's Change is the door
                         // once it exists (the Mac card's rule).
                         if shortcutURL == nil {
-                            Button {
+                            Button("Shortcut") {
                                 shortcutText = ""
                                 showShortcutEntry = true
-                            } label: {
-                                Label("Shortcut", systemImage: "bolt")
                             }
                         }
-                    } label: {
-                        Label("Link a person, place, document or web address", systemImage: "link")
-                            .font(.system(size: 14))
+                        Button("Cancel", role: .cancel) { }
                     }
                 }
 
@@ -351,26 +432,43 @@ struct DayflowTaskEditSheet: View {
                         .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
                 }
             }
-            .sheet(isPresented: $showWhenPicker) {
-                // Session 78 round 3 (David, off TestFlight: "Clicking the
-                // date in any task edit gives me a different experience than
-                // the nice feeling I get from the main screens. Its a week
-                // at a time and the view doesnt match") — the old week-paged
-                // DayflowWhenPickerSheet is retired from here; this is the
-                // app's own month language: Today/Tomorrow rows, then the
-                // same grid the masthead unfolds.
-                DayflowDatePickSheet(current: when) { picked in
-                    when = picked
-                }
-            }
-            .sheet(item: $linkPicker) { kind in
-                DayflowTaskLinkPicker(kind: kind) { name in
-                    appendLink(name)
-                }
-            }
-            .sheet(isPresented: $showDocPicker) {
-                DayflowTaskDocumentPicker { docPath in
-                    appendDocumentLink(docPath)
+            .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
+            .dayflowWikiMissAlert($wikiMiss)
+            // **ONE `.sheet` on this view.** It had three, which is why the
+            // Date row was dead (D283); they were folded into `subSheet` this
+            // session and then I added a second one back an hour later for the
+            // Linked row, and the console said exactly what it had said
+            // before: *"only presenting a single sheet is supported."* The
+            // rule is not "avoid three", it is **one host, always**, and a new
+            // destination is a case rather than a modifier.
+            .sheet(item: $subSheet) { which in
+                switch which {
+                case .when:
+                    // Session 78 round 3 (David, off TestFlight: "Clicking the
+                    // date in any task edit gives me a different experience
+                    // than the nice feeling I get from the main screens. Its a
+                    // week at a time and the view doesnt match") — the old
+                    // week-paged DayflowWhenPickerSheet is retired from here;
+                    // this is the app's own month language.
+                    DayflowDatePickSheet(current: when) { picked in
+                        when = picked
+                    }
+                case .link(let kind):
+                    DayflowTaskLinkPicker(kind: kind) { name in
+                        appendLink(name)
+                    }
+                case .document:
+                    DayflowTaskDocumentPicker { docPath in
+                        appendDocumentLink(docPath)
+                    }
+                case .record(let target):
+                    NavigationStack {
+                        DayflowWikiSummaryView(target: target)
+                    }
+                case .endeavor(let id):
+                    NavigationStack {
+                        DayflowEndeavorView(endeavorID: id)
+                    }
                 }
             }
             .alert("Satchel isn't installed", isPresented: $satchelUnavailable) {
@@ -430,26 +528,90 @@ struct DayflowTaskEditSheet: View {
         }
     }
 
+    /// The optional list as a non-optional selection, `""` meaning none.
+    /// The same mapping `DayflowBookingSheet.statusBinding` makes, for the same
+    /// reason: SwiftUI can tag an optional and every call site then has to
+    /// spell it, and one that forgets shows an empty picker.
+    private var listBinding: Binding<String> {
+        Binding(get: { list ?? "" }, set: { list = $0.isEmpty ? nil : $0 })
+    }
+
     // MARK: Linked people/places (Session 78)
 
+    /// **This used to be a binary classifier and it made things up.** It asked
+    /// whether the name was a Notion Place and, if not, drew a PERSON glyph and
+    /// called it one. David, on a task linked to an endeavor: *"there is no
+    /// icon to tell me that the task I called How'd was from an endeavor."*
+    /// There was worse than no icon - there was the wrong one, asserting that
+    /// Test Trip 2 is a person.
+    ///
+    /// Same class as the `LinkedRecord` bug D270 found on the Mac and one notch
+    /// worse: that one said "Not in People or Places", which is an admission.
+    /// This one made a claim.
+    ///
+    /// Four kinds now, in the Mac's own precedence - place, person, endeavor,
+    /// then nothing recognised - so adding endeavors only catches what used to
+    /// fall through to a false answer.
+    ///
+    /// **Warning TWELVE decides the last glyph.** An unrecognised name draws a
+    /// plain `link` while Notion is still loading or has failed, and only draws
+    /// a question mark once the answer is actually known. A question mark over
+    /// a cold launch would be the screen reporting an absence it cannot tell
+    /// from ignorance - the rule `unresolvedMessage` on the endeavor screen has
+    /// followed since Session 71.
+    ///
+    /// The scanner is `NoteStore.wikilinkTargets`, the app's own parser, rather
+    /// than the hand-rolled `[[`/`]]` walk that was here. That walk was a fifth
+    /// opinion about what a link is and it could not read the `[[name|alias]]`
+    /// form at all.
     private var linkedNames: [(name: String, icon: String)] {
-        var seen = Set<String>()
-        var out: [(String, String)] = []
-        var rest = Substring(notes)
-        while let open = rest.range(of: "[["), let close = rest.range(of: "]]"),
-              open.upperBound <= close.lowerBound {
-            let name = String(rest[open.upperBound..<close.lowerBound])
-                .trimmingCharacters(in: .whitespaces)
-            rest = rest[close.upperBound...]
-            guard !name.isEmpty, !name.hasPrefix("visit:"), seen.insert(name).inserted else { continue }
-            let isPlace = NotionService.shared.places.contains { $0.name == name }
-            out.append((name, isPlace ? "mappin.and.ellipse" : "person"))
-        }
-        return out
+        let notion = NotionService.shared
+        let settled = notion.placesLoad == .loaded && notion.peopleLoad == .loaded
+        return NoteStore.wikilinkTargets(in: notes)
+            .filter { !$0.hasPrefix("visit:") }
+            .map { name in
+                if notion.places.contains(where: { $0.name == name }) {
+                    return (name, "mappin.and.ellipse")
+                }
+                if notion.people.contains(where: { $0.name == name }) {
+                    return (name, "person")
+                }
+                if endeavorNames.contains(name) { return (name, "flag") }
+                return (name, settled ? "questionmark.circle" : "link")
+            }
     }
 
     /// A bare host gets https:// — URLs in notes are detected by their
     /// scheme, on the row chip and in this sheet both.
+    /// Opens a linked record from the Linked section, through the shared
+    /// resolver. `openURL` covers notes and endeavors; the record cases hand
+    /// back to this sheet's own `wikiLinkTarget` sheet.
+    /// **Everything opens INSIDE this sheet.** `follow`'s default for an
+    /// endeavor and a note is `openURL`, which asks the app to present a
+    /// screen - and a sheet cannot ask the app to present something over
+    /// itself. So this host overrides every case it can and hands `follow` an
+    /// `openURL` it will only reach for a daily note, which has nowhere else
+    /// to go from here.
+    ///
+    /// The note case still routes, and that is the one path in this sheet that
+    /// will queue rather than open. Left rather than guessed at: it needs the
+    /// sheet to dismiss FIRST and then route, and this file's sibling comment
+    /// on `openNote` records that a dismissal and a presentation in the same
+    /// turn is how the routed destination gets dropped. Its own change.
+    private func resolveLink(_ name: String) {
+        switch DayflowWikiLink.resolve(name) {
+        case .place(let place):    subSheet = .record(.place(place))
+        case .person(let person):  subSheet = .record(.person(person))
+        case .endeavor(let id, _): subSheet = .endeavor(id)
+        case .miss(let miss):      wikiMiss = DayflowWikiMissNotice(name: name, miss: miss)
+        case .note, .dailyNote:
+            DayflowWikiLink.follow(name,
+                                   openURL: openURL,
+                                   onRecord: { subSheet = .record($0) },
+                                   onMiss: { wikiMiss = $0 })
+        }
+    }
+
     private func appendWebLink(_ raw: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

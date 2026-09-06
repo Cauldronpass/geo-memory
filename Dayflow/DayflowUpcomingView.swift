@@ -64,6 +64,13 @@ struct DayflowUpcomingView: View {
     /// would like the same swiping treatment as what we have in Today"):
     /// left = multi-select (RootView shows the shared bar), right = the When
     /// sheet with the calendar-glyph reveal.
+    /// Every endeavor's name, loaded once per screen (D270, Session 88).
+    ///
+    /// **The row is handed a `Set`; it never reaches for one.**
+    /// `EndeavorFile.nameIndex` walks the endeavor files, which is cheap once
+    /// per screen and unaffordable once per row - the Mac's own split, and the
+    /// same reasoning as `docStore` being built lazily on its task row.
+    @State private var endeavorNames: Set<String> = []
     @State private var selection = DayflowTodaySelection.shared
     @State private var whenRequest: DayflowWhenRequest? = nil
     @State private var rowDragOffsets: [String: CGFloat] = [:]
@@ -183,6 +190,7 @@ struct DayflowUpcomingView: View {
             DayflowMeetingTaskSheet(event: event)
         }
         .task { await load() }
+        .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
         .sheet(item: $editingTask) { task in
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
                                  initialDate: task.date, initialList: task.list,
@@ -579,6 +587,38 @@ struct DayflowUpcomingView: View {
             }
             if task.repeats && !isTraceYearly {
                 Image(systemName: "repeat")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.dayflowFaint)
+            }
+            // **The endeavor mark** (D270). David, on the Mac: *"could you add
+            // a small icon indicator when i look at the task that is in an
+            // endeavor?"* - and, on the phone one session later, *"there is no
+            // icon to tell me that the task I called How'd was from an
+            // endeavor."*
+            //
+            // `flag`, because the Mac sidebar has called an endeavor a flag
+            // since the room existed, so the mark needs no learning. The type
+            // glyph was rejected on the Mac for a reason that holds here: an
+            // airplane on a task row reads as "travel task" rather than "on a
+            // trip", and five glyphs meaning one thing is five things to learn.
+            //
+            // **Faint, not accent.** The note and link marks are accent because
+            // they say there is more to open; this is a fact about where the
+            // task sits, and a passive mark should not scold.
+            //
+            // Placed beside `repeat`, the other faint mark, and LAST of the
+            // four so it is the one that yields when a title is long. The Mac
+            // caps its cluster at three; the phone now draws four in the rare
+            // case where a task has prose, a link, an endeavor and a repeat,
+            // and that is the row to watch if the cluster ever feels crowded.
+            //
+            // **No tap target here, deliberately.** Every mark in this cluster
+            // is passive, and a 10pt glyph competing with the row tap on a
+            // phone is a worse door than the one that already exists: the row
+            // opens the task, and its Linked section names the endeavor and
+            // opens it (D285, and the resolver in D282).
+            if EndeavorFile.linkedName(in: task.notes, among: endeavorNames) != nil {
+                Image(systemName: "flag")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.dayflowFaint)
             }

@@ -49,6 +49,13 @@ struct DayflowTodaySection: View {
     /// ticking clock; refreshed by load(), which reruns on date change and
     /// on every scene activation (ContentView refreshes the store then).
     @State private var nowTick = Date()
+    /// Every endeavor's name, loaded once per screen (D270, Session 88).
+    ///
+    /// **The row is handed a `Set`; it never reaches for one.**
+    /// `EndeavorFile.nameIndex` walks the endeavor files, which is cheap once
+    /// per screen and unaffordable once per row - the Mac's own split, and the
+    /// same reasoning as `docStore` being built lazily on its task row.
+    @State private var endeavorNames: Set<String> = []
     @State private var selection = DayflowTodaySelection.shared
     @State private var whenRequest: DayflowWhenRequest? = nil
     /// Session 78, D166 — a [[wikilink]] chip on a task row was tapped;
@@ -88,6 +95,7 @@ struct DayflowTodaySection: View {
             if !timedEvents.isEmpty { daySection }
         }
         .task(id: dayKey) { await load() }
+        .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
         .onChange(of: dayKey) { _, _ in selection.exit() }
         .sheet(item: $whenRequest) { request in
             DayflowWhenSheet(tasks: request.tasks)
@@ -428,6 +436,38 @@ struct DayflowTodaySection: View {
             if task.repeats {
                 Image(systemName: "repeat")
                     .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.dayflowFaint)
+            }
+            // **The endeavor mark** (D270). David, on the Mac: *"could you add
+            // a small icon indicator when i look at the task that is in an
+            // endeavor?"* - and, on the phone one session later, *"there is no
+            // icon to tell me that the task I called How'd was from an
+            // endeavor."*
+            //
+            // `flag`, because the Mac sidebar has called an endeavor a flag
+            // since the room existed, so the mark needs no learning. The type
+            // glyph was rejected on the Mac for a reason that holds here: an
+            // airplane on a task row reads as "travel task" rather than "on a
+            // trip", and five glyphs meaning one thing is five things to learn.
+            //
+            // **Faint, not accent.** The note and link marks are accent because
+            // they say there is more to open; this is a fact about where the
+            // task sits, and a passive mark should not scold.
+            //
+            // Placed beside `repeat`, the other faint mark, and LAST of the
+            // four so it is the one that yields when a title is long. The Mac
+            // caps its cluster at three; the phone now draws four in the rare
+            // case where a task has prose, a link, an endeavor and a repeat,
+            // and that is the row to watch if the cluster ever feels crowded.
+            //
+            // **No tap target here, deliberately.** Every mark in this cluster
+            // is passive, and a 10pt glyph competing with the row tap on a
+            // phone is a worse door than the one that already exists: the row
+            // opens the task, and its Linked section names the endeavor and
+            // opens it (D285, and the resolver in D282).
+            if EndeavorFile.linkedName(in: task.notes, among: endeavorNames) != nil {
+                Image(systemName: "flag")
+                    .font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(Color.dayflowFaint)
             }
 
@@ -981,7 +1021,11 @@ struct DayflowMeetingTaskSheet: View {
     @State private var title = ""
     @State private var armed = false
     /// D175 round two — David: "It did not let me change the list away from
-    /// Personal (is that a bug?)". It was a gap; the label is a menu now.
+    /// Personal (is that a bug?)". It was a gap, and the fix was a `Menu` -
+    /// **which never presented**, so the control he reported as missing was
+    /// replaced by one that looked present and was not. Found in Session 88
+    /// (D283) and converted to a dialog. Worth remembering as the cost of that
+    /// bug: it swallowed a fix as well as a feature.
     ///
     /// **`nil` is the resting state** (D262): no list chosen. A matched
     /// meeting makes an undated task, which routes to the Inbox; an
@@ -1041,22 +1085,23 @@ struct DayflowMeetingTaskSheet: View {
                     .onSubmit { save() }
             }
             Rectangle().fill(Color.dayflowHairline).frame(height: 1)
-            HStack {
-                Menu {
-                    ForEach(ReminderTaskStore.shared.listNames, id: \.self) { name in
-                        Button(name) { list = name }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(destinationLabel)
-                            .tracking(1.5)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 7, weight: .semibold))
-                    }
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.dayflowFaint)
-                    .contentShape(Rectangle())
+
+            // Chips rather than a dialog, for the note composer's reason: two
+            // presentation mechanisms failed inside a detent sheet, so this one
+            // presents nothing. D175's original complaint was that the list
+            // could not be changed at all; it now can be, visibly.
+            DayflowChipStrip("LIST") {
+                ForEach(ReminderTaskStore.shared.listNames, id: \.self) { name in
+                    DayflowChip(name, selected: name == list) { list = name }
                 }
+            }
+
+            HStack {
+                Text(destinationLabel)
+                    .font(.system(size: 10, weight: .medium))
+                    .tracking(1.5)
+                    .foregroundStyle(Color.dayflowFaint)
+                    .lineLimit(1)
                 Spacer()
                 Button { save() } label: {
                     Text("Save")

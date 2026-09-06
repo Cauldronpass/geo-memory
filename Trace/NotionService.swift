@@ -2255,6 +2255,25 @@ class NotionService {
         }
     }
 
+    /// Create or update, decided by whether the draft carries an id.
+    ///
+    /// **The sheet does not know which it is doing and should not**: it builds
+    /// a `Booking` and hands it over. An empty id is the only difference, and
+    /// it is the model's own fact rather than a flag someone has to remember.
+    ///
+    /// Lives here rather than in a view because BOTH sheets need it. It was a
+    /// private four-line branch in `TraceMacEndeavorsView` until Session 88,
+    /// when the phone's sheet would otherwise have made a second copy of it.
+    /// The Mac's copy still exists and should be retired onto this one the
+    /// next time that target is open - see `Trace-Backlog.md`.
+    func saveBooking(_ draft: Booking) async throws {
+        if draft.id.isEmpty {
+            _ = try await createBooking(draft)
+        } else {
+            try await updateBooking(draft)
+        }
+    }
+
     /// Archives the page, which is what Notion's own delete does.
     ///
     /// Reversible from Notion's trash and invisible from here, which is why the

@@ -101,6 +101,11 @@ struct DayflowApp: App {
                                 birthday: $0.birthday, isArchived: $0.isArchived)
                         })
                     await notionService.fetchVisits()
+                    // Bookings (Session 88). The endeavor screen's
+                    // bands read `bookingsLoad` and draw nothing at
+                    // all while it is idle or loading, so the fetch
+                    // has to have STARTED for idle to mean anything.
+                    await notionService.fetchBookings()
                     // Same sweep the Mac runs at launch. Idempotent, so
                     // whichever app opens first does the work and the other
                     // finds nothing left to do.

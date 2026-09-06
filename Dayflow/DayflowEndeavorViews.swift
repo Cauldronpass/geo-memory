@@ -36,25 +36,33 @@ private extension EndeavorStatus {
     var wash: Color { tint.opacity(0.12) }
 }
 
+/// A shared `DocumentTint` in the phone's own colours.
+///
+/// Extracted from `Endeavor.typeColor` in Session 88, when the booking bands
+/// needed the same eight cases for `BookingKind.tint(for:)`. **Two copies of
+/// this switch would drift the first time a tint changed and the drift would
+/// be invisible** - standing warning FIVE. The literals are the exact ones the
+/// type extension has carried since Session 78; nothing here is a new colour.
+func dayflowTint(_ tint: DocumentTint) -> Color {
+    switch tint {
+    case .indigo: return Color(red: 0.345, green: 0.337, blue: 0.839)
+    case .green:  return Color(red: 0.141, green: 0.541, blue: 0.239)
+    case .rose:   return Color(red: 0.812, green: 0.184, blue: 0.467)
+    case .amber:  return Color(red: 0.788, green: 0.463, blue: 0.039)
+    case .teal:   return Color(red: 0.173, green: 0.478, blue: 0.471)
+    case .blue:   return Color(red: 0.039, green: 0.518, blue: 1.000)
+    case .red:    return Color(red: 0.843, green: 0.000, blue: 0.082)
+    case .gray:   return Color(red: 0.420, green: 0.420, blue: 0.439)
+    }
+}
+
 private extension Endeavor {
     /// The shared `typeTint` (a `DocumentTint`) in the phone's own colours.
     ///
-    /// The mapping is here and the CHOICE is on the model, so adding a type is
-    /// one edit in `Endeavor.swift` rather than one here and one on the Mac
-    /// that drift. The indigo and the green are the exact literals this
-    /// extension has carried since Session 78.
-    var typeColor: Color {
-        switch typeTint {
-        case .indigo: return Color(red: 0.345, green: 0.337, blue: 0.839)
-        case .green:  return Color(red: 0.141, green: 0.541, blue: 0.239)
-        case .rose:   return Color(red: 0.812, green: 0.184, blue: 0.467)
-        case .amber:  return Color(red: 0.788, green: 0.463, blue: 0.039)
-        case .teal:   return Color(red: 0.173, green: 0.478, blue: 0.471)
-        case .blue:   return Color(red: 0.039, green: 0.518, blue: 1.000)
-        case .red:    return Color(red: 0.843, green: 0.000, blue: 0.082)
-        case .gray:   return Color(red: 0.420, green: 0.420, blue: 0.439)
-        }
-    }
+    /// The mapping is `dayflowTint` and the CHOICE is on the model, so adding
+    /// a type is one edit in `Endeavor.swift` rather than one here and one on
+    /// the Mac that drift.
+    var typeColor: Color { dayflowTint(typeTint) }
     var glyph: String { typeGlyph }
 }
 
@@ -412,7 +420,8 @@ struct DayflowEndeavorView: View {
     /// Set when a tapped `[[wikilink]]` resolves to a real place or person.
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
     /// A tapped name that resolved to nothing. Held so the screen can SAY so.
-    @State private var unresolvedLink: String? = nil
+    /// A tapped name that opened nothing, and why (Session 88, D282).
+    @State private var wikiMiss: DayflowWikiMissNotice? = nil
     /// A project note PUSHED onto this screen's own navigation stack.
     ///
     /// David, after the first round: *"when I went into megans wedding endeavor
@@ -447,8 +456,42 @@ struct DayflowEndeavorView: View {
     /// unused"): the OPEN TASKS band's edit/add sheets, and the clutter fix
     /// (the three chip rows + documents fold behind one ATTACHED row).
     @State private var editingTask: ThingsTask? = nil
-    @State private var addingTask = false
+    /// Which task sheet the OPEN TASKS band is showing (Session 88).
+    ///
+    /// **One host, not two `.sheet` modifiers.** `attach` is the chooser over
+    /// existing tasks and `compose` is the composer for a new one, and the
+    /// chooser reaches the composer by setting this rather than presenting a
+    /// sheet of its own. Dismissing one presentation and starting another in
+    /// the same turn is exactly what `openNote` above records going wrong:
+    /// two presentations in flight and SwiftUI drops one.
+    ///
+    /// This replaced a plain `addingTask` bool, which could only ever mean the
+    /// composer.
+    @State private var taskSheet: TaskSheet? = nil
+
+    private enum TaskSheet: Identifiable {
+        case attach
+        /// Carrying whatever was typed into the chooser's search field, so the
+        /// handover does not throw it away.
+        case compose(String)
+        var id: String {
+            switch self {
+            case .attach:  return "attach"
+            case .compose: return "compose"
+            }
+        }
+        var draftTitle: String {
+            if case .compose(let title) = self { return title }
+            return ""
+        }
+    }
     @State private var attachedExpanded = false
+    /// The schedule band's fold. Two days, like the Mac's (Session 88).
+    @State private var scheduleExpanded = false
+    /// How far each OPEN TASKS row is slid, keyed by task id (Session 88).
+    @State private var taskRowOffsets: [String: CGFloat] = [:]
+    /// Which booking the sheet is editing, or which band's `+` opened it.
+    @State private var bookingTarget: BookingTarget? = nil
     /// Crossfade in/out (Session 78 round three) — the cover presents with
     /// animations disabled (no slide, David's call), so the screen fades
     /// itself. Copied from DayflowNoteFullPageView (D162).
@@ -550,19 +593,24 @@ struct DayflowEndeavorView: View {
         .navigationDestination(item: $pushedNoteTitle) { title in
             DayflowProjectNoteView(title: title, onBack: { pushedNoteTitle = nil })
         }
-        .alert("Nothing to open", isPresented: Binding(
-            get: { unresolvedLink != nil },
-            set: { if !$0 { unresolvedLink = nil } }
-        )) {
-            Button("OK", role: .cancel) { unresolvedLink = nil }
-        } message: {
-            Text(unresolvedMessage)
-        }
+        .dayflowWikiMissAlert($wikiMiss)
         .task(id: noteStore.hasAccess) {
             store.reload()
             guard !loaded, let endeavor else { return }
             body_ = endeavor.body
             loaded = true
+        }
+        // **The bands need `bookingsLoad` to have been ASKED.** The launch
+        // task fetches bookings, but this screen can be reached in a session
+        // where that ran before Notion was reachable, and an idle load draws
+        // no band at all rather than an empty one - which would look like an
+        // endeavor with nothing on it. Only when idle: a `.failed` stays
+        // failed until something retries it deliberately, and re-fetching on
+        // every appearance would hide a real outage behind a spinner.
+        .task {
+            if NotionService.shared.bookingsLoad == .idle {
+                await NotionService.shared.fetchBookings()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -608,15 +656,15 @@ struct DayflowEndeavorView: View {
             // line, its pills are the note's own subject, and its Attach button is
             // useful mid-sentence.
             if !editorFocused {
-                // OPEN TASKS (Session 78 round two): every open task linked
-                // [[endeavor name]] — same anchor machinery as project notes,
-                // so a promoted checkbox, the plus here, and the compact
-                // sheet all land in one place. Real rows: circle completes,
-                // title opens the standard edit sheet.
-                openTasksSection(e)
+                // THE BODY, in the order this endeavor's TYPE gives it
+                // (D268, Session 88). Bands, then the tasks, or the
+                // tasks then the bands on a Project - see
+                // `endeavorBody`. OPEN TASKS is unchanged and is
+                // still drawn exactly once.
+                endeavorBody(e)
 
                 // The clutter fix (David: "destinations, people, notes...
-                // there has to be a better way" on iOS). The three chip rows
+                // there has to be a better way" on iOS). The chip rows
                 // and the documents fold behind ONE quiet row, collapsed by
                 // default with the count on the label — the same move
                 // FINISHED and RELATED NOTES already make. The Mac keeps its
@@ -717,9 +765,38 @@ struct DayflowEndeavorView: View {
                 Task { await ReminderTaskStore.shared.refreshAll() }
             }
         }
-        .sheet(isPresented: $addingTask) {
-            if let e = endeavor {
-                DayflowNoteTaskSheet(anchor: e.name)
+        .sheet(item: $taskSheet) { which in
+            if let live = endeavor {
+                switch which {
+                case .attach:
+                    DayflowEndeavorTaskAttachSheet(
+                        endeavorName: live.name,
+                        link: EndeavorFile.link(named: live.name),
+                        tasks: ReminderTaskStore.shared.allTasks,
+                        onAttach: { picked in await attachTasks(picked, to: live) },
+                        onNewTask: { typed in taskSheet = .compose(typed) })
+                case .compose:
+                    // `compact: false` - this shares its presentation with the
+                    // chooser above, so both arms must size the same way.
+                    DayflowNoteTaskSheet(anchor: live.name,
+                                         initialTitle: which.draftTitle,
+                                         compact: false)
+                }
+            }
+        }
+        // **On `content`, not on the outer `Group`.** That one already carries
+        // four `.sheet` modifiers and this file's own comment records what
+        // stacking them costs: the later one wins silently. The two task
+        // sheets live here for the same reason.
+        .sheet(item: $bookingTarget) { target in
+            // Re-read rather than using the captured `e`, the rule the trip
+            // log sheet above learned the hard way: a value is captured when
+            // the view is BUILT, and this sheet writes to Notion under the
+            // endeavor's slug.
+            if let live = endeavor {
+                DayflowBookingSheet(endeavor: live,
+                                    existing: target.booking,
+                                    seedLedger: target.isLedger)
             }
         }
     }
@@ -841,6 +918,11 @@ struct DayflowEndeavorView: View {
                             .font(.system(size: 10.5, weight: .semibold))
                             .tracking(1.0)
                             .foregroundStyle(Color.dayflowAccent)
+                    } else if let figure = typeFigure(e) {
+                        Text(figure.uppercased())
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .tracking(1.0)
+                            .foregroundStyle(Color.dayflowAccent)
                     }
                 }
 
@@ -856,7 +938,830 @@ struct DayflowEndeavorView: View {
     // `pill(_:tint:)` retired with the header's capsules (Session 78
     // redesign) — the kicker line carries type and status as caps now.
 
+    // MARK: - The body's bands (Session 88, D268 on the phone)
+    //
+    // The Mac gained two band shapes in Sessions 86 and 87 and a PLACES band
+    // in D273, and the phone drew none of them. **Everything below is view
+    // work.** `Booking`, `BookingStatus`, `BookingKind` and every band helper
+    // on `Endeavor` were already compiled into this target and had never been
+    // read here - there were zero occurrences of "Booking" in `Dayflow/`.
+    //
+    // **No view here switches on the endeavor's type.** `scheduleBandLabel`
+    // and `ledgerBandLabel` return the word or nil, and a nil band is an
+    // absent band, which is what keeps the ledger off a trip and the schedule
+    // off a decision without either one naming a type. That rule is D268's and
+    // it is why the phone's half of this is small.
+
+    /// What the booking sheet was opened FOR.
+    ///
+    /// `newLedger` is not a mode and not a second sheet: it is three seeds -
+    /// no date, Kind `Other`, Status `Quoted` - on the one editor, because a
+    /// `+` on QUOTES that opened a dated Flight would be asking for the shape
+    /// the band it came from cannot show.
+    private enum BookingTarget: Identifiable {
+        case new
+        case newLedger
+        case edit(Booking)
+        var id: String {
+            switch self {
+            case .new:         return "new"
+            case .newLedger:   return "new-ledger"
+            case .edit(let b): return b.id
+            }
+        }
+        var booking: Booking? {
+            if case .edit(let b) = self { return b }
+            return nil
+        }
+        var isLedger: Bool {
+            if case .newLedger = self { return true }
+            return false
+        }
+    }
+
+    /// One line on the schedule, which is not one booking.
+    ///
+    /// **A booking whose end falls on a later day makes two lines** (D268). A
+    /// calendar draws a multi-day thing as a bar across its grid; a list of
+    /// days has no grid to cross, so it splits - and on the morning you leave,
+    /// "check out, 11:00" is what you need rather than a row filed four days
+    /// earlier.
+    private struct BookingEntry: Identifiable {
+        let booking: Booking
+        let isEnd: Bool
+        var date: Date? { isEnd ? booking.end : booking.start }
+        var id: String { isEnd ? booking.id + "-end" : booking.id }
+    }
+
+    /// One day's entries. Undated rows share the key `undated`, carry no
+    /// numeral and sort last.
+    private struct BookingDay: Identifiable {
+        let id: String
+        let numeral: String
+        let label: String
+        let entries: [BookingEntry]
+    }
+
+    /// Days shown before the fold. Two, for the Mac's reason and more so: on
+    /// the morning you leave, the next two days with something on them are the
+    /// whole answer, and this screen is a phone.
+    private static let scheduleDayCap = 2
+
+    private static let bookingDayKey: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
+    }()
+    private static let bookingDayNumeral: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "d"; return f
+    }()
+    private static let bookingDayWord: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEEE, MMMM"; return f
+    }()
+    private static let bookingTime: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "h:mm a"; return f
+    }()
+    private static let bookingMoney: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .currency
+        f.maximumFractionDigits = 0
+        return f
+    }()
+
+    private func spansDays(_ b: Booking) -> Bool {
+        guard let start = b.start, let end = b.end else { return false }
+        return !Calendar.current.isDate(start, inSameDayAs: end)
+    }
+
+    /// **A Bookings row with a cost and no date is a ledger line** (D268).
+    /// No flag, no second database, and no switch on the type to decide what a
+    /// row IS - the row's own two fields decide, and the type only decides
+    /// whether there is a band to put it in. Zero is not a cost.
+    private func isLedgerRow(_ b: Booking) -> Bool {
+        b.start == nil && (b.cost ?? 0) > 0
+    }
+
+    private func entryIsBefore(_ a: BookingEntry, _ b: BookingEntry) -> Bool {
+        switch (a.date, b.date) {
+        case let (x?, y?):
+            if x != y { return x < y }
+            if a.booking.name != b.booking.name { return a.booking.name < b.booking.name }
+            return !a.isEnd && b.isEnd
+        case (_?, nil): return true
+        case (nil, _?): return false
+        case (nil, nil): return a.booking.name < b.booking.name
+        }
+    }
+
+    private func bookingEntries(_ e: Endeavor) -> [BookingEntry] {
+        // **A row belongs to one band, never two** (warning FIVE). When this
+        // endeavor HAS a ledger, its ledger lines come out of the schedule
+        // band; when it does not, an undated costed row stays in the Undated
+        // bucket. Filtering unconditionally would make a real Notion row
+        // appear on no screen at all - see `Endeavor.ledgerBandLabel`.
+        let hasLedger: Bool = e.ledgerBandLabel != nil
+        var out: [BookingEntry] = []
+        for booking in NotionService.shared.bookings(for: e.id) {
+            if hasLedger, isLedgerRow(booking) { continue }
+            out.append(BookingEntry(booking: booking, isEnd: false))
+            if spansDays(booking) {
+                out.append(BookingEntry(booking: booking, isEnd: true))
+            }
+        }
+        return out.sorted(by: entryIsBefore)
+    }
+
+    private func bookingDays(_ e: Endeavor) -> [BookingDay] {
+        let rows = bookingEntries(e)
+        var order: [String] = []
+        var buckets: [String: [BookingEntry]] = [:]
+        var numerals: [String: String] = [:]
+        var labels: [String: String] = [:]
+        for entry in rows {
+            let key: String
+            if let date = entry.date {
+                let day = Calendar.current.startOfDay(for: date)
+                key = Self.bookingDayKey.string(from: day)
+                numerals[key] = Self.bookingDayNumeral.string(from: day)
+                labels[key] = Self.bookingDayWord.string(from: day)
+            } else {
+                key = "undated"
+                numerals[key] = ""
+                labels[key] = "Undated"
+            }
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(entry)
+        }
+        return order.map {
+            BookingDay(id: $0, numeral: numerals[$0] ?? "",
+                       label: labels[$0] ?? "", entries: buckets[$0] ?? [])
+        }
+    }
+
+    /// **A range only when both ends fall on the same day.** Each line of a
+    /// spanning booking is a moment rather than a duration, and the hotel's
+    /// check-in row read "10:13 AM - 10:13 AM" on the Mac before this. A dated
+    /// booking with no clock time reads "All day": the column is there either
+    /// way and an empty cell looks like a bug.
+    private func entryTime(_ entry: BookingEntry) -> String {
+        let b = entry.booking
+        guard let date = entry.date else { return "" }
+        guard b.hasTime else { return "All day" }
+        if !entry.isEnd, let start = b.start, let end = b.end, !spansDays(b) {
+            return Self.bookingTime.string(from: start) + " - " + Self.bookingTime.string(from: end)
+        }
+        return Self.bookingTime.string(from: date)
+    }
+
+    /// "Check in" / "Check out", in the kind's own words, and only on a
+    /// booking that spans days where one line of two needs to say which it is.
+    /// `BookingKind.labels` already holds this vocabulary for the Mac's sheet.
+    private func entryQualifier(_ entry: BookingEntry) -> String {
+        guard spansDays(entry.booking) else { return "" }
+        let labels = BookingKind.labels(for: entry.booking.kind)
+        return entry.isEnd ? labels.end : labels.start
+    }
+
+    /// First names, resolved from Notion People by relation id. **An id that
+    /// resolves to nobody is skipped, not printed** - a raw UUID mid-line is
+    /// noise no one can act on.
+    private func bookingWho(_ b: Booking) -> String {
+        let names: [String] = b.whoIDs.compactMap { id in
+            NotionService.shared.people.first { $0.id == id }?.name
+        }
+        return names.compactMap { $0.split(separator: " ").first.map(String.init) }
+                    .joined(separator: ", ")
+    }
+
+    private func bookingCost(_ b: Booking) -> String {
+        guard let cost = b.cost, cost > 0 else { return "" }
+        return Self.bookingMoney.string(from: NSNumber(value: cost)) ?? ""
+    }
+
+    /// The schedule row's second line.
+    private func scheduleSub(_ b: Booking) -> String {
+        var parts: [String] = []
+        if let provider = b.provider, !provider.isEmpty { parts.append(provider) }
+        let who = bookingWho(b)
+        if !who.isEmpty { parts.append(who) }
+        if let c = b.confirmation, !c.isEmpty { parts.append(c) }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// The LEDGER row's second line.
+    ///
+    /// **The provider is dropped when it is already the headline.** On Kind
+    /// `Other`, which is what a quote usually is, `writtenName` builds the
+    /// Name out of the provider, so a quote with only a provider is named
+    /// after it and `scheduleSub` would print that same word directly under
+    /// its own headline. The schedule band never hits this because a journey's
+    /// name leads with its number and a stay's ends in a night count.
+    private func ledgerSub(_ b: Booking, headline: String) -> String {
+        var parts: [String] = []
+        let provider = (b.provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !provider.isEmpty, provider != headline { parts.append(provider) }
+        let who = bookingWho(b)
+        if !who.isEmpty { parts.append(who) }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// This endeavor's ledger rows, cheapest first.
+    ///
+    /// **Cheapest first rather than accepted first.** A ledger is read to
+    /// compare, and prices out of order are work the reader does twice. The
+    /// accepted row is found by its wash rather than by its position, which
+    /// also stops it jumping to the top the moment it is chosen.
+    private func ledgerRows(_ e: Endeavor) -> [Booking] {
+        NotionService.shared.bookings(for: e.id)
+            .filter(isLedgerRow)
+            .sorted {
+                let a = $0.cost ?? 0
+                let b = $1.cost ?? 0
+                if a != b { return a < b }
+                return $0.name < $1.name
+            }
+    }
+
+    // MARK: Band chrome
+
+    /// One header for every band on this screen, in the grammar OPEN TASKS
+    /// already spoke: caps label, count, an optional `+`, an ink rule.
+    ///
+    /// **One function, not four.** On a Project all four bands are on screen
+    /// at once, and headers written separately drift the first time any one of
+    /// them changes - standing warning FIVE, and the same extraction the Mac
+    /// made in Session 87.
+    ///
+    /// `onAdd` is optional: a band with no door draws no `+`, because a button
+    /// that opens nothing is worse than no button.
+    private func bandHeader(_ label: String,
+                            count: Int,
+                            addLabel: String = "Add",
+                            onAdd: (() -> Void)? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(label.uppercased())
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.8)
+                    .foregroundStyle(Color.dayflowFaint)
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.dayflowFaint)
+                }
+                Spacer()
+                if let onAdd {
+                    Button(action: onAdd) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.dayflowFaint)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(addLabel)
+                }
+            }
+            .padding(.bottom, 4)
+            Rectangle().fill(Color.dayflowInk).frame(height: 1)
+        }
+    }
+
+    private func bandEmpty(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .padding(.top, 8)
+    }
+
+    /// A hairline under every band row, so the three bands read as one system.
+    private var bandHair: some View {
+        Rectangle().fill(Color.dayflowHairline).frame(height: 1)
+    }
+
+    // MARK: The schedule band
+
+    /// ITINERARY on a Travel endeavor, SCHEDULE on Milestone, Gathering and
+    /// Project, and absent on a Decision - all of it from
+    /// `Endeavor.scheduleBandLabel`, which is why no type is named here.
+    ///
+    /// **Three states off `bookingsLoad`, not two** (warning TWELVE). Idle and
+    /// loading draw nothing at all, so no heading flashes in before the answer
+    /// and nothing claims an absence while the fetch is in flight. `.failed`
+    /// says Notion did not answer, which is a different statement from "there
+    /// are none" - and the likeliest first failure of this feature is the
+    /// integration not being connected to the database, which returns nothing.
+    ///
+    /// **The count is of BOOKINGS, not lines.** A hotel is one reservation
+    /// drawn on two lines for the same reason a flight has a departure and an
+    /// arrival; the second line is a rendering decision, not a second thing
+    /// bought. David caught this on the Mac in Session 87.
+    ///
+    /// **The `+` and the row both open `DayflowBookingSheet`.** They did not
+    /// when this band first shipped, on the reasoning that a door which is
+    /// drawn and does not open is worse than no door - true, and the wrong
+    /// conclusion. David: *"there is no plus sign to open anything for Quote,
+    /// Schedule."* The answer to a band with no editor is the editor.
+    ///
+    /// One sheet for both bands, because there is one Bookings row.
+    @ViewBuilder
+    private func scheduleBand(_ e: Endeavor) -> some View {
+        let state = NotionService.shared.bookingsLoad
+        let settled = state == .loaded || state == .failed
+        let days = bookingDays(e)
+        let count = Set(days.flatMap { $0.entries.map(\.booking.id) }).count
+        let shown = scheduleExpanded ? days : Array(days.prefix(Self.scheduleDayCap))
+        let hidden = days.count - shown.count
+        if let bandLabel = e.scheduleBandLabel, settled {
+            VStack(alignment: .leading, spacing: 0) {
+                bandHeader(bandLabel, count: count,
+                           addLabel: "Add a booking") { bookingTarget = .new }
+                if state == .failed {
+                    bandEmpty("Notion did not answer.")
+                } else if days.isEmpty {
+                    bandEmpty("Nothing booked yet.")
+                } else {
+                    ForEach(shown) { day in
+                        scheduleDayLead(day)
+                        ForEach(day.entries) { entry in scheduleRow(entry) }
+                    }
+                    if hidden > 0 || scheduleExpanded {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.18)) { scheduleExpanded.toggle() }
+                        } label: {
+                            Text(scheduleExpanded ? "SHOW FEWER DAYS"
+                                 : (hidden == 1 ? "+ 1 MORE DAY" : "+ \(hidden) MORE DAYS"))
+                                .font(.system(size: 10, weight: .medium))
+                                .tracking(1.4)
+                                .foregroundStyle(Color.dayflowMuted)
+                                .padding(.top, 8)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 2)
+            .padding(.bottom, 10)
+        }
+    }
+
+    /// The day's own heading. A serif numeral, because a day is the structure
+    /// of a trip; smaller than the Mac's, because this is a phone.
+    private func scheduleDayLead(_ day: BookingDay) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if !day.numeral.isEmpty {
+                Text(day.numeral)
+                    .font(.dayflowSerif(20, weight: .heavy))
+                    .foregroundStyle(Color.dayflowInk)
+            }
+            Text(day.label.uppercased())
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.4)
+                .foregroundStyle(Color.dayflowMuted)
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 10)
+        .padding(.bottom, 1)
+    }
+
+    /// One entry, two lines rather than the Mac's four columns.
+    ///
+    /// **What the phone drops, and what it does not.** The Mac gives the time
+    /// its own 148pt column and the confirmation its own cell; at this width
+    /// both would squeeze the name, which is the row's subject. So the time
+    /// goes to the right of the headline and the confirmation joins the second
+    /// line with the provider and who is on it. Nothing is dropped: a
+    /// confirmation code is what you need standing at a counter, and a screen
+    /// that holds one and does not show it is the shape this app has already
+    /// been bitten by five times.
+    ///
+    /// **NOT BOOKED and the cost show on the opening line only.** Being booked
+    /// is a fact about the whole reservation and a price is not paid twice.
+    private func scheduleRow(_ entry: BookingEntry) -> some View {
+        let b = entry.booking
+        let tint = dayflowTint(BookingKind.tint(for: b.kind))
+        let glyph = BookingKind.glyph(for: b.kind)
+        // A hand-added row can reach Notion with no Name. The kind is a poorer
+        // headline than "UA 1642 - DEN to ORD" and a much better one than a
+        // blank line where the subject should be.
+        let headline = b.name.isEmpty ? b.kind : b.name
+        let qualifier = entryQualifier(entry)
+        let sub = scheduleSub(b)
+        let time = entryTime(entry)
+        let cost = entry.isEnd ? "" : bookingCost(b)
+        let isPast = (entry.date).map { $0 < Date() } ?? false
+        let showNotBooked = !b.booked && !entry.isEnd
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: glyph)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 16)
+                Text(headline)
+                    .font(.dayflowSerif(15))
+                    .foregroundStyle(Color.dayflowInk)
+                    .lineLimit(1)
+                if !qualifier.isEmpty {
+                    Text(qualifier.uppercased())
+                        .font(.system(size: 9, weight: .semibold))
+                        .tracking(1.0)
+                        .foregroundStyle(Color.dayflowFaint)
+                }
+                Spacer(minLength: 6)
+                Text(time)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.dayflowMuted)
+                    .lineLimit(1)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Spacer().frame(width: 16)
+                if !sub.isEmpty {
+                    Text(sub)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dayflowMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                if showNotBooked {
+                    Text("NOT BOOKED")
+                        .font(.system(size: 9, weight: .semibold))
+                        .tracking(1.0)
+                        .foregroundStyle(Color.dayflowAccent)
+                }
+                if !cost.isEmpty {
+                    Text(cost)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.dayflowInk)
+                }
+            }
+        }
+        .padding(.vertical, 7)
+        .opacity(isPast ? 0.55 : 1)
+        .contentShape(Rectangle())
+        .onTapGesture { bookingTarget = .edit(b) }
+        .overlay(alignment: .bottom) { bandHair }
+    }
+
+    // MARK: The ledger band
+
+    /// QUOTES on a Project, OPTIONS on a Decision, nil everywhere else - from
+    /// `Endeavor.ledgerBandLabel`, so again no type is named here.
+    ///
+    /// **No fold.** The schedule band caps at two days because a nine-day trip
+    /// has more days than this screen can spare. A ledger is the three or four
+    /// things being compared, and hiding some of them hides the comparison.
+    @ViewBuilder
+    private func ledgerBand(_ e: Endeavor) -> some View {
+        let state = NotionService.shared.bookingsLoad
+        let settled = state == .loaded || state == .failed
+        let rows = ledgerRows(e)
+        if let bandLabel = e.ledgerBandLabel, settled {
+            VStack(alignment: .leading, spacing: 0) {
+                bandHeader(bandLabel, count: rows.count,
+                           addLabel: "Add a \(bandLabel.dropLast().lowercased())") {
+                    bookingTarget = .newLedger
+                }
+                if state == .failed {
+                    bandEmpty("Notion did not answer.")
+                } else if rows.isEmpty {
+                    bandEmpty("No \(bandLabel.lowercased()) yet.")
+                } else {
+                    ForEach(rows) { b in ledgerRow(b) }
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 2)
+            .padding(.bottom, 10)
+        }
+    }
+
+    /// One ledger row.
+    ///
+    /// **The accepted row carries a faint accent wash, at 0.06.** A decision
+    /// that has been made should be visible without reading three prices. Not
+    /// 0.12, which is what this app washes a selected row with: at 0.12 the
+    /// chosen quote and a highlighted row would be the same colour, and the
+    /// one that means something would be the one that does not.
+    ///
+    /// **A declined row is dimmed, not struck and not dropped.** It is part of
+    /// the comparison: what it cost is why the accepted one was chosen.
+    ///
+    /// **A quoted row says nothing at the right.** Quoted is the resting state
+    /// of every row in the band, and a column that prints the same word on
+    /// every line says nothing. `BookingStatus.rowLabel` already returns nil
+    /// for it, and is total over `String`, so a fourth option typed into
+    /// Notion counts as open rather than crashing or vanishing.
+    private func ledgerRow(_ b: Booking) -> some View {
+        let tint = dayflowTint(BookingKind.tint(for: b.kind))
+        let glyph = BookingKind.glyph(for: b.kind)
+        let headline = b.name.isEmpty ? b.kind : b.name
+        let sub = ledgerSub(b, headline: headline)
+        let cost = bookingCost(b)
+        let accepted = BookingStatus.isAccepted(b.status)
+        let declined = BookingStatus.isDeclined(b.status)
+        let stateLabel = BookingStatus.rowLabel(b.status) ?? ""
+        let stateColor = accepted ? Color.dayflowAccent : Color.dayflowMuted
+        let wash = accepted ? Color.dayflowAccent.opacity(0.06) : Color.clear
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: glyph)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 16)
+                Text(headline)
+                    .font(.dayflowSerif(15))
+                    .foregroundStyle(Color.dayflowInk)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text(cost)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.dayflowInk)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Spacer().frame(width: 16)
+                if !sub.isEmpty {
+                    Text(sub)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dayflowMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                if !stateLabel.isEmpty {
+                    Text(stateLabel.uppercased())
+                        .font(.system(size: 9, weight: .semibold))
+                        .tracking(1.0)
+                        .foregroundStyle(stateColor)
+                }
+            }
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 4)
+        .background(wash)
+        .opacity(declined ? 0.55 : 1)
+        .contentShape(Rectangle())
+        .onTapGesture { bookingTarget = .edit(b) }
+        .overlay(alignment: .bottom) { bandHair }
+    }
+
+    // MARK: The PLACES band (D273)
+
+    /// One place on this endeavor: planned, visited, or both.
+    ///
+    /// **Two things were one thing in two tenses.** The Destinations chip row
+    /// held what David attached; the trip log held where he turned up. Attach
+    /// Gibsons, check in at Gibsons, and the screen said nothing to connect
+    /// them. David: *"I will add places that i want to go... I also may go
+    /// places during a trip that were never on the destination place in the
+    /// first place and then it appears in the endeavor after the fact."*
+    private struct EndeavorPlace: Identifiable {
+        let name: String
+        let attached: Bool
+        let visitDate: Date?
+        let skipped: Bool
+        var id: String
+    }
+
+    /// The one key this band matches on, and the same one the Mac's band and
+    /// its catch-up panel use. **Two matchers would eventually let one screen
+    /// say "went" about a place another is still asking about.**
+    private func placeKey(_ name: String) -> String {
+        TripLog.shortPlaceName(name).lowercased()
+    }
+
+    /// Planned first, in the order he attached them, then anywhere he went
+    /// that he never planned.
+    ///
+    /// **"Went" is a check-in inside the endeavor's dates**, David's own
+    /// definition, day-granular at both ends through `Endeavor.covers`.
+    ///
+    /// **Warning TWELVE is satisfied by the DEFAULT, not by a guard.** A place
+    /// with no matching check-in shows NOTHING at its right, never "Didn't
+    /// go" - that word comes only from `skippedPlaces`, which is stored rather
+    /// than derived. So an unfetched `visits` array costs an absent row and
+    /// never a false statement.
+    private func endeavorPlaces(_ e: Endeavor) -> [EndeavorPlace] {
+        let tripVisits = NotionService.shared.visits
+            .filter { e.covers($0.date) }
+            .sorted { $0.date < $1.date }
+        var firstVisit: [String: Date] = [:]
+        for v in tripVisits {
+            let k = placeKey(v.placeName)
+            if let seen = firstVisit[k], seen <= v.date { continue }
+            firstVisit[k] = v.date
+        }
+        let skipped = Set(e.skippedPlaces.map(placeKey))
+
+        var out: [EndeavorPlace] = []
+        var seen = Set<String>()
+        for name in e.places {
+            let k = placeKey(name)
+            guard seen.insert(k).inserted else { continue }
+            out.append(EndeavorPlace(name: name, attached: true,
+                                     visitDate: firstVisit[k],
+                                     skipped: skipped.contains(k), id: k))
+        }
+        for v in tripVisits {
+            let k = placeKey(v.placeName)
+            guard seen.insert(k).inserted else { continue }
+            out.append(EndeavorPlace(name: v.placeName, attached: false,
+                                     visitDate: firstVisit[k],
+                                     skipped: false, id: k))
+        }
+        return out
+    }
+
+    /// PLACES, under the schedule and above the note (D273).
+    ///
+    /// **Every type gets this band**, unlike the other two. A trip has places,
+    /// a gathering happens somewhere, a project has a site. A type that
+    /// silently could not attach a place would be a second rule to remember.
+    ///
+    /// It replaces the Destinations chip row inside the ATTACHED fold, which
+    /// could not carry a second line and so could not say "Went - Sat 21 Nov".
+    @ViewBuilder
+    private func placesBand(_ e: Endeavor) -> some View {
+        let rows = endeavorPlaces(e)
+        VStack(alignment: .leading, spacing: 0) {
+            bandHeader("Places", count: rows.count,
+                       addLabel: "Attach a place") { attaching = .place }
+            if rows.isEmpty {
+                bandEmpty("Nowhere attached yet.")
+            } else {
+                ForEach(rows) { row in placeRow(row, in: e) }
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 2)
+        .padding(.bottom, 10)
+    }
+
+    /// One place: the pin, the name, whether it is on the list, and whether he
+    /// went.
+    ///
+    /// **One pin rather than the Mac's per-category glyph.** `placeIcon` and
+    /// `placeColor` live in `PlaceHelpers.swift`, which this target does not
+    /// compile, and adding it is a `project.pbxproj` edit for a glyph. The row
+    /// this band replaces drew one `mappin.circle.fill` for every destination,
+    /// so nothing is lost today; the backlog carries the upgrade.
+    ///
+    /// **The row still opens the place.** `resolveWikiLink` is the same door
+    /// the chip carried, and a screen that names a record it can open and does
+    /// not is the shape Session 87 found five times.
+    private func placeRow(_ row: EndeavorPlace, in e: Endeavor) -> some View {
+        let known = NotionService.shared.places.contains {
+            placeKey($0.name) == row.id
+        }
+        let state: String = {
+            if row.skipped { return "DIDN'T GO" }
+            if let d = row.visitDate {
+                let f = DateFormatter(); f.dateFormat = "EEE d MMM"
+                return "WENT \u{00B7} " + f.string(from: d).uppercased()
+            }
+            return ""
+        }()
+        let sub: String = {
+            if !known { return "not in your places" }
+            if !row.attached { return "not on your list" }
+            return ""
+        }()
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "mappin.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.dayflowMuted)
+                    .frame(width: 16)
+                Text(TripLog.shortPlaceName(row.name))
+                    .font(.dayflowSerif(15))
+                    .foregroundStyle(Color.dayflowInk)
+                    .strikethrough(row.skipped)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                if !state.isEmpty {
+                    Text(state)
+                        .font(.system(size: 9, weight: .semibold))
+                        .tracking(1.0)
+                        .foregroundStyle(Color.dayflowMuted)
+                }
+            }
+            if !sub.isEmpty {
+                HStack(spacing: 8) {
+                    Spacer().frame(width: 16)
+                    Text(sub)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dayflowFaint)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+        .opacity(row.skipped ? 0.55 : 1)
+        .onTapGesture { resolveWikiLink(row.name) }
+        .overlay(alignment: .bottom) { bandHair }
+        .contextMenu {
+            if row.attached {
+                Button("Remove", role: .destructive) { detach(row.name, from: e) }
+            } else {
+                Button("Add to this endeavor") { attach(row.name, kind: .place, to: e) }
+            }
+        }
+    }
+
+    /// Takes a place off the endeavor. **The skipped mark is not touched here
+    /// and is still read-only on the phone** (D273): the question is asked on
+    /// the Mac's Active tab and that is where the answer is given and taken
+    /// back.
+    private func detach(_ name: String, from e: Endeavor) {
+        var updated = store.endeavor(id: e.id) ?? e
+        let key = placeKey(name)
+        updated.places.removeAll { placeKey($0) == key }
+        try? store.save(updated)
+    }
+
+    // MARK: The body, in the type's own order (D268)
+
+    /// The bands between the tag bar and the note, in the order D268's table
+    /// gives for this type.
+    ///
+    /// | Type | Body |
+    /// |---|---|
+    /// | Travel | ITINERARY, PLACES, tasks, note |
+    /// | Milestone, Gathering | SCHEDULE, PLACES, tasks, note |
+    /// | Project | tasks, QUOTES, SCHEDULE, PLACES, note |
+    /// | Decision | OPTIONS, PLACES, tasks, note |
+    ///
+    /// **Where the tasks go is the one thing D268's table could not answer**,
+    /// and it is answered here rather than absorbed. On the Mac a non-Project
+    /// endeavor keeps its tasks on the rail, so they are not in the body at
+    /// all. The phone has no rail, so they have to go somewhere, and putting
+    /// them first for every type would put back on top the exact thing D268
+    /// demoted: David's brief was that the flights and the hotels were buried.
+    /// So the type's own band leads, and the tasks sit under PLACES, directly
+    /// above the note.
+    ///
+    /// **`bodyLeadsWithTasks` therefore means the same thing on both
+    /// platforms** - Project leads with the punch list and nothing else does.
+    ///
+    /// **The section is drawn once, in one of two places, never both.** It is
+    /// the same `openTasksSection`, not a second copy: standing warning FIVE,
+    /// and the shape the Mac solved with `tasksSection(_:placement:)`.
+    @ViewBuilder
+    private func endeavorBody(_ e: Endeavor) -> some View {
+        if e.bodyLeadsWithTasks {
+            openTasksSection(e)
+            ledgerBand(e)
+            scheduleBand(e)
+            placesBand(e)
+        } else {
+            scheduleBand(e)
+            ledgerBand(e)
+            placesBand(e)
+            openTasksSection(e)
+        }
+    }
+
     // MARK: Tasks on the endeavor (Session 78 round two)
+
+    /// The type's own count, for the kicker's third segment (D268, Session 87
+    /// on the Mac and Session 88 here).
+    ///
+    /// **The countdown first, the count only when there is none.** Replacing a
+    /// countdown with a count on anything carrying a real date is a downgrade:
+    /// a wedding twelve days out wants "Starts in 12 days", not "4 items on the
+    /// schedule". In practice this fires for Project and Decision, the two
+    /// types that usually carry no dates and whose kicker otherwise read "NO
+    /// DATES YET" - two segments, the second an apology.
+    ///
+    /// **It reads "4 tasks open", not "4 of 11 done"** (warning FOUR).
+    /// `ReminderTaskStore.allTasks` is filled by
+    /// `predicateForIncompleteReminders` and has never held a completed
+    /// reminder, so there is no denominator to print. A fraction whose bottom
+    /// half is invented is worse than a count. Backlogged on both platforms.
+    ///
+    /// Decision counts options that are neither accepted nor declined, which
+    /// covers Quoted and a row nobody has given a status. `BookingStatus` is
+    /// total over `String`, so a fourth option typed into Notion counts as open
+    /// rather than vanishing.
+    ///
+    /// Nil at zero: on a project with nothing on it the absence is not worth a
+    /// third of the line.
+    private func typeFigure(_ e: Endeavor) -> String? {
+        switch e.type.lowercased() {
+        case "project":
+            let n = linkedOpenTasks(e).count
+            guard n > 0 else { return nil }
+            return n == 1 ? "1 task open" : "\(n) tasks open"
+        case "decision":
+            let n = ledgerRows(e).filter {
+                !BookingStatus.isAccepted($0.status) && !BookingStatus.isDeclined($0.status)
+            }.count
+            guard n > 0 else { return nil }
+            return n == 1 ? "1 option open" : "\(n) options open"
+        default:
+            return nil
+        }
+    }
 
     private func linkedOpenTasks(_ e: Endeavor) -> [ThingsTask] {
         ReminderTaskStore.shared.allTasks.filter {
@@ -865,7 +1770,7 @@ struct DayflowEndeavorView: View {
     }
 
     private func attachedCount(_ e: Endeavor) -> Int {
-        e.places.count + unionedPeople(e).count + linkedNotes(e).count
+        unionedPeople(e).count + linkedNotes(e).count
     }
 
     private func promoteEndeavorTask(_ line: String, _ e: Endeavor,
@@ -894,7 +1799,7 @@ struct DayflowEndeavorView: View {
                     .tracking(1.8)
                     .foregroundStyle(Color.dayflowFaint)
                 Spacer()
-                Button { addingTask = true } label: {
+                Button { taskSheet = .attach } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.dayflowFaint)
@@ -961,11 +1866,111 @@ struct DayflowEndeavorView: View {
                 .overlay(alignment: .bottom) {
                     Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                 }
+                // **Swipe LEFT to take the task off this endeavor**, and the
+                // edge is chosen rather than assumed. David asked for a right
+                // swipe, and right is already spoken for: on Today, Upcoming
+                // and Quick Find a rightward swipe on a task row reveals a
+                // calendar and opens the when picker. Reusing it here would be
+                // one gesture meaning two things depending on which screen you
+                // are on, which is standing warning FIVE and the thing this
+                // project keeps paying for.
+                //
+                // Left is free IN THIS BAND. It means multi-select on the three
+                // full task rooms, but this band has no selection mode at all,
+                // so nothing is displaced - and leftward-to-remove is the
+                // platform's own convention, which is a better teacher than
+                // either of us.
+                //
+                // **The reveal is a word, not a glyph.** Today's rightward
+                // swipe can afford a bare calendar because scheduling is what
+                // that gesture does everywhere; this one is local to this band,
+                // so it says REMOVE and teaches itself on the first half-swipe.
+                //
+                // `.offset` is visual only, so the `.background` applied after
+                // it keeps the original frame and the label stays put while the
+                // row slides. Dominance-guarded, so vertical scrolling is
+                // untouched.
+                .offset(x: taskRowOffsets[task.id] ?? 0)
+                .background(alignment: .trailing) {
+                    let slid = -(taskRowOffsets[task.id] ?? 0)
+                    let progress = min(max(slid / 60, 0), 1)
+                    if progress > 0 {
+                        Text("REMOVE")
+                            .font(.system(size: 10, weight: .bold))
+                            .tracking(1.4)
+                            .foregroundStyle(Color.dayflowAccent)
+                            .opacity(Double(progress))
+                            .padding(.trailing, 2)
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 28)
+                        .onChanged { value in
+                            let h = value.translation.width
+                            guard abs(h) > abs(value.translation.height) else { return }
+                            // Leftward slides and reveals; rightward stays put,
+                            // because rightward means something else in this app
+                            // and a row that moved would promise it.
+                            taskRowOffsets[task.id] = h < 0 ? max(h, -90) : 0
+                        }
+                        .onEnded { value in
+                            let h = value.translation.width
+                            withAnimation(.spring(duration: 0.3)) {
+                                taskRowOffsets[task.id] = 0
+                            }
+                            guard abs(h) > abs(value.translation.height) * 1.5,
+                                  h < -50 else { return }
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            detachTask(task, from: e)
+                        }
+                )
+                // Long press stays, and is the direct equivalent of the Mac's
+                // right click. Two ways to reach ONE verb is not warning FIVE;
+                // one gesture reaching two verbs is.
+                .contextMenu {
+                    Button("Remove from this endeavor", role: .destructive) {
+                        detachTask(task, from: e)
+                    }
+                }
             }
         }
         .padding(.horizontal, 24)
         .padding(.top, 2)
         .padding(.bottom, 8)
+    }
+
+    /// Appends the link to each chosen task, preserving everything already in
+    /// its notes.
+    ///
+    /// **`setNotes`, not `update`.** The latter is a routing function that
+    /// recomputes list and date rules and, for a task in the Inbox or Someday,
+    /// clears the due date and the alarms even when passed no date - warning
+    /// FOUR, and the Mac paid for that lesson in Session 87. Attaching has no
+    /// opinion about when a task is due.
+    private func attachTasks(_ tasks: [ThingsTask], to e: Endeavor) async -> Bool {
+        let link = EndeavorFile.link(named: e.name)
+        var allOK = true
+        for task in tasks {
+            guard let merged = EndeavorFile.notesAttaching(link, to: task.notes) else { continue }
+            let ok = await ReminderTaskStore.shared.setNotes(taskID: task.id, notes: merged)
+            if !ok { allOK = false }
+        }
+        await ReminderTaskStore.shared.refreshAll()
+        return allOK
+    }
+
+    /// Takes a task off this endeavor, leaving the rest of its notes alone.
+    ///
+    /// **It ships with attach rather than after it.** A mis-attach otherwise
+    /// has no way back from inside the app, which is the reason D269 built the
+    /// Mac's detach in the same session as its chooser.
+    private func detachTask(_ task: ThingsTask, from e: Endeavor) {
+        let link = EndeavorFile.link(named: e.name)
+        guard let kept = EndeavorFile.notesDetaching(link, from: task.notes) else { return }
+        Task {
+            _ = await ReminderTaskStore.shared.setNotes(taskID: task.id, notes: kept)
+            await ReminderTaskStore.shared.refreshAll()
+        }
     }
 
     private func endeavorTaskWhenLabel(_ task: ThingsTask) -> String {
@@ -1021,70 +2026,27 @@ struct DayflowEndeavorView: View {
     /// needs its own date sheet, and an Endeavor note is about a thing rather
     /// than about a day. A date wikilink still types and still renders; it just
     /// does not open anything, which is what it did before this change too.
+    /// Every `[[name]]` on this screen, through the one resolver (D282).
+    ///
+    /// **This screen used to be the RICHEST of the four copies** - it matched
+    /// case-insensitively, resolved notes as well as records, and said why when
+    /// nothing matched. The other three did less, silently. Rather than teach
+    /// the other three what this one knew, all four now call the same function,
+    /// and this screen keeps only what is genuinely local to it: a project note
+    /// is PUSHED onto its own stack so back returns to the endeavor, instead of
+    /// routing away through `dayflow://note`.
+    ///
+    /// It gains endeavors in the trade, which is the bug that started D282: an
+    /// endeavor name here produced "Nothing named X exists as a place, a person
+    /// or a note yet" while the endeavor itself was on screen.
     private func resolveWikiLink(_ name: String) {
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        // CASE-INSENSITIVE ON RECORDS TOO. The note branch below got that
-        // comparison in Session 67 and the two branches above it were never
-        // revisited, so `[[lakemore resort]]` opened nothing while
-        // `[[Lakemore Resort]]` opened the place. Nobody chose that difference.
-        if let place = NotionService.shared.places.first(where: {
-            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
-        }) {
-            wikiLinkTarget = .place(place)
-        } else if let person = NotionService.shared.people.first(where: {
-            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
-        }) {
-            wikiLinkTarget = .person(person)
-        } else if let note = NoteStore.shared.linkableNotes().first(where: {
-            $0.title.localizedCaseInsensitiveCompare(name) == .orderedSame
-        }) {
-            // D64's other half, on the phone. The Mac learned to resolve a
-            // wikilink to a Project or Daily note in Session 67; here the name
-            // fell out of the `if` and **did nothing at all** — the link rendered
-            // blue and went nowhere, which is worse than no link because it looks
-            // live. David: *"on the endeavor note the Final Wedding speech is not
-            // clickable."*
-            //
-            // Records first, notes last, matching the Mac's order: a Place note
-            // and a Place record share a name and the record is what you want.
-            //
-            // Routed through the app's own `dayflow://note?path=` rather than a
-            // new `WikiLinkTarget` case. That route already exists, already
-            // handles Calendar / Projects / Endeavors, and already uses
-            // `URLComponents` so a name with an ampersand survives — a fourth
-            // enum case would have rippled through `DayflowWikiSummaryView` for
-            // nothing.
-            openNote(note.relativePath)
-        } else {
-            // **NOTHING MATCHED, AND THIS USED TO BE AN EMPTY `else`.**
-            //
-            // A destination pill whose name is not a Place record, not a Person
-            // and not a note simply did nothing when tapped — no sheet, no
-            // message, no log line — which from the outside is exactly what a
-            // broken button looks like. David: *"the destination pills are not
-            // clickable."*
-            //
-            // The distinction that matters is D94's, and it is the reason this
-            // is not a single string: on a cold launch `places` and `people`
-            // arrive from Notion, so a tap before they land must say "still
-            // loading" and never "there is no such place". Same rule the Mac's
-            // search learned the hard way.
-            unresolvedLink = name
-        }
+        DayflowWikiLink.follow(name,
+                               openURL: openURL,
+                               onRecord: { wikiLinkTarget = $0 },
+                               onNote: { openNote($0.relativePath) },
+                               onMiss: { wikiMiss = $0 })
     }
 
-    /// Why the tapped name opened nothing, in the user's terms.
-    private var unresolvedMessage: String {
-        let name = unresolvedLink ?? "That name"
-        let notion = NotionService.shared
-        if notion.placesLoad == .loading || notion.peopleLoad == .loading {
-            return "Places and people are still loading from Notion. Try \(name) again in a moment."
-        }
-        if notion.placesLoad == .failed || notion.peopleLoad == .failed {
-            return "Places and people could not be loaded from Notion, so \(name) cannot be resolved. Reopen the app to try again."
-        }
-        return "Nothing named \(name) exists as a place, a person or a note yet."
-    }
 
     /// Routes to a note through the app's own deep link.
     ///
@@ -1171,18 +2133,11 @@ struct DayflowEndeavorView: View {
         let people = unionedPeople(e)
         let notes  = linkedNotes(e)
         VStack(alignment: .leading, spacing: 6) {
-            // `dimmed:` carries the `skipped:` set. Session 72: the Mac's
-            // Active-tab band writes that key when David answers "Didn't go",
-            // and a phone that drew the destination exactly as before would be
-            // showing a question as though it were still open. Read-only here —
-            // the answer is given and taken back on the Mac, where the band that
-            // asks it lives.
-            chipRow(title: "Destinations",
-                    icon: "mappin.circle.fill",
-                    names: e.places,
-                    empty: "Nowhere attached yet.",
-                    dimmed: Set(e.skippedPlaces.map { TripLog.shortPlaceName($0).lowercased() }),
-                    onTap: { resolveWikiLink($0) }) { attaching = .place }
+            // Destinations left this fold in Session 88 and is the
+            // PLACES band in the body now (D273). A chip cannot carry
+            // a second line, so it could not say "Went - Sat 21 Nov",
+            // and the skipped mark was the only thing it ever said
+            // about a place beyond its name.
             chipRow(title: "People",
                     icon: "person.circle.fill",
                     names: people,
@@ -2158,9 +3113,22 @@ struct DayflowEndeavorDetailsSheet: View {
     private var basicsSection: some View {
         Section {
             TextField("Name", text: $name)
+            // **The push, not the menu** (Session 88). This was a plain
+            // `Picker`, which renders as a `.menu` in a Form, and the menu did
+            // not present at all inside this sheet - David, on the simulator:
+            // *"type for the endeavor is not clickable."* Every other control
+            // in the same Form takes its taps, so the Form is not the problem
+            // and the menu presentation is.
+            //
+            // `.navigationLink` sidesteps menu presentation entirely and
+            // pushes a list, which is the mechanism the Place row directly
+            // below has always used successfully in this same sheet. It reads
+            // better too: five options is a list, and the two rows now carry
+            // the same chevron and behave the same way.
             Picker("Type", selection: $type) {
                 ForEach(types, id: \.self) { Text($0).tag($0) }
             }
+            .pickerStyle(.navigationLink)
             // Doubles as the cover search term, which is why it is worth
             // a field rather than a line in the body: type it once and
             // the photograph comes from it.

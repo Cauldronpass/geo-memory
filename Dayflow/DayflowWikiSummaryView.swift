@@ -189,6 +189,8 @@ struct DayflowWikiSummaryView: View {
     @State private var isLoadingNoteStore = false
     @State private var noteStoreLoadedOnce = false
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
+    /// A tapped name that opened nothing, and why (Session 88, D282).
+    @State private var wikiMiss: DayflowWikiMissNotice? = nil
     /// Session 45 addendum 6 — set by MarkdownEditorView's onCaptureTap when a
     /// `[label](capture://open?id=ID)` marker is tapped, from either
     /// placeNotesTab or personNotesTab below (both share this one state var
@@ -242,6 +244,7 @@ struct DayflowWikiSummaryView: View {
                 editToolbarButton
             }
         }
+        .dayflowWikiMissAlert($wikiMiss)
         .sheet(item: $wikiLinkTarget) { nested in
             NavigationStack {
                 DayflowWikiSummaryView(target: nested)
@@ -1336,12 +1339,14 @@ struct DayflowWikiSummaryView: View {
 
     // MARK: - Wikilink resolution (notes tab → nested summary sheet)
 
+    /// Through the one resolver (D282). This was the thinnest of the four:
+    /// case-sensitive, places and people only, and silent on everything else.
+    /// It has no day peek, so a `[[yyyy-MM-dd]]` here opens the note itself.
     private func resolveWikiLink(_ name: String) {
-        if let place = NotionService.shared.places.first(where: { $0.name == name }) {
-            wikiLinkTarget = .place(place)
-        } else if let person = NotionService.shared.people.first(where: { $0.name == name }) {
-            wikiLinkTarget = .person(person)
-        }
+        DayflowWikiLink.follow(name,
+                               openURL: openURL,
+                               onRecord: { wikiLinkTarget = $0 },
+                               onMiss: { wikiMiss = $0 })
     }
 
     private func wikiSuggestions(for query: String) -> [(name: String, isPlace: Bool)] {

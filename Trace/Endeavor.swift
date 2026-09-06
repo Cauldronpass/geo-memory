@@ -1070,6 +1070,56 @@ extension EndeavorFile {
         return out
     }
 
+    /// **The one spelling of an endeavor link.** Everything that writes,
+    /// removes, filters or recognises one goes through these four functions, so
+    /// they cannot come to disagree about what a link looks like - which is the
+    /// failure that would offer a task in the attach sheet and then not show it
+    /// in the band afterwards.
+    ///
+    /// Added in Session 88 when the phone needed all of this and the Mac's
+    /// copies were private to `TraceMacEndeavorsView` and `MacTaskAttachSheet`.
+    /// Those still exist and are backlogged to retire onto these.
+    static func link(named name: String) -> String { "[[" + name + "]]" }
+
+    /// Which endeavor a task's notes name, or nil.
+    ///
+    /// Returns nil the instant `names` is empty, so a caller that has not
+    /// loaded the index runs no scan at all. The parser is
+    /// `NoteStore.wikilinkTargets`, the app's own: a second regex here would be
+    /// a second opinion about what a link is.
+    static func linkedName(in notes: String?, among names: Set<String>) -> String? {
+        guard !names.isEmpty, let notes, !notes.isEmpty else { return nil }
+        return NoteStore.wikilinkTargets(in: notes).first { names.contains($0) }
+    }
+
+    /// Notes with the link appended, or nil when it is already there.
+    ///
+    /// **Read-modify-write, never a bare set.** Notes carry machinery from
+    /// other features - `satchel:doc:` markers, the person-capture marker - and
+    /// writing a fresh string would delete them silently.
+    static func notesAttaching(_ link: String, to notes: String?) -> String? {
+        let existing = notes ?? ""
+        guard !existing.contains(link) else { return nil }
+        return existing.isEmpty ? link : existing + "\n" + link
+    }
+
+    /// Notes with the link removed and everything else kept, or nil when there
+    /// was nothing to remove.
+    ///
+    /// A line that is nothing but the link is dropped; a link sitting inside a
+    /// line someone typed is cut out and the rest of that line stays. Deleting
+    /// a whole line because it happens to mention an endeavor would throw away
+    /// prose the user wrote.
+    static func notesDetaching(_ link: String, from notes: String?) -> String? {
+        let existing = notes ?? ""
+        guard existing.contains(link) else { return nil }
+        return existing
+            .components(separatedBy: "\n")
+            .filter { $0.trimmingCharacters(in: .whitespaces) != link }
+            .map { $0.replacingOccurrences(of: link, with: "") }
+            .joined(separator: "\n")
+    }
+
     static func loadAll(from noteStore: NoteStore) -> [Endeavor] {
         guard noteStore.hasAccess else { return [] }
         let files = (try? noteStore.listFiles(in: folder)) ?? []

@@ -100,6 +100,9 @@ struct DayflowDailyNoteEditor: View {
     @State private var relatedNotesHidden = false
     @State private var isLoading = true
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
+    /// A tapped name that opened nothing, and why (Session 88, D282).
+    @State private var wikiMiss: DayflowWikiMissNotice? = nil
+    @Environment(\.openURL) private var openURL
     /// Session 45 addendum 6 — set by MarkdownEditorView's onCaptureTap when a
     /// `[label](capture://open?id=ID)` marker is tapped. Same isPresented-Binding
     /// pattern as peekDate below (String isn't Identifiable, so not .sheet(item:)).
@@ -341,6 +344,7 @@ struct DayflowDailyNoteEditor: View {
 
             Task { await load() }
         }
+        .dayflowWikiMissAlert($wikiMiss)
         .sheet(item: $wikiLinkTarget) { target in
             NavigationStack {
                 // sourceNoteText: content — Session 28 AI-prefill. The Daily Note is
@@ -490,22 +494,14 @@ struct DayflowDailyNoteEditor: View {
         return Array(results.prefix(8))
     }
 
+    /// Through the one resolver (D282). Was case-sensitive with an empty
+    /// `else`; the day peek stays local because it is real here.
     private func resolveWikiLink(_ name: String) {
-        // Session 38 addition — Daily Note prose previously only recognized
-        // Person/Place wikilinks. A Related Notes row pointing at another
-        // Daily Note reuses this same resolver when its embedded
-        // DayflowWikiSummaryView-style flow needs it, and it costs nothing
-        // to also let a hand-typed [[yyyy-MM-dd]] in the note body itself
-        // peek the same way Project Note's prose already allows.
-        if let date = DayflowRelatedNotesEngine.parseDailyNoteDate(name) {
-            peekDate = date
-            return
-        }
-        if let place = NotionService.shared.places.first(where: { $0.name == name }) {
-            wikiLinkTarget = .place(place)
-        } else if let person = NotionService.shared.people.first(where: { $0.name == name }) {
-            wikiLinkTarget = .person(person)
-        }
+        DayflowWikiLink.follow(name,
+                               openURL: openURL,
+                               onRecord: { wikiLinkTarget = $0 },
+                               onDailyNote: { peekDate = $0 },
+                               onMiss: { wikiMiss = $0 })
     }
 
     // MARK: Related Notes — add/remove (parsing/serialization/candidate
@@ -531,20 +527,42 @@ struct DayflowDailyNoteEditor: View {
             peekDate = d
         case .project(let name):
             openProjectTitle = name
+        // **Case-insensitive, and never silent** (D282). These were
+        // `if let` with no `else`, so a row naming a record whose case had
+        // drifted, or a record Notion had not delivered yet, was a row that
+        // did nothing when tapped - the same thing that made the destination
+        // pills look broken in Session 71.
+        //
+        // A failed lookup falls through to the shared resolver rather than to
+        // an error: the row already believes it knows what kind this is, and
+        // the resolver is the thing that can be wrong about that gracefully.
         case .person(let name):
-            if let person = NotionService.shared.people.first(where: { $0.name == name }) {
+            if let person = NotionService.shared.people.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }) {
                 wikiLinkTarget = .person(person)
+            } else {
+                resolveWikiLink(name)
             }
         case .place(let name):
-            if let place = NotionService.shared.places.first(where: { $0.name == name }) {
+            if let place = NotionService.shared.places.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }) {
                 wikiLinkTarget = .place(place)
+            } else {
+                resolveWikiLink(name)
             }
         case .visit(let id):
             if let visit = NotionService.shared.visits.first(where: { $0.id == id }) {
                 activeVisit = visit
+            } else {
+                wikiMiss = DayflowWikiMissNotice(name: "That visit", miss: .notFound)
             }
-        case .unknown:
-            break
+        // **`unknown` carries the name**, and it is how an endeavor reached
+        // these rows: nothing classified it, so the row did nothing at all.
+        // The resolver knows about endeavors now, so hand it over.
+        case .unknown(let name):
+            resolveWikiLink(name)
         }
     }
 }
