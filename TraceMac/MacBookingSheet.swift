@@ -19,7 +19,13 @@ import SwiftUI
 struct MacBookingSheet: View {
 
     /// Notion's seven Kind options, in the database's own order.
-    private let kinds = ["Flight", "Shuttle", "Train", "Hotel", "Car rental", "Parking", "Other"]
+    ///
+    /// **Static as of Session 92**, so the confirmation parser can name the
+    /// same seven words rather than carrying a second list that drifts the
+    /// first time an option is added in Notion. Still read through `kinds`
+    /// everywhere inside the sheet.
+    static let kinds = ["Flight", "Shuttle", "Train", "Hotel", "Car rental", "Parking", "Other"]
+    private var kinds: [String] { Self.kinds }
 
     /// The endeavor this booking belongs to. Its slug is written to `Endeavor`
     /// and its people are offered first in Who.
@@ -45,6 +51,22 @@ struct MacBookingSheet: View {
     /// shape the band it came from cannot show. Every field stays editable;
     /// this is a starting point, not a mode.
     var newRowIsLedger: Bool = false
+    /// Fields read out of a dropped confirmation (D319, Session 92).
+    ///
+    /// **Applied on create only, and after the ledger seeds.** An edit opens on
+    /// the row that exists; a parse that could reach the edit branch would
+    /// overwrite a real booking with a guess.
+    var seed: BookingParse? = nil
+    /// A quiet line at the top of the sheet: could not read it, or this
+    /// document holds more than one booking. Nil the rest of the time.
+    var seedNotice: String? = nil
+    /// Writes the endeavor's dates, when the line at the foot is ticked (D319).
+    ///
+    /// **A second closure rather than a flag on `onSave`.** The sheet has no
+    /// access to the endeavor store and should not gain one; the caller that
+    /// owns the popover already has it. Nil hides nothing on its own — the
+    /// line's conditions do that — it just means nobody is listening.
+    var onSetTripDates: ((Date, Date) async throws -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
 
@@ -71,6 +93,8 @@ struct MacBookingSheet: View {
     @State private var confirmingDelete = false
     @State private var failure: String? = nil
     @State private var seeded       = false
+    /// The line at the foot, ticked by default (D319).
+    @State private var alsoSetTripDates = true
     /// People created from inside this sheet.
     ///
     /// `people` is a snapshot passed in at presentation, so someone added here
@@ -83,6 +107,35 @@ struct MacBookingSheet: View {
     private var pool: [Person] { people + created }
 
     private var isEdit: Bool { existing != nil }
+
+    /// Whether to offer to set the trip's dates from this confirmation (D319).
+    ///
+    /// **Four conditions, and every one of them is doing work.** Creating, not
+    /// editing — an edit is not the moment to redate a trip. From a document,
+    /// not a `+` — a hand-typed row is not evidence about the trip. With a date
+    /// in the parse — there is nothing to offer otherwise. And only when the
+    /// endeavor has NEITHER date: a trip that already knows when it is does not
+    /// get asked, because one confirmation is a leg, not the trip.
+    private var offersTripDates: Bool {
+        existing == nil
+            && seed?.start != nil
+            && endeavor.starts == nil
+            && endeavor.ends == nil
+    }
+
+    /// "25 Nov to 29 Nov".
+    ///
+    /// **A one-way flight prints its own date twice**, which reads oddly and is
+    /// correct: a trip with one flight on it starts and ends that day until
+    /// something else says otherwise, and that is a better starting point than
+    /// no dates at all.
+    private var tripDatesLabel: String {
+        guard let start = seed?.start else { return "" }
+        let finish = seed?.end ?? start
+        let fmt = DateFormatter()
+        fmt.dateFormat = "d MMM"
+        return "\(fmt.string(from: start)) to \(fmt.string(from: finish))"
+    }
     private var labels: BookingKind.Labels { BookingKind.labels(for: kind) }
 
     /// Everyone the endeavor already names, resolved to a Notion person.
@@ -274,6 +327,17 @@ struct MacBookingSheet: View {
             }
             .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
 
+            if let seedNotice {
+                // Above the fields rather than below them, because it is about
+                // why the fields look the way they do. Secondary ink: it is a
+                // statement of fact, not a failure to act on — the document is
+                // filed and the sheet works.
+                Text(seedNotice)
+                    .font(MacType.meta)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20).padding(.bottom, 10)
+            }
+
             Form {
                 Section {
                     Picker("Kind", selection: kindBinding) {
@@ -362,6 +426,21 @@ struct MacBookingSheet: View {
                             .lineLimit(2)
                     }
                 }
+
+                if offersTripDates {
+                    // **One line at the foot, not a second sheet** (D319). Both
+                    // things are the richest reading of a dropped confirmation
+                    // — the row AND the trip's dates — and two sheets for one
+                    // drop is two saves and two chances to cancel halfway.
+                    //
+                    // Ticked by default because it is almost always right: a
+                    // trip with no dates and a confirmation in hand wants the
+                    // confirmation's dates. Untick it and only the row lands.
+                    Section {
+                        Toggle("Also set the trip's dates: \(tripDatesLabel)",
+                               isOn: $alsoSetTripDates)
+                    }
+                }
             }
             .formStyle(.grouped)
 
@@ -417,6 +496,61 @@ struct MacBookingSheet: View {
                     hasDate = false
                     kind    = "Other"
                     status  = BookingStatus.initial
+                }
+                // A dropped confirmation (D319). AFTER the ledger seeds, on the
+                // create branch only, and written straight to `kind` rather
+                // than through `kindBinding` for `newRowIsLedger`'s own reason:
+                // the binding carries the clear-on-group-change rule, which is
+                // a rule about what the USER does, and firing it here would
+                // wipe fields this block has just filled (warning ELEVEN, D267).
+                if let seed, seed.hasAnything {
+                    if let k = seed.kind, kinds.contains(k) { kind = k }
+                    if let value = seed.provider     { provider     = value }
+                    if let value = seed.number       { number       = value }
+                    if let value = seed.confirmation { confirmation = value }
+                    if let value = seed.from         { from         = value }
+                    if let value = seed.to           { to           = value }
+                    if let startDate = seed.start {
+                        hasDate = true
+                        start   = startDate
+                        hasTime = seed.hasTime
+                    } else {
+                        hasDate = false
+                    }
+                    if let endDate = seed.end {
+                        hasEnd = true
+                        end    = endDate
+                    } else {
+                        hasEnd = false
+                    }
+                    // **Full ink, in Cost.** A confirmation is a number somebody
+                    // gave him, which is the entire difference from a proposed
+                    // row's estimate (D316).
+                    if let amount = seed.cost { costText = String(format: "%g", amount) }
+                    // It is booked; that is what a confirmation confirms. Status
+                    // stays None — a ledger's three states are not a question a
+                    // ticket asks.
+                    booked = true
+                    status = nil
+                    // The currency is said, never converted. This sheet is USD,
+                    // and a euro figure typed into it silently means something
+                    // else. Warning TWELVE on the one field that is money.
+                    var lines: [String] = []
+                    if let text = seed.notes, !text.isEmpty { lines.append(text) }
+                    if let code = seed.currency, code.uppercased() != "USD" {
+                        lines.append("Printed in \(code.uppercased()). The cost above is that figure, not converted.")
+                    }
+                    if !lines.isEmpty { notes = lines.joined(separator: "\n") }
+                } else if seed != nil {
+                    // **Nothing was read, so nothing is filled in — and that
+                    // includes the date.** The line at the top of this sheet
+                    // says the document could not be read; leaving Has a date
+                    // on then fills the one field the sheet has no business
+                    // guessing, with today at the current minute. David pressed
+                    // Add on exactly that and got a phantom flight sitting on
+                    // the itinerary two months before the trip. Warning TWELVE:
+                    // a default that looks like an answer.
+                    hasDate = false
                 }
                 return
             }
@@ -511,6 +645,18 @@ struct MacBookingSheet: View {
         Task {
             do {
                 try await onSave(draft())
+                // **After the booking, never before** (D319). If the row fails
+                // to save, the trip keeps the dates it had; a trip redated by a
+                // booking that does not exist is the worse of the two failures.
+                if alsoSetTripDates, offersTripDates,
+                   let onSetTripDates, let start = seed?.start {
+                    // Deliberately `try?`. The row is already in Notion by this
+                    // point, so surfacing an error here would leave the sheet
+                    // open on a booking that saved, and a second press of Add
+                    // would write it twice. Dates he can type in Settings are a
+                    // far smaller loss than a duplicated flight.
+                    try? await onSetTripDates(start, seed?.end ?? start)
+                }
                 dismiss()
             } catch {
                 // Stays open with the typing intact. A sheet that closes on a

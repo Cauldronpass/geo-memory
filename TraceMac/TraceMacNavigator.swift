@@ -84,6 +84,44 @@ enum MacPlace: Hashable, Sendable {
     }
 }
 
+/// The endeavor currently on screen, for the ONE caller that needs it and
+/// cannot reach it: the window's drop zone (Session 92, D325).
+///
+/// **This exists because two attempts at winning a hit test both lost.** The
+/// Endeavors view has its own `.onDrop` covering the endeavor page and its
+/// rail; the window has one covering everything. A file let go over the trip
+/// kept arriving at the window's, which filed it unattached and switched
+/// section — twice, on two different zone shapes. Rather than guess at SwiftUI's
+/// nested-drop precedence a third time, the window's zone is told what is on
+/// screen and files to it. The handler that demonstrably receives every drop is
+/// now the handler that does the right thing with one.
+///
+/// Written by `TraceMacEndeavorsView` whenever its selection changes, and read
+/// only inside `handleGlobalDrop`, which also checks the section — so leaving
+/// Endeavors needs no clearing step that could be missed.
+@MainActor
+@Observable
+final class MacEndeavorDropTarget {
+    static let shared = MacEndeavorDropTarget()
+    private init() {}
+    var endeavor: Endeavor?
+
+    /// A document the window's zone has just filed to that endeavor, waiting
+    /// for the Endeavors view to offer D322's three verbs. Consume and clear.
+    ///
+    /// **This was a notification for one build and it did not arrive.** David:
+    /// dropping on the rail asked the question, dropping on the endeavor page
+    /// filed the file and asked nothing. `MacSearchRoute`'s own doc comment
+    /// already names the reason a notification is the wrong mechanism here — "a
+    /// notification posted then lands before anything is listening" — and this
+    /// is the same hand-off between the same two views. Observation is what the
+    /// app uses everywhere else for this, so it is what this uses now.
+    ///
+    /// The PATH, not the URL: the dropped URL's security scope has ended by the
+    /// time anyone reads this.
+    var pendingPrompt: String?
+}
+
 @MainActor
 @Observable
 final class MacNavigator {

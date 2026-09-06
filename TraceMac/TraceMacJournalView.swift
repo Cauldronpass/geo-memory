@@ -15,6 +15,11 @@ extension Notification.Name {
     static let openWikilink      = Notification.Name("trace.openWikilink")
     static let selectDocument    = Notification.Name("trace.selectDocument")
     static let reloadDocuments   = Notification.Name("trace.reloadDocuments")
+    // `endeavorDocumentFiled` lived here for one build of Session 92 and was
+    // removed the same day. It was the window drop zone telling the Endeavors
+    // view a file had landed, and it did not arrive — the same failure
+    // `MacSearchRoute`'s doc comment already describes. That hand-off is
+    // `MacEndeavorDropTarget.pendingPrompt` now, by observation.
     /// Navigate to a record from any context. userInfo: ["type": "person"|"place", "id": String]
     static let navigateToRecord  = Notification.Name("trace.navigateToRecord")
 

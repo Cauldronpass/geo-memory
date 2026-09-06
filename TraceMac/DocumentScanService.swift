@@ -44,12 +44,81 @@ enum DocumentScanError: LocalizedError {
     }
 }
 
+// MARK: - What a confirmation turned into
+
+/// A dropped confirmation, read into the fields `MacBookingSheet` already has
+/// (D319, Session 92).
+///
+/// **Every field is optional and nothing here is written anywhere.** This is a
+/// seed for a sheet, not a record: David corrects it and presses Save, and the
+/// save is the ordinary `NotionService.saveBooking` every other row goes
+/// through. A parse that guessed badly costs him a correction; a parse that
+/// wrote would cost him a row he did not ask for.
+///
+/// **`found` is the count the document holds, not the count returned.** A
+/// return flight is one PDF with two legs, and v1 seeds the first and says so
+/// at the top of the sheet. Silently seeding one of two would be the Session 86
+/// class of bug — a screen reporting an absence that is not true.
+struct BookingParse {
+    /// One of `MacBookingSheet.kinds`, or nil when the document did not say.
+    var kind: String?         = nil
+    /// "United", "Marriott", "Go Airport Shuttle".
+    var provider: String?     = nil
+    /// Flight number, job number, reservation number.
+    var number: String?       = nil
+    var confirmation: String? = nil
+    /// Airport or city. Nil on a hotel, which has no from.
+    var from: String?         = nil
+    /// Airport or city; on a hotel, the property's city.
+    var to: String?           = nil
+    /// Departure, or check-in.
+    var start: Date?          = nil
+    /// Arrival, or check-out.
+    var end: Date?            = nil
+    /// False for a hotel with no clock time on it. The sheet's Include times.
+    var hasTime: Bool         = false
+    var cost: Double?         = nil
+    /// Recorded, never converted. The sheet is USD; a euro figure typed into it
+    /// silently means something else, so it is said in the notes instead.
+    var currency: String?     = nil
+    /// Bookings the document holds. 0 means nothing was read.
+    var found: Int            = 0
+    var notes: String?        = nil
+    /// Set when the year the model returned is not a year the document prints
+    /// (D330). Shown at the top of the sheet, above the fields it is about.
+    var dateWarning: String?  = nil
+
+    /// True when there is something worth putting on a sheet.
+    ///
+    /// A date alone is not enough — every confirmation has a date somewhere and
+    /// a sheet seeded with only a date looks read when it was not.
+    var hasAnything: Bool {
+        kind != nil || provider != nil || number != nil
+            || confirmation != nil || from != nil || to != nil || cost != nil
+    }
+}
+
 // MARK: - Service
 
 enum DocumentScanService {
 
     private static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
     private static let model    = "claude-haiku-4-5-20251001"   // fast + cheap for metadata extraction
+
+    /// The confirmation parse only (D327). Ask's model, `TraceMacAskService`.
+    ///
+    /// **Haiku was tried and it could not hold a date.** Two runs over the same
+    /// United PDF returned the same flight number and confirmation code and two
+    /// different dates and two different fares — 24 Feb / $300, then 12 May /
+    /// $200 — both in 2026, on a document printing 2024 twice. Two prompt
+    /// rewrites did not move it, and instability across runs on fields the
+    /// document states plainly is a capability signal, not a wording one. The
+    /// starter for this session named this exact escalation in advance.
+    ///
+    /// **Scoped to this one call.** `scan` stays on Haiku: tags and a
+    /// one-sentence description are what it is good at, it runs on every
+    /// document that arrives, and nothing about it has ever been wrong this way.
+    private static let bookingModel = "claude-sonnet-5"
 
     private static var apiKey: String {
         // Was a direct `UserDefaults(suiteName:)` read. Routed through
@@ -95,6 +164,365 @@ enum DocumentScanService {
         } else {
             throw DocumentScanError.unsupportedFormat
         }
+    }
+
+    // MARK: - Confirmation parsing (D319, Session 92)
+
+    /// Reads a dropped confirmation into booking fields.
+    ///
+    /// **The private guard is first, in the same position `scan` puts it**, and
+    /// for the same reason: a document that must not leave the Mac must be
+    /// refused before the key is checked, before the file is opened, and before
+    /// anything is encoded. `Read privately` never reaches this entry point at
+    /// all — it tags and then goes to `MacLocalIntelligence` — but a second
+    /// caller arriving later must hit the same wall this one does.
+    ///
+    /// Throws rather than returning an empty parse, so the caller can tell
+    /// "could not read it" from "read it and it holds no booking". Both open
+    /// the same sheet with the same line; keeping them distinct here costs
+    /// nothing and a future third answer will need it.
+    static func parseBooking(doc: TraceMacDocument, noteStore: NoteStore) async throws -> BookingParse {
+        guard !doc.isPrivate else { throw DocumentScanError.isPrivate }
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DocumentScanError.noKey
+        }
+        guard let fileURL = noteStore.resolvedURL(for: doc.relativePath) else {
+            throw DocumentScanError.noContent
+        }
+
+        let prompt = bookingPrompt()
+
+        if doc.isPDF {
+            guard let pdf = PDFDocument(url: fileURL) else { throw DocumentScanError.noContent }
+            // Six pages rather than `scan`'s four. A confirmation email printed
+            // to PDF puts the fare breakdown and the confirmation code on
+            // different pages, and the useful half is often the second one.
+            var text = ""
+            for i in 0..<min(pdf.pageCount, 6) {
+                if let page = pdf.page(at: i), let s = page.string { text += s + "\n" }
+            }
+            let preview = String(text.prefix(8_000))
+            let years = documentYears(preview)
+            // **The same letters-or-digits test the scan path uses**, not
+            // "non-empty", so the two cannot disagree about which PDFs have a
+            // text layer and fall back differently on the same file.
+            if preview.contains(where: { $0.isLetter || $0.isNumber }) {
+                let body = requestBody(textPrompt: bookingPrompt(printedYears: years)
+                                            + "\n\nDocument text:\n" + preview,
+                                       maxTokens: 900, modelName: bookingModel)
+                let raw = try await sendRaw(body: body)
+                var parse = try decodeBooking(raw)
+                // The prompt asks; this checks. Asking has failed on two models.
+                reconcileYear(&parse, printed: years)
+                return parse
+            }
+            // No text layer — a scanned or photographed confirmation. Same
+            // branch `scanPDF` takes, for the same reason.
+            guard let page = pdf.page(at: 0), let rendered = renderPageImage(page) else {
+                throw DocumentScanError.noContent
+            }
+            let body = requestBody(imageData: rendered, textPrompt: prompt, maxTokens: 900,
+                                   modelName: bookingModel)
+            let raw = try await sendRaw(body: body)
+            return try decodeBooking(raw)
+        }
+
+        if doc.isImage {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: fileURL)
+            guard let raw = try? Data(contentsOf: fileURL), !raw.isEmpty else {
+                throw DocumentScanError.apiError("Could not read the image — it may still be downloading from iCloud.")
+            }
+            let imageData = resizedImageData(raw, maxDimension: 1600) ?? raw
+            let body = requestBody(imageData: imageData, textPrompt: prompt, maxTokens: 900,
+                                   modelName: bookingModel)
+            let answer = try await sendRaw(body: body)
+            return try decodeBooking(answer)
+        }
+
+        throw DocumentScanError.unsupportedFormat
+    }
+
+    /// Reads a confirmation on this Mac, for a document tagged `private` (D322).
+    ///
+    /// **Nothing here touches the network**, which is the entire reason the
+    /// verb exists. The text comes off the file by `MacTextExtraction` — the
+    /// PDF's own text layer, or Vision on the pages of a scanned one — and goes
+    /// to Apple's on-device model.
+    ///
+    /// **The extraction is detached because it must not run on the main
+    /// thread.** `MacTextExtraction` says so in its own header: Vision on a full
+    /// page is tens of milliseconds and a scanned PDF is that per page. This
+    /// file is main-actor isolated by the project's default, so the hop is
+    /// explicit rather than accidental.
+    ///
+    /// Returns `nil` for every failure — no model on this Mac, no readable
+    /// text, a model that returned nothing usable. The caller shows the same
+    /// empty sheet and the same line as an unreadable document, because from
+    /// where David is standing that is what happened.
+    static func parseBookingLocally(doc: TraceMacDocument, noteStore: NoteStore) async -> BookingParse? {
+        guard let url = noteStore.resolvedURL(for: doc.relativePath) else { return nil }
+
+        let text = await Task.detached { MacTextExtraction.extract(from: url) }.value
+        guard let text, text.contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
+        guard let facts = await MacLocalIntelligence.parseBooking(text: text) else { return nil }
+
+        func value(_ raw: String) -> String? {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty, t.lowercased() != "null", t.lowercased() != "n/a" else { return nil }
+            return t
+        }
+
+        var parse = BookingParse()
+        parse.kind = value(facts.kind).flatMap { candidate in
+            MacBookingSheet.kinds.first { $0.lowercased() == candidate.lowercased() }
+        }
+        parse.provider     = value(facts.provider)
+        parse.number       = value(facts.number)
+        parse.confirmation = value(facts.confirmation)
+        parse.from         = value(facts.from)
+        parse.to           = value(facts.to)
+
+        let startPair = localDate(facts.start)
+        parse.start   = startPair.date
+        parse.hasTime = startPair.hasTime
+        parse.end     = localDate(facts.end).date
+
+        if let raw = value(facts.cost) {
+            let digits = raw.filter { $0.isNumber || $0 == "." }
+            if let amount = Double(digits), amount > 0 { parse.cost = amount }
+        }
+
+        // Same rule the cloud decode uses: fields without a count is one
+        // booking, and no fields at all is nothing read.
+        parse.found = parse.hasAnything ? 1 : 0
+        // And the same year check. A smaller model is likelier to need it, not
+        // less, and the text is already in hand.
+        reconcileYear(&parse, printed: documentYears(text))
+        return parse.hasAnything ? parse : nil
+    }
+
+    /// Every four-digit year the document prints.
+    ///
+    /// **Bounded by non-digits, and bounded to 1900–2099**, which is what keeps
+    /// a flight number out of it: `UA1898` yields 1898 and 1898 is not a year
+    /// this rule will accept. A fare of `2024.00` will land in the set, and
+    /// that is a false positive worth taking — the set is only ever used to
+    /// widen what is allowed, never to narrow it.
+    private static func documentYears(_ text: String) -> Set<Int> {
+        var years: Set<Int> = []
+        var run = ""
+        func flush() {
+            if run.count == 4, let value = Int(run), (1900...2099).contains(value) {
+                years.insert(value)
+            }
+            run = ""
+        }
+        for ch in text {
+            if ch.isNumber { run.append(ch) } else { flush() }
+        }
+        flush()
+        return years
+    }
+
+    /// Puts the parsed dates back into a year the document actually prints
+    /// (D330).
+    ///
+    /// **This exists because two prompts and two models could not stop a model
+    /// dating an old confirmation to this year.** The document is the authority
+    /// on what year it is about, and the years it prints are a fact that can be
+    /// read without asking anyone. A model that returns a year the paper does
+    /// not contain has not read it off the paper.
+    ///
+    /// **One printed year: snap to it, and say so.** That is the overwhelming
+    /// case — a confirmation is about one trip in one year — and it is a
+    /// correction the sheet can state in a line rather than a guess it has to
+    /// hide.
+    ///
+    /// **More than one: change nothing, and say THAT.** Choosing between 2024
+    /// and 2025 by rule would be inventing an answer, which is the thing being
+    /// fixed. A flagged date David checks beats a silently corrected one he
+    /// does not. Warning TWELVE.
+    ///
+    /// Never fires when the model's year is already on the document, which is
+    /// the normal case, so a correct parse is untouched.
+    private static func reconcileYear(_ parse: inout BookingParse, printed: Set<Int>) {
+        guard let start = parse.start, !printed.isEmpty else { return }
+        let cal = Calendar.current
+        let read = cal.component(.year, from: start)
+        guard !printed.contains(read) else { return }
+
+        guard printed.count == 1, let only = printed.first else {
+            parse.dateWarning = "Check the date — this document does not print \(read) anywhere."
+            return
+        }
+
+        func moved(_ date: Date) -> Date {
+            var parts = cal.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+            parts.year = only
+            return cal.date(from: parts) ?? date
+        }
+        parse.start = moved(start)
+        if let end = parse.end { parse.end = moved(end) }
+        parse.dateWarning = "Year corrected to \(only), the only year on the document. It was read as \(read)."
+    }
+
+    /// What the model is asked for.
+    ///
+    /// **The field descriptions are `BookingKind.help(for:)`'s own words**, cut
+    /// down to what a reader of a confirmation needs. David asked for exactly
+    /// that, and the reason is that the sheet's info popover and this prompt
+    /// must mean the same thing by "Number" — one of them is what he reads when
+    /// he forgets, and the other is what decides where the string lands.
+    ///
+    /// **Today's date is given for one purpose and it is stated.** A boarding
+    /// pass often prints "25 NOV" with no year, and a model with no idea what
+    /// day it is will pick one. It resolves a missing year; it never supplies a
+    /// missing date.
+    private static func bookingPrompt(printedYears: Set<Int> = []) -> String {
+        let today = DateFormatter()
+        today.dateFormat = "yyyy-MM-dd"
+        let stamp = today.string(from: Date())
+
+        // Built as a statement rather than a ternary chain: a trailing closure
+        // sitting after `:` and between two `+` is exactly the shape Swift's
+        // parser reads two ways.
+        var yearLine = ""
+        if !printedYears.isEmpty {
+            let list = printedYears.sorted().map({ String($0) }).joined(separator: ", ")
+            yearLine = "\n        - The only years printed anywhere on this document are: "
+                     + list + ". Every date you return must use one of them."
+        }
+
+        return """
+        You are reading a travel or service confirmation. Return JSON only — no explanation, no markdown fences.
+
+        Today is \(stamp), given for one purpose only: see the year rule below. Never invent a date the document does not state.
+
+        Return exactly this structure:
+        {
+          "found": 1,
+          "kind": "Flight",
+          "provider": "United",
+          "number": "UA 1642",
+          "confirmation": "K4M2QP",
+          "from": "ORD",
+          "to": "DEN",
+          "start": "2026-11-25T17:40",
+          "end": "2026-11-25T19:12",
+          "cost": 318.40,
+          "currency": "USD",
+          "notes": null
+        }
+
+        Rules:
+        - found: how many separate bookings this document holds. A round trip printed as two flights is 2. One hotel stay is 1. If it holds no booking at all, return 0 and null for every other field.
+        - Describe the FIRST booking only. Ignore the rest.
+        - kind: exactly one of Flight, Shuttle, Train, Hotel, Car rental, Parking, Other. Null if it is none of those.
+        - provider: who is providing it — the airline, the hotel brand, the rental company, the shuttle operator.
+        - number: their reference for the thing itself, the one printed on the ticket or the door — a flight number, a room number, a rental reservation number. Null if none is printed.
+        - confirmation: the booking reference you would read out on the phone. Rarely the same string as number; return both when both are printed.
+        - from: where it starts from — airport code or city. Null for a hotel or a car park, which have no from.
+        - to: where it goes; for a stay, where it IS — the property's city, or the car park.
+        - start: departure, check-in, or pick-up. "YYYY-MM-DDTHH:mm" when a clock time is printed, "YYYY-MM-DD" when only a day is. Local time exactly as printed; do not convert between timezones.
+        - end: arrival, check-out, or drop-off, in the same two formats. Null when the document states only one end.
+        - cost: the total charged, as a plain number with no currency symbol and no thousands separator. Null when no figure is printed. Never estimate one.
+        - currency: the ISO code of that figure, e.g. "USD", "EUR". Null when cost is null.
+        - notes: anything printed that matters and fits none of the fields above — a seat, a gate, a cancellation deadline, a pickup instruction. One short sentence, or null.
+        - YEARS. Use the year printed beside the travel date. If none is printed there, take it from another date on the document — an email header, an issue or purchase date, a printed footer. Only when the document shows no year anywhere at all, use today's. **Never move a date into a different year to make it look upcoming.** An old confirmation is an old confirmation.
+        - Every field the document does not state is null. Guessing is worse than null.
+        - Return valid JSON only. No other text.\(yearLine)
+        """
+    }
+
+    /// Turns the model's JSON into a `BookingParse`.
+    ///
+    /// **Shape is not trusted, only meaning** — the same rule
+    /// `MacLocalIntelligence.clean` states. A cost can come back as `318.40`,
+    /// `"318.40"` or `"$318.40"`, and a Kind can come back correct but
+    /// lowercase. Fixing that here is cheaper than explaining it in the prompt
+    /// and, unlike the prompt, it cannot be ignored.
+    private static func decodeBooking(_ cleaned: String) throws -> BookingParse {
+        guard let data = cleaned.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw DocumentScanError.parseError("Could not parse JSON: \(cleaned.prefix(200))")
+        }
+
+        func string(_ key: String) -> String? {
+            guard let raw = obj[key] as? String else { return nil }
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty, t.lowercased() != "null" else { return nil }
+            return t
+        }
+
+        var parse = BookingParse()
+        parse.kind = string("kind").flatMap { candidate in
+            MacBookingSheet.kinds.first { $0.lowercased() == candidate.lowercased() }
+        }
+        parse.provider     = string("provider")
+        parse.number       = string("number")
+        parse.confirmation = string("confirmation")
+        parse.from         = string("from")
+        parse.to           = string("to")
+        parse.notes        = string("notes")
+        parse.currency     = string("currency")
+
+        let startPair = localDate(obj["start"])
+        let endPair   = localDate(obj["end"])
+        parse.start   = startPair.date
+        parse.end     = endPair.date
+        // **One flag for the row, taken from the start.** The sheet has a
+        // single Include times, because a booking that departs at a clock time
+        // and arrives on a day is not a shape it can save. Start is the half he
+        // is standing in front of.
+        parse.hasTime = startPair.hasTime
+
+        if let n = obj["cost"] as? NSNumber {
+            parse.cost = n.doubleValue > 0 ? n.doubleValue : nil
+        } else if let s = string("cost") {
+            let cleanedCost = s.filter { $0.isNumber || $0 == "." }
+            if let value = Double(cleanedCost), value > 0 { parse.cost = value }
+        }
+        if parse.cost == nil { parse.currency = nil }
+
+        if let n = obj["found"] as? NSNumber {
+            parse.found = n.intValue
+        } else if let s = string("found"), let value = Int(s) {
+            parse.found = value
+        }
+        // A model that filled the fields and forgot the count has found one.
+        // Leaving it at zero would put "Couldn't read this document" above a
+        // sheet that is plainly full.
+        if parse.found == 0, parse.hasAnything { parse.found = 1 }
+
+        return parse
+    }
+
+    /// `"2026-11-25T17:40"` or `"2026-11-25"`, read in this Mac's timezone.
+    ///
+    /// **Local, not UTC.** A confirmation prints the time at the airport it
+    /// leaves from, and the sheet shows what it is given. Parsing 17:40 as UTC
+    /// would put a Denver departure on screen at 11:40, which is a wrong answer
+    /// that looks like a right one.
+    private static func localDate(_ raw: Any?) -> (date: Date?, hasTime: Bool) {
+        guard let s = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !s.isEmpty, s.lowercased() != "null" else { return (nil, false) }
+
+        let withTime = DateFormatter()
+        withTime.locale = Locale(identifier: "en_US_POSIX")
+        withTime.timeZone = .current
+        withTime.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        if let d = withTime.date(from: String(s.prefix(16))), s.count >= 16 {
+            return (d, true)
+        }
+
+        let dayOnly = DateFormatter()
+        dayOnly.locale = Locale(identifier: "en_US_POSIX")
+        dayOnly.timeZone = .current
+        dayOnly.dateFormat = "yyyy-MM-dd"
+        if let d = dayOnly.date(from: String(s.prefix(10))) {
+            return (d, false)
+        }
+        return (nil, false)
     }
 
     // MARK: - PDF scanning
@@ -275,28 +703,29 @@ enum DocumentScanService {
         """
     }
 
-    // MARK: - Claude API call (text prompt only)
+    // MARK: - Request bodies
 
-    private static func callClaude(textPrompt: String) async throws -> DocumentScanResult {
-        let body: [String: Any] = [
-            "model": model,
-            "max_tokens": 512,
+    /// **One body shape per input, built in one place.** Session 92 added a
+    /// second question for the same model; two copies of this dictionary is two
+    /// places for the model name and the token cap to drift apart, and the one
+    /// that drifts is always the one nobody is looking at.
+    private static func requestBody(textPrompt: String, maxTokens: Int = 512,
+                                    modelName: String = model) -> [String: Any] {
+        [
+            "model": modelName,
+            "max_tokens": maxTokens,
             "messages": [[
                 "role": "user",
                 "content": textPrompt
             ]]
         ]
-        return try await sendRequest(body: body)
     }
 
-    // MARK: - Claude API call (image + text prompt)
-
-    private static func callClaude(imageData: Data, textPrompt: String) async throws -> DocumentScanResult {
-        let base64 = imageData.base64EncodedString()
-        let mediaType = detectMediaType(imageData)
-        let body: [String: Any] = [
-            "model": model,
-            "max_tokens": 512,
+    private static func requestBody(imageData: Data, textPrompt: String, maxTokens: Int = 512,
+                                    modelName: String = model) -> [String: Any] {
+        [
+            "model": modelName,
+            "max_tokens": maxTokens,
             "messages": [[
                 "role": "user",
                 "content": [
@@ -304,8 +733,8 @@ enum DocumentScanService {
                         "type": "image",
                         "source": [
                             "type": "base64",
-                            "media_type": mediaType,
-                            "data": base64
+                            "media_type": detectMediaType(imageData),
+                            "data": imageData.base64EncodedString()
                         ]
                     ],
                     [
@@ -315,12 +744,29 @@ enum DocumentScanService {
                 ]
             ]]
         ]
-        return try await sendRequest(body: body)
+    }
+
+    // MARK: - Claude API call (text prompt only)
+
+    private static func callClaude(textPrompt: String) async throws -> DocumentScanResult {
+        try await sendRequest(body: requestBody(textPrompt: textPrompt))
+    }
+
+    // MARK: - Claude API call (image + text prompt)
+
+    private static func callClaude(imageData: Data, textPrompt: String) async throws -> DocumentScanResult {
+        try await sendRequest(body: requestBody(imageData: imageData, textPrompt: textPrompt))
     }
 
     // MARK: - Shared request sender
 
-    private static func sendRequest(body: [String: Any]) async throws -> DocumentScanResult {
+    /// The HTTP call, the envelope and the fence, and nothing else.
+    ///
+    /// Split out in Session 92 so the booking parse and the document scan send
+    /// the same request through the same error handling and differ only in what
+    /// they ask for and what they do with the answer. `sendRequest` below is now
+    /// this plus one decode.
+    private static func sendRaw(body: [String: Any]) async throws -> String {
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.setValue(apiKey,            forHTTPHeaderField: "x-api-key")
@@ -347,7 +793,11 @@ enum DocumentScanService {
         }
 
         // Strip code fences if Claude wrapped the JSON anyway
-        let cleaned = stripCodeFence(text)
+        return stripCodeFence(text)
+    }
+
+    private static func sendRequest(body: [String: Any]) async throws -> DocumentScanResult {
+        let cleaned = try await sendRaw(body: body)
         guard let jsonData = cleaned.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
             throw DocumentScanError.parseError("Could not parse JSON: \(cleaned.prefix(200))")

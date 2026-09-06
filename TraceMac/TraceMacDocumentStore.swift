@@ -316,6 +316,27 @@ class TraceMacDocumentStore {
     /// document filed from the phone's Endeavor screen already carries.
     @discardableResult
     func importDocument(from sourceURL: URL, filedTo endeavor: Endeavor? = nil) throws -> String {
+        // **The same file dropped on the same endeavor twice is the same file**
+        // (D331, Session 92). David dropped his United itinerary a second time
+        // to re-run the read and got a second copy in the rail. Re-dropping is
+        // the only way to ask a filed document to be read again, so the gesture
+        // is right and the duplicate is not: it reuses what is already there
+        // and the three verbs come up on it.
+        //
+        // **Matched on the ORIGINAL filename and on the endeavor, both.** The
+        // import prefixes a timestamp precisely so two files called
+        // `boarding-pass.pdf` can coexist, and they should — the same name
+        // filed to two different trips is two documents. This only collapses a
+        // repeat of the same file onto the same trip.
+        //
+        // Only when there IS an endeavor. A screenshot dropped on the window
+        // twice keeps both copies, exactly as it does today; nothing about
+        // that gesture says the second one was a mistake.
+        if let endeavor,
+           let existing = existingImport(named: sourceURL.lastPathComponent, filedTo: endeavor) {
+            return existing
+        }
+
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd-HHmmss"
         let timestamp = fmt.string(from: Date())
@@ -324,7 +345,6 @@ class TraceMacDocumentStore {
         let relativePath = try noteStore.writeDocument(data,
                                                        category: NoteStore.documentFolder(),
                                                        filename: filename)
-        guard let endeavor else { return relativePath }
 
         // Same derivation `moveDocument` uses: drop the extension, add `.md`.
         let ext = sourceURL.pathExtension
@@ -339,11 +359,53 @@ class TraceMacDocumentStore {
         // it in the rail would be leaking a storage detail into a title.
         data2.title       = sourceURL.deletingPathExtension().lastPathComponent
         data2.created     = Date()
-        data2.endeavor     = endeavor.id
-        data2.endeavorName = endeavor.name
-        data2.linkedNote   = endeavor.relativePath
+        // **The sidecar is written whether or not there is an endeavor**
+        // (Session 92). It used to return early with no endeavor, which meant
+        // every file dropped on the window rather than on an endeavor landed
+        // with no sidecar at all — and therefore no title. David dropped a
+        // United itinerary and got a row with a blank name sitting above its
+        // own date, which is what sent me looking at this method.
+        //
+        // The title is the only thing that needs writing in that case; the two
+        // association keys stay nil, which is exactly what "filed, not filed to
+        // anything" means. **Both are written when there IS one**, on purpose:
+        // `endeavor` is what Satchel's capture sets and what the Mac's rail
+        // filters on, `linked_note` is what `SatchelDocumentChips` on the phone
+        // filters on. Writing one without the other produces a document that is
+        // visible on one device and invisible on the other.
+        if let endeavor {
+            data2.endeavor     = endeavor.id
+            data2.endeavorName = endeavor.name
+            data2.linkedNote   = endeavor.relativePath
+        }
         try noteStore.writeFile(sidecarPath, content: renderSidecar(data2))
         return relativePath
+    }
+
+    /// A document already filed to this endeavor that came from a file of this
+    /// name, or nil (D331).
+    ///
+    /// Reads the folder rather than `documents`, because the one caller that
+    /// needs this most builds a store of its own and never loads it — see
+    /// `TraceMacContentView.handleGlobalDrop`. A directory listing and at most
+    /// a few sidecar reads is cheap next to a drag the user just finished.
+    ///
+    /// **This year's folder only.** `documentFolder()` is the year, imports go
+    /// there, and a re-drop happens seconds after the first one. A copy filed
+    /// last December is not what "I just dropped this twice" means.
+    private func existingImport(named originalFilename: String, filedTo endeavor: Endeavor) -> String? {
+        let folder = "Documents/\(NoteStore.documentFolder())"
+        let suffix = "-\(originalFilename)"
+        guard let names = try? noteStore.listDocumentFiles(in: folder) else { return nil }
+        for name in names where name.hasSuffix(suffix) {
+            let relativePath = "\(folder)/\(name)"
+            let ext = (name as NSString).pathExtension
+            let base = ext.isEmpty ? relativePath : String(relativePath.dropLast(ext.count + 1))
+            guard let sidecar = parseSidecar(at: "\(base).md"),
+                  sidecar.endeavor == endeavor.id else { continue }
+            return relativePath
+        }
+        return nil
     }
 
     // MARK: - Auto-scan on arrival (Session 69)

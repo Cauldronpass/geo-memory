@@ -117,6 +117,16 @@ struct TraceMacEndeavorsView: View {
     @State private var taskSheet: TaskSheet? = nil
     @State private var openTaskID: String? = nil
     @State private var isDocDropTargeted = false
+    /// A file has just been filed and is asking what it is (D322).
+    ///
+    /// **The file is already in Satchel by the time this is set.** The import
+    /// happens first and unconditionally, so Escape, a click away, or a crash
+    /// between the drop and the answer all leave the document filed. A dropped
+    /// file must never be lost to a dismissed popover.
+    @State private var docPrompt: DocDropPrompt? = nil
+    /// True while a dropped document is being read, so the three verbs are
+    /// replaced by what is happening rather than staying pressable.
+    @State private var parsingDrop = false
     /// Projects + Daily. Read once when the section appears; a note created
     /// while it is open shows up on the next visit, which is the same freshness
     /// the document and visit lists have.
@@ -140,6 +150,9 @@ struct TraceMacEndeavorsView: View {
     @State private var addingPersonTo: Endeavor? = nil
     @State private var selectedID: String?
     @State private var navigator = MacNavigator.shared
+    /// Written by the window's drop zone, read here. See
+    /// `MacEndeavorDropTarget.pendingPrompt`.
+    @State private var dropTarget = MacEndeavorDropTarget.shared
     /// Remembered across launches. The two inline copies of this strip in
     /// People and Places used plain `@State`, so a widened column was narrow
     /// again on the next launch.
@@ -306,9 +319,40 @@ struct TraceMacEndeavorsView: View {
                 MacColumnResizer(width: $listWidth)
                 Divider()
                 if let e = selected {
-                    detail(e)
-                    Divider()
-                    rail(e)
+                    // **The whole endeavor is the drop zone, not the rail's
+                    // Satchel strip** (Session 92, found on David's first test).
+                    //
+                    // He dragged a United itinerary "to the Thanksgiving
+                    // endeavor" and the app filed it to Satchel untitled,
+                    // unlinked, and jumped him there. Nothing about the popover
+                    // was wrong: the drop never reached it. The Satchel section
+                    // is a ~90pt strip inside a 232pt rail, and everything else
+                    // on the page — the cover, the bands, the note — fell
+                    // through to `TraceMacContentView.handleGlobalDrop`, which
+                    // files to Satchel with no endeavor and switches section.
+                    //
+                    // **A drop zone the size of a rail section is a drop zone
+                    // you have to aim at**, and nobody aims at a rail when the
+                    // thing they mean is the trip. The zone now covers the
+                    // endeavor page and its rail together. The Satchel section
+                    // still draws the accent border, which is now the useful
+                    // half of the feedback: it says where the file is going.
+                    HStack(spacing: 0) {
+                        detail(e)
+                        Divider()
+                        rail(e)
+                    }
+                    // **`contentShape` because a stack's drop area is its
+                    // subviews, not its frame.** Every drop zone in this app
+                    // that works is attached to something with a filled
+                    // background; this one had neither, which is at least part
+                    // of why the window's zone kept winning. It is not the whole
+                    // fix — see `MacEndeavorDropTarget` — but a zone with gaps
+                    // in it is wrong on its own terms.
+                    .contentShape(Rectangle())
+                    .onDrop(of: [UTType.fileURL], isTargeted: $isDocDropTargeted) { providers in
+                        handleDocumentDrop(providers, for: e)
+                    }
                 } else {
                     MacEmptyState.placeholder("flag", "Select an endeavor")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -321,6 +365,23 @@ struct TraceMacEndeavorsView: View {
         // look intended and wrong enough to be useless. `selected` is derived
         // (it falls back to the first live row), so the id it resolves to is the
         // one on screen, which is the one worth returning to.
+        // What the window's drop zone files to. Set on arrival as well as on
+        // change, because landing on this section with a row already selected
+        // is not a change and a drop a second later is perfectly possible.
+        .onChange(of: selected?.id, initial: true) { _, _ in
+            MacEndeavorDropTarget.shared.endeavor = selected
+        }
+        // A file the WINDOW's zone caught while this endeavor was on screen. It
+        // is already imported and linked; what is left is the reload and the
+        // three verbs, which is exactly what the local zone does after its own
+        // import. Both routes end in the same popover.
+        //
+        // **`task(id:)` AND `onChange`, which is `MacSearchRoute`'s own pairing
+        // in `TraceMacContentView`.** One fires when the value is already set as
+        // this view appears, the other when it changes while it is on screen,
+        // and a hand-off between two views needs both.
+        .task(id: dropTarget.pendingPrompt) { consumeDropPrompt() }
+        .onChange(of: dropTarget.pendingPrompt) { consumeDropPrompt() }
         .onChange(of: selected?.id) { _, id in
             guard let id else { return }
             // **NOT WHILE A DEEP LINK IS IN FLIGHT.**
@@ -842,7 +903,16 @@ struct TraceMacEndeavorsView: View {
                             onAddPerson: { name in
                                 try await notionService.addPerson(name: name)
                             },
-                            newRowIsLedger: target.isLedger)
+                            newRowIsLedger: target.isLedger,
+                            seed: target.seed,
+                            seedNotice: target.seedNotice,
+                            onSetTripDates: { start, end in
+                                guard let store else { return }
+                                var updated = e
+                                updated.starts = start
+                                updated.ends   = end
+                                _ = try await store.update(updated)
+                            })
         }
         .confirmationDialog("Delete “\(deletingBooking?.name ?? "")”?",
                             isPresented: Binding(get: { deletingBooking != nil },
@@ -2128,6 +2198,16 @@ struct TraceMacEndeavorsView: View {
         var id: String { rawValue }
     }
 
+    /// A document that has just been filed against this endeavor and is waiting
+    /// for David to say what it is (D322).
+    ///
+    /// Keyed on the path, so dropping the same file twice re-asks about that
+    /// file rather than stacking a second prompt.
+    private struct DocDropPrompt: Identifiable {
+        let path: String
+        var id: String { path }
+    }
+
     /// Which booking the sheet is for.
     private enum BookingTarget: Identifiable {
         case new
@@ -2136,11 +2216,16 @@ struct TraceMacEndeavorsView: View {
         /// differ, and every one of them stays editable.
         case newLedger
         case edit(Booking)
+        /// A confirmation was dropped and read (D319). The parse seeds the
+        /// CREATE branch of the sheet and nothing else; the document's path
+        /// rides along so the id is stable per file.
+        case seeded(BookingParse, documentPath: String)
         var id: String {
             switch self {
-            case .new:          return "new"
-            case .newLedger:    return "new-ledger"
-            case .edit(let b):  return b.id
+            case .new:                 return "new"
+            case .newLedger:           return "new-ledger"
+            case .edit(let b):         return b.id
+            case .seeded(_, let path): return "seeded-\(path)"
             }
         }
         var booking: Booking? {
@@ -2150,6 +2235,34 @@ struct TraceMacEndeavorsView: View {
         var isLedger: Bool {
             if case .newLedger = self { return true }
             return false
+        }
+        /// The parse, when this target came from a document.
+        var seed: BookingParse? {
+            if case .seeded(let parse, _) = self { return parse }
+            return nil
+        }
+        /// The quiet line at the top of the sheet, or nil.
+        ///
+        /// **Warning TWELVE, and it is the whole reason this exists.** A sheet
+        /// that opens empty because nothing could be read looks exactly like a
+        /// sheet that opens empty because it is new. The line is the only thing
+        /// that tells them apart — and saying the file is in Satchel is the
+        /// half of the answer that stops him dropping it again.
+        var seedNotice: String? {
+            guard case .seeded(let parse, _) = self else { return nil }
+            if !parse.hasAnything {
+                return "Couldn't read this document — the file is in Satchel."
+            }
+            // **The date warning outranks the count.** Both can be true at
+            // once, and of the two, a year that may be wrong is the one that
+            // survives being skimmed: the row lands on a plausible day and
+            // reads correctly at the moment it is being checked (D330).
+            var lines: [String] = []
+            if let warning = parse.dateWarning { lines.append(warning) }
+            if parse.found > 1 {
+                lines.append("\(parse.found) bookings in this document — showing the first.")
+            }
+            return lines.isEmpty ? nil : lines.joined(separator: " ")
         }
     }
 
@@ -2868,8 +2981,12 @@ struct TraceMacEndeavorsView: View {
                 .strokeBorder(Color.accentColor, lineWidth: isDocDropTargeted ? 1.5 : 0)
                 .padding(.horizontal, 6)
         )
-        .onDrop(of: [UTType.fileURL], isTargeted: $isDocDropTargeted) { providers in
-            handleDocumentDrop(providers, for: e)
+        // The drop itself is handled one level up, on the endeavor page and
+        // this rail together — see `body`. What stays here is the border, which
+        // lights up wherever the file is hovering and says where it will land,
+        // and the popover, which points at the section the document is now in.
+        .popover(item: $docPrompt, arrowEdge: .trailing) { prompt in
+            dropPromptCard(prompt, for: e)
         }
     }
 
@@ -2882,10 +2999,19 @@ struct TraceMacEndeavorsView: View {
         panel.message = "Add to \(e.name)"
         panel.begin { response in
             guard response == .OK else { return }
+            // Same rule as the drop below: one file asks, several just file.
+            let asks = panel.urls.count == 1
+            var imported: String? = nil
             for url in panel.urls {
-                _ = try? docStore?.importDocument(from: url, filedTo: e)
+                let path = (try? docStore?.importDocument(from: url, filedTo: e)) ?? nil
+                if asks { imported = path }
             }
-            Task { @MainActor in await docStore?.reload() }
+            Task { @MainActor in
+                await docStore?.reload()
+                // Raised after the reload, so the document exists in the store
+                // by the time one of the three verbs can be pressed.
+                if let imported { docPrompt = DocDropPrompt(path: imported) }
+            }
         }
     }
 
@@ -2901,6 +3027,11 @@ struct TraceMacEndeavorsView: View {
     /// plausible name.
     @discardableResult
     private func handleDocumentDrop(_ providers: [NSItemProvider], for e: Endeavor) -> Bool {
+        // **Only a single file is asked what it is.** One click per drop is
+        // D322's price and it buys a private choice that is real; five clicks
+        // for five files dragged in together is a batch being filed, not a
+        // confirmation being read. A multiple drop behaves exactly as it did.
+        let asks = providers.count == 1
         var handled = false
         for provider in providers {
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -2914,12 +3045,172 @@ struct TraceMacEndeavorsView: View {
                       !isDir.boolValue,
                       !url.lastPathComponent.hasPrefix(".") else { return }
 
-                _ = try? docStore?.importDocument(from: url, filedTo: e)
-                Task { @MainActor in await docStore?.reload() }
+                let imported = (try? docStore?.importDocument(from: url, filedTo: e)) ?? nil
+                Task { @MainActor in
+                    await docStore?.reload()
+                    if asks, let imported { docPrompt = DocDropPrompt(path: imported) }
+                }
             }
             handled = true
         }
         return handled
+    }
+
+    /// The three verbs a freshly filed document is offered (D322).
+    ///
+    /// **The question has to be asked before anything is sent**, because a
+    /// document's privacy is a `private` tag on its sidecar and a file that
+    /// arrived thirty milliseconds ago has no tags. "Cloud unless marked
+    /// private" cannot be decided by looking at the document, so it is decided
+    /// by asking — and the answer is real rather than decorative, which a
+    /// toggle on the sheet could not be: by then the text has left the Mac.
+    ///
+    /// **Just file it is today's behaviour and the default.** Most of what gets
+    /// dropped on an endeavor is a floor plan, a menu, a photo of the old deck.
+    /// Escape, or clicking away, is the same answer, which is why the import
+    /// already happened.
+    @ViewBuilder
+    private func dropPromptCard(_ prompt: DocDropPrompt, for e: Endeavor) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Filed to Satchel").macLabel().foregroundStyle(.tertiary)
+                .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 1)
+            Text(promptTitle(prompt.path))
+                .font(MacType.row)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.horizontal, 14).padding(.bottom, 9)
+
+            Divider()
+
+            if parsingDrop {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading…").font(MacType.row).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 12)
+            } else {
+                dropPromptButton("Read confirmation",
+                                 icon: "doc.text.magnifyingglass",
+                                 detail: "Fill in a booking from it.") {
+                    beginParse(prompt, for: e, locally: false)
+                }
+                dropPromptButton("Read privately",
+                                 icon: "lock.doc",
+                                 detail: "Tag it private and read it on this Mac.") {
+                    beginParse(prompt, for: e, locally: true)
+                }
+                dropPromptButton("Just file it",
+                                 icon: "tray.and.arrow.down",
+                                 detail: "Leave it where it is.") {
+                    docPrompt = nil
+                }
+                .padding(.bottom, 6)
+            }
+        }
+        .frame(width: 272)
+    }
+
+    private func dropPromptButton(_ title: String,
+                                  icon: String,
+                                  detail: String,
+                                  action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Image(systemName: icon)
+                    .font(MacGlyph.smallBold)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(MacType.row)
+                    Text(detail).font(MacType.meta).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The document's own title, which is the original filename without the
+    /// import timestamp. Falls back to the last path component if the store has
+    /// not caught up, which it always has by the time this is on screen.
+    private func promptTitle(_ path: String) -> String {
+        docStore?.documents.first(where: { $0.relativePath == path })?.title
+            ?? (path as NSString).lastPathComponent
+    }
+
+    /// Takes the document the window's zone filed here and offers the verbs.
+    ///
+    /// Cleared before the reload, not after: a second drop while this one is
+    /// still reloading must not be swallowed by a value that is still sitting
+    /// there.
+    private func consumeDropPrompt() {
+        guard let path = dropTarget.pendingPrompt else { return }
+        dropTarget.pendingPrompt = nil
+        Task { @MainActor in
+            await docStore?.reload()
+            docPrompt = DocDropPrompt(path: path)
+        }
+    }
+
+    /// Reads a filed document into booking fields and opens the sheet on it.
+    ///
+    /// **`locally` tags the document BEFORE it reads it.** That order is the
+    /// whole decision (D322): privacy here is a tag, and a document read before
+    /// it is tagged has already been read. Tagging afterwards would label a
+    /// document that was no longer private.
+    ///
+    /// Every failure lands in the same place — the sheet, empty, with a line
+    /// saying so and the file safe in Satchel. Nothing on this path throws at
+    /// David.
+    private func beginParse(_ prompt: DocDropPrompt, for e: Endeavor, locally: Bool) {
+        guard let docStore,
+              let doc = docStore.documents.first(where: { $0.relativePath == prompt.path })
+        else { docPrompt = nil; return }
+
+        parsingDrop = true
+        Task { @MainActor in
+            var parse = BookingParse()
+            if locally {
+                // The tag goes on first, and the reload after it is what makes
+                // `doc.isPrivate` true for anything that looks later.
+                let tags = doc.tags.contains(where: { $0.lowercased() == "private" })
+                    ? doc.tags
+                    : doc.tags + ["private"]
+                try? docStore.saveSidecar(for: doc,
+                                          title: doc.title,
+                                          tags: tags,
+                                          linkedNote: doc.linkedNote,
+                                          people: doc.people,
+                                          description: doc.description)
+                await docStore.reload()
+                // Read here, on this Mac, and sent nowhere. A nil answer — no
+                // Apple Intelligence, no readable text, nothing usable in it —
+                // leaves the parse empty, which opens the sheet with the same
+                // line an unreadable document gets. That is not an error to
+                // explain; it is what happened.
+                let tagged = docStore.documents.first { $0.relativePath == prompt.path } ?? doc
+                parse = await DocumentScanService.parseBookingLocally(doc: tagged,
+                                                                      noteStore: noteStore)
+                    ?? BookingParse()
+            } else {
+                parse = (try? await DocumentScanService.parseBooking(doc: doc,
+                                                                     noteStore: noteStore))
+                    ?? BookingParse()
+            }
+
+            parsingDrop = false
+            docPrompt = nil
+            // **Two popovers on one view cannot swap in the same turn of the
+            // run loop.** The second is asked to present while the first is
+            // still on screen and simply does not appear — no error, no sheet.
+            // One hop is enough; this is not a guess at a duration.
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            bookingTarget = .seeded(parse, documentPath: prompt.path)
+        }
     }
 
     private func documentRow(_ d: TraceMacDocument) -> some View {

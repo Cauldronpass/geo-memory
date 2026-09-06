@@ -695,13 +695,41 @@ struct TraceMacContentView: View {
     // MARK: - Global file drop
 
     @discardableResult
+    /// The window-wide drop zone.
+    ///
+    /// **It now asks where you are before deciding what a file means** (Session
+    /// 92, D325). A file let go while an endeavor is on screen belongs to that
+    /// endeavor: it is filed to it, its chip appears in the rail, the app stays
+    /// where it is, and the Endeavors view is told so it can offer the three
+    /// verbs. Anywhere else, this is what it always was — file it to Satchel,
+    /// unattached, and go there so you can see it landed.
+    ///
+    /// **Jumping to Satchel is right in one case and wrong in the other.** From
+    /// Today, the file has gone somewhere you cannot see and the app should show
+    /// you. From an endeavor, you are already looking at the place it went, and
+    /// being thrown out of the trip you are planning is the bug David reported.
+    ///
+    /// Both reads happen up front, on the main actor, so the closure below
+    /// captures values and never touches shared state from a background thread.
     private func handleGlobalDrop(providers: [NSItemProvider]) -> Bool {
+        let target = selectedSection == .endeavors
+            ? MacEndeavorDropTarget.shared.endeavor
+            : nil
+        // Only a single file is offered the three verbs, for D323's reason.
+        let asks = providers.count == 1
         var handled = false
         for provider in providers {
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
                 guard error == nil,
                       let data = item as? Data,
                       let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                // The scope has to be taken and the read done INSIDE this
+                // closure; it ends when the closure returns. Hopping to the main
+                // actor first would put the read outside it, which presents as a
+                // file that is simply not there.
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+
                 var isDir: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
                       !isDir.boolValue,
@@ -710,11 +738,16 @@ struct TraceMacContentView: View {
                 guard !["txt", "md", "markdown", "text"].contains(ext) else { return }
                 let store = TraceMacDocumentStore(noteStore: noteStore)
                 do {
-                    try store.importDocument(from: url)
+                    let path = try store.importDocument(from: url, filedTo: target)
                     Task { @MainActor in
-                        // Switch to Documents section and reload
-                        selectedSection = .documents
                         NotificationCenter.default.post(name: .reloadDocuments, object: nil)
+                        guard target != nil else {
+                            selectedSection = .documents
+                            return
+                        }
+                        // Stay on the endeavor. Hand the path over so the rail
+                        // reloads and the popover opens on it.
+                        if asks { MacEndeavorDropTarget.shared.pendingPrompt = path }
                     }
                 } catch { }
             }

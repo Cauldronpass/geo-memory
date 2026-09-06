@@ -64,6 +64,31 @@ enum MacLocalIntelligence {
         let summary: String
     }
 
+    /// A confirmation read on this machine (Session 92, D319/D322).
+    ///
+    /// **All strings, and empty means absent.** The cloud path gets JSON with
+    /// real nulls; guided generation on device is happier filling a fixed set
+    /// of string fields than reasoning about which ones to omit, and an empty
+    /// string is a shape it cannot get wrong. The Mac side turns these into a
+    /// `BookingParse`, which is where the dates are parsed and the Kind is
+    /// matched against the seven — the same conversion the cloud answer gets,
+    /// so a field means the same thing whichever model read it.
+    ///
+    /// **No cost currency, no count of bookings, no notes.** Nine fields is
+    /// already a lot to ask of a small on-device model, and those three are the
+    /// ones a wrong answer would be least useful and most confident about.
+    struct BookingFacts: Sendable {
+        let kind: String
+        let provider: String
+        let number: String
+        let confirmation: String
+        let from: String
+        let to: String
+        let start: String
+        let end: String
+        let cost: String
+    }
+
 #if canImport(FoundationModels)
 
     @Generable
@@ -73,6 +98,91 @@ enum MacLocalIntelligence {
 
         @Guide(description: "One plain sentence saying what this document is, naming the organisation and the subject if they appear. No preamble, no 'this document'.")
         var summary: String
+    }
+
+    @Generable
+    struct BookingDraft {
+        @Guide(description: "Exactly one of: Flight, Shuttle, Train, Hotel, Car rental, Parking, Other. Empty string if the text does not say which.")
+        var kind: String
+
+        @Guide(description: "Who provides it: the airline, the hotel brand, the rental company, the shuttle operator. Empty string if absent.")
+        var provider: String
+
+        @Guide(description: "The reference for the thing itself, printed on the ticket or the door: a flight number, a room number, a rental reservation number. Empty string if absent.")
+        var number: String
+
+        @Guide(description: "The booking confirmation code, the one you would read out on the phone. Empty string if absent.")
+        var confirmation: String
+
+        @Guide(description: "Where it departs from, as an airport code or a city. Empty string for a hotel or a car park.")
+        var from: String
+
+        @Guide(description: "Where it arrives; for a stay, the city it is in. Empty string if absent.")
+        var to: String
+
+        @Guide(description: "Departure or check-in, written as 2026-11-25T17:40 when a clock time is printed, or 2026-11-25 when only a day is. Empty string if absent.")
+        var start: String
+
+        @Guide(description: "Arrival or check-out, in the same format as start. Empty string if absent.")
+        var end: String
+
+        @Guide(description: "The total cost, digits and a decimal point only, for example 318.40. No currency symbol. Empty string if no figure is printed.")
+        var cost: String
+    }
+
+    /// Reads a confirmation without the text leaving this Mac (D322).
+    ///
+    /// **This is the whole point of the private verb.** A boarding pass carries
+    /// a full name, a record locator and sometimes a card's last four; the
+    /// alternative to this path was those going to an API or the document not
+    /// being read at all. It will do a worse job than the cloud model and that
+    /// is the trade being made, knowingly — every field it fills is editable on
+    /// the sheet before anything is saved.
+    ///
+    /// Returns `nil` on any failure, an unavailable model included. The caller
+    /// opens the same empty sheet with the same line it shows when a document
+    /// could not be read, which is the honest description of what happened.
+    static func parseBooking(text: String) async -> BookingFacts? {
+        guard availability.isReady else { return nil }
+
+        // Same cap as `suggest`. A confirmation's useful half is the top of it:
+        // the legs, the code and the fare come before the fare rules.
+        let body = String(text.prefix(4_000))
+
+        do {
+            let session = LanguageModelSession(
+                instructions: """
+                You read travel confirmations for a private filing system. \
+                You are precise and brief. Every field you cannot find in the \
+                text is an empty string. You never invent a name, a code, a \
+                date or a figure, and you never carry one over from another \
+                booking in the same document. Dates keep the year printed on \
+                the document; you never substitute the current year to make an \
+                old confirmation look upcoming.
+                """
+            )
+            let reply = try await session.respond(
+                to: """
+                Read this confirmation and fill in the fields. If it holds \
+                more than one booking, describe only the first.
+
+                \(body)
+                """,
+                generating: BookingDraft.self
+            )
+            let d = reply.content
+            return BookingFacts(kind: d.kind,
+                                provider: d.provider,
+                                number: d.number,
+                                confirmation: d.confirmation,
+                                from: d.from,
+                                to: d.to,
+                                start: d.start,
+                                end: d.end,
+                                cost: d.cost)
+        } catch {
+            return nil
+        }
     }
 
     static var availability: Availability {
@@ -148,6 +258,8 @@ enum MacLocalIntelligence {
     static var availability: Availability { .notBuilt }
 
     static func suggest(text: String, hint: String) async -> Suggestion? { nil }
+
+    static func parseBooking(text: String) async -> BookingFacts? { nil }
 
 #endif
 
