@@ -3,8 +3,15 @@
 //  Dayflow
 //
 //  The tab bar shell (Session 77, step a of the task UI build —
-//  Dayflow-Tasks-Design.md). Four tabs, always visible: Today · Inbox ·
-//  Upcoming · Notes. Replaces the top-bar browse Menu as the way around the
+//  Dayflow-Tasks-Design.md). Four tabs, always visible: Today · Tasks ·
+//  Upcoming · Notes.
+//
+//  Session 89: the second tab was INBOX and is now TASKS, hosting
+//  DayflowTasksView — whose first pool is the same triage screen the tab used
+//  to hold. That file's header carries why the word moved and what it cost.
+//  Still FOUR tabs: five sets of 9pt caps is where these labels start
+//  truncating, and the shape of the tab bar is a whole-app decision that
+//  should not get made as a side effect of a tasks screen. Replaces the top-bar browse Menu as the way around the
 //  app; the Menu survives on the Today screen for now with only the entries
 //  that have no tab yet (Anytime, the notes Inbox, Search) — where those
 //  land permanently is an open design question for steps c/d.
@@ -32,15 +39,16 @@
 import SwiftUI
 
 enum DayflowTab: String {
-    case today, inbox, upcoming, notes
+    case today, tasks, upcoming, notes
 }
 
 struct DayflowRootView: View {
     @State private var selectedTab: DayflowTab = .today
     @State private var selectedDate: Date = DayflowRelativeDay.today.date()
-    /// Session 77 — the "Add Task" quick action opens the INBOX tab's capture
-    /// card (the + went event-only in the composer round). Observed here for
-    /// the tab switch; DayflowInboxView consumes the pending value.
+    /// Session 77 — the "Add Task" quick action opens the capture card, which
+    /// since Session 89 lives inside the Tasks tab's Inbox pool. Observed here
+    /// for the tab switch; the room puts itself on that pool and the triage
+    /// screen consumes the pending value.
     @State private var quickActions = DayflowQuickActionRouter.shared
 
     /// The tab a pending destination asked for, captured at the MOMENT the
@@ -89,7 +97,7 @@ struct DayflowRootView: View {
             Rectangle().fill(Color.dayflowHairline).frame(height: 1)
             HStack(spacing: 0) {
                 editorialTab(.today, "TODAY", "sun.max")
-                editorialTab(.inbox, "INBOX", "tray")
+                editorialTab(.tasks, "TASKS", "checklist")
                 editorialTab(.upcoming, "UPCOMING", "calendar")
                 editorialTab(.notes, "NOTES", "note.text")
             }
@@ -157,10 +165,10 @@ struct DayflowRootView: View {
                 .safeAreaPadding(.bottom, 60)
                 .tag(DayflowTab.today)
 
-            DayflowInboxView(isTabRoot: true)
+            DayflowTasksView()
                 .toolbar(.hidden, for: .tabBar)
                 .safeAreaPadding(.bottom, 60)
-                .tag(DayflowTab.inbox)
+                .tag(DayflowTab.tasks)
 
             DayflowUpcomingView(isTabRoot: true)
                 .toolbar(.hidden, for: .tabBar)
@@ -228,13 +236,13 @@ struct DayflowRootView: View {
             if selection.isActive { selection.exit() }
         }
         .onChange(of: quickActions.pending) { _, type in
-            if type == "AddTask" { selectedTab = .inbox }
+            if type == "AddTask" { selectedTab = .tasks }
             if type == "AddEvent" || type == "NewNote" { selectedTab = .today }
         }
         // Cold launch from the quick action: pending was set before this view
         // existed, so onChange never fires — check once on appearance.
         .task {
-            if quickActions.pending == "AddTask" { selectedTab = .inbox }
+            if quickActions.pending == "AddTask" { selectedTab = .tasks }
             if quickActions.pending == "AddEvent"
                 || quickActions.pending == "NewNote" { selectedTab = .today }
         }
@@ -246,7 +254,7 @@ struct DayflowRootView: View {
                 // Session 78 — the tasks widget's "+": same router value the
                 // Home Screen quick action uses; DayflowInboxView consumes
                 // it and opens the capture card.
-                selectedTab = .inbox
+                selectedTab = .tasks
                 quickActions.pending = "AddTask"
             case "addEvent", "note", "endeavor", "task":
                 selectedTab = .today

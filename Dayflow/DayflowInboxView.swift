@@ -33,6 +33,15 @@ struct DayflowInboxView: View {
     /// Session 77: true when hosted as the Inbox tab in DayflowRootView —
     /// hides the chevron (there is no presentation to dismiss there).
     var isTabRoot: Bool = false
+    /// Session 89: false when this screen is the INBOX pool inside the Tasks
+    /// room, which draws the masthead ("Tasks") and the strip (INBOX) above
+    /// it. Two mastheads stacked would say the same thing twice and spend
+    /// eighty points of a phone screen doing it.
+    ///
+    /// The header also carries the Quick Find pull-down; the room's own header
+    /// carries it when this one is hidden, so the gesture is never absent and
+    /// never registered twice.
+    var showsHeader: Bool = true
 
     /// Task ids in decision order. An order over `inboxTasks`, resynced on
     /// every store change: existing order kept, new arrivals appended,
@@ -84,7 +93,7 @@ struct DayflowInboxView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
+            if showsHeader { header }
             if store.isLoadingInbox && store.inboxTasks.isEmpty {
                 Spacer()
                 ProgressView().frame(maxWidth: .infinity)

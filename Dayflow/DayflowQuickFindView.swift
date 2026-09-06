@@ -86,7 +86,6 @@ struct DayflowQuickFindView: View {
     /// per screen and unaffordable once per row - the Mac's own split, and the
     /// same reasoning as `docStore` being built lazily on its task row.
     @State private var endeavorNames: Set<String> = []
-    @State private var selection = DayflowTodaySelection.shared
     @State private var order = DayflowTaskOrder.shared
 
     private var store: ReminderTaskStore { ReminderTaskStore.shared }
@@ -122,17 +121,14 @@ struct DayflowQuickFindView: View {
             || notion.peopleLoad == .loading
     }
 
-    /// Lists offered as browse rows: every real list except the two with
-    /// their own doors (Inbox tab, Someday GO TO row).
-    private var browseLists: [String] {
-        store.listNames.filter {
-            $0 != ReminderTaskStore.inboxListName
-                && $0 != ReminderTaskStore.somedayListName
-        }
-    }
+    /// Lists offered as browse rows, and the counts beside them — both in
+    /// `DayflowTaskPools` since Session 89, when the Tasks room started
+    /// showing the same rows. Two screens deciding separately which lists are
+    /// "real" is how one of them quietly starts offering Someday twice.
+    private var browseLists: [String] { DayflowTaskPools.browseLists }
 
     private func openCount(in list: String) -> Int {
-        store.allTasks.filter { $0.list == list }.count
+        DayflowTaskPools.openCount(in: list)
     }
 
     private var somedayCount: Int {
@@ -291,7 +287,7 @@ struct DayflowQuickFindView: View {
         VStack(alignment: .leading, spacing: 0) {
             sectionHeader("GO TO")
             browseRow(icon: "books.vertical", title: "Anytime",
-                      count: store.anytimeTasks.count) { go(.anytime) }
+                      count: DayflowTaskPools.anytime.count) { go(.anytime) }
             browseRow(icon: "archivebox", title: "Someday",
                       count: somedayCount) {
                 go(.list(ReminderTaskStore.somedayListName))
@@ -404,7 +400,8 @@ struct DayflowQuickFindView: View {
             .padding(.top, 2)
         switch place {
         case .anytime:
-            let pool = placeFiltered(order.sorted(store.anytimeTasks, key: "anytime"))
+            let pool = placeFiltered(order.sorted(DayflowTaskPools.anytime,
+                                                  key: DayflowTaskPools.anytimeOrderKey))
             if pool.isEmpty {
                 emptyPlace(trimmedQuery.isEmpty
                            ? "Nothing undated outside the Inbox."
@@ -412,22 +409,30 @@ struct DayflowQuickFindView: View {
             } else {
                 sectionHeader("THE POOL")
                 if trimmedQuery.isEmpty {
-                    reorderableRows(pool, key: "anytime") { $0.list?.uppercased() }
+                    reorderableRows(pool, key: DayflowTaskPools.anytimeOrderKey) { $0.list?.uppercased() }
                 } else {
                     ForEach(pool) { swipeableRow($0, meta: $0.list?.uppercased()) }
                 }
             }
         case .list(let list):
-            let scheduled = placeFiltered(store.allTasks
-                .filter { $0.list == list && $0.date != nil }
-                .sorted { $0.date! < $1.date! })
-            let undated = placeFiltered(order.sorted(
-                store.allTasks.filter { $0.list == list && $0.date == nil },
-                key: "list-" + list))
-            if scheduled.isEmpty && undated.isEmpty {
+            // Three buckets from `DayflowTaskPools` since Session 89, with
+            // OVERDUE its own heading rather than the front of SCHEDULED: a
+            // date that has passed is the one thing here that wants doing
+            // today, and filing it under "Scheduled" is the screen declining
+            // to say so. The Tasks room shows the same three.
+            let b = DayflowTaskPools.buckets(for: list)
+            let key = DayflowTaskPools.orderKey(forList: list)
+            let overdue = placeFiltered(b.overdue)
+            let scheduled = placeFiltered(b.scheduled)
+            let undated = placeFiltered(order.sorted(b.undated, key: key))
+            if overdue.isEmpty && scheduled.isEmpty && undated.isEmpty {
                 emptyPlace(trimmedQuery.isEmpty
                            ? "Nothing here."
                            : "Nothing in \(list) matches.")
+            }
+            if !overdue.isEmpty {
+                sectionHeader("OVERDUE")
+                ForEach(overdue) { swipeableRow($0, meta: Self.dateLabel($0.date!)) }
             }
             if !scheduled.isEmpty {
                 sectionHeader("SCHEDULED")
@@ -436,7 +441,7 @@ struct DayflowQuickFindView: View {
             if !undated.isEmpty {
                 sectionHeader(list == ReminderTaskStore.somedayListName ? "SOMEDAY" : "ANYTIME")
                 if trimmedQuery.isEmpty {
-                    reorderableRows(undated, key: "list-" + list) { _ in nil }
+                    reorderableRows(undated, key: key) { _ in nil }
                 } else {
                     ForEach(undated) { swipeableRow($0, meta: nil) }
                 }
@@ -458,30 +463,17 @@ struct DayflowQuickFindView: View {
         }
     }
 
-    /// Undated rows with drag-to-reorder: long-press lifts a row (the
-    /// horizontal swipes and taps are untouched — different activations),
-    /// dropping on a row inserts before it, the tail strip drops at the end.
-    @ViewBuilder
+    /// Undated rows with drag-to-reorder. Moved to `DayflowReorderableRows`
+    /// in Session 89 with the row: the order is persisted under a KEY, so two
+    /// screens showing one pool must agree about the key AND the drop rules or
+    /// a drag in one silently re-sorts the other.
     private func reorderableRows(_ tasks: [ThingsTask], key: String,
                                  meta: @escaping (ThingsTask) -> String?) -> some View {
-        let ids = tasks.map(\.id)
-        ForEach(tasks) { task in
-            swipeableRow(task, meta: meta(task))
-                .draggable(task.id)
-                .dropDestination(for: String.self) { items, _ in
-                    guard let moved = items.first else { return false }
-                    order.move(id: moved, before: task.id, key: key, current: ids)
-                    return true
-                }
-        }
-        Color.clear
-            .frame(height: 28)
-            .contentShape(Rectangle())
-            .dropDestination(for: String.self) { items, _ in
-                guard let moved = items.first else { return false }
-                order.move(id: moved, before: nil, key: key, current: ids)
-                return true
-            }
+        DayflowReorderableRows(tasks: tasks, key: key, meta: meta,
+                               endeavorNames: endeavorNames,
+                               dragOffsets: $rowDragOffsets,
+                               onOpen: { editingTask = $0 },
+                               onWhen: { whenRequest = DayflowWhenRequest(tasks: [$0]) })
     }
 
     private func placeName(_ place: DayflowQuickFindPlace) -> String {
@@ -506,177 +498,16 @@ struct DayflowQuickFindView: View {
         return f.string(from: date).uppercased()
     }
 
-    /// A task row with Today's full swipe grammar (David: "the swiping on
-    /// results would be nice as well"): right slides and reveals the When
-    /// card, left flips into multi-select — the root's selection bar floats
-    /// ABOVE this card, so the bar's When/Move/Delete work from here.
+    /// A task row with Today's full swipe grammar. **The row itself is
+    /// `DayflowTaskPoolRow`** since Session 89, shared with the Tasks room —
+    /// this method survives as the call shape the rest of this file already
+    /// uses, so not one call site here changed.
     private func swipeableRow(_ task: ThingsTask, meta: String?) -> some View {
-        let selected = selection.ids.contains(task.id)
-        // NOT a Button (Simulator lesson, 2026-08-29): a Button's own
-        // recognizer claims the touch before an attached DragGesture can
-        // win, so the swipes read as dead. Today's rows are plain stacks
-        // with onTapGesture for exactly this reason — same shape here.
-        return HStack(alignment: .firstTextBaseline, spacing: 12) {
-            if selection.isActive {
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 16))
-                    .foregroundStyle(selected ? Color.dayflowAccent : Color.dayflowFaint)
-            } else {
-                // Tappable (2026-08-29 night — David: "Anytime list doesnt
-                // allow me to check anything off"): the circle was
-                // decoration. Its own onTapGesture wins over the row's
-                // (innermost first), so tapping it completes rather than
-                // opening the edit sheet.
-                Circle()
-                    .strokeBorder(Color.dayflowInk, lineWidth: 1.5)
-                    .frame(width: 16, height: 16)
-                    .padding(6)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        Task { await ReminderTaskStore.shared.complete(taskID: task.id) }
-                    }
-                    .padding(-6)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(task.title)
-                    .font(.dayflowSerif(15))
-                    .foregroundStyle(Color.dayflowInk)
-                    .lineLimit(1)
-                if let meta, !meta.isEmpty {
-                    Text(meta)
-                        .font(.system(size: 10.5))
-                        .tracking(0.8)
-                        .foregroundStyle(Color.dayflowFaint)
-                }
-            }
-            Spacer()
-            // The Mac row's bolt (D239): a shortcut fires in passing — the
-            // Button takes the tap before the row's own gesture, so running
-            // it does not also open the task.
-            if let source = task.dayflowSource, source.icon == "bolt" {
-                Button {
-                    UIApplication.shared.open(source.url)
-                } label: {
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Color.dayflowAccent)
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            // D229 marks (Session 81): these pool rows are the phone's list
-            // rail, and a row that says nothing about its note or its link is
-            // the failure D229 was written against. Same glyphs, same accent
-            // as Today's rows.
-            if task.hasNoteProse {
-                Image(systemName: "text.alignleft")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(Color.dayflowAccent)
-            }
-            if task.hasFollowableLink {
-                Image(systemName: "link")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.dayflowAccent)
-            }
-            if task.repeats {
-                Image(systemName: "repeat")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.dayflowFaint)
-            }
-            // **The endeavor mark** (D270). David, on the Mac: *"could you add
-            // a small icon indicator when i look at the task that is in an
-            // endeavor?"* - and, on the phone one session later, *"there is no
-            // icon to tell me that the task I called How'd was from an
-            // endeavor."*
-            //
-            // `flag`, because the Mac sidebar has called an endeavor a flag
-            // since the room existed, so the mark needs no learning. The type
-            // glyph was rejected on the Mac for a reason that holds here: an
-            // airplane on a task row reads as "travel task" rather than "on a
-            // trip", and five glyphs meaning one thing is five things to learn.
-            //
-            // **Faint, not accent.** The note and link marks are accent because
-            // they say there is more to open; this is a fact about where the
-            // task sits, and a passive mark should not scold.
-            //
-            // Placed beside `repeat`, the other faint mark, and LAST of the
-            // four so it is the one that yields when a title is long. The Mac
-            // caps its cluster at three; the phone now draws four in the rare
-            // case where a task has prose, a link, an endeavor and a repeat,
-            // and that is the row to watch if the cluster ever feels crowded.
-            //
-            // **No tap target here, deliberately.** Every mark in this cluster
-            // is passive, and a 10pt glyph competing with the row tap on a
-            // phone is a worse door than the one that already exists: the row
-            // opens the task, and its Linked section names the endeavor and
-            // opens it (D285, and the resolver in D282).
-            if EndeavorFile.linkedName(in: task.notes, among: endeavorNames) != nil {
-                Image(systemName: "flag")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.dayflowFaint)
-            }
-        }
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if selection.isActive {
-                if selected { selection.ids.remove(task.id) }
-                else { selection.ids.insert(task.id) }
-                if selection.ids.isEmpty { selection.exit() }
-            } else {
-                editingTask = task
-            }
-        }
-        // `.offset` is visual only; the `.background` AFTER it keeps the
-        // original frame, so the glyph stays put while the row slides
-        // (DayflowTodaySection's comment, same trick).
-        .offset(x: rowDragOffsets[task.id] ?? 0)
-        .background(alignment: .leading) {
-            let progress = min(max((rowDragOffsets[task.id] ?? 0) / 60, 0), 1)
-            if progress > 0 {
-                Image(systemName: "calendar")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.dayflowAccent)
-                    .opacity(Double(progress))
-                    .scaleEffect(0.7 + 0.3 * progress)
-                    .padding(.leading, 2)
-            }
-        }
-        .gesture(
-            DragGesture(minimumDistance: 25)
-                .onChanged { value in
-                    guard !selection.isActive else { return }
-                    let h = value.translation.width
-                    guard abs(h) > abs(value.translation.height) else { return }
-                    rowDragOffsets[task.id] = h > 0 ? min(h, 80) : 0
-                }
-                .onEnded { value in
-                    let h = value.translation.width
-                    withAnimation(.spring(duration: 0.3)) { rowDragOffsets[task.id] = 0 }
-                    guard !selection.isActive else { return }
-                    guard abs(h) > abs(value.translation.height) * 1.5,
-                          abs(h) > 40 else { return }
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    if h < 0 {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            selection.isActive = true
-                            selection.ids = [task.id]
-                        }
-                    } else {
-                        // The settled-gesture hop, same as Today's rows.
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                            whenRequest = DayflowWhenRequest(tasks: [task])
-                        }
-                    }
-                }
-        )
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.dayflowHairline).frame(height: 1)
-        }
-        .animation(.easeInOut(duration: 0.15), value: selection.isActive)
+        DayflowTaskPoolRow(task: task, meta: meta,
+                           endeavorNames: endeavorNames,
+                           dragOffsets: $rowDragOffsets,
+                           onOpen: { editingTask = $0 },
+                           onWhen: { whenRequest = DayflowWhenRequest(tasks: [$0]) })
     }
 
     // MARK: Results (typed)
