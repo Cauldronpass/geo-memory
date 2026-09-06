@@ -502,21 +502,46 @@ struct DayflowEndeavorView: View {
     private var endeavor: Endeavor? { store.endeavor(id: endeavorID) }
 
     var body: some View {
-        Group {
-            if let endeavor {
-                content(endeavor)
-            } else {
-                // The note was deleted or renamed out from under this screen.
-                VStack(spacing: 8) {
-                    Image(systemName: "questionmark.folder")
-                        .font(.system(size: 26))
-                        .foregroundStyle(.secondary)
-                    Text("This Endeavor is no longer there.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+        // **The top bar is the first child, not a `safeAreaInset`** (Session
+        // 89, on David's TestFlight build).
+        //
+        // It was `.safeAreaInset(edge: .top)` on this Group, inside a
+        // `NavigationStack` in a `fullScreenCover` with the navigation bar
+        // hidden. On his phone ENDEAVOR and Done were drawn INSIDE the status
+        // bar, overlapping the Dynamic Island, and Done could not be tapped.
+        //
+        // `DayflowNoteFullPageView` wears the same row — this file's own
+        // comment says the row copied its grammar — and that screen has always
+        // been right on his phone. It puts the header as the first child of a
+        // plain VStack and uses no inset at all. Copying the shape that works
+        // beats reasoning about why the other one does not.
+        //
+        // The `safeAreaInset` further down this file stays: it is inside a
+        // SHEET, where the behaviour differs and where it exists to keep a
+        // text field out of a scroll view rather than to place a bar.
+        //
+        // **Not proven until David builds it.** A mechanism plus a real
+        // symptom is not a diagnosis (D283) — but this is the same row, in the
+        // same app, laid out the way the working copy lays it out.
+        VStack(spacing: 0) {
+            endeavorTopBar
+            Group {
+                if let endeavor {
+                    content(endeavor)
+                } else {
+                    // The note was deleted or renamed out from under this screen.
+                    VStack(spacing: 8) {
+                        Image(systemName: "questionmark.folder")
+                            .font(.system(size: 26))
+                            .foregroundStyle(.secondary)
+                        Text("This Endeavor is no longer there.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .dayflowSkinBackground()
         .opacity(appeared ? 1 : 0)
@@ -528,7 +553,6 @@ struct DayflowEndeavorView: View {
         // day-note full page's own top row instead — kicker left, the
         // details Menu and Done in ink on the right.
         .toolbar(.hidden, for: .navigationBar)
-        .safeAreaInset(edge: .top, spacing: 0) { endeavorTopBar }
         .sheet(isPresented: $showingDetails) {
             DayflowEndeavorDetailsSheet(existing: endeavor)
         }
