@@ -13,11 +13,8 @@ struct SaveCaptureAsPlaceSheet: View {
         case temp = "Temp"
     }
 
-    private let placeCategories = [
-        "Restaurant", "Bar", "Cafe", "Hotel", "Shop", "Attraction",
-        "Venue", "House", "Fitness", "Office", "Airport", "Medical",
-        "Park", "Grocery"
-    ]
+    /// D333: one list, in `PlaceCategory.all`.
+    private let placeCategories = PlaceCategory.all
 
     @State private var saveMode: SaveMode = .personal
     @State private var name = ""

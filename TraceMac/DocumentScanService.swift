@@ -98,6 +98,65 @@ struct BookingParse {
     }
 }
 
+// MARK: - What a sentence turned into
+
+/// An endeavor described in plain language, read into the fields
+/// `MacEndeavorSheet` already has (D317, D321, Session 93).
+///
+/// **Every field is optional and nothing here is written anywhere.** Same rule
+/// as `BookingParse`: this is a seed for a sheet, not a record. David corrects
+/// it and presses Create, and the create is the ordinary
+/// `TraceMacEndeavorStore.create` the `+` already calls.
+///
+/// **`peopleNamed` and `placesNamed` are RAW names.** Whether a name is
+/// somebody in Notion is decided in code, against `notionService.people` and
+/// `.places`, case-insensitively — never by asking the model whether it knows
+/// them. D330's rule, generalised: the model never supplies a value the source
+/// already states.
+struct EndeavorDraft {
+    var name: String?        = nil
+    /// One of `Endeavor.offeredTypes`, or nil when the sentence did not say.
+    var type: String?        = nil
+    var starts: Date?        = nil
+    var ends: Date?          = nil
+    /// Where it is. Also the cover search term, which is why filling it is all
+    /// the banner needs (D321) and why there is no photo code to write.
+    var destination: String? = nil
+    /// Prose for the note's `## Summary`, in the endeavor's own skeleton.
+    var summary: String?     = nil
+    var peopleNamed: [String] = []
+    var placesNamed: [String] = []
+
+    /// True when there is something worth putting on a sheet.
+    var hasAnything: Bool {
+        (name?.isEmpty == false) || type != nil || starts != nil
+            || (destination?.isEmpty == false) || (summary?.isEmpty == false)
+            || !peopleNamed.isEmpty || !placesNamed.isEmpty
+    }
+}
+
+/// One name the sentence produced, after the app has looked it up (D321).
+///
+/// **`exists` is decided in code, never by the model.** The draft carries raw
+/// names; whether "Hannah" is somebody in Notion is answered by
+/// `notionService.people`, which is the authority. D330's rule generalised: the
+/// model never supplies a value the app can already look up.
+///
+/// **`resolvedName` is what gets written.** A sentence says "Hannah" and the
+/// record is "Hannah Weiss"; the endeavor should carry the record's name, not
+/// the nickname, or the link stops resolving. For an unmatched name the two are
+/// the same string.
+struct EndeavorSeedName: Identifiable, Hashable {
+    enum Kind: Hashable { case person, place }
+    /// As the sentence wrote it.
+    let name: String
+    /// As Notion has it, or `name` when nothing matched.
+    let resolvedName: String
+    let kind: Kind
+    let exists: Bool
+    var id: String { "\(kind)-\(name.lowercased())" }
+}
+
 // MARK: - Service
 
 enum DocumentScanService {
@@ -164,6 +223,102 @@ enum DocumentScanService {
         } else {
             throw DocumentScanError.unsupportedFormat
         }
+    }
+
+    // MARK: - Create parsing (D317, D321, Session 93)
+
+    /// Turns a sentence into the fields of the New Endeavor sheet.
+    ///
+    /// **Today's date is sent here, and unlike D327 that is correct.** A
+    /// confirmation prints its own year and a model substituting the current
+    /// one is reading past the page; a SENTENCE says "over spring break" and
+    /// means the next one, so the current date is the only thing that can
+    /// resolve it. Different source, different rule, stated so the two are not
+    /// confused later.
+    ///
+    /// **Names come back raw.** Whether "Hannah" is somebody in Notion is
+    /// decided in code against `notionService.people`, never by asking the model
+    /// whether it knows her. D330's rule generalised: the model never supplies a
+    /// value the app can already look up.
+    static func parseEndeavor(brief: String) async throws -> EndeavorDraft {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DocumentScanError.noKey
+        }
+
+        let today = DateFormatter()
+        today.dateFormat = "yyyy-MM-dd"
+        let stamp = today.string(from: Date())
+
+        let prompt = """
+        Someone is describing something they are planning, in one or two sentences. Turn it into the fields below. Return JSON only — no explanation, no markdown fences.
+
+        Today is \(stamp). Use it to resolve relative timing the sentence implies — "next spring", "over Thanksgiving", "in three weeks". Do not invent dates the sentence does not imply.
+
+        Return exactly this structure:
+        {
+          "name": "Four Days in Savannah",
+          "type": "Travel",
+          "starts": "2027-03-13",
+          "ends": "2027-03-17",
+          "destination": "Savannah",
+          "summary": "Four days in Savannah over spring break, driving down from Chicago.",
+          "people": ["Hannah"],
+          "places": ["Savannah"]
+        }
+
+        Rules:
+        - name: a short title for it, 2 to 5 words, title case. Not a sentence. Null only if the text names nothing at all.
+        - type: exactly one of Travel, Milestone, Gathering, Project, Decision. Travel is a trip. Milestone is a dated life event like a graduation or a wedding. Gathering is people coming together without travel being the point. Project is work with an outcome. Decision is a choice being weighed between options. Null if none of the five fits.
+        - starts / ends: "YYYY-MM-DD". Null when the text implies no date. A single day gives the same date twice. Never guess a date from the type — a trip with no timing stated has no dates.
+        - destination: where it happens, as a person would say it — "Savannah", "Fort Collins, CO", "Kyoto". Null for anything not tied to a place.
+        - summary: one short paragraph in plain prose, written back to the person as a statement of what this is. Their own words and facts, nothing added. Two or three sentences at most.
+        - people: every person the text names, exactly as written, first names included. [] if none.
+        - places: every place the text names. [] if none. The destination may also appear here.
+        - Never invent a person, a place, a date or a detail the text does not contain. A field the text does not support is null or empty.
+        - Return valid JSON only. No other text.
+
+        The text:
+        \(brief)
+        """
+
+        let body = requestBody(textPrompt: prompt, maxTokens: 900, modelName: bookingModel)
+        let raw = try await sendRaw(body: body)
+        return try decodeEndeavor(raw)
+    }
+
+    private static func decodeEndeavor(_ cleaned: String) throws -> EndeavorDraft {
+        guard let data = cleaned.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw DocumentScanError.parseError("Could not parse JSON: \(cleaned.prefix(200))")
+        }
+
+        func string(_ key: String) -> String? {
+            guard let raw = obj[key] as? String else { return nil }
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty, t.lowercased() != "null" else { return nil }
+            return t
+        }
+        func names(_ key: String) -> [String] {
+            (obj[key] as? [String] ?? [])
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+
+        var draft = EndeavorDraft()
+        draft.name = string("name")
+        // Matched against the five in code. A sixth type the model invented is
+        // not a type this app has, and the sheet's picker would silently show
+        // Travel instead — the exact data loss D268's `types` note describes.
+        draft.type = string("type").flatMap { candidate in
+            Endeavor.offeredTypes.first { $0.lowercased() == candidate.lowercased() }
+        }
+        draft.starts      = localDate(obj["starts"]).date
+        draft.ends        = localDate(obj["ends"]).date
+        draft.destination = string("destination")
+        draft.summary     = string("summary")
+        draft.peopleNamed = names("people")
+        draft.placesNamed = names("places")
+        return draft
     }
 
     // MARK: - Confirmation parsing (D319, Session 92)

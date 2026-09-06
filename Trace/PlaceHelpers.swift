@@ -69,6 +69,14 @@ func placeColor(for category: String) -> Color {
     case "medical": return .mint
     case "park": return Color(red: 0.2, green: 0.6, blue: 0.15)
     case "grocery": return Color(red: 0.8, green: 0.45, blue: 0.0)
+    // D333. Five hues chosen to sit apart from the fourteen above rather than
+    // near them — the whole job of this colour is telling one pin from another
+    // on a map, and a near-miss is worse than an odd choice.
+    case "city":    return Color(red: 0.36, green: 0.45, blue: 0.58)   // steel
+    case "gas":     return Color(red: 0.80, green: 0.25, blue: 0.30)   // crimson
+    case "school":  return Color(red: 0.48, green: 0.52, blue: 0.20)   // olive
+    case "parking": return Color(red: 0.45, green: 0.42, blue: 0.68)   // slate violet
+    case "service": return Color(red: 0.50, green: 0.42, blue: 0.36)   // warm grey
     default: return .gray
     }
 }
@@ -79,8 +87,8 @@ func superCategoryColor(for category: String) -> Color {
     switch category.lowercased() {
     case "restaurant", "cafe", "bar", "grocery": return .orange
     case "fitness", "park", "medical":            return .green
-    case "attraction", "venue", "hotel", "airport": return .indigo
-    default: return Color(.systemGray)  // house, office, shop, temp, uncategorized
+    case "attraction", "venue", "hotel", "airport", "city": return .indigo
+    default: return Color(.systemGray)  // house, office, shop, gas, parking, service, school, temp
     }
 }
 
@@ -88,8 +96,11 @@ func superCategoryName(for category: String) -> String {
     switch category.lowercased() {
     case "restaurant", "cafe", "bar", "grocery":    return "Food & Drink"
     case "fitness", "park", "medical":              return "Active & Health"
-    case "attraction", "venue", "hotel", "airport": return "Out & About"
-    default:                                         return "Everyday"
+    // **City joins Out & About, the other four are Everyday** (D333). A city is
+    // somewhere you went; a gas station, a garage, a school run and a car park
+    // are the texture of a normal week, which is what Everyday is for.
+    case "attraction", "venue", "hotel", "airport", "city": return "Out & About"
+    default:                                                return "Everyday"
     }
 }
 
@@ -110,6 +121,11 @@ func placeIcon(for category: String) -> String {
     case "medical": return "stethoscope"
     case "park": return "leaf"
     case "grocery": return "cart"
+    case "city":    return "building.2.crop.circle"
+    case "gas":     return "fuelpump"
+    case "school":  return "graduationcap"
+    case "parking": return "parkingsign"
+    case "service": return "wrench.and.screwdriver"
     default: return "mappin"
     }
 }

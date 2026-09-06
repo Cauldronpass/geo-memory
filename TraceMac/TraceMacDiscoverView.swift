@@ -47,9 +47,8 @@ private func guessCategory(_ primaryType: String?) -> String {
     return "Attraction"
 }
 
-private let discoverCategories = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
-                                   "Attraction", "Venue", "House", "Fitness",
-                                   "Office", "Airport", "Medical", "Park", "Grocery"]
+/// D333: one list, in `PlaceCategory.all`.
+private let discoverCategories = PlaceCategory.all
 
 // MARK: - Research notes panel (E32) — paths
 

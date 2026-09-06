@@ -140,6 +140,21 @@ struct TraceMacEndeavorsView: View {
     /// `MacEditorActions.applyToBody` for why writing the file instead loses.
     @State private var editorActions = MacEditorActions()
     @State private var showingNew = false
+    /// The Create window (D317). Open, and what he has typed into it.
+    @State private var showingCreateAI = false
+    @State private var createBrief = ""
+    /// What the sentence became. Nil for every plain `+`, which is what keeps
+    /// typing a name from ever costing a model call.
+    @State private var createSeed: EndeavorDraft? = nil
+    /// True while the sentence is being read, and what went wrong if it was not.
+    @State private var createReading = false
+    @State private var createFailure: String? = nil
+    /// The sentence's people and places, looked up against Notion.
+    @State private var createNames: [EndeavorSeedName] = []
+    /// The endeavor `onSave` just made, so `onAttach` has something to attach
+    /// to. Cleared as soon as it is used; the two closures run back to back on
+    /// the same sheet and nothing else reads it.
+    @State private var justCreated: Endeavor? = nil
     @State private var coverTarget: Endeavor? = nil
     @State private var settingsTarget: Endeavor? = nil
     @State private var deleteTarget: Endeavor? = nil
@@ -463,14 +478,247 @@ struct TraceMacEndeavorsView: View {
             Task { await store?.reload() }
         }
         .sheet(isPresented: $showingNew) {
+            // `seed` comes last because `seedName` and `seed` are declared
+            // after `onSave` on the sheet, beside each other. Argument order
+            // follows the declaration, not the reading order.
             MacEndeavorSheet(existing: nil,
                              onSave: { _, name, type, starts, ends, destination, _, _ in
-                guard let store else { return }
-                let made = try? await store.create(name: name, type: type,
-                                                   starts: starts, ends: ends,
-                                                   destination: destination)
-                if let made { reveal(made) }
-            })
+                                 guard let store else { return }
+                                 // The Summary paragraph rides along into the
+                                 // note's own `## Summary` section. Nil on
+                                 // every plain `+`, which writes the empty
+                                 // skeleton exactly as it always did.
+                                 let made = try? await store.create(name: name, type: type,
+                                                                    starts: starts, ends: ends,
+                                                                    destination: destination,
+                                                                    summary: createSeed?.summary)
+                                 justCreated = made
+                                 if let made { reveal(made) }
+                             },
+                             seed: createSeed,
+                             seedNames: createNames,
+                             onAttach: { picked in await attachSeedNames(picked) })
+        }
+    }
+
+    // MARK: Create (D317, D321)
+
+    /// The AI button, beside the capture square.
+    ///
+    /// **Paper where the `+` is ink.** They do the same job from two
+    /// directions and the typed one is the default, so the new one is drawn as
+    /// the quieter of the pair rather than competing with it. Same 46pt square,
+    /// same corner, same shadow family — `MacEditorialPlus` is not restyled and
+    /// must not be.
+    private var createAIButton: some View {
+        Button { showingCreateAI = true } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(MacEditorialColor.paper)
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(MacEditorialColor.ink.opacity(0.22), lineWidth: 1)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(MacEditorialColor.ink)
+            }
+            .frame(width: MacEditorialLayout.plusSize,
+                   height: MacEditorialLayout.plusSize)
+            .shadow(color: .black.opacity(0.10), radius: 5, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, MacEditorialLayout.plusInset)
+        .help("Describe an endeavor in a sentence")
+        .popover(isPresented: $showingCreateAI, arrowEdge: .top) { createAICard }
+    }
+
+    /// One box, one verb, and a line saying what leaves the Mac (D317).
+    ///
+    /// **The brief is required and the button is dead without it.** The note is
+    /// context; the brief is intent. A verb that ran on an empty box would send
+    /// something on a stray click and guess at what he wanted.
+    ///
+    /// **The faint line is the rule made visible, not decoration.** It prints
+    /// every time so that what is sent never has to be remembered. On the
+    /// Endeavors room there is no note yet, so this line is shorter than
+    /// Research's will be — it says what is true here.
+    private var createAICard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("New endeavor").macLabel().foregroundStyle(.tertiary)
+                .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 3)
+            Text("Describe it in a sentence.")
+                .font(MacType.row)
+                .padding(.horizontal, 16).padding(.bottom, 9)
+
+            TextEditor(text: $createBrief)
+                .font(MacType.body)
+                .scrollContentBackground(.hidden)
+                .frame(height: 92)
+                .padding(6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(MacEditorialColor.ink.opacity(0.18), lineWidth: 1)
+                )
+                .padding(.horizontal, 14)
+
+            Text("Sends: your sentence. Not sent: your people, Log, Reference, documents.")
+                .font(MacType.meta)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16).padding(.top, 9).padding(.bottom, 11)
+
+            if let createFailure {
+                Text(createFailure)
+                    .font(MacType.meta)
+                    .foregroundStyle(MacEditorialColor.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16).padding(.bottom, 10)
+            }
+
+            Divider()
+            HStack {
+                if createReading {
+                    ProgressView().controlSize(.small)
+                    Text("Reading…").font(MacType.meta).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") { showingCreateAI = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Create") { runCreate() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(createBriefIsEmpty || createReading)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+        }
+        .frame(width: 340)
+    }
+
+    private var createBriefIsEmpty: Bool {
+        createBrief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Looks the sentence's names up against Notion (D321).
+    ///
+    /// **People match on the full name first, then on a first name**, because
+    /// David writes "Hannah" and the record is "Hannah Weiss" — and the full
+    /// name is what gets written, so the link resolves. A first name that
+    /// matches two people matches neither: guessing which sister he meant is
+    /// worse than offering to create a duplicate he can see and untick.
+    ///
+    /// **Places match exactly, and only exactly.** A Place is a real record
+    /// with coordinates; a fuzzy match attaches the wrong one silently.
+    private func resolveSeedNames(_ draft: EndeavorDraft) -> [EndeavorSeedName] {
+        var out: [EndeavorSeedName] = []
+        var seen = Set<String>()
+
+        for raw in draft.peopleNamed {
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { continue }
+            var resolved = name
+            var exists = false
+            if let exact = notionService.people.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }) {
+                resolved = exact.name
+                exists = true
+            } else {
+                let firstNameMatches = notionService.people.filter {
+                    $0.name.lowercased().hasPrefix(name.lowercased() + " ")
+                }
+                if firstNameMatches.count == 1 {
+                    resolved = firstNameMatches[0].name
+                    exists = true
+                }
+            }
+            let item = EndeavorSeedName(name: name, resolvedName: resolved,
+                                        kind: .person, exists: exists)
+            if seen.insert(item.id).inserted { out.append(item) }
+        }
+
+        for raw in draft.placesNamed {
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { continue }
+            let match = notionService.places.first {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }
+            let item = EndeavorSeedName(name: name,
+                                        resolvedName: match?.name ?? name,
+                                        kind: .place, exists: match != nil)
+            if seen.insert(item.id).inserted { out.append(item) }
+        }
+        return out
+    }
+
+    /// Writes the ticked names onto the endeavor that was just created (D321).
+    ///
+    /// A person the app does not have is created FIRST, through the same
+    /// `NotionService.addPerson` the booking sheet's "Someone else…" already
+    /// uses — a ticked line on a sheet he is saving is that same act, not a new
+    /// write path. A person that fails to create is skipped rather than written
+    /// as a bare name, so the endeavor never carries a link to nothing.
+    private func attachSeedNames(_ picked: [EndeavorSeedName]) async {
+        guard let store, let made = justCreated else { return }
+        justCreated = nil
+        var updated = made
+        for item in picked {
+            switch item.kind {
+            case .person:
+                var name = item.resolvedName
+                if !item.exists {
+                    guard let person = try? await notionService.addPerson(name: item.name) else {
+                        continue
+                    }
+                    name = person.name
+                }
+                if !updated.people.contains(name) { updated.people.append(name) }
+            case .place:
+                // **The NAME goes on the endeavor; no Place record is ever
+                // made** (D321, D332). A name with no record behind it renders
+                // as "not in your places" — D275's existing orphan line, which
+                // is the thing that makes it resolvable in Discover later.
+                if !updated.places.contains(item.resolvedName) {
+                    updated.places.append(item.resolvedName)
+                }
+            }
+        }
+        guard updated.people != made.people || updated.places != made.places else { return }
+        _ = try? await store.update(updated)
+    }
+
+    /// Turns the sentence into a draft and opens the New Endeavor sheet on it.
+    ///
+    /// **Build 1 of Session 93 uses a fixed draft, no model call.** The point of
+    /// this build is that the button, the window, the disabled verb, the seed
+    /// and the sheet all work; a model in the middle of that would make a
+    /// failure ambiguous. The parse replaces the body of this method in build 2
+    /// and nothing around it changes.
+    private func runCreate() {
+        guard !createBriefIsEmpty else { return }
+        createReading = true
+        createFailure = nil
+        Task { @MainActor in
+            do {
+                let draft = try await DocumentScanService.parseEndeavor(brief: createBrief)
+                createReading = false
+                showingCreateAI = false
+                // **A popover and a sheet cannot swap in the same turn of the
+                // run loop.** Session 92 found this between the drop popover
+                // and the booking sheet: the second is asked to present while
+                // the first is still on screen and simply does not appear.
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                createSeed = draft
+                createNames = resolveSeedNames(draft)
+                showingNew = true
+                createBrief = ""
+            } catch {
+                // **The window stays open on failure, unlike the drop's sheet.**
+                // There the file was already in Satchel and something had to
+                // open; here nothing has happened yet, the sentence he typed is
+                // still in the box, and retrying is one click. Throwing him into
+                // an empty New Endeavor sheet would lose the sentence and say
+                // nothing about why.
+                createReading = false
+                createFailure = error.localizedDescription
+            }
         }
     }
 
@@ -621,7 +869,13 @@ struct TraceMacEndeavorsView: View {
                     // New has to be reachable when the list is empty, which is
                     // exactly when you most want it.
                     .contentShape(Rectangle())
-                    .contextMenu { Button("New Endeavor…") { showingNew = true } }
+                    .contextMenu {
+                        Button("New Endeavor…") {
+                            createSeed = nil
+                            createNames = []
+                            showingNew = true
+                        }
+                    }
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -649,7 +903,18 @@ struct TraceMacEndeavorsView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            MacEditorialPlus { showingNew = true }
+            // **Two buttons, and the `+` is unchanged** (D317). Typing a name
+            // yourself must never start costing a model call, so Create is a
+            // neighbour rather than a replacement, and it is drawn as the
+            // quieter of the pair: paper where the `+` is ink.
+            HStack(spacing: 0) {
+                createAIButton
+                MacEditorialPlus {
+                    createSeed = nil
+                    createNames = []
+                    showingNew = true
+                }
+            }
         }
         .frame(width: listWidth)
         .confirmationDialog("Delete “\(deleteTarget?.name ?? "")”?",
@@ -789,7 +1054,11 @@ struct TraceMacEndeavorsView: View {
         // the card to the left."* Both entries route to the same places the
         // band's pills do, so there is one implementation of each verb.
         .contextMenu {
-            Button("New Endeavor…") { showingNew = true }
+            Button("New Endeavor…") {
+                createSeed = nil
+                createNames = []
+                showingNew = true
+            }
             Divider()
             Button("Endeavor Settings…") { settingsTarget = e }
             Button("Change Cover…")      { coverTarget = e }
@@ -3370,6 +3639,23 @@ struct MacEndeavorSheet: View {
     /// A name typed somewhere else, carried in (D249's + rail). Only consulted
     /// when creating; an edit seeds from `existing` as it always has.
     var seedName: String = ""
+    /// Fields read out of a sentence by the Create window (D317, Session 93).
+    ///
+    /// **Create branch only**, beside `seedName` and for the same reason: an
+    /// edit opens on the endeavor that exists, and a draft that could reach the
+    /// edit branch would overwrite a real record with a guess. Same rule
+    /// `MacBookingSheet.seed` follows.
+    var seed: EndeavorDraft? = nil
+    /// The people and places the sentence named, already looked up (D321).
+    /// Empty on every other path, which is what keeps this block off the `+`.
+    var seedNames: [EndeavorSeedName] = []
+    /// Attaches the ticked names AFTER the endeavor is created.
+    ///
+    /// **A second closure rather than a ninth positional parameter.** `onSave`
+    /// already takes eight unlabelled arguments; adding to it is how the wrong
+    /// value ends up in the wrong slot. Same call Session 92 made for
+    /// `onSetTripDates` on the booking sheet.
+    var onAttach: (([EndeavorSeedName]) async -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
 
@@ -3385,6 +3671,8 @@ struct MacEndeavorSheet: View {
     @State private var saving      = false
     @State private var confirmingDelete = false
     @State private var seeded      = false
+    /// Which of `seedNames` are ticked, by id.
+    @State private var picked: Set<String> = []
 
     private var isEdit: Bool { existing != nil }
 
@@ -3411,6 +3699,15 @@ struct MacEndeavorSheet: View {
                 if hasStart { MacDateField(label: "Starts", date: $starts) }
                 Toggle("End date", isOn: $hasEnd)
                 if hasEnd { MacDateField(label: "Ends", date: $ends) }
+
+                // **Create only, and only when the sentence named somebody**
+                // (D321). It is a list of proposals, not a field: every line
+                // states what the app found and what Save will do about it.
+                if !isEdit, !seedNames.isEmpty {
+                    Section("From your sentence") {
+                        ForEach(seedNames) { item in seedNameRow(item) }
+                    }
+                }
 
                 if isEdit {
                     // ONLY the two a calendar cannot express. Active, upcoming
@@ -3467,6 +3764,45 @@ struct MacEndeavorSheet: View {
             guard !seeded, let e = existing else {
                 seeded = true
                 if name.isEmpty { name = seedName }
+                // A sentence, read by the Create window (D317). After
+                // `seedName`, which is the older and narrower of the two, so a
+                // draft wins where both are present — the sentence is the more
+                // specific statement of intent.
+                if let seed {
+                    if let value = seed.name, !value.isEmpty { name = value }
+                    // Matched in code against the offered five. A type the
+                    // model invented is not a type this app has.
+                    if let value = seed.type,
+                       let match = Endeavor.offeredTypes.first(where: {
+                           $0.lowercased() == value.lowercased()
+                       }) {
+                        type = match
+                    }
+                    if let value = seed.destination, !value.isEmpty { destination = value }
+                    // **Off when the sentence gave none, never today's date.**
+                    // D326's rule on the booking sheet, and the same reasoning:
+                    // a default that looks like an answer is worse than a blank
+                    // on the field that decides where a thing lands.
+                    hasStart = seed.starts != nil
+                    hasEnd   = seed.ends   != nil
+                    if let value = seed.starts { starts = value }
+                    if let value = seed.ends   { ends   = value }
+                }
+                // **Ticked when the record already exists, off when it does
+                // not** (D321). Attaching somebody he already has is the
+                // obvious act; CREATING a person is not, and a tick he did not
+                // put there is how a Notion People list fills up with
+                // misspellings. A place that does not exist gets no tick at
+                // all — this app never invents a Place.
+                // **On for anything already known, and for every place**
+                // (D332). Attaching a record he has is the obvious act, and so
+                // is putting a place name on the trip it belongs to — neither
+                // writes anything to Notion. CREATING a Person does, so an
+                // unknown person stays off until he says otherwise; that is how
+                // a People list fills with misspellings.
+                picked = Set(seedNames
+                    .filter { $0.exists || $0.kind == .place }
+                    .map(\.id))
                 return
             }
             seeded      = true
@@ -3484,6 +3820,45 @@ struct MacEndeavorSheet: View {
         }
     }
 
+    /// One proposed name.
+    ///
+    /// **A place this app does not have is not tickable at all.** A Notion
+    /// Place is coordinates, a category and a Discover record that Directions
+    /// and Check In depend on; one made from a name in a sentence is a thin
+    /// record that looks real (D321, and D268/D275 before it). So the line says
+    /// where to go instead, and Save leaves the place unattached — the new
+    /// endeavor then shows the same unresolved line any orphaned place gets.
+    @ViewBuilder
+    private func seedNameRow(_ item: EndeavorSeedName) -> some View {
+        let subtitle: String? = {
+            if item.exists { return nil }
+            return item.kind == .person
+                ? "not in People · Create"
+                : "not in your places · Find in Discover"
+        }()
+
+        // **Every line is tickable, including a place this app does not have**
+        // (D332). Drawing that one as dead text was a misreading of D321: a
+        // place is never CREATED, but writing its NAME onto the endeavor is not
+        // creating anything — it is the same orphaned-place line D275 already
+        // draws, and it is what makes the place findable in Discover later.
+        // Leaving it off the endeavor entirely dropped the destination out of
+        // the Places band, which David found on the first Savannah run.
+        Toggle(isOn: Binding(
+                get: { picked.contains(item.id) },
+                set: { on in
+                    if on { picked.insert(item.id) } else { picked.remove(item.id) }
+                }
+        )) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.resolvedName)
+                if let subtitle {
+                    Text(subtitle).font(MacType.meta).foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
     private func save() {
         saving = true
         Task {
@@ -3491,6 +3866,13 @@ struct MacEndeavorSheet: View {
                          hasStart ? starts : nil,
                          hasEnd   ? ends   : nil,
                          destination, status, stamps)
+            // **After the endeavor exists, never before.** There is nothing to
+            // attach a person to until it has been written, and a Person
+            // created for an endeavor that then failed to save is a record he
+            // did not ask for.
+            if !isEdit, let onAttach {
+                await onAttach(seedNames.filter { picked.contains($0.id) })
+            }
             dismiss()
         }
     }

@@ -1401,9 +1401,7 @@ struct TraceMacPlaceDetail: View {
     }
 
     /// The Notion "Category" select, spelled the same way iOS spells it.
-    private static let categories = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
-                                     "Attraction", "Venue", "House", "Fitness",
-                                     "Office", "Airport", "Medical", "Park", "Grocery"]
+    private static let categories = PlaceCategory.all
 
     /// The Notion "Status" select. Two values, and they are the two the edit
     /// sheet's segmented picker has always offered — not a new vocabulary, the
@@ -2332,9 +2330,8 @@ struct MacCheckInSheet: View {
 
 // MARK: - MacPlaceEditSheet
 
-private let macPlaceEditCategories = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
-                                      "Attraction", "Venue", "House", "Fitness",
-                                      "Office", "Airport", "Medical", "Park", "Grocery"]
+/// D333: one list, in `PlaceCategory.all`.
+private let macPlaceEditCategories = PlaceCategory.all
 
 struct MacPlaceEditSheet: View {
     let place: Place

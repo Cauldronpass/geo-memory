@@ -716,10 +716,21 @@ enum EndeavorFile {
     /// third copy inside the body was pure repetition — David flagged it on the
     /// first endeavor he made, 2026-07-29. It is in the frontmatter as `name:`,
     /// which is the field the app reads.
-    static func skeleton() -> String {
-        """
+    /// The five sections every endeavor note opens with.
+    ///
+    /// **`summary` fills the first one and nothing else** (Session 93). Create
+    /// writes a paragraph there from David's sentence; every other caller passes
+    /// nothing and gets the empty skeleton it always got. The paragraph goes in
+    /// the note rather than a frontmatter field because that is where he reads
+    /// it, and because `## Summary` is already what the AI window will send
+    /// back to the model later (D317).
+    static func skeleton(summary: String? = nil) -> String {
+        let opening = (summary?.trimmingCharacters(in: .whitespacesAndNewlines))
+            .flatMap { $0.isEmpty ? nil : $0 } ?? ""
+        return """
         ## Summary
 
+        \(opening)
 
         ## Plan
 
@@ -747,6 +758,7 @@ enum EndeavorFile {
                             destination: String? = nil,
                             placeID: String? = nil,
                             stampsCaptures: Bool? = nil,
+                            summary: String? = nil,
                             existingIDs: [String]) -> Endeavor {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmed.isEmpty ? "Untitled" : trimmed
@@ -764,7 +776,7 @@ enum EndeavorFile {
             stampsCaptures: stampsCaptures
                 ?? Endeavor.defaultStampsCaptures(starts: starts, ends: ends),
             relativePath: "\(folder)/\(safeFilename(finalName)).md",
-            body: skeleton()
+            body: skeleton(summary: summary)
         )
     }
 

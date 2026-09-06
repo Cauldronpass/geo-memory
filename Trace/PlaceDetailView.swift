@@ -222,9 +222,7 @@ struct PlaceDetailView: View {
                 }
                 DetailRow(label: "Category") {
                     Menu {
-                        ForEach(["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
-                                 "Attraction", "Venue", "House", "Fitness",
-                                 "Office", "Airport", "Medical", "Park", "Grocery"], id: \.self) { cat in
+                        ForEach(PlaceCategory.all, id: \.self) { cat in
                             Button(cat) {
                                 Task {
                                     try? await notionService.updatePlace(livePlace, name: livePlace.name, category: cat, status: livePlace.status)
@@ -910,9 +908,8 @@ struct VisitEditSheet: View {
 
 // MARK: - Place Edit Sheet
 
-private let placeEditCategories = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
-                                    "Attraction", "Venue", "House", "Fitness",
-                                    "Office", "Airport", "Medical", "Park", "Grocery"]
+/// D333: one list, in `PlaceCategory.all`.
+private let placeEditCategories = PlaceCategory.all
 
 struct PlaceEditSheet: View {
     let place: Place

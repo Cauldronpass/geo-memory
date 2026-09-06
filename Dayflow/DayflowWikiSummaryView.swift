@@ -178,9 +178,8 @@ struct DayflowWikiSummaryView: View {
     @State private var isSavingPlace = false
     @State private var placeSaveError: String? = nil
 
-    private let placeCategoryOptions = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
-                                         "Attraction", "Venue", "House", "Fitness",
-                                         "Office", "Airport", "Medical", "Park", "Grocery"]
+    /// D333: one list, in `PlaceCategory.all`.
+    private let placeCategoryOptions = PlaceCategory.all
     private let placeTagOptions = ["Family", "Friends", "Work", "Favorite", "Want to Visit"]
 
     // MARK: Notes tab (shared — NoteStore markdown file, both person + place)

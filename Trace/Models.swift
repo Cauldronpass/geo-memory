@@ -315,10 +315,35 @@ struct ClaudeAPIKeySection: View {
 /// is deliberately distinguishable from a confident answer.
 enum PlaceCategory {
 
-    /// The canonical list. Was duplicated in four files.
+    /// The canonical list, and now the ONLY one (D333, Session 93).
+    ///
+    /// The note here used to read "was duplicated in four files". It was still
+    /// duplicated in six when David asked for more categories — every picker in
+    /// both apps carried its own copy, so adding one in the obvious place would
+    /// have added it to exactly one screen. All six now read this array.
+    ///
+    /// **Five added 2026-09-06, appended rather than sorted in.** David:
+    /// *"Denver for example should be City which isnt a choice. I also had a
+    /// gas station that was not a choice."* Existing order is left alone so
+    /// nothing he already knows moves in a picker.
+    ///
+    /// - **City** — Denver, Savannah. The one that was structurally missing:
+    ///   an endeavor's destination is almost always a city, and Create now
+    ///   writes those names onto endeavors (D332), so they had nowhere to sit.
+    /// - **Gas** — road trips. He drives to Fort Collins.
+    /// - **School** — a campus. Hannah's graduation is an endeavor already.
+    /// - **Parking** — a garage or a lot. Bookings have had a Parking kind
+    ///   since D267 and the place it happens had no category.
+    /// - **Service** — the mechanic, the vet, the dry cleaner, the salon. The
+    ///   errand bucket that was falling into Shop, which is where you buy
+    ///   things rather than have something done.
+    ///
+    /// **Notion needs no schema edit.** Writing an unknown option to a select
+    /// creates it, so the first place saved under a new category adds it there.
     static let all = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
                       "Attraction", "Venue", "House", "Fitness",
-                      "Office", "Airport", "Medical", "Park", "Grocery"]
+                      "Office", "Airport", "Medical", "Park", "Grocery",
+                      "City", "Gas", "School", "Parking", "Service"]
 
     /// Best guess for a Google `primaryType`, or nil when there is no honest one.
     ///
@@ -347,6 +372,16 @@ enum PlaceCategory {
             "performing_arts_theater": "Venue", "event_venue": "Venue",
             "corporate_office": "Office", "accounting": "Office", "lawyer": "Office",
             "store": "Shop", "shopping_mall": "Shop", "clothing_store": "Shop",
+            // Added with the five new categories (D333).
+            "locality": "City", "administrative_area_level_1": "City",
+            "administrative_area_level_2": "City", "political": "City",
+            "gas_station": "Gas", "electric_vehicle_charging_station": "Gas",
+            "school": "School", "university": "School", "primary_school": "School",
+            "secondary_school": "School", "library": "School",
+            "parking": "Parking",
+            "car_repair": "Service", "car_wash": "Service", "veterinary_care": "Service",
+            "hair_salon": "Service", "beauty_salon": "Service", "laundry": "Service",
+            "bank": "Service", "atm": "Service", "post_office": "Service",
         ]
         if let hit = exact[raw] { return hit }
 
@@ -364,6 +399,13 @@ enum PlaceCategory {
         if raw.contains("museum") || raw.contains("attraction") { return "Attraction" }
         if raw.contains("theater") || raw.contains("stadium")   { return "Venue" }
         if raw.contains("office")                               { return "Office" }
+        // The tail for the five added in D333, ABOVE the Shop line on purpose:
+        // "car_repair_shop" is a Service and "gas_station_store" is a Gas, and
+        // both contain "shop"/"store". Order is the rule here, not the words.
+        if raw.contains("gas") || raw.contains("charging")      { return "Gas" }
+        if raw.contains("school") || raw.contains("universit")  { return "School" }
+        if raw.contains("parking")                              { return "Parking" }
+        if raw.contains("repair") || raw.contains("salon")      { return "Service" }
         if raw.contains("store") || raw.contains("shop")        { return "Shop" }
         return nil
     }
