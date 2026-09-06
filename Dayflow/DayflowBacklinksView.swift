@@ -63,7 +63,16 @@ struct DayflowBacklinksView: View {
             if let title = selectedProjectTitle {
                 DayflowProjectNoteView(title: title, onBack: { selectedProjectTitle = nil })
             } else if let id = selectedEndeavorID {
-                DayflowEndeavorView(endeavorID: id)
+                // In a `NavigationStack` like the other six hosts (D303,
+                // Session 90). Without one the endeavor's
+                // `navigationDestination` push to a project note compiled,
+                // rendered and did nothing from this door. Found by D301 and
+                // lost in that session's revert. Done still closes the whole
+                // excursion: at the root of a stack `dismiss` falls through
+                // to the enclosing presentation.
+                NavigationStack {
+                    DayflowEndeavorView(endeavorID: id)
+                }
             } else {
                 mainBody
             }

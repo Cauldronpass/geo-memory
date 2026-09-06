@@ -452,6 +452,20 @@ struct DayflowEndeavorView: View {
     /// True while the note editor holds the keyboard. Collapses the header, so
     /// the thing being typed into is not the smallest thing on screen.
     @State private var editorFocused = false
+    /// Height of everything above the note editor inside the page's scroll:
+    /// header (or its compact form), tag bar, bands, ATTACHED (D303, Session
+    /// 90). Measured, not summed from constants. The 310pt figure in
+    /// `content(_:)`'s comment was written before D279 added the bands and
+    /// was already wrong by the time it mattered.
+    @State private var chromeAboveEditor: CGFloat = 0
+    /// The least the note gets when the bands push it down the page (D303).
+    /// About ten lines. David: *"ill be most interested in the flight and
+    /// hotel information on the road with my phone"*, so the schedule
+    /// outranks the note and the floor is set low enough that more of the
+    /// bands show before the first swipe. Not applied while typing: then the
+    /// editor is exactly the room above the keyboard, and a floor larger than
+    /// that room would leave the page scrollable under the caret.
+    private let editorFloor: CGFloat = 240
     /// Session 78 round two — tasks on the endeavor (David: "it wont go
     /// unused"): the OPEN TASKS band's edit/add sheets, and the clutter fix
     /// (the three chip rows + documents fold behind one ATTACHED row).
@@ -609,11 +623,15 @@ struct DayflowEndeavorView: View {
         // A pill that does nothing is indistinguishable from a pill that is
         // broken, and David reported these as "not clickable" — which is what
         // silence looks like from the outside. See `resolveWikiLink`.
-        // Every host presents this view inside a `NavigationStack` — checked,
-        // all four: the Endeavors list, the agenda row, the wiki summary sheet
-        // and ContentView's route. A `navigationDestination` with no stack
-        // above it compiles, renders and does nothing, which is the exact
-        // failure mode this session has already met twice.
+        // Every host presents this view inside a `NavigationStack`. This
+        // comment once said "checked, all four". D301 counted six and found
+        // the backlinks door bare; D303 counted again with a grep of the call
+        // itself and found SEVEN: DayflowEndeavorViews (the list),
+        // ContentView (the route), DayflowProjectNoteView, DayflowVisitDetailView,
+        // DayflowWikiSummaryView, DayflowTaskEditSheet, and DayflowBacklinksView,
+        // whose body swap now wraps it too. A `navigationDestination` with no
+        // stack above it compiles, renders and does nothing, which is why a
+        // bare host is silent. Count with the grep, not from memory.
         .navigationDestination(item: $pushedNoteTitle) { title in
             DayflowProjectNoteView(title: title, onBack: { pushedNoteTitle = nil })
         }
@@ -644,7 +662,37 @@ struct DayflowEndeavorView: View {
 
     @ViewBuilder
     private func content(_ e: Endeavor) -> some View {
+        // **THE PAGE SCROLLS** (D303, Session 90). It did not, and once D279's
+        // bands were on it the fixed stack ran taller than the display. A
+        // view taller than the space it is offered is CENTRED, so the overflow
+        // split top and bottom and the ENDEAVOR row went above the glass,
+        // measured at y = -2 against the day note page's 62 (D302). Four
+        // fixes aimed at safe areas and navigation moved it by zero pixels,
+        // because none of them changed how much content there was.
+        //
+        // The shape: the top row stays outside this, pinned. Everything else
+        // is one `ScrollView`, and the editor is given a REAL height inside
+        // it: `viewport - chrome`, floored at `editorFloor` when the bands
+        // push it down, exactly `viewport - chrome` while typing. Inside a
+        // scroll view a `maxHeight: .infinity` editor is offered no height
+        // and collapses to nothing with its footer rows climbing over the
+        // text. The home screen learned that on 2026-08-28 and answered it
+        // with `.frame(height: 360)` on the Daily Note card. Same answer
+        // here, with the number measured rather than fixed. A `UITextView`
+        // inside a scroll view is already the home card's daily reality;
+        // "Bug 4" (stale contentSize) was fixed in the editor itself and
+        // covers every host.
+        //
+        // The three wrapping lines below are deliberately NOT re-indented
+        // with the body they wrap. Re-indenting 140 lines is how Session 89
+        // put English into ContentView as Swift.
+        GeometryReader { viewport in
+        ScrollView {
         VStack(alignment: .leading, spacing: 0) {
+            // Everything above the editor, measured as one block so the
+            // editor can take exactly what is left (D303). Same alignment and
+            // spacing as its parent, so the nesting draws nothing.
+            VStack(alignment: .leading, spacing: 0) {
             // COLLAPSE WHILE TYPING. David, 2026-07-31: *"when i click in the note
             // section the keyboard jumps up and dominates the screen and i cant see
             // the note any more."*
@@ -660,10 +708,10 @@ struct DayflowEndeavorView: View {
             // not say what it is editing is its own small problem). Everything else
             // returns the moment the keyboard goes down.
             //
-            // Deliberately NOT solved by making the page scroll. A UITextView inside
-            // a ScrollView is where this codebase has already been bitten — see
-            // `makeUIView`'s "Bug 4" note on contentSize and scroll lock — and it
-            // would be a far larger change for the same result.
+            // The collapse stays now that the page scrolls (D303): scrolling
+            // answers "the bands are taller than the screen", not "the keyboard
+            // covers the note". While typing the editor is sized to the room
+            // above the keyboard and the page has nothing left to scroll.
             if editorFocused {
                 compactHeader(e)
             } else {
@@ -716,6 +764,12 @@ struct DayflowEndeavorView: View {
                     SatchelAddDocumentButton(notePath: e.relativePath, style: .bar)
                 }
             }
+            } // the chrome above the editor (D303)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                chromeAboveEditor = height
+            }
 
             // D4: the editor gets prose only. `body_` is what the store split
             // off; saving puts it back with the frontmatter re-rendered around
@@ -752,24 +806,17 @@ struct DayflowEndeavorView: View {
                 onPromoteTask: { line, done in promoteEndeavorTask(line, e, done) },
                 onCompletePromoted: { line in completeEndeavorTask(titled: line, e) }
             )
-            // **A floor under the preview, Session 72.** David: *"the various
-            // notes and documents are great but they start to crowd out the note
-            // at the bottom. Id like to be able to scroll to see more of the
-            // note and in addition click on it to open up the full note."*
-            //
-            // The tap-to-full-screen half already worked — see the overlay
-            // below, built for his earlier report about the 3/4-height editor.
-            // What had gone wrong is that on Megan's Wedding Week the preview
-            // was down to about one line, so there was nothing that read as
-            // tappable and nothing worth tapping. **The fix is height, not a
-            // scroll view:** `makeUIView`'s "Bug 4" note records what a
-            // `UITextView` inside a `ScrollView` did to this codebase, and the
-            // comment below already ruled that path out once.
-            //
-            // 180pt is about eight lines. Paired with the collapsed document
-            // buckets above, which is where the space actually went, the note is
-            // a readable preview again rather than a sliver.
-            .frame(maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
+            // **A definite height, not `maxHeight: .infinity`** (D303, Session
+            // 90). This was `minHeight: 180, maxHeight: .infinity` from Session
+            // 72, when David found Megan's Wedding Week had squeezed the note
+            // to one line and the fix was a floor. That worked in a fixed
+            // stack. Inside the page's `ScrollView` an infinite maxHeight is
+            // offered nothing and collapses, so the editor is now told its
+            // height outright: the room left under the chrome, never less than
+            // `editorFloor` when the bands are showing, exactly the room above
+            // the keyboard while typing. See `editorHeight(viewport:)`.
+            .frame(maxWidth: .infinity)
+            .frame(height: editorHeight(viewport: viewport.size.height))
             // **The inline editor IS the typing surface again (Session 78).**
             //
             // The full-screen editor cover (Session 72's answer) earned its
@@ -782,6 +829,11 @@ struct DayflowEndeavorView: View {
             // again, which the old tap-catcher had traded away.
         }
         .animation(.easeInOut(duration: 0.2), value: editorFocused)
+        } // ScrollView (D303)
+        // A short endeavor fits, and a page that fits should not bounce like
+        // one with more to give.
+        .scrollBounceBehavior(.basedOnSize)
+        } // GeometryReader (D303)
         .sheet(item: $editingTask) { task in
             DayflowTaskEditSheet(taskID: task.id, initialTitle: task.title,
                                  initialDate: task.date, initialList: task.list,
@@ -885,6 +937,17 @@ struct DayflowEndeavorView: View {
             instant.disablesAnimations = true
             withTransaction(instant) { dismiss() }
         }
+    }
+
+    /// What the note gets on the page (D303). The room left under the chrome,
+    /// never less than `editorFloor` when the bands are showing; while typing
+    /// exactly the room above the keyboard, so the page has nothing left to
+    /// scroll and cannot move under the caret. The 80 is a sanity floor for
+    /// the one layout pass before `chromeAboveEditor` has been measured, and
+    /// for a keyboard that leaves almost nothing.
+    private func editorHeight(viewport: CGFloat) -> CGFloat {
+        let remaining = viewport - chromeAboveEditor
+        return max(editorFocused ? 80 : editorFloor, remaining)
     }
 
     /// The header while the keyboard is up: the name, and nothing else.
