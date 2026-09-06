@@ -1273,15 +1273,7 @@ struct DayflowWikiSummaryView: View {
     /// predicate that enumerates what IS handled cannot drift from the switch that
     /// handles it — it is the same list.
     private func isMentionOpenable(_ mention: NoteMention) -> Bool {
-        let path = mention.relativePath
-        if path.hasPrefix("Notes/Projects/") { return true }
-        if path.hasPrefix("Calendar/")       { return true }
-        if path.hasPrefix("Notes/Places/")   { return true }
-        if path.hasPrefix("Notes/People/")   { return true }
-        if path.hasPrefix("Notes/Endeavors/") {
-            return EndeavorStore.shared.endeavors.contains { $0.name == mention.title }
-        }
-        return false
+        DayflowMention.isOpenable(mention)
     }
 
     /// Generalized version of DayflowBacklinksView.openMention's dispatch,
@@ -1294,47 +1286,25 @@ struct DayflowWikiSummaryView: View {
     /// sanitized filename (`NoteStore.placeNoteFilename`), not necessarily
     /// the place's real display name — same mismatch DayflowBacklinksView.
     /// openMention already had to reverse-lookup around.
+    /// One classifier, two screens (Session 88). This screen PRESENTS each
+    /// destination; the backlinks screen swaps its own body. That difference
+    /// stays local - what a row points at does not.
     private func openMention(_ mention: NoteMention) {
-        let path = mention.relativePath
-        if path.hasPrefix("Notes/Projects/") {
-            mentionProjectTarget = MentionProjectTarget(id: mention.title)
-        } else if path.hasPrefix("Calendar/") {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone.current
-            formatter.dateFormat = "yyyy-MM-dd"
-            if let parsed = formatter.date(from: mention.title) {
-                mentionDailyNoteDate = parsed
-                showMentionDailyNote = true
-            }
-        } else if path.hasPrefix("Notes/Places/") {
-            if let place = NotionService.shared.places.first(where: {
-                NoteStore.shared.placeNoteFilename(for: $0.name) == mention.title
-            }) {
-                wikiLinkTarget = .place(place)
-            }
-        } else if path.hasPrefix("Notes/People/") {
-            if let person = NotionService.shared.people.first(where: { $0.name == mention.title }) {
-                wikiLinkTarget = .person(person)
-            }
-        } else if path.hasPrefix("Notes/Endeavors/") {
-            // ADDED 2026-08-01. David tapped Karla from the Lunch with Bronwyn
-            // Endeavor note, landed on her card, and found the row naming that
-            // Endeavor did nothing.
-            //
-            // **The chevron was already promising it.** `isMentionOpenable`
-            // excluded only `Notes/Horizons/`, so an Endeavor row drew the arrow
-            // and this dispatch had no case for it — the tap fell through to the
-            // silent no-op below. The two were written at different times and
-            // nothing made them agree.
-            //
-            // Endeavors are keyed by SLUG, not by title, so the store is asked
-            // rather than the filename trusted.
-            if let match = EndeavorStore.shared.endeavors.first(where: { $0.name == mention.title }) {
-                mentionEndeavorID = match.id
-            }
+        switch DayflowMention.target(for: mention) {
+        case .projectNote(let title):
+            mentionProjectTarget = MentionProjectTarget(id: title)
+        case .dailyNote(let day):
+            mentionDailyNoteDate = day
+            showMentionDailyNote = true
+        case .place(let place):
+            wikiLinkTarget = .place(place)
+        case .person(let person):
+            wikiLinkTarget = .person(person)
+        case .endeavor(let id, _):
+            mentionEndeavorID = id
+        case .none:
+            break
         }
-        // Notes/Horizons/ and anything else: no Dayflow destination, silent no-op.
     }
 
     // MARK: - Wikilink resolution (notes tab → nested summary sheet)
@@ -1349,24 +1319,9 @@ struct DayflowWikiSummaryView: View {
                                onMiss: { wikiMiss = $0 })
     }
 
-    private func wikiSuggestions(for query: String) -> [(name: String, isPlace: Bool)] {
-        let q = query.lowercased()
-        var results: [(name: String, isPlace: Bool)] = []
-        let placeMatches = NotionService.shared.places
-            .map { $0.name }
-            .filter { q.isEmpty || $0.lowercased().contains(q) }
-            .sorted()
-            .map { (name: $0, isPlace: true) }
-        results.append(contentsOf: placeMatches)
-        let peopleMatches = NotionService.shared.people
-            .map { $0.name }
-            .filter { name in
-                (q.isEmpty || name.lowercased().contains(q)) &&
-                !results.contains(where: { $0.name == name })
-            }
-            .sorted()
-            .map { (name: $0, isPlace: false) }
-        results.append(contentsOf: peopleMatches)
-        return results
+    /// One shared list (Session 88). This was a copy - six of them, already
+    /// disagreeing about which kinds to offer and whether to cap.
+    private func wikiSuggestions(for query: String) -> [(name: String, kind: WikiSuggestionKind)] {
+        WikiSuggestions.matches(for: query)
     }
 }

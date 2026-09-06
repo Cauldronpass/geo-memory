@@ -140,6 +140,7 @@
 				Models.swift,
 				NoteStore.swift,
 				NotionService.swift,
+				PlaceHelpers.swift,
 				PlaceLink.swift,
 				ReminderTaskStore.swift,
 				TaskLineParser.swift,

@@ -199,3 +199,90 @@ extension View {
         }
     }
 }
+
+
+// MARK: - Backlink rows (Session 88)
+//
+// **The arrow and the tap must come from the same answer.** A backlink row
+// draws a chevron when it thinks it can be opened, and a separate function
+// decided what tapping it did. On the backlinks screen the chevron rule was
+// "anything except Horizons" while the tap handled four folders, so an
+// endeavor row drew an arrow and did nothing. The wiki summary's own comment
+// had already named this exact failure when it added its endeavor case:
+// *"The chevron was already promising it... the two were written at different
+// times and nothing made them agree."* It was fixed there and left standing
+// here, which is the same one-screen-only fix that D282 was made of.
+//
+// Same split as the wikilink resolver above: this decides WHAT a row points
+// at, and each screen decides how to show it - one screen swaps its body,
+// the other presents. Neither can quietly support fewer destinations than the
+// other, because `isOpenable` is derived from the same answer the tap uses.
+
+enum DayflowMentionTarget {
+    case projectNote(String)
+    case dailyNote(Date)
+    case place(Place)
+    case person(Person)
+    case endeavor(id: String, name: String)
+    /// No destination. Today that is Horizons, and anything whose record has
+    /// gone missing since the mention was written.
+    case none
+}
+
+enum DayflowMention {
+
+    private static let dayKey: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    /// What this row points at.
+    ///
+    /// **Deliberately not the wikilink resolver.** That one matches a literal
+    /// `[[Name]]` typed in a note body against a record's name. A mention
+    /// row's title is a FILENAME, and a place's note filename is sanitised for
+    /// the filesystem, so the two questions have different right answers. The
+    /// wiki summary's own comment made that call and it still holds.
+    ///
+    /// Endeavors are keyed by slug rather than by title, so the store is asked
+    /// rather than the filename trusted.
+    static func target(for mention: NoteMention) -> DayflowMentionTarget {
+        let path = mention.relativePath
+        if path.hasPrefix("Notes/Projects/") {
+            return .projectNote(mention.title)
+        }
+        if path.hasPrefix("Calendar/") {
+            if let parsed = dayKey.date(from: mention.title) { return .dailyNote(parsed) }
+            return .none
+        }
+        if path.hasPrefix("Notes/Places/") {
+            if let place = NotionService.shared.places.first(where: {
+                NoteStore.shared.placeNoteFilename(for: $0.name) == mention.title
+            }) { return .place(place) }
+            return .none
+        }
+        if path.hasPrefix("Notes/People/") {
+            if let person = NotionService.shared.people.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(mention.title) == .orderedSame
+            }) { return .person(person) }
+            return .none
+        }
+        if path.hasPrefix("Notes/Endeavors/") {
+            if let match = EndeavorStore.shared.endeavors.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(mention.title) == .orderedSame
+            }) { return .endeavor(id: match.id, name: match.name) }
+            return .none
+        }
+        return .none
+    }
+
+    /// Whether to draw the arrow. Derived from `target`, so the promise and
+    /// the behaviour cannot drift apart again.
+    static func isOpenable(_ mention: NoteMention) -> Bool {
+        if case .none = target(for: mention) { return false }
+        return true
+    }
+}

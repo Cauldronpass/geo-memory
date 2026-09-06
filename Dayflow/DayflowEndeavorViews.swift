@@ -1598,19 +1598,24 @@ struct DayflowEndeavorView: View {
     /// One place: the pin, the name, whether it is on the list, and whether he
     /// went.
     ///
-    /// **One pin rather than the Mac's per-category glyph.** `placeIcon` and
-    /// `placeColor` live in `PlaceHelpers.swift`, which this target does not
-    /// compile, and adding it is a `project.pbxproj` edit for a glyph. The row
-    /// this band replaces drew one `mappin.circle.fill` for every destination,
-    /// so nothing is lost today; the backlog carries the upgrade.
+    /// **The category's own glyph and colour**, from `placeIcon` and
+    /// `placeColor` - the same two functions the Mac and the Trace app draw
+    /// every place with. `PlaceHelpers.swift` was not in this target when the
+    /// band shipped, so it drew one pin for everything; adding the file was a
+    /// `project.pbxproj` edit and therefore waited for an Xcode-quit window.
+    ///
+    /// A place the app does not hold gets the default glyph rather than a
+    /// question mark: the row already says "not in your places" underneath,
+    /// and saying it twice in two alphabets is not saying it better.
     ///
     /// **The row still opens the place.** `resolveWikiLink` is the same door
     /// the chip carried, and a screen that names a record it can open and does
     /// not is the shape Session 87 found five times.
     private func placeRow(_ row: EndeavorPlace, in e: Endeavor) -> some View {
-        let known = NotionService.shared.places.contains {
-            placeKey($0.name) == row.id
-        }
+        let place = NotionService.shared.places.first { placeKey($0.name) == row.id }
+        let known = place != nil
+        let glyph = placeIcon(for: place?.category ?? "")
+        let tint = placeColor(for: place?.category ?? "")
         let state: String = {
             if row.skipped { return "DIDN'T GO" }
             if let d = row.visitDate {
@@ -1626,9 +1631,9 @@ struct DayflowEndeavorView: View {
         }()
         return VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "mappin.circle.fill")
+                Image(systemName: glyph)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.dayflowMuted)
+                    .foregroundStyle(tint)
                     .frame(width: 16)
                 Text(TripLog.shortPlaceName(row.name))
                     .font(.dayflowSerif(15))
@@ -1988,38 +1993,10 @@ struct DayflowEndeavorView: View {
     /// `DayflowProjectNoteView`'s. Copied rather than adapted on purpose: three
     /// hosts offering three different vocabularies from the same two lists would
     /// be a worse bug than the one this fixes.
-    private func wikiSuggestions(for query: String) -> [(name: String, isPlace: Bool)] {
-        let q = query.lowercased()
-        var results: [(name: String, isPlace: Bool)] = []
-        let placeMatches = NotionService.shared.places
-            .map { $0.name }
-            .filter { q.isEmpty || $0.lowercased().contains(q) }
-            .sorted()
-            .map { (name: $0, isPlace: true) }
-        results.append(contentsOf: placeMatches)
-        let peopleMatches = NotionService.shared.people
-            .map { $0.name }
-            .filter { name in
-                (q.isEmpty || name.lowercased().contains(q)) &&
-                !results.contains(where: { $0.name == name })
-            }
-            .sorted()
-            .map { (name: $0, isPlace: false) }
-        results.append(contentsOf: peopleMatches)
-        // Notes as a third source (D64). `isPlace: false` gives them the person
-        // pill icon, which is wrong and deliberate for now: the closure's return
-        // type is a Bool, so a third kind means widening it at every host that
-        // supplies one. Queued rather than smuggled in here.
-        let noteMatches = NoteStore.shared.linkableNotes()
-            .map { $0.title }
-            .filter { title in
-                (q.isEmpty || title.lowercased().contains(q)) &&
-                !results.contains(where: { $0.name == title })
-            }
-            .sorted()
-            .map { (name: $0, isPlace: false) }
-        results.append(contentsOf: noteMatches)
-        return Array(results.prefix(8))
+    /// One shared list (Session 88). This was a copy - six of them, already
+    /// disagreeing about which kinds to offer and whether to cap.
+    private func wikiSuggestions(for query: String) -> [(name: String, kind: WikiSuggestionKind)] {
+        WikiSuggestions.matches(for: query)
     }
 
     /// No `[[yyyy-MM-dd]]` day-note peek here, unlike the other two hosts: that

@@ -320,9 +320,12 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// (e.g. "Blue Bottle Coffee"). Parent view is responsible for navigation/lookup.
     var onWikiTap: ((String) -> Void)? = nil
     /// Called with the partial name as the user types inside [[ ...]].
-    /// Returns matched items: `name` is inserted into the text; `isPlace` selects the pill icon.
+    /// Returns matched items: `name` is inserted into the text; `kind` selects
+    /// the pill icon. **`kind` replaced an `isPlace` Bool in Session 88**: a
+    /// Bool can say place-or-person and the list now also offers notes and
+    /// endeavors, which were both wearing the person icon by default.
     /// Parent view provides this — filters Places (mappin icon) and People (person icon).
-    var wikiSuggestions: ((String) -> [(name: String, isPlace: Bool)])? = nil
+    var wikiSuggestions: ((String) -> [(name: String, kind: WikiSuggestionKind)])? = nil
     /// When set, matching spans are painted with an orange background and the view
     /// scrolls to the first hit. Purely visual — never touches the saved file.
     /// Supports the same token syntax as GlobalSearchView: plain text and #tag.
@@ -1000,7 +1003,7 @@ struct MarkdownEditorView: UIViewRepresentable {
         var suppressResignOnHide = false
 
         // MARK: - E6a: [[wikilink]] autocomplete
-        var wikiSuggestions: ((String) -> [(name: String, isPlace: Bool)])?
+        var wikiSuggestions: ((String) -> [(name: String, kind: WikiSuggestionKind)])?
         /// The formatting toolbar UIInputView — swapped back in when suggestions close.
         weak var formattingBarView: UIInputView?
         /// The formatting stack — rebuilt when toolbar order changes.
@@ -3167,7 +3170,7 @@ struct MarkdownEditorView: UIViewRepresentable {
             }
         }
 
-        private func showWikiSuggestions(_ items: [(name: String, isPlace: Bool)]) {
+        private func showWikiSuggestions(_ items: [(name: String, kind: WikiSuggestionKind)]) {
             ensureSuggestionBar()
             guard let suggStack = _suggestionStack,
                   let suggScroll = _suggestionScrollView else { return }
@@ -3184,11 +3187,20 @@ struct MarkdownEditorView: UIViewRepresentable {
                 cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
                     var a = attrs; a.font = UIFont.systemFont(ofSize: 13); return a
                 }
-                // Icon: mappin for places, person for people
-                let iconName = item.isPlace ? "mappin.circle.fill" : "person.circle.fill"
+                // One glyph and one colour per kind. A note and an endeavor
+                // used to fall to the person icon, which claimed they were
+                // people - the same false statement the task sheet's Linked
+                // row was making until this session.
+                let iconName: String
+                let iconTint: UIColor
+                switch item.kind {
+                case .place:    iconName = "mappin.circle.fill"; iconTint = .systemBlue
+                case .person:   iconName = "person.circle.fill"; iconTint = .systemPurple
+                case .note:     iconName = "doc.circle.fill";    iconTint = .systemGray
+                case .endeavor: iconName = "flag.circle.fill";   iconTint = .systemOrange
+                }
                 cfg.image = UIImage(systemName: iconName)?
-                    .withTintColor(item.isPlace ? .systemBlue : .systemPurple,
-                                   renderingMode: .alwaysOriginal)
+                    .withTintColor(iconTint, renderingMode: .alwaysOriginal)
                 cfg.imagePadding   = 4
                 cfg.imagePlacement = .leading
                 let capName = item.name

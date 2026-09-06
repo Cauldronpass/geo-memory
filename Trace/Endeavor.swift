@@ -1130,3 +1130,65 @@ extension EndeavorFile {
         }
     }
 }
+
+
+// MARK: - Wikilink suggestions (Session 88)
+//
+// **The `[[` pill list, in one place.** It existed SIX times - four Dayflow
+// screens and twice in Trace's notes - and it had already drifted: the
+// endeavor note offered linked notes and nobody else did, and the wiki summary
+// had no limit while the other five capped at eight. The endeavor copy's own
+// comment named the reason it could not add a fourth kind: *"the type is a
+// Bool, so a third kind means widening it at every host that supplies one.
+// Queued rather than smuggled in here."*
+//
+// David: *"i was expecting that as i typed [[Test that it would give me the
+// endeavor option pill at the bottom but it never does that like it does for
+// people or places."* Right, and the app could already OPEN an endeavor link -
+// it just could not offer you one, which is the same half-built shape this
+// session has found repeatedly.
+//
+// Lives in this file because it needs Notion, notes AND endeavors, and this is
+// the shared file every target that has all three already compiles. It must
+// not move into `NoteStore.swift`: Satchel and Jot compile that one and have
+// no `NotionService`.
+
+enum WikiSuggestionKind {
+    case place
+    case person
+    case note
+    case endeavor
+}
+
+enum WikiSuggestions {
+
+    /// How many pills the bar offers. Eight was five of the six copies; the
+    /// sixth had no limit, which is a scrolling bar of every person you know.
+    private static let cap = 8
+
+    /// Places, then people, then notes, then endeavors, deduplicated by name.
+    ///
+    /// **Order is precedence, and it matches what a tapped link resolves to**
+    /// (`DayflowWikiLink.resolve`). A list that offered a name in one order
+    /// while the tap resolved it in another would hand you a pill that opens
+    /// something else.
+    static func matches(for query: String) -> [(name: String, kind: WikiSuggestionKind)] {
+        let q = query.lowercased()
+        var out: [(name: String, kind: WikiSuggestionKind)] = []
+        var seen = Set<String>()
+
+        func add(_ names: [String], _ kind: WikiSuggestionKind) {
+            for name in names.sorted() where out.count < cap {
+                guard q.isEmpty || name.lowercased().contains(q) else { continue }
+                guard seen.insert(name.lowercased()).inserted else { continue }
+                out.append((name: name, kind: kind))
+            }
+        }
+
+        add(NotionService.shared.places.map { $0.name }, .place)
+        add(NotionService.shared.people.map { $0.name }, .person)
+        add(NoteStore.shared.linkableNotes().map { $0.title }, .note)
+        add(EndeavorFile.loadAll(from: NoteStore.shared).map { $0.name }, .endeavor)
+        return out
+    }
+}

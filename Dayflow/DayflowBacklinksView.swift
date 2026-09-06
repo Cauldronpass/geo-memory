@@ -48,6 +48,7 @@ struct DayflowBacklinksView: View {
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
     @State private var showDailyNote = false
     @State private var selectedProjectTitle: String? = nil
+    @State private var selectedEndeavorID: String? = nil
 
     private var sortedMentions: [NoteMention] {
         switch sortOrder {
@@ -61,6 +62,8 @@ struct DayflowBacklinksView: View {
         Group {
             if let title = selectedProjectTitle {
                 DayflowProjectNoteView(title: title, onBack: { selectedProjectTitle = nil })
+            } else if let id = selectedEndeavorID {
+                DayflowEndeavorView(endeavorID: id)
             } else {
                 mainBody
             }
@@ -214,8 +217,11 @@ struct DayflowBacklinksView: View {
         return "Note"
     }
 
+    /// **Was "anything except Horizons"**, which drew an arrow on rows the
+    /// tap could not open - an endeavor row above all. Derived from the same
+    /// answer the tap uses now.
     private func isOpenable(_ mention: NoteMention) -> Bool {
-        !mention.relativePath.hasPrefix("Notes/Horizons/")
+        DayflowMention.isOpenable(mention)
     }
 
     /// Generalized version of DayflowNotesView.openResult's dispatch — same
@@ -225,30 +231,29 @@ struct DayflowBacklinksView: View {
     /// Horizons has no Dayflow destination — same silent no-op rule as
     /// everywhere else in this build; nothing in the row implies a
     /// destination exists in that case (see `isOpenable` above).
+    /// One classifier, two screens (Session 88). This screen swaps its own
+    /// body for a note or an endeavor, which keeps the excursion inside the
+    /// backlinks sheet; the wiki summary presents instead. That difference is
+    /// real and stays local - what a row POINTS AT does not.
     private func openMention(_ mention: NoteMention) {
-        let path = mention.relativePath
-        if path.hasPrefix("Notes/Projects/") {
-            selectedProjectTitle = mention.title
-        } else if path.hasPrefix("Calendar/") {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone.current
-            formatter.dateFormat = "yyyy-MM-dd"
-            if let parsed = formatter.date(from: mention.title) {
-                selectedDate = parsed
-                showDailyNote = true
-            }
-        } else if path.hasPrefix("Notes/Places/") {
-            if let place = NotionService.shared.places.first(where: {
-                NoteStore.shared.placeNoteFilename(for: $0.name) == mention.title
-            }) {
-                wikiLinkTarget = .place(place)
-            }
-        } else if path.hasPrefix("Notes/People/") {
-            if let person = NotionService.shared.people.first(where: { $0.name == mention.title }) {
-                wikiLinkTarget = .person(person)
-            }
+        switch DayflowMention.target(for: mention) {
+        case .projectNote(let title):
+            selectedProjectTitle = title
+        case .dailyNote(let day):
+            selectedDate = day
+            showDailyNote = true
+        case .place(let place):
+            wikiLinkTarget = .place(place)
+        case .person(let person):
+            wikiLinkTarget = .person(person)
+        case .endeavor(let id, _):
+            // Body swap, like the project note above, rather than a third
+            // `.sheet` on this view. Done inside the endeavor closes the whole
+            // backlinks excursion and lands back on the note, which is where
+            // the trip started.
+            selectedEndeavorID = id
+        case .none:
+            break
         }
-        // Notes/Horizons/ and anything else: no Dayflow destination, silent no-op.
     }
 }

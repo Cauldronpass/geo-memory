@@ -522,19 +522,12 @@ struct PlaceDetailView: View {
                     wikiLinkTarget = .person(p)
                 }
             },
+            // A SEVENTH copy of the suggestion list, written inline rather
+            // than as a function, which is why the count of six was wrong
+            // (Session 88). One shared list now - and this screen gains notes
+            // and endeavors as a side effect of no longer having its own.
             wikiSuggestions: { query in
-                let q = query.lowercased()
-                let places = notionService.places
-                    .map { $0.name }
-                    .filter { q.isEmpty || $0.lowercased().contains(q) }
-                    .sorted()
-                    .map { (name: $0, isPlace: true) }
-                let people = notionService.people
-                    .map { $0.name }
-                    .filter { n in (q.isEmpty || n.lowercased().contains(q)) && !places.contains(where: { $0.name == n }) }
-                    .sorted()
-                    .map { (name: $0, isPlace: false) }
-                return Array((places + people).prefix(8))
+                WikiSuggestions.matches(for: query)
             },
             onCaptureTap: { id in tappedCaptureID = id }
         )

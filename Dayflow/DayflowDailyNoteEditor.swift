@@ -473,25 +473,10 @@ struct DayflowDailyNoteEditor: View {
     // just resolving to DayflowWikiSummaryView instead of the real
     // PlaceDetailView/PersonDetailView sheets.
 
-    private func wikiSuggestions(for query: String) -> [(name: String, isPlace: Bool)] {
-        let q = query.lowercased()
-        var results: [(name: String, isPlace: Bool)] = []
-        let placeMatches = NotionService.shared.places
-            .map { $0.name }
-            .filter { q.isEmpty || $0.lowercased().contains(q) }
-            .sorted()
-            .map { (name: $0, isPlace: true) }
-        results.append(contentsOf: placeMatches)
-        let peopleMatches = NotionService.shared.people
-            .map { $0.name }
-            .filter { name in
-                (q.isEmpty || name.lowercased().contains(q)) &&
-                !results.contains(where: { $0.name == name })
-            }
-            .sorted()
-            .map { (name: $0, isPlace: false) }
-        results.append(contentsOf: peopleMatches)
-        return Array(results.prefix(8))
+    /// One shared list (Session 88). This was a copy - six of them, already
+    /// disagreeing about which kinds to offer and whether to cap.
+    private func wikiSuggestions(for query: String) -> [(name: String, kind: WikiSuggestionKind)] {
+        WikiSuggestions.matches(for: query)
     }
 
     /// Through the one resolver (D282). Was case-sensitive with an empty
