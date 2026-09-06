@@ -58,6 +58,41 @@ class TraceMacDocumentStore {
         self.noteStore = noteStore
     }
 
+    // MARK: - Filed against a note
+
+    /// The documents filed against one note, newest first.
+    ///
+    /// **Exact string match, deliberately.** Satchel tidies the path on the way
+    /// in precisely so both sides settle on one spelling, and a case-folded or
+    /// fuzzy match here would paper over a hand-off writing the WRONG path and
+    /// make the real bug much harder to see. That is the phone's shared chips
+    /// view's own rule; this is the Mac saying the same thing.
+    ///
+    /// `remindingOn` is for a DAY note. A document whose `remind:` falls on that
+    /// day belongs on that day's page even though it is filed somewhere else, so
+    /// a receipt scanned on the 4th and marked ready on the 6th is on the 6th.
+    /// Pass nil for anything that is not a day. A document that is both filed
+    /// here and reminding that day appears once.
+    ///
+    /// **The Mac's four older filters are not this function yet.** Places,
+    /// People, the project note hub and the Notes list each wrote their own, and
+    /// they DIFFER rather than being copies: two fold case, one unions on a
+    /// person, one unions on an endeavor. Retiring them onto one rule is a
+    /// change to four screens that nobody is testing today, so it is backlogged
+    /// rather than folded into the change that adds a fifth caller.
+    func filed(to notePath: String, remindingOn day: Date? = nil) -> [TraceMacDocument] {
+        var out = documents.filter { $0.linkedNote == notePath }
+        if let day {
+            let already = Set(out.map(\.relativePath))
+            let cal = Calendar.current
+            out += documents.filter { doc in
+                guard !already.contains(doc.relativePath), let due = doc.remindOn else { return false }
+                return cal.isDate(due, inSameDayAs: day)
+            }
+        }
+        return out.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+    }
+
     // MARK: - Load
 
     func reload() async {

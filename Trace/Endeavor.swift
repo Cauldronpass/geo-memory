@@ -1076,9 +1076,11 @@ extension EndeavorFile {
     /// failure that would offer a task in the attach sheet and then not show it
     /// in the band afterwards.
     ///
-    /// Added in Session 88 when the phone needed all of this and the Mac's
-    /// copies were private to `TraceMacEndeavorsView` and `MacTaskAttachSheet`.
-    /// Those still exist and are backlogged to retire onto these.
+    /// Added in Session 88 when the phone needed all of this and the Mac kept
+    /// private copies in `TraceMacEndeavorsView` and `TraceMacTaskCard`.
+    /// Retired onto these in Session 90 (D304), so these four are now the only
+    /// versions. `MacTaskAttachSheet` never had a copy: it is handed the link
+    /// and has only ever compared it, which the older wording here got wrong.
     static func link(named name: String) -> String { "[[" + name + "]]" }
 
     /// Which endeavor a task's notes name, or nil.

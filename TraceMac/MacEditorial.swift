@@ -64,7 +64,17 @@ enum MacEditorialColor {
 
     /// The ground behind the paper. Warm off-white in light, the same ink-brown
     /// as paper in dark (Dayflow's locked dark frame has no second ground).
-    static let canvas = Color.macDynamic(light: "FBF9F4", dark: "1B1916")
+    static let canvas = Color(nsColor: canvasNS)
+
+    /// The same ground as an `NSColor`, for the AppKit views that need one.
+    ///
+    /// **Defined here and `canvas` derived FROM it**, rather than converting
+    /// with `NSColor(canvas)` at the call site. The round trip through SwiftUI
+    /// and back is the sort of thing that either works or silently returns
+    /// something else, and the first attempt at grounding the PDF viewer (D310)
+    /// did exactly that and changed nothing on screen. One hex pair, two types,
+    /// no conversion. (D311)
+    static let canvasNS = NSColor.macDynamic(light: "FBF9F4", dark: "1B1916")
 
     /// The sidebar, and any rail that should sit a step back from the page.
     static let panel = Color.macDynamic(light: "F7F7F5", dark: "23201B")

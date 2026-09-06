@@ -58,6 +58,30 @@ enum MacPlace: Hashable, Sendable {
             }
         }
     }
+
+    /// What to CALL this place on screen, for the control that names where back
+    /// goes rather than only pointing at it (D308).
+    ///
+    /// **The section's own name, with one correction.** `section` above answers
+    /// a different question — which screen the back-stack COLLAPSE treats this
+    /// as — and it deliberately calls a day note `.notes`, because
+    /// `.dailyOrProjectNote` cannot tell a day from a project without looking at
+    /// its folder. That imprecision was invisible while it only affected
+    /// collapsing.
+    ///
+    /// It is not invisible in a LABEL. A day note replays onto Today, so a line
+    /// reading "Notes" would name a screen you do not land on, which is worse
+    /// than a bare arrow. Here the folder is looked at.
+    ///
+    /// Correcting `section` itself would change how entries collapse, which is
+    /// tested navigation behaviour and its own decision. Backlogged.
+    var label: String {
+        if case .record(.dailyOrProjectNote(let path)) = self,
+           path.hasPrefix(NoteStore.dailyFolder + "/") {
+            return MacSection.today.rawValue
+        }
+        return section.rawValue
+    }
 }
 
 @MainActor
@@ -81,6 +105,12 @@ final class MacNavigator {
 
     var canGoBack: Bool { !backStack.isEmpty }
     var canGoForward: Bool { !forwardStack.isEmpty }
+
+    /// Where back and forward go, BY NAME, or nil when there is nowhere to go.
+    /// The masthead's line and the Go menu's items both read these, so the word
+    /// on screen and the word in the menu cannot disagree (D308).
+    var backLabel: String? { backStack.last?.label }
+    var forwardLabel: String? { forwardStack.last?.label }
 
     /// Fifty is well past anyone's memory of where they have been, and it stops
     /// a long session growing this without bound.

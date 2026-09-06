@@ -448,11 +448,17 @@ struct TraceMacDocumentsView: View {
                     Button { NSWorkspace.shared.open(url) } label: {
                         Label("Open", systemImage: "arrow.up.forward.square")
                     }
+                    // David: *"how do i open the image?"* — it was already
+                    // these two buttons, and they were two unlabelled glyphs in
+                    // a corner. The capability was never missing; the word for
+                    // it was. (D311)
+                    .help("Open in the default app")
                 }
                 ToolbarItem {
                     Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
                         Label("Reveal", systemImage: "folder")
                     }
+                    .help("Reveal in Finder")
                 }
             }
         }
@@ -1470,24 +1476,53 @@ struct DocMetadataPanel: View {
     // the bytes, under FILE, rather than a control.
 
     private var filedToRow: some View {
-        HStack {
+        // **The name goes to the note; the chevron changes it.**
+        //
+        // One control did both, so the only thing clicking the note you had
+        // filed to could do was re-file it. David: *"when i click on the chip
+        // for todays note in Satchel it opens the link option rather than
+        // taking me to today. Wouldnt it be better to have a way to do both?"*
+        //
+        // The same grammar the task card's chips already use: the face is the
+        // door, and the small control beside it is the other verb.
+        let routable: Bool = !linkedNote.isEmpty && TraceMacContentView.canRouteNote(linkedNote)
+        return HStack {
             fieldLabel("Filed to")
-            Button {
-                showingFilePicker = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: linkedNote.isEmpty ? "tray" : "folder.fill")
-                        .font(.caption2)
-                    Text(linkedNote.isEmpty ? "Nothing" : noteName(from: linkedNote))
-                        .font(.caption)
-                    Image(systemName: "chevron.down").font(.caption2)
+            HStack(spacing: 0) {
+                // Plain text, not a disabled button, when nothing opens this
+                // path — a place note has no Mac screen yet. A control that
+                // accepts a click and swallows it is the bug the task card has
+                // already paid for once, so this simply is not a control.
+                if routable {
+                    Button {
+                        NotificationCenter.default.post(
+                            name: .navigateToRecord, object: nil,
+                            userInfo: ["type": "note", "id": linkedNote])
+                    } label: { filedToFace }
+                    .buttonStyle(.plain)
+                    .help("Go to \(noteName(from: linkedNote))")
+                } else {
+                    filedToFace
+                        .help(linkedNote.isEmpty
+                              ? "Not filed against a note"
+                              : "Filed here, but no Mac screen opens this note yet")
                 }
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Color.accentColor.opacity(0.1))
-                .foregroundStyle(Color.accentColor)
-                .clipShape(Capsule())
+                Button {
+                    showingFilePicker = true
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .padding(.leading, 5)
+                        .padding(.trailing, 8)
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(linkedNote.isEmpty ? "File this document" : "File it somewhere else")
             }
-            .buttonStyle(.plain)
+            .background(Color.accentColor.opacity(0.1))
+            .foregroundStyle(Color.accentColor)
+            .clipShape(Capsule())
             if !linkedNote.isEmpty {
                 Button {
                     linkedNote = ""
@@ -1511,6 +1546,22 @@ struct DocMetadataPanel: View {
             }
             .environment(noteStore)
         }
+    }
+
+    /// The capsule's left half: the folder mark and the note's name. Its own
+    /// property because it is drawn twice, once inside a Button and once as
+    /// plain text, and two copies would drift on the padding that makes them
+    /// line up inside one capsule.
+    private var filedToFace: some View {
+        HStack(spacing: 4) {
+            Image(systemName: linkedNote.isEmpty ? "tray" : "folder.fill")
+                .font(.caption2)
+            Text(linkedNote.isEmpty ? "Nothing" : noteName(from: linkedNote))
+                .font(.caption)
+        }
+        .padding(.leading, 8)
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
     }
 
     /// Which Endeavor this document belongs to.
@@ -3334,6 +3385,7 @@ struct PDFViewRepresentable: NSViewRepresentable {
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
+        Self.applyGround(to: view)
         Self.relaxSizing(view)
         // Bound before the load, so the highlight lands whether the bytes were
         // already here or arrive from iCloud a moment later. `bind` writes no
@@ -3357,6 +3409,10 @@ struct PDFViewRepresentable: NSViewRepresentable {
         if nsView.document?.documentURL != url {
             Self.load(url, into: nsView, find: find)
         }
+        // Cheap and idempotent. The appearance can change under us (light to
+        // dark) and the dynamic colour handles that on its own, but a rebuilt
+        // inner view does not.
+        Self.applyGround(to: nsView)
         // Cheap: returns immediately unless the query changed since the last
         // run. Deferred anyway, because `updateNSView` is an update pass and
         // the search writes observed state.
@@ -3381,6 +3437,48 @@ struct PDFViewRepresentable: NSViewRepresentable {
     /// resistance in `relaxSizing` says the same thing to AppKit's own layout.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: PDFView, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? 320, height: proposal.height ?? 240)
+    }
+
+    /// **THIS DOES NOT WORK, AND THAT IS THE POINT OF THIS COMMENT.**
+    ///
+    /// Three attempts across D310, D311 and D312 tried to give the PDF pane the
+    /// app's ground instead of PDFKit's dark grey. Every one of them moved zero
+    /// pixels on David's build:
+    ///
+    ///   1. `backgroundColor` set once in `makeNSView`, via `NSColor(Color)`.
+    ///   2. The same, with the SwiftUI conversion removed.
+    ///   3. This: applied to the inner scroll view too, and re-applied after
+    ///      every `document` assignment.
+    ///
+    /// David called it, correctly: *"its still dark. lets not continue to do
+    /// this. its not worth it."*
+    ///
+    /// **Left in place rather than reverted, and labelled rather than trusted.**
+    /// Deleting it would invite a fourth attempt from someone who sees no
+    /// background code and assumes nobody tried. Leaving it unlabelled is
+    /// worse — a future reader would believe the ground is handled and go
+    /// looking somewhere else for a bug that is right here.
+    ///
+    /// **Do not attempt a fourth patch at this layer.** Two failures already
+    /// said the layer is wrong (warning SEVENTEEN) and the third confirmed it.
+    /// The next step, if this is ever worth picking up, is a SURFACE MAP: paint
+    /// the viewer one unmistakable colour and whatever sits behind the preview
+    /// pane another, build once, and read off which pixels belong to which
+    /// view. No more reasoning about which property should win.
+    ///
+    /// It is inert, not harmful: it sets properties PDFKit evidently ignores.
+    static func applyGround(to view: PDFView) {
+        view.backgroundColor = MacEditorialColor.canvasNS
+        // Depth-first: the scroll view is a child of the PDFView, and on some
+        // releases a grandchild. Walking is cheap and does not care which.
+        func paint(_ v: NSView) {
+            if let scroll = v as? NSScrollView {
+                scroll.drawsBackground = true
+                scroll.backgroundColor = MacEditorialColor.canvasNS
+            }
+            v.subviews.forEach(paint)
+        }
+        paint(view)
     }
 
     static func relaxSizing(_ view: NSView) {
@@ -3411,6 +3509,10 @@ struct PDFViewRepresentable: NSViewRepresentable {
     private static func load(_ url: URL, into view: PDFView, find: MacPDFFind? = nil) {
         if let doc = PDFDocument(url: url) {
             view.document = doc
+            // Assigning a document rebuilds the inner scroll view, which is
+            // where the ground actually lives. Re-applied here and below for
+            // that reason, not out of caution. (D312)
+            applyGround(to: view)
             // Next runloop turn: this path runs inside `makeNSView`, and the
             // search writes observed state.
             DispatchQueue.main.async { find?.applyIfNeeded() }
@@ -3439,6 +3541,7 @@ struct PDFViewRepresentable: NSViewRepresentable {
             // flight — do not stamp a stale one over it.
             guard view.document == nil else { return }
             view.document = data.flatMap { PDFDocument(data: $0) }
+            applyGround(to: view)
             // The other moment a document first exists. Without this a PDF that
             // iCloud was still fetching when the search result opened it would
             // render unpainted and never recover — the same shape as the
@@ -3556,6 +3659,10 @@ final class PreviewZoomController {
     /// False when no preview is showing (an unsupported file type), so the bar
     /// can hide rather than offer controls that do nothing.
     var isActive: Bool = false
+    /// True only while a PDF is attached. `Fit Width` is PDF-only, and a button
+    /// that is drawn and does nothing is indistinguishable from a feature that
+    /// was never built (warning FIFTEEN), so the bar omits it for images.
+    var canFitWidth: Bool = false
 
     /// Ignored by Observation: plumbing to AppKit views, never read from a view
     /// body, and a weak reference has no business waking a redraw.
@@ -3568,6 +3675,7 @@ final class PreviewZoomController {
         imageView = view
         pdfView = nil
         isActive = true
+        canFitWidth = false
         view.onZoomChange = { [weak self] mag, fit in
             guard let self else { return }
             self.percent = Int((mag * 100).rounded())
@@ -3579,6 +3687,7 @@ final class PreviewZoomController {
         pdfView = view
         imageView = nil
         isActive = true
+        canFitWidth = true
         percent = Int((view.scaleFactor * 100).rounded())
         isFitted = view.autoScales
     }
@@ -3587,6 +3696,7 @@ final class PreviewZoomController {
         imageView = nil
         pdfView = nil
         isActive = false
+        canFitWidth = false
     }
 
     func zoomIn()  { zoom(by: Self.step) }
@@ -3600,6 +3710,33 @@ final class PreviewZoomController {
             percent = Int((pdfView.scaleFactor * 100).rounded())
             isFitted = true
         }
+    }
+
+    /// Fill the pane's WIDTH with the page, and scroll for the rest.
+    ///
+    /// The third fit a document viewer needs and the one this bar was missing.
+    /// `Fit` shows the whole page, which on a tall receipt in a wide pane means
+    /// 46% and unreadable; `100%` is the page's own idea of its size and has
+    /// nothing to do with the pane. This is the one that answers "make it as
+    /// big as it can be without me scrolling sideways".
+    ///
+    /// PDF only. `MacZoomableImageView` has no equivalent and the bar hides the
+    /// button rather than offering one that would do nothing — the D225 rule.
+    func fitWidth() {
+        guard let pdfView,
+              let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else { return }
+        let pageWidth = page.bounds(for: pdfView.displayBox).width
+        guard pageWidth > 0, pdfView.bounds.width > 0 else { return }
+        // `autoScales` off FIRST, for the reason `zoom(by:)` records: it re-fits
+        // on every layout pass and would undo this on the next one.
+        pdfView.autoScales = false
+        // The inset is PDFKit's own page margin and shadow. Without it the page
+        // is a hair wider than the pane and the view starts life scrolled.
+        let target = (pdfView.bounds.width - 24) / pageWidth
+        pdfView.scaleFactor = max(pdfView.minScaleFactor,
+                                  min(pdfView.maxScaleFactor, target))
+        percent = Int((pdfView.scaleFactor * 100).rounded())
+        isFitted = false
     }
 
     func actualSize() {
@@ -3921,6 +4058,13 @@ struct PreviewZoomBar: View {
                 .font(.caption)
                 .foregroundStyle(zoom.isFitted ? Color.accentColor : Color.secondary)
                 .help("Fit the whole document in the pane")
+            if zoom.canFitWidth {
+                Button("Width") { zoom.fitWidth() }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Fill the pane's width and scroll")
+            }
             Button("100%") { zoom.actualSize() }
                 .buttonStyle(.plain)
                 .font(.caption)

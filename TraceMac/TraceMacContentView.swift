@@ -328,6 +328,12 @@ struct TraceMacContentView: View {
             // relativePath — the same string `MacSearchDestination.document`
             // already carries, so this arm adds a poster, not a new route.
             case "document": destination = .document(id)
+            // A note, from Satchel's "Filed to" chip (D307). `id` is the
+            // container-relative path, which is what `.dailyOrProjectNote`
+            // already carries, so this arm adds a poster and not a new route.
+            // The caller checks `canRouteNote` before drawing itself as a link,
+            // so an unroutable path never gets here.
+            case "note":     destination = .dailyOrProjectNote(id)
             default:         destination = nil
             }
             if let destination { openSearchResult(destination, query: "") }
@@ -359,6 +365,27 @@ struct TraceMacContentView: View {
         // equality rather than by a flag.
         .onChange(of: selectedSection) { _, new in
             navigator.record(.section(new ?? .today))
+        }
+        // **The screen you LAUNCH onto is a place too** (D309).
+        //
+        // `record` was reached only from the watcher above, so nothing reported
+        // the section the app opens on. `current` stayed nil, and `record`'s
+        // "push where we were" step is `if let existing = current` — with
+        // nothing there it appends nothing. So the FIRST jump of every session
+        // was swallowed: it set where you are and left the history empty.
+        //
+        // Invisible since Session 79 because the only back control was on
+        // Directory, and the only way to reach Directory is a section change,
+        // which records. It surfaced the moment D308 put the history on every
+        // screen: click a document from Today on a fresh launch and the masthead
+        // correctly reported that there was nowhere to go back to.
+        //
+        // Guarded on `current` rather than run unconditionally, so a replay or a
+        // jump that has already recorded is not overwritten by a late arrival.
+        .task {
+            if navigator.current == nil {
+                navigator.record(.section(selectedSection ?? .today))
+            }
         }
         // Session 73. Satchel's filter-pane shortcut, user-settable in Settings.
         //
@@ -568,12 +595,31 @@ struct TraceMacContentView: View {
         openSearchResult(request.destination, query: request.query)
     }
 
+    /// The three folders `routeNote` knows how to open, in the order it tests
+    /// them. **Named once (D307)** so a control can ask whether a path is
+    /// routable without writing the list a second time — that second list is
+    /// what would give Satchel a "go to note" button that goes nowhere, which
+    /// is warning FIFTEEN: a control that is drawn and does nothing is
+    /// indistinguishable from a feature that was never built.
+    static let routableNoteFolders = [NoteStore.dailyFolder + "/",
+                                      NoteStore.projectsFolder + "/",
+                                      "Notes/Horizons/"]
+
+    /// Whether `routeNote` has somewhere to send this path.
+    static func canRouteNote(_ path: String) -> Bool {
+        routableNoteFolders.contains { path.hasPrefix($0) }
+    }
+
     /// Where a note by container-relative path lives now that the Notes tab
     /// container is gone (Session 83). A day note is a DAY, so it opens on
     /// Today; a project note opens in Projects; a week note opens in Today's
     /// DAYS list with its rule picked. Anything else is ignored rather than
     /// guessed at — `linkableNotes()` only ever produces these folders.
     private func routeNote(_ path: String) {
+        // The guard is the list, so a fourth branch added below without adding
+        // its folder above fails LOUDLY here rather than quietly disagreeing
+        // with whatever asked `canRouteNote` first.
+        guard Self.canRouteNote(path) else { return }
         let filename = (path as NSString).lastPathComponent
         if path.hasPrefix(NoteStore.dailyFolder + "/") {
             let key = filename.replacingOccurrences(of: ".md", with: "")
@@ -589,17 +635,20 @@ struct TraceMacContentView: View {
         }
     }
 
-    /// "2026-W35.md" → Today, DAYS, Week 35 picked. A filename that is not an
+    /// "2026-W35.md" -> Today, DAYS, that week picked. A filename that is not an
     /// ISO week (the old Horizons folder also held month notes) opens nothing,
     /// which is what the Weekly tab did with its calendar header for those.
+    ///
+    /// Parsed by the rule that also WRITES these names (D304), then checked by
+    /// spelling the name back and requiring a match. Stricter than the 1...53
+    /// range this used to test, and it cannot drift away from the writer: a
+    /// stem the shared rule would never produce is not one of ours.
     @discardableResult
     private func routeWeekFile(_ filename: String) -> Bool {
         let stem = filename.replacingOccurrences(of: ".md", with: "")
-        let parts = stem.split(separator: "-")
-        guard parts.count == 2, let year = Int(parts[0]),
-              parts[1].hasPrefix("W"), let week = Int(parts[1].dropFirst()),
-              (1...53).contains(week) else { return false }
-        pendingDaysPick = .week(year: year, week: week)
+        guard let monday = NoteStore.weekStart(fromStem: stem),
+              NoteStore.weekFilename(for: monday) == filename else { return false }
+        pendingDaysPick = .week(monday)
         selectedSection = .today
         return true
     }

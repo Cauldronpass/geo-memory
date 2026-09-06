@@ -98,24 +98,125 @@ struct MacEditorialMasthead: View {
     /// Counts down the spring-load. Cancelled the moment the pointer leaves, so
     /// crossing the title on the way somewhere else opens nothing.
     @State private var springTask: Task<Void, Never>? = nil
+    /// Read directly rather than passed in, which is the whole reason Back is
+    /// one insertion and not ten: every screen already draws this masthead, so
+    /// every screen gets it the moment it is here (D308). The same trick
+    /// `MacSectionHeader` used for the arrows it carried before the editorial
+    /// redesign left that header on one screen out of eleven.
+    @State private var navigator = MacNavigator.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MacEditorialRule.heavy
             VStack(alignment: .leading, spacing: 1) {
-                Text(kicker).editorialKicker()
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    // The kicker describes the screen and always wins the room:
+                    // "142 days · 21 weeks · since 3 March" is about what you
+                    // are looking at, and the way back is not.
+                    // `lineLimit(1)`: with something to its right this line
+                    // could wrap, and a two-line kicker pushes the masthead's
+                    // whole subject down. It truncates instead. (D309)
+                    Text(kicker)
+                        .editorialKicker()
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
+                    Spacer(minLength: 10)
+                    navLine
+                }
+                // **The subject is the door, and now only the subject is.**
+                //
+                // The tap that unfolds a month grid and the drag that
+                // spring-loads it used to sit on this whole two-line block.
+                // They moved down here with D308, which is what `onTapSubject`
+                // has always said they were for. Leaving them on the block
+                // would have put a Button inside a tapped container, and going
+                // back would also have unfolded the calendar.
+                //
+                // The drag target loses the kicker's line of height and keeps
+                // its full width. The big serif line IS "the title of the
+                // screen" in David's own phrasing of that feature.
                 subjectLine
+                    .contentShape(Rectangle())
+                    .onTapGesture { onTapSubject?() }
+                    // Only where a host asked for it — every other masthead in
+                    // the app has nothing to drag and should not answer drops.
+                    .modifier(SpringLoadOnDrag(enabled: onDragOverSubject != nil,
+                                               springTask: $springTask,
+                                               fire: { onDragOverSubject?() }))
             }
             .padding(.vertical, 9)
-            .contentShape(Rectangle())
-            .onTapGesture { onTapSubject?() }
-            // Only where a host asked for it — every other masthead in the app
-            // has nothing to drag and should not be answering drops.
-            .modifier(SpringLoadOnDrag(enabled: onDragOverSubject != nil,
-                                       springTask: $springTask,
-                                       fire: { onDragOverSubject?() }))
             MacEditorialRule.ink
         }
+    }
+
+    /// Where back and forward go, by NAME, on the kicker's own line.
+    ///
+    /// **A name rather than two chevrons** (D308). There are eleven sections and
+    /// the jumps that need this land deep inside one of them, so the question in
+    /// the moment is not "can I go back" but "back to WHAT" — and an arrow makes
+    /// you click to find out. "← Satchel" answers it before you move.
+    ///
+    /// **Absent entirely when there is nowhere to go**, so a screen with no
+    /// history is exactly as quiet as it was before this existed. Not a dimmed
+    /// pair: `MacSectionHeader` dims its arrows because they hold a position in
+    /// a row of controls, and this holds no position — the line it sits on is
+    /// drawn either way.
+    ///
+    /// It lives on the kicker line because that line already exists, has a fixed
+    /// height, and is empty on its right on every screen in the app. So it costs
+    /// no vertical space and moves nothing.
+    @ViewBuilder
+    private var navLine: some View {
+        if navigator.canGoBack || navigator.canGoForward {
+            HStack(spacing: 12) {
+                if let back = navigator.backLabel {
+                    // **The name when it fits, the arrow alone when it does
+                    // not** (D309). Measured, not assumed: on Satchel's left
+                    // column the kicker reads "39 DOCUMENTS · 4 THIS WEEK" and
+                    // there is no room for a word beside it, so the first build
+                    // wrapped the label on top of it.
+                    //
+                    // `ViewThatFits` rather than a width calculation, because
+                    // the honest question is "does this fit" and that is the
+                    // one thing it answers without anyone measuring a font. The
+                    // tooltip still names the destination in both cases, so the
+                    // arrow-only form is short, never mute.
+                    ViewThatFits(in: .horizontal) {
+                        navButton("\u{2190} " + back, help: "Back to \(back)") {
+                            navigator.goBack()
+                        }
+                        navButton("\u{2190}", help: "Back to \(back)") {
+                            navigator.goBack()
+                        }
+                    }
+                }
+                if let forward = navigator.forwardLabel {
+                    ViewThatFits(in: .horizontal) {
+                        navButton(forward + " \u{2192}", help: "Forward to \(forward)") {
+                            navigator.goForward()
+                        }
+                        navButton("\u{2192}", help: "Forward to \(forward)") {
+                            navigator.goForward()
+                        }
+                    }
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private func navButton(_ text: String, help: String,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .editorialKicker()
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     @ViewBuilder

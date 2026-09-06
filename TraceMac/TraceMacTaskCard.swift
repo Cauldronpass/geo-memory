@@ -364,7 +364,7 @@ struct MacTaskRow: View {
         // Faint, not accent. The bolt beside the title is accent because it is
         // a control you fire; this is a fact about the task, and the carried
         // mark's own rule is that a passive mark should not scold.
-        if let endeavor = linkedEndeavorName {
+        if let endeavor = EndeavorFile.linkedName(in: task.notes, among: endeavorNames) {
             Image(systemName: "flag")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(MacEditorialColor.faint)
@@ -796,17 +796,10 @@ struct MacTaskRow: View {
                                onOpen: open, onUnlink: { toggleWikilink(name) })
     }
 
-    /// The endeavor this task names, or nil.
-    ///
-    /// Nil the moment `endeavorNames` is empty, so a host that passes nothing
-    /// pays nothing: no regex, no scan. `wikilinkTargets` is `NoteStore`'s own
-    /// parser, the same one that finds these links everywhere else - a second
-    /// regex here would be a second opinion about what a link is.
-    private var linkedEndeavorName: String? {
-        guard !endeavorNames.isEmpty,
-              let notes = task.notes, notes.contains("[[") else { return nil }
-        return NoteStore.wikilinkTargets(in: notes).first { endeavorNames.contains($0) }
-    }
+    // Which endeavor a task's notes name is `EndeavorFile.linkedName` (D304).
+    // The private copy that stood here was the same rule written twice, and
+    // its one apparent advantage, skipping the scan when the notes hold no
+    // brackets at all, is already the first line of the shared parser.
 
     /// What a `[[Name]]` actually points at.
     ///

@@ -105,6 +105,13 @@ struct TraceMacTodayView: View {
     /// `MacTextEditor` requires one, and an unused instance is cheaper than a
     /// second initialiser on a shared component.
     @State private var noteActions = MacEditorActions()
+    /// Satchel documents, for the strip under the note (D306).
+    ///
+    /// Its own instance rather than one hoisted into the environment, which is
+    /// what the task card and the Days list already do with their stores: it
+    /// holds no mutable state anyone else observes, and a reload is one
+    /// directory sweep.
+    @State private var docStore: TraceMacDocumentStore? = nil
     /// The task being dragged. Set when the drag STARTS, which is why the rows
     /// use `.onDrag` rather than `.draggable`: the newer modifier has no
     /// start callback, and without knowing what is in flight a row cannot say
@@ -154,6 +161,23 @@ struct TraceMacTodayView: View {
         .background(MacEditorialColor.paper)
         .task(id: dayKey) { await load() }
         .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
+        .task {
+            if docStore == nil { docStore = TraceMacDocumentStore(noteStore: noteStore) }
+            await docStore?.reload()
+        }
+        // A document filed in Satchel, in this app or on the phone, changes what
+        // belongs under this note. Debounced by a beat for the Documents view's
+        // reason: one capture lands as two events, the file and then its
+        // sidecar, and reloading twice makes the strip flicker.
+        .onReceive(NotificationCenter.default.publisher(for: .noteStoreDocumentsDidChange)) { _ in
+            Task {
+                try? await Task.sleep(for: .milliseconds(400))
+                await docStore?.reload()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reloadDocuments)) { _ in
+            Task { await docStore?.reload() }
+        }
         // Any change of day — a day word, the month grid, the arrow keys —
         // is an answer to "which day", and the list was only a way of asking.
         .onChange(of: date) { _, _ in daysMode = false }
@@ -334,6 +358,26 @@ struct TraceMacTodayView: View {
     }
     private var noteHeading: String {
         daysMode ? (daysPick?.heading ?? "Day note") : "Day note"
+    }
+
+    /// The day the note column is showing, or nil when it is showing a WEEK
+    /// note. Only a day has reminders due on it, so only a day passes one.
+    /// Returning nil is the honest answer for a week rather than quietly using
+    /// today's date, which would put a receipt under a week note it has nothing
+    /// to do with.
+    private var noteDay: Date? {
+        guard daysMode else { return date }
+        if case .day(let key) = daysPick { return MacDaysList.dayFormatter.date(from: key) }
+        return nil
+    }
+
+    /// What the strip under the note draws. Empty until the store has loaded,
+    /// which is why the strip shows nothing at all rather than an empty state:
+    /// "no documents" and "not loaded yet" are different facts and this cannot
+    /// tell them apart, so it says neither. Warning TWELVE.
+    private var noteDocuments: [TraceMacDocument] {
+        guard let docStore else { return [] }
+        return docStore.filed(to: noteRelativePath, remindingOn: noteDay)
     }
 
     @ViewBuilder
@@ -791,6 +835,94 @@ struct TraceMacTodayView: View {
     // counterpart was worse — see `trackBlock`. A foreign event is now simply
     // painted `MacEditorialColor.foreignEvent`, chip and block alike.
 
+    // MARK: - Documents filed against this note (D306)
+
+    /// The Satchel documents belonging to the note on screen, as a footer strip.
+    ///
+    /// **A footer, not a band above the editor.** The phone puts its chips after
+    /// the note because the page scrolls; the Mac's note column does not, so the
+    /// same order here means a strip pinned to the bottom that the note can
+    /// never push off. It also answers David's standing objection on the
+    /// endeavor screen, that documents "start to crowd out the note": this is
+    /// one line tall and absent entirely when there is nothing to say.
+    ///
+    /// **Nothing when there are no documents, including while loading.** No
+    /// empty state, no header with a zero beside it. A strip that says "no
+    /// documents" before the sweep has finished is a screen reporting an absence
+    /// it cannot distinguish from ignorance.
+    ///
+    /// Horizontal scroll rather than a wrap. A day usually has one document and
+    /// rarely more than three; a wrapping layout would cost real measurement
+    /// work to handle a case that mostly does not happen, and a strip that
+    /// scrolls is at least honest about having more in it.
+    @ViewBuilder
+    private var documentStrip: some View {
+        let docs = noteDocuments
+        if !docs.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                MacEditorialRule.hair
+                HStack(alignment: .center, spacing: 8) {
+                    Text("Documents").editorialSectionLabel()
+                        .foregroundStyle(MacEditorialColor.faint)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(docs) { doc in documentChip(doc) }
+                        }
+                        .padding(.vertical, 1)
+                    }
+                }
+                .padding(.top, 10)
+                .padding(.bottom, 12)
+            }
+        }
+    }
+
+    /// One document, as a chip that opens it in Satchel.
+    ///
+    /// The bell marks a document that is here because its reminder falls on this
+    /// day rather than because it is filed to it. Without the mark the two are
+    /// indistinguishable, and a receipt that appears on a day it was never filed
+    /// to, with nothing saying why, reads as a bug.
+    private func documentChip(_ doc: TraceMacDocument) -> some View {
+        let filedHere: Bool = doc.linkedNote == noteRelativePath
+        let tint: Color = MacPalette.documentTint(doc.resolvedTint)
+        let help: String = filedHere ? "Open in Satchel"
+                                     : "Reminder falls on this day. Open in Satchel"
+        return Button {
+            // The notification, not a closure. `.navigateToRecord` is the door
+            // the task card's own document chip uses, and it lands in the
+            // navigator's history for free rather than teaching this screen a
+            // second way to reach Satchel.
+            NotificationCenter.default.post(
+                name: .navigateToRecord, object: nil,
+                userInfo: ["type": "document", "id": doc.relativePath])
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: doc.resolvedIcon.sfSymbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(tint)
+                Text(doc.title)
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.muted)
+                    .lineLimit(1)
+                if !filedHere {
+                    Image(systemName: "bell")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(MacEditorialColor.faint)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(MacEditorialColor.hairline, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
     // MARK: - DAY NOTE column
 
     private var noteColumn: some View {
@@ -819,6 +951,7 @@ struct TraceMacTodayView: View {
                                externalActions: noteActions,
                                onFocusChange: { focused in noteFocused = focused })
                 .frame(maxHeight: .infinity)
+            documentStrip
         }
         .padding(.horizontal, MacEditorialLayout.margin)
         .padding(.top, MacEditorialLayout.topMargin)

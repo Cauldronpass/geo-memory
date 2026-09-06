@@ -41,13 +41,19 @@ import SwiftUI
 enum MacDaysPick: Equatable {
     /// `yyyy-MM-dd`.
     case day(String)
-    /// ISO week, as the phone's check-in writer names the file.
-    case week(year: Int, week: Int)
+    /// The Monday of an ISO week, which is what `NoteStore.weekStart` answers.
+    ///
+    /// A Monday rather than a year-and-week pair, deliberately (D304). The
+    /// path and the heading are both derived from it, so the rule that names
+    /// the FILE is the rule that names the week on screen. A pair would have
+    /// to be computed by somebody, and whoever computed it would be the second
+    /// opinion this change exists to delete.
+    case week(Date)
 
     var relativePath: String {
         switch self {
-        case .day(let key):             return "Calendar/\(key).md"
-        case .week(let year, let week): return "Notes/Horizons/" + String(format: "%d-W%02d.md", year, week)
+        case .day(let key):     return "Calendar/\(key).md"
+        case .week(let monday): return NoteStore.weekPath(for: monday)
         }
     }
 
@@ -56,8 +62,8 @@ enum MacDaysPick: Equatable {
         case .day(let key):
             guard let date = MacDaysList.dayFormatter.date(from: key) else { return "Day note" }
             return "Day note \u{00B7} " + date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
-        case .week(_, let week):
-            return "Week note \u{00B7} Week \(week)"
+        case .week(let monday):
+            return "Week note \u{00B7} Week \(NoteStore.isoWeek(for: monday).week)"
         }
     }
 }
@@ -155,24 +161,22 @@ struct MacDaysList: View {
         return f
     }()
 
-    /// ISO weeks, Monday first, as `NoteStore.appendToWeeklyCheckInLog` names
-    /// them. Not `Calendar.current`, which is Sunday-first in en_US and would
-    /// put Sunday's note under the wrong week rule.
-    private static let isoCal: Calendar = {
-        var c = Calendar(identifier: .iso8601)
-        c.timeZone = TimeZone.current
-        return c
-    }()
+    // The private ISO calendar that used to stand here is gone (D304). Weeks
+    // are `NoteStore.weekStart`, `isoWeek`, `weekFilename` and `weekPath`, the
+    // definition the check-in writer and the phone already read, so this list
+    // and the file it opens cannot come to name different weeks.
 
     // MARK: Derived
 
     private struct WeekGroup: Identifiable {
-        let year: Int
-        let week: Int
+        /// The Monday, from `NoteStore.weekStart`. It is the grouping key, the
+        /// row's selection and what names the file, so those three cannot
+        /// disagree with each other.
         let start: Date
+        let week: Int
         let end: Date
         let days: [String]
-        var id: String { "\(year)-\(week)" }
+        var id: Date { start }
     }
 
     private var visibleKeys: [String] {
@@ -187,25 +191,30 @@ struct MacDaysList: View {
     }
 
     private var weeks: [WeekGroup] {
-        var order: [String] = []
-        var bucket: [String: (year: Int, week: Int, start: Date, days: [String])] = [:]
-        let cal = Self.isoCal
+        var order: [Date] = []
+        var bucket: [Date: [String]] = [:]
         for key in visibleKeys {
             guard let date = Self.dayFormatter.date(from: key) else { continue }
-            let week = cal.component(.weekOfYear, from: date)
-            let year = cal.component(.yearForWeekOfYear, from: date)
-            let id = "\(year)-\(week)"
-            if bucket[id] == nil {
-                let start = cal.dateInterval(of: .weekOfYear, for: date)?.start ?? date
-                bucket[id] = (year, week, cal.startOfDay(for: start), [])
-                order.append(id)
+            let start = NoteStore.weekStart(for: date)
+            if bucket[start] == nil {
+                bucket[start] = []
+                order.append(start)
             }
-            bucket[id]?.days.append(key)
+            bucket[start]?.append(key)
         }
-        return order.compactMap { id in
-            guard let b = bucket[id] else { return nil }
-            let end = cal.date(byAdding: .day, value: 6, to: b.start) ?? b.start
-            return WeekGroup(year: b.year, week: b.week, start: b.start, end: end, days: b.days)
+        // One calendar built per call rather than a cached one, because the
+        // shared definition is a computed property and a cache here would be
+        // the second opinion again. It is one Foundation object per day on a
+        // list of a few hundred. If it ever shows, the cache belongs in
+        // `NoteStore`, once, not in this file.
+        let cal = NoteStore.isoCalendar
+        return order.compactMap { start in
+            guard let days = bucket[start] else { return nil }
+            let end = cal.date(byAdding: .day, value: 6, to: start) ?? start
+            return WeekGroup(start: start,
+                             week: NoteStore.isoWeek(for: start).week,
+                             end: end,
+                             days: days)
         }
     }
 
@@ -280,11 +289,11 @@ struct MacDaysList: View {
     /// Today's section labels, so a week reads as a section and its days as
     /// rows. Accent when it is the selected note.
     private func weekRule(_ group: WeekGroup) -> some View {
-        let picked: Bool = pick == .week(year: group.year, week: group.week)
+        let picked: Bool = pick == .week(group.start)
         let tint: Color = picked ? MacEditorialColor.accent : MacEditorialColor.ink
         let wash: Color = picked ? MacEditorialColor.canvas : Color.clear
         return Button {
-            pick = .week(year: group.year, week: group.week)
+            pick = .week(group.start)
         } label: {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {

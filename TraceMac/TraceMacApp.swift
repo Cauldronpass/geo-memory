@@ -31,6 +31,9 @@ struct TraceMacApp: App {
     /// One instance, reachable both ways. Session 82, D248.
     @State private var notionService = NotionService.shared
     @State private var selectedSection: MacSection? = .today
+    /// For the Go menu's Back and Forward (D308). The history has existed since
+    /// Session 79 with no keyboard route to it at all.
+    @State private var navigator = MacNavigator.shared
     /// Held here only so the Go menu can print the current shortcut in its
     /// title. Registration happens in `TraceMacContentView`'s launch task; the
     /// Carbon hot key is app-wide and outlives the window, so closing the window
@@ -98,6 +101,29 @@ struct TraceMacApp: App {
             // `Horizons` became `Weekly` (D3) and `Visits` took ⌘5 now that it
             // is a tab rather than a sheet buried inside Places.
             CommandMenu("Go") {
+                // **Back and Forward, at last with a keyboard route** (D308).
+                //
+                // The navigator has recorded every jump since Session 79, and
+                // the only way to walk it was two chevrons on a header the
+                // editorial redesign left on one screen out of eleven. The
+                // masthead's named line is the visible half of this change;
+                // these two are the half David will actually use.
+                //
+                // The items NAME the destination, the same string the masthead
+                // shows, so the menu and the screen cannot disagree about where
+                // back goes. They fall back to the bare word when the stack is
+                // empty, which is also when they are disabled.
+                Button(navigator.backLabel.map { "Back to \($0)" } ?? "Back") {
+                    navigator.goBack()
+                }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(!navigator.canGoBack)
+                Button(navigator.forwardLabel.map { "Forward to \($0)" } ?? "Forward") {
+                    navigator.goForward()
+                }
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(!navigator.canGoForward)
+                Divider()
                 // **No `.keyboardShortcut` here, and that is the point.**
                 //
                 // Search is on a system-wide Carbon hot key now (⌃⌥Space by

@@ -49,11 +49,13 @@ extension Calendar {
         return c
     }()
 
-    /// The same calendar with a fixed locale, for building and parsing the
-    /// `YYYY-Www` note filenames, which must not vary by machine.
-    static let traceWeekPOSIX: Calendar = {
-        var c = Calendar(identifier: .iso8601)
-        c.locale = Locale(identifier: "en_US_POSIX")
-        return c
-    }()
+    // The POSIX-locale twin that stood here built and parsed the `YYYY-Www`
+    // note filenames. That job is `NoteStore.weekFilename` and
+    // `NoteStore.weekStart(fromStem:)` now (D304), which the check-in writer,
+    // the phone and the Mac all read, so this calendar had no readers left.
+    //
+    // `traceWeek` above is for week RANGES on screen and stays. A week you
+    // DRAW and a week you NAME A FILE AFTER are not automatically one concept,
+    // which is warning THIRTEEN a layer up: two calendars with the same
+    // settings are not the same idea.
 }

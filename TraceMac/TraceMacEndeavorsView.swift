@@ -835,7 +835,7 @@ struct TraceMacEndeavorsView: View {
                             existing: target.booking,
                             people: notionService.people,
                             endeavorPeople: railPeople(e).map(\.name),
-                            onSave: { draft in try await saveBooking(draft) },
+                            onSave: { draft in try await notionService.saveBooking(draft) },
                             onDelete: { booking in
                                 try await notionService.deleteBooking(id: booking.id)
                             },
@@ -1536,51 +1536,41 @@ struct TraceMacEndeavorsView: View {
 
     // MARK: Attaching an existing task (Session 87)
 
-    /// The line an endeavor writes into a task's notes. One definition, used by
-    /// the writer, the remover and the chooser's already-attached filter, so
-    /// they cannot come to disagree about what a link looks like.
-    private func endeavorLink(_ e: Endeavor) -> String { "[[" + e.name + "]]" }
+    /// The line an endeavor writes into a task's notes.
+    ///
+    /// One local name for `EndeavorFile.link(named:)` (D304), so the five call
+    /// sites below did not have to change. The brackets were spelled out here
+    /// until Session 90, which made this the fifth spelling of them.
+    private func endeavorLink(_ e: Endeavor) -> String { EndeavorFile.link(named: e.name) }
 
     /// Appends the link to each task's notes, preserving everything already
-    /// there.
-    ///
-    /// **Read-modify-write, never a bare set.** Notes carry machinery from
-    /// other features — `satchel:doc:` markers, the person-capture marker — and
-    /// writing a fresh string would delete them silently.
+    /// there. The merge rule is `EndeavorFile.notesAttaching` (D304); it was
+    /// written out here as well until Session 90.
     ///
     /// `setNotes` rather than `update`: the latter is a routing function that
     /// recomputes list and date rules and, for a task in the Inbox or Someday,
     /// clears the due date and the alarms even when passed no date. Attaching
-    /// has no opinion about when a task is due.
+    /// has no opinion about when a task is due. That part is this screen's own
+    /// and stays here.
     private func attachTasks(_ tasks: [ThingsTask], to e: Endeavor) async -> Bool {
         let link = endeavorLink(e)
         var allOK = true
         for task in tasks {
-            let existing = task.notes ?? ""
-            guard !existing.contains(link) else { continue }
-            let merged = existing.isEmpty ? link : existing + "\n" + link
+            // nil means the link is already there, which is not a failure.
+            guard let merged = EndeavorFile.notesAttaching(link, to: task.notes) else { continue }
             let ok = await ReminderTaskStore.shared.setNotes(taskID: task.id, notes: merged)
             if !ok { allOK = false }
         }
         return allOK
     }
 
-    /// Removes the link, leaving the rest of the notes alone.
-    ///
-    /// A line that is nothing but the link is dropped. A link sitting inside a
-    /// line someone typed is cut out of it and the rest of that line is kept —
-    /// deleting a whole line because it happens to mention an endeavor would
-    /// throw away prose the user wrote.
+    /// Removes the link, leaving the rest of the notes alone. The rule is
+    /// `EndeavorFile.notesDetaching` (D304), which returns nil when there was
+    /// nothing to remove, so nothing is written in that case.
     @discardableResult
     private func detachTask(_ task: ThingsTask, from e: Endeavor) async -> Bool {
         let link = endeavorLink(e)
-        let existing = task.notes ?? ""
-        guard existing.contains(link) else { return true }
-        let kept = existing
-            .components(separatedBy: "\n")
-            .filter { $0.trimmingCharacters(in: .whitespaces) != link }
-            .map { $0.replacingOccurrences(of: link, with: "") }
-            .joined(separator: "\n")
+        guard let kept = EndeavorFile.notesDetaching(link, from: task.notes) else { return true }
         return await ReminderTaskStore.shared.setNotes(taskID: task.id, notes: kept)
     }
 
@@ -2163,18 +2153,10 @@ struct TraceMacEndeavorsView: View {
         }
     }
 
-    /// Create or update, decided by whether the draft carries an id.
-    ///
-    /// The sheet does not know which it is doing and should not: it builds a
-    /// `Booking` and hands it over. An empty id is the only difference, and it
-    /// is the model's own fact rather than a flag someone has to remember.
-    private func saveBooking(_ draft: Booking) async throws {
-        if draft.id.isEmpty {
-            try await notionService.createBooking(draft)
-        } else {
-            try await notionService.updateBooking(draft)
-        }
-    }
+    // The private create-or-update branch that stood here is retired onto
+    // `NotionService.saveBooking` (D304). It was the same four lines the
+    // phone's sheet would have copied a third time, and the call site above
+    // now asks the service directly.
 
     /// Notion's own page URL. Ids come back hyphenated and the web form has no
     /// hyphens; both resolve, but the clean one is what Notion itself copies.

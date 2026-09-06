@@ -453,15 +453,10 @@ struct MacDailyMoveSheet: View {
 
     // MARK: Horizon list
 
-    /// Was a second definition of the same calendar. Now one name for the
-    /// shared one, so the call sites below did not have to change.
-    private static let isoCal: Calendar = .traceWeekPOSIX
-
-    private var currentWeekFile: String {
-        let wk = Self.isoCal.component(.weekOfYear, from: Date())
-        let yr = Self.isoCal.component(.yearForWeekOfYear, from: Date())
-        return String(format: "%d-W%02d.md", yr, wk)
-    }
+    /// The week file this list puts at the top, named by the rule that writes
+    /// it (D304). Was assembled here from a second calendar and a second copy
+    /// of the format string, which is what D297 deleted everywhere else.
+    private var currentWeekFile: String { NoteStore.weekFilename(for: Date()) }
 
     private var currentMonthFile: String {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM"
@@ -475,7 +470,7 @@ struct MacDailyMoveSheet: View {
                 Text("This period").editorialFieldLabel().padding(.top, 12).padding(.bottom, 4)
                 MacEditorialRule.hair
                 horizonRow(file: currentWeekFile,
-                           label: "Week \(Self.isoCal.component(.weekOfYear, from: Date()))",
+                           label: "Week \(NoteStore.isoWeek(for: Date()).week)",
                            icon: "calendar.badge.clock")
                 MacEditorialRule.hair
                 horizonRow(file: currentMonthFile,
