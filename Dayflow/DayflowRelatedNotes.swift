@@ -209,7 +209,7 @@ enum DayflowRelatedNotesEngine {
         }
         var parts: [String] = []
         if daily > 0 { parts.append("\(daily) daily") }
-        if project > 0 { parts.append("\(project) project\(project == 1 ? "" : "s")") }
+        if project > 0 { parts.append("\(project) note\(project == 1 ? "" : "s")") }
         if person > 0 { parts.append("\(person) \(person == 1 ? "person" : "people")") }
         if place > 0 { parts.append("\(place) place\(place == 1 ? "" : "s")") }
         if visit > 0 { parts.append("\(visit) visit\(visit == 1 ? "" : "s")") }
@@ -274,7 +274,7 @@ func dayflowLinkKindMenuItems(_ start: @escaping (DayflowLinkKind) -> Void) -> s
         Label("Daily Note", systemImage: "calendar")
     }
     Button { start(.project) } label: {
-        Label("Project Note", systemImage: "folder")
+        Label("Note", systemImage: "folder")
     }
     Button { start(.person) } label: {
         Label("Person", systemImage: "person")
@@ -619,7 +619,7 @@ struct DayflowLinkFlowSheet: View {
                 }
             } else {
                 candidatePickerSheet(
-                    title: "Link a Project Note", icon: "folder",
+                    title: "Link a Note", icon: "folder",
                     candidates: DayflowRelatedNotesEngine.projectCandidates(excludingTitle: excludeProjectTitle)
                 )
             }

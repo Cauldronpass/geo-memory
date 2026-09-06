@@ -527,7 +527,7 @@ struct DayflowInboxFilingSheet: View {
                     Button("File to Daily Note") { file(to: .daily(selectedDate)) }
                 }
 
-                Section("Project") {
+                Section("Note") {
                     // Above the list, not below it: this is the row that
                     // matters when nothing in the list is right, and the list
                     // is capped at 5 + search (see `visible`), so a trailing
@@ -536,9 +536,9 @@ struct DayflowInboxFilingSheet: View {
                         newProjectName = ""
                         showNewProjectPrompt = true
                     } label: {
-                        Label("New project\u{2026}", systemImage: "plus.circle.fill")
+                        Label("New note\u{2026}", systemImage: "plus.circle.fill")
                     }
-                    filingRows(all: projectCandidates, emptyText: "No projects yet") { name in
+                    filingRows(all: projectCandidates, emptyText: "No notes yet") { name in
                         file(to: .project(name))
                     }
                 }
@@ -559,7 +559,7 @@ struct DayflowInboxFilingSheet: View {
                     )
                 }
             }
-            .searchable(text: $searchText, prompt: "Search Projects, People, Places")
+            .searchable(text: $searchText, prompt: "Search Notes, People, Places")
             .navigationTitle("File to…")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -578,12 +578,12 @@ struct DayflowInboxFilingSheet: View {
             // Same `.alert` + `TextField` + Create pattern
             // DayflowNotesView.swift's own "New Project Note" prompt uses, so
             // creating a project feels identical on both screens.
-            .alert("New Project", isPresented: $showNewProjectPrompt) {
-                TextField("Project name", text: $newProjectName)
+            .alert("New Note", isPresented: $showNewProjectPrompt) {
+                TextField("Note name", text: $newProjectName)
                 Button("Cancel", role: .cancel) { newProjectName = "" }
                 Button("Create & File") { fileToNewProject() }
             } message: {
-                Text("Files this note into a new project note.")
+                Text("Files this note into a new note.")
             }
             // Loading overlay while the Claude prefill call for a "Log as
             // Interaction"/"Log as Visit" swipe action is in flight — a swipe
@@ -660,7 +660,7 @@ struct DayflowInboxFilingSheet: View {
         newProjectName = ""
         guard !typed.isEmpty else { return }
         guard !typed.contains("/") else {
-            errorMessage = "Project names can't contain \"/\"."
+            errorMessage = "Note names can't contain \"/\"."
             return
         }
         let match = projectCandidates.first {

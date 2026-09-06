@@ -6,6 +6,11 @@
 //  Dayflow-Tasks-Design.md). Four tabs, always visible: Today · Tasks ·
 //  Upcoming · Notes.
 //
+//  Session 89: the fourth tab was NOTES and is now RECORDS (D298) — it holds
+//  notes, endeavors and the filing queue, and naming a container after one of
+//  the things inside it is what made that screen read wrong. The Mac's sidebar
+//  groups exactly these under RECORDS.
+//
 //  Session 89: the second tab was INBOX and is now TASKS, hosting
 //  DayflowTasksView — whose first pool is the same triage screen the tab used
 //  to hold. That file's header carries why the word moved and what it cost.
@@ -39,7 +44,7 @@
 import SwiftUI
 
 enum DayflowTab: String {
-    case today, tasks, upcoming, notes
+    case today, tasks, upcoming, records
 }
 
 struct DayflowRootView: View {
@@ -86,7 +91,7 @@ struct DayflowRootView: View {
     /// from under this.
     private func tab(for destination: MacSearchDestination?) -> DayflowTab {
         if case .dailyOrProjectNote(let path)? = destination,
-           path.hasPrefix("Notes/Projects/") { return .notes }
+           path.hasPrefix("Notes/Projects/") { return .records }
         return .today
     }
 
@@ -99,7 +104,7 @@ struct DayflowRootView: View {
                 editorialTab(.today, "TODAY", "sun.max")
                 editorialTab(.tasks, "TASKS", "checklist")
                 editorialTab(.upcoming, "UPCOMING", "calendar")
-                editorialTab(.notes, "NOTES", "note.text")
+                editorialTab(.records, "RECORDS", "folder")
             }
             .padding(.top, 10)
             .padding(.bottom, 4)
@@ -160,7 +165,7 @@ struct DayflowRootView: View {
         // above the band instead of sliding under it.
         TabView(selection: $selectedTab) {
             ContentView(selectedDate: $selectedDate,
-                        onOpenNotesTab: { selectedTab = .notes })
+                        onOpenNotesTab: { selectedTab = .records })
                 .toolbar(.hidden, for: .tabBar)
                 .safeAreaPadding(.bottom, 60)
                 .tag(DayflowTab.today)
@@ -178,7 +183,7 @@ struct DayflowRootView: View {
             DayflowNotesView(selectedDate: $selectedDate, isTabRoot: true)
                 .toolbar(.hidden, for: .tabBar)
                 .safeAreaPadding(.bottom, 60)
-                .tag(DayflowTab.notes)
+                .tag(DayflowTab.records)
         }
         .tint(Color.dayflowAccent)
         // The band pins to the SCREEN bottom: it ignores the keyboard's

@@ -127,6 +127,9 @@ struct ContentView: View {
     /// Bool used to drive is gone from this screen. The headline is still
     /// the one door (Session 24's rule), it just opens downward now.
     @State private var monthUnfolded = false
+    /// Session 89 (D297) — the fourth word on the day nav. True while the
+    /// running list of days has replaced the top half of the page.
+    @State private var daysMode = false
     /// Added 2026-07-24 (Session 44 addendum 10) — David's Inbox concept,
     /// reached by swiping right on the home screen (see the `.gesture(...)`
     /// on this screen's root VStack below), deliberately NOT part of
@@ -258,47 +261,59 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     topBar
 
-                    // Still the one door into Calendar browsing (Session
-                    // 24); since Session 78 it opens DOWNWARD — the month
-                    // unfolds in place instead of a cover sliding up.
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.25)) { monthUnfolded.toggle() }
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    } label: {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Rectangle().fill(Color.dayflowInk).frame(height: 3)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(mastheadKicker)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .tracking(2.2)
-                                    .foregroundStyle(Color.dayflowMuted)
-                                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                    Text(mastheadDayNumber)
-                                        .font(.dayflowSerif(38, weight: .heavy))
-                                        .foregroundStyle(Color.dayflowInk)
-                                    Text(mastheadWeekday)
-                                        .font(.dayflowSerif(22, weight: .semibold))
-                                        .foregroundStyle(Color.dayflowNoteText)
-                                    Spacer()
-                                    Image(systemName: "chevron.down")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(Color.dayflowFaint)
-                                        .rotationEffect(monthUnfolded ? .degrees(180) : .zero)
+                    // Session 89: **the masthead belongs to whatever is below it.**
+                    //
+                    // The Mac swaps this whole headline out in days mode —
+                    // `MacDaysList` draws its own, titled Days. The first phone
+                    // build left the day headline standing above a list of days,
+                    // where it belonged to neither, and David found it the only
+                    // way anyone finds this class of thing: he pressed it and got
+                    // thrown out of the list onto a month grid.
+                    if !daysMode {
+                        // Still the one door into Calendar browsing (Session
+                        // 24); since Session 78 it opens DOWNWARD — the month
+                        // unfolds in place instead of a cover sliding up.
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                monthUnfolded.toggle()
+                            }
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Rectangle().fill(Color.dayflowInk).frame(height: 3)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(mastheadKicker)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .tracking(2.2)
+                                        .foregroundStyle(Color.dayflowMuted)
+                                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                        Text(mastheadDayNumber)
+                                            .font(.dayflowSerif(38, weight: .heavy))
+                                            .foregroundStyle(Color.dayflowInk)
+                                        Text(mastheadWeekday)
+                                            .font(.dayflowSerif(22, weight: .semibold))
+                                            .foregroundStyle(Color.dayflowNoteText)
+                                        Spacer()
+                                        Image(systemName: "chevron.down")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(Color.dayflowFaint)
+                                            .rotationEffect(monthUnfolded ? .degrees(180) : .zero)
+                                    }
+                                }
+                                .padding(.vertical, 9)
+                                if !monthUnfolded {
+                                    Rectangle().fill(Color.dayflowInk).frame(height: 1)
                                 }
                             }
-                            .padding(.vertical, 9)
-                            if !monthUnfolded {
-                                Rectangle().fill(Color.dayflowInk).frame(height: 1)
+                        }
+                        .buttonStyle(.plain)
+                        if monthUnfolded {
+                            DayflowMonthUnfold(selectedDate: selectedDate) { day in
+                                selectedDate = day
+                                withAnimation(.easeInOut(duration: 0.22)) { monthUnfolded = false }
                             }
+                            .transition(.opacity)
                         }
-                    }
-                    .buttonStyle(.plain)
-                    if monthUnfolded {
-                        DayflowMonthUnfold(selectedDate: selectedDate) { day in
-                            selectedDate = day
-                            withAnimation(.easeInOut(duration: 0.22)) { monthUnfolded = false }
-                        }
-                        .transition(.opacity)
                     }
                 }
                 // `contentShape` so the gaps between the two rows drag too; a
@@ -364,7 +379,16 @@ struct ContentView: View {
                 // imminent endeavor is the biggest thing happening in a
                 // stretch of life and was the most buried record in the app.
                 // One quiet caps line each, straight under the masthead.
-                DayflowEndeavorPresence { id in openEndeavorInstant(id) }
+                // Session 89: Today's, not the list's. These lines are about
+                // what is happening NOW — "day 8", "in 9 days" — and a list of
+                // days already gone is the one place on the phone where that
+                // is the wrong tense. They also sat ABOVE the list's masthead
+                // once the day headline was gated, which broke D182's own
+                // placement rule of straight UNDER the masthead. The Mac's
+                // days column carries no presence lines either.
+                if !daysMode {
+                    DayflowEndeavorPresence { id in openEndeavorInstant(id) }
+                }
 
                 // Session 77, step (b): task card first, events strip, then
                 // the Day note with a minimum height — replaces
@@ -374,8 +398,19 @@ struct ContentView: View {
                 // the section, re-running its `.task(id:)` fetch.
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        DayflowTodaySection(date: selectedDate)
-                            .id(agendaRefreshToken)
+                        if daysMode {
+                            // The list takes the day column's place. Tapping a
+                            // row fills the note below without leaving the
+                            // list, which is what makes reading down a week
+                            // one tap per day instead of a round trip.
+                            DayflowDaysList { day in
+                                selectedDate = day
+                                showNoteFullPage = true
+                            }
+                        } else {
+                            DayflowTodaySection(date: selectedDate)
+                                .id(agendaRefreshToken)
+                        }
 
                         DayflowDailyNoteSection(
                             date: selectedDate,
@@ -1081,13 +1116,19 @@ struct ContentView: View {
             // segment. Top row is now just the day strip — the calm David
             // asked Session 77's "why have the gear and the hamburger?"
             // question toward, taken to its end.
-            Color.clear.frame(width: 32, height: 32)
-            Spacer()
+            // Session 89: DAYS rides at the far right, where the Mac's own
+            // day nav puts it, and the three named days sit LEFT, where the
+            // Mac puts those.
+            //
+            // The first attempt kept them centred by holding 54pt of clear
+            // space on the left to balance DAYS. On David's build YESTERDAY
+            // wrapped to two lines: four words plus a phantom fifth do not fit
+            // across a phone, and the centring was worth less than the word.
+            // The Mac's own nav is left-aligned with DAYS at the far end, so
+            // matching it costs nothing and buys back the room.
             dayPill
-            Spacer()
-            // Session 77: the gear moved into the hamburger menu; this clear
-            // frame keeps the day pill centered.
-            Color.clear.frame(width: 32, height: 32)
+            Spacer(minLength: 24)
+            daysButton
         }
     }
 
@@ -1111,7 +1152,12 @@ struct ContentView: View {
         HStack(spacing: 2) {
             ForEach(DayflowRelativeDay.allCases) { day in
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { selectedDate = day.date() }
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        // Any of the three named days leaves the list, so the
+                        // nav is never lit in two places at once.
+                        daysMode = false
+                        selectedDate = day.date()
+                    }
                 } label: {
                     // Editorial (Session 77): plain small-caps text, accent
                     // on the active day, no pill fill — the white-capsule
@@ -1120,7 +1166,13 @@ struct ContentView: View {
                         .font(.system(size: 11, weight: isActive(day) ? .bold : .medium))
                         .tracking(1.2)
                         .foregroundStyle(isActive(day) ? Color.dayflowAccent : Color.dayflowFaint)
-                        .padding(.horizontal, 8)
+                        // A nav word that wraps has stopped being a nav word.
+                        // Belt and braces after the 2026-09-06 wrap: the
+                        // layout above gives it the room, this refuses to
+                        // take the offer if anything ever squeezes it again.
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 7)
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.plain)
@@ -1130,8 +1182,43 @@ struct ContentView: View {
     }
 
     private func isActive(_ day: DayflowRelativeDay) -> Bool {
-        Calendar.current.isDate(selectedDate, inSameDayAs: day.date())
+        // Nothing in the pill is lit while DAYS is: the page is not showing a
+        // named day, and two lit words would claim it was showing both.
+        guard !daysMode else { return false }
+        return Calendar.current.isDate(selectedDate, inSameDayAs: day.date())
     }
+
+    /// **DAYS, the fourth answer to "which day"** (Session 89, D297). David:
+    /// *"what if instead we put Days on the top to the right of tomorrow just
+    /// like we have on mac."*
+    ///
+    /// `MacDaysList` carries the reasoning, in his words: the left column
+    /// answers WHICH DAY, the right column is THAT DAY'S NOTE, and DAYS is a
+    /// fourth answer to the first question. The phone is that layout stacked,
+    /// so this swaps the TOP half and the note below stays put.
+    private var daysButton: some View {
+        Button {
+            UISelectionFeedbackGenerator().selectionChanged()
+            withAnimation(.easeInOut(duration: 0.15)) {
+                daysMode.toggle()
+                // The month grid and the list both answer "which day". Two of
+                // them open at once is two controls claiming one question.
+                if daysMode { monthUnfolded = false }
+            }
+        } label: {
+            Text("DAYS")
+                .font(.system(size: 11, weight: daysMode ? .bold : .medium))
+                .tracking(1.2)
+                .foregroundStyle(daysMode ? Color.dayflowAccent : Color.dayflowFaint)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 7)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
 
     // Save routing for the old Quick Add sheet lived here until Session 77;
     // DayflowEventComposer owns event creation (buffers included) now, and

@@ -388,12 +388,12 @@ struct DayflowProjectNoteView: View {
                         .background(.quaternary.opacity(0.6), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(isFlagged ? "Unpin this project" : "Pin this project")
+                .accessibilityLabel(isFlagged ? "Unpin this note" : "Pin this note")
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
             VStack(alignment: .leading, spacing: 4) {
-                Text("PROJECT")
+                Text("NOTE")
                     .font(.system(size: 10, weight: .bold))
                     .tracking(2.2)
                     .foregroundStyle(Color.dayflowAccent)

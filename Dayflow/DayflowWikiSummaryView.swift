@@ -1225,7 +1225,7 @@ struct DayflowWikiSummaryView: View {
 
     private func mentionLabel(for relativePath: String) -> String {
         if relativePath.hasPrefix("Calendar/") { return "Daily Note" }
-        if relativePath.hasPrefix("Notes/Projects/") { return "Project" }
+        if relativePath.hasPrefix("Notes/Projects/") { return "Note" }
         if relativePath.hasPrefix("Notes/Places/") { return "Place" }
         if relativePath.hasPrefix("Notes/People/") { return "Person" }
         if relativePath.hasPrefix("Notes/Horizons/") { return "Horizon" }

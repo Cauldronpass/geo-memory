@@ -378,7 +378,58 @@ class NoteStore {
         """
         try? sample.write(to: dailyFile, atomically: true, encoding: .utf8)
 
+        seedWeekNotes(at: root)
         seedEndeavors(at: root)
+    }
+
+    /// Week notes for the Simulator, and only for the Simulator (Session 89).
+    ///
+    /// The phone's Weeks list reads `Notes/Horizons/`, and the only thing that
+    /// writes there is a check-in — which the Dayflow Simulator has no door to.
+    /// So the screen was correctly reporting an empty folder and there was no
+    /// way to see it working, which is the same hole `seedEndeavors` was
+    /// written to close: *everything on screen has to be reachable in the
+    /// Simulator, or testing only ever proves the easy half.*
+    ///
+    /// **Named through `weekFilename`, never by hand.** A seed that spelled the
+    /// filename itself would be a fourth opinion about which week this is, in
+    /// the one file that exists to stop there being a second. It also means
+    /// this seed proves the shared naming end to end: written by one function,
+    /// read back by another.
+    ///
+    /// Three weeks with a deliberate gap at two weeks ago, so the list is
+    /// visibly not "every week since March" and a missing week reads as
+    /// missing.
+    private func seedWeekNotes(at root: URL) {
+        let dir = root.appendingPathComponent("Notes/Horizons")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let cal = Self.isoCalendar
+        let bodies = [
+            0: "Held the line on the Treasury policy draft. Two calls moved.",
+            1: "Short week. Got the board slide to a place I would show someone.",
+            3: "Ran four times. Japan flights still held, not booked."
+        ]
+        for (weeksAgo, line) in bodies {
+            guard let day = cal.date(byAdding: .weekOfYear, value: -weeksAgo, to: Date()) else { continue }
+            let file = dir.appendingPathComponent(Self.weekFilename(for: day))
+            guard !FileManager.default.fileExists(atPath: file.path) else { continue }
+            let w = Self.isoWeek(for: day)
+            let text = """
+            # Week \(w.week) — \(w.year)
+
+            \u{2022} \(line)
+            \u{2022} 
+            \u{2022} 
+
+            ---
+
+            Check-in Log:
+
+            **Seeded (Simulator)**
+            \(line)
+            """
+            try? text.write(to: file, atomically: true, encoding: .utf8)
+        }
     }
 
     /// Endeavor notes for the Simulator, and **only** for the Simulator.
@@ -1100,19 +1151,84 @@ class NoteStore {
 
     // MARK: - Weekly check-in log
 
+    // MARK: - Which week is this (Session 89)
+
+    /// **One definition of a week, for everything that touches one.**
+    ///
+    /// Week notes live at `Notes/Horizons/YYYY-Www.md` and are written by the
+    /// phone's check-ins. When the phone's Days list started grouping rows by
+    /// week it computed weeks a second time, with a Gregorian calendar set to
+    /// start on Monday — which agrees with a true ISO week all year and
+    /// disagrees in early January, because ISO additionally requires four days
+    /// of the new year before a week counts as week one.
+    ///
+    /// Cosmetic while the second opinion only drew headings. **Fatal the
+    /// moment a heading names a FILE**: one side opens `2027-W01.md` while the
+    /// other keeps writing `2026-W53.md`, and neither looks broken. That is
+    /// D266's warning exactly — two writers disagreeing about a path file
+    /// things into nothing — so the second opinion is deleted rather than
+    /// aligned. Alignment is a thing that drifts back; one function is not.
+    ///
+    /// Kept in this file rather than a new one on purpose: `Trace/` is not a
+    /// synchronized folder for every target, so a new file here costs a
+    /// project-file edit and an Xcode restart. This one is already in every
+    /// target that needs it.
+    nonisolated static var isoCalendar: Calendar {
+        var c = Calendar(identifier: .iso8601)
+        c.timeZone = TimeZone.current
+        return c
+    }
+
+    /// The ISO year and week a date falls in.
+    nonisolated static func isoWeek(for date: Date) -> (year: Int, week: Int) {
+        let c = isoCalendar
+        return (c.component(.yearForWeekOfYear, from: date),
+                c.component(.weekOfYear, from: date))
+    }
+
+    /// `2026-W36.md` — the filename the check-in writer has always produced.
+    nonisolated static func weekFilename(for date: Date) -> String {
+        let w = isoWeek(for: date)
+        return String(format: "%d-W%02d.md", w.year, w.week)
+    }
+
+    /// `Notes/Horizons/2026-W36.md`.
+    nonisolated static func weekPath(for date: Date) -> String {
+        "Notes/Horizons/" + weekFilename(for: date)
+    }
+
+    /// The Monday a date's ISO week starts on — the key the Days list groups
+    /// by, so a heading and the file behind it can never name different weeks.
+    nonisolated static func weekStart(for date: Date) -> Date {
+        let c = isoCalendar
+        let parts = c.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
+        return c.date(from: parts) ?? c.startOfDay(for: date)
+    }
+
+    /// The Monday of a `YYYY-Www` stem, for reading a week file back into a
+    /// date. `nil` when the stem is not one of ours.
+    nonisolated static func weekStart(fromStem stem: String) -> Date? {
+        let parts = stem.split(separator: "-")
+        guard parts.count == 2, parts[1].hasPrefix("W"),
+              let year = Int(parts[0]),
+              let week = Int(parts[1].dropFirst()) else { return nil }
+        var comps = DateComponents()
+        comps.yearForWeekOfYear = year
+        comps.weekOfYear = week
+        return isoCalendar.date(from: comps)
+    }
+
     /// Appends a check-in entry to the current week's Horizons note under a "Check-in Log:" section.
     /// Creates the note with a bullet-list template if it doesn't exist yet.
     /// New days get their own bold sub-header; multiple check-ins on the same day stack beneath it.
     func appendToWeeklyCheckInLog(_ line: String, date: Date = Date()) throws {
         guard let documentsURL else { throw NoteStoreError.iCloudUnavailable }
 
-        // ISO week path: Notes/Horizons/YYYY-Www.md
-        var isoCal = Calendar(identifier: .iso8601)
-        isoCal.timeZone = TimeZone.current
-        let week = isoCal.component(.weekOfYear, from: date)
-        let year = isoCal.component(.yearForWeekOfYear, from: date)
-        let filename = String(format: "%d-W%02d.md", year, week)
-        let relativePath = "Notes/Horizons/\(filename)"
+        // ISO week path: Notes/Horizons/YYYY-Www.md — through the shared
+        // definition since Session 89, so the phone's Days and Weeks lists
+        // cannot name a different file than this writer creates.
+        let (year, week) = Self.isoWeek(for: date)
+        let relativePath = Self.weekPath(for: date)
 
         // Day sub-header: "**Monday (07-06)**"
         let dayFmt = DateFormatter()

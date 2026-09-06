@@ -129,7 +129,7 @@ struct DayflowNotesView: View {
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
 
     private enum Scope: String, CaseIterable, Identifiable {
-        case all = "All", daily = "Daily", projects = "Projects", places = "Places", people = "People"
+        case all = "All", daily = "Daily", projects = "Notes", places = "Places", people = "People"
         /// Added 2026-07-29. Endeavors are notes in the shared pool like any
         /// other, but they carry frontmatter and are browsed by imminence
         /// rather than searched by name — so this scope renders its own list
@@ -150,10 +150,10 @@ struct DayflowNotesView: View {
             // projects". A scope called All that omits a whole note type is worse
             // than no All at all, because it answers "not there" convincingly.
             case .all:      return [("Daily", "Calendar"),
-                                    ("Projects", "Notes/Projects"),
+                                    ("Notes", "Notes/Projects"),
                                     ("Endeavors", "Notes/Endeavors")]
             case .daily:    return [("Daily", "Calendar")]
-            case .projects: return [("Projects", "Notes/Projects")]
+            case .projects: return [("Notes", "Notes/Projects")]
             case .places, .people, .endeavors: return []
             }
         }
@@ -253,10 +253,24 @@ struct DayflowNotesView: View {
     // icon; the old scope pills survive INSIDE search mode, where
     // Places/People scoping still earns its keep.
     private enum NotesSegment: String, CaseIterable, Identifiable {
-        case days = "DAYS", projects = "PROJECTS", endeavors = "ENDEAVORS", toFile = "TO FILE"
+        // Session 89 (D298). Two changes, one each of the two kinds of drift
+        // David found when he asked whether this tab had come adrift from the
+        // Mac.
+        //
+        // **PROJECTS is NOTES**, finishing D271. The Mac's room went back to
+        // being called Notes in Session 87 and that entry said the phone
+        // carried the same label off the same folder and that a Dayflow
+        // session would fix it. This is that session.
+        //
+        // **DAYS is gone**, because D297 gave it a better home: the day nav on
+        // Today, where the Mac has always kept it. Removed only AFTER David
+        // confirmed the replacement on a build — a way in must never come out
+        // before its replacement is proven, which is the shape half this
+        // session has been about.
+        case notes = "NOTES", endeavors = "ENDEAVORS", toFile = "TO FILE"
         var id: String { rawValue }
     }
-    @State private var segment: NotesSegment = .days
+    @State private var segment: NotesSegment = .notes
     @State private var searchActive = false
     /// Session 78 evening — the project-delete confirmation's subject.
     @State private var projectPendingDelete: String? = nil
@@ -264,7 +278,6 @@ struct DayflowNotesView: View {
     /// Session 78, Notes redesign — routed PROJECT notes land on this tab
     /// (in place, tab bar visible) instead of ContentView's cover.
     @State private var quickFindRouter = DayflowQuickFindRouter.shared
-    @State private var dayNotes: [(date: Date, preview: String)] = []
     @FocusState private var searchFocused: Bool
 
     private var sortedResults: [SearchResult] {
@@ -288,8 +301,8 @@ struct DayflowNotesView: View {
                 mainBody
             }
         }
-        .alert("New Project Note", isPresented: $showNewProjectAlert) {
-            TextField("Project name", text: $newProjectName)
+        .alert("New Note", isPresented: $showNewProjectAlert) {
+            TextField("Note name", text: $newProjectName)
             Button("Cancel", role: .cancel) { newProjectName = "" }
             Button("Create") { createProject() }
         }
@@ -310,7 +323,6 @@ struct DayflowNotesView: View {
         // debounces its saves, so this is not per-keystroke.
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreFileDidChange)) { _ in
             loadTagCounts()
-            loadDayNotes()
         }
         .onAppear {
             loadProjectNames()
@@ -319,7 +331,6 @@ struct DayflowNotesView: View {
             // until the scope was toggled.
             loadTagCounts()
             applyRoutedProject()
-            loadDayNotes()
             refreshToFileCount()
             drainRoutedProjectNote()
         }
@@ -405,10 +416,7 @@ struct DayflowNotesView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 2) {
                             switch segment {
-                            case .days:
-                                pinnedDaysSection
-                                daysList
-                            case .projects:
+                            case .notes:
                                 newProjectRow
                                 projectNotesSection
                             case .endeavors:
@@ -465,106 +473,10 @@ struct DayflowNotesView: View {
         .padding(.vertical, 10)
     }
 
-    // MARK: Days segment (Session 77 step d)
 
-    private var daysList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(dayNotes.enumerated()), id: \.element.date) { index, entry in
-                // Month masthead on crossover (redesign) — the same move
-                // Upcoming makes at a month boundary, scrolling back in time.
-                if index > 0,
-                   !Calendar.current.isDate(entry.date, equalTo: dayNotes[index - 1].date,
-                                            toGranularity: .month) {
-                    monthMasthead(entry.date)
-                }
-                dayNoteRow(entry.date, entry.preview)
-                Rectangle().fill(Color.dayflowHairline).frame(height: 1)
-            }
-        }
-        .padding(.top, pinnedDays.isEmpty ? 4 : 12)
-    }
 
-    private func monthMasthead(_ date: Date) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            let f = DateFormatter()
-            Text({ f.dateFormat = "MMMM"; return f.string(from: date).uppercased() }())
-                .font(.system(size: 12, weight: .heavy))
-                .tracking(2.6)
-                .foregroundStyle(Color.dayflowAccent)
-            Rectangle().fill(Color.dayflowInk).frame(height: 2)
-        }
-        .padding(.top, 18)
-        .padding(.bottom, 6)
-    }
 
-    private func dayNoteRow(_ date: Date, _ preview: String) -> some View {
-        let cal = Calendar.current
-        let isToday = cal.isDateInToday(date)
-        // Redesign: Today leads bigger with an accent date tag, Yesterday a
-        // faint one; previews are FAINT, not muted — "the preview is a good
-        // signal but lighter... is the right approach" (David, mockup round).
-        return Button {
-            selectedDate = date
-            showDailyNote = true
-        } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(dayNoteLabel(date))
-                        .font(.dayflowSerif(isToday ? 18 : 15.5,
-                                            weight: isToday ? .bold : .semibold))
-                        .foregroundStyle(Color.dayflowInk)
-                    Spacer()
-                    if isToday || cal.isDateInYesterday(date) {
-                        let f = DateFormatter()
-                        Text({ f.dateFormat = "EEE d"; return f.string(from: date).uppercased() }())
-                            .font(.system(size: 10, weight: .medium))
-                            .tracking(1.2)
-                            .foregroundStyle(isToday ? Color.dayflowAccent : Color.dayflowFaint)
-                    }
-                }
-                if !preview.isEmpty {
-                    Text(preview)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(Color.dayflowFaint)
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(minHeight: 46)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
 
-    private func dayNoteLabel(_ date: Date) -> String {
-        let cal = Calendar.current
-        if cal.isDateInToday(date) { return "Today" }
-        if cal.isDateInYesterday(date) { return "Yesterday" }
-        let f = DateFormatter(); f.dateFormat = "EEEE d MMMM"
-        return f.string(from: date)
-    }
-
-    /// Recent day notes with a one-line preview. ~30 small local files; cheap
-    /// enough to read on entry and on every note write.
-    private func loadDayNotes() {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd"
-        let names = (try? NoteStore.shared.listFiles(in: "Calendar")) ?? []
-        let dates = names.compactMap { name -> Date? in
-            f.date(from: ((name as NSString).lastPathComponent as NSString).deletingPathExtension)
-        }.sorted(by: >).prefix(30)
-        dayNotes = dates.map { d in
-            let raw = (try? NoteStore.shared.readDailyNote(date: d)) ?? ""
-            let body = DayflowDailyNoteEditor.stripDateHeader(raw)
-            let preview = body.split(separator: "\n").map(String.init)
-                .first(where: { line in
-                    let t = line.trimmingCharacters(in: .whitespaces)
-                    return !t.isEmpty && !t.hasPrefix("#")
-                })?.trimmingCharacters(in: .whitespaces) ?? ""
-            return (d, preview)
-        }
-    }
 
     private func refreshToFileCount() {
         toFileCount = (try? NoteStore.shared.listFiles(in: "Notes/Inbox").count) ?? 0
@@ -588,11 +500,18 @@ struct DayflowNotesView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                Text("Notes")
+                // **Records, not Notes** (Session 89, D298). The tab holds
+                // notes, endeavors and the filing queue, and an endeavor is
+                // not a note — it is a record with dates, bookings, places and
+                // its own tasks, with a note attached. Naming the container
+                // after one of the things inside it is what made this screen
+                // read wrong, and the Mac already had the right word: its
+                // sidebar groups exactly these under RECORDS.
+                Text("Records")
                     .font(.dayflowSerif(30, weight: .heavy))
                     .foregroundStyle(Color.dayflowInk)
                 Spacer()
-                Text("\(dayNotes.count) DAYS \u{00B7} \(projectNames.count) PROJECTS")
+                Text("\(projectNames.count) NOTES")
                     .font(.system(size: 10, weight: .medium))
                     .tracking(1.4)
                     .foregroundStyle(Color.dayflowFaint)
@@ -645,7 +564,7 @@ struct DayflowNotesView: View {
         quickFindRouter.pendingDestination = nil
         let title = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         guard !title.isEmpty else { return }
-        segment = .projects
+        segment = .notes
         selectedProjectTitle = title
     }
 
@@ -734,7 +653,7 @@ struct DayflowNotesView: View {
             HStack(spacing: 8) {
                 Image(systemName: "plus")
                     .font(.system(size: 11, weight: .semibold))
-                Text("NEW PROJECT")
+                Text("NEW NOTE")
                     .font(.system(size: 10.5, weight: .medium))
                     .tracking(1.6)
                 Spacer()
@@ -969,7 +888,7 @@ struct DayflowNotesView: View {
             }
             archivedProjectsSection
         } else {
-            Text("No project notes yet — tap \"New project note\" above to start one.")
+            Text("Nothing here yet — tap \"New note\" above to start one.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .padding(.top, 24)
@@ -1183,7 +1102,7 @@ struct DayflowNotesView: View {
             Button {
                 if noteStore.archiveProject(name: name) { loadProjectNames() }
             } label: {
-                Label("Archive Project", systemImage: "archivebox")
+                Label("Archive Note", systemImage: "archivebox")
             }
             // Session 78 evening — David: "i have no way of deleting project
             // notes." Destructive + confirmed (file removal is permanent;
@@ -1191,7 +1110,7 @@ struct DayflowNotesView: View {
             Button(role: .destructive) {
                 projectPendingDelete = name
             } label: {
-                Label("Delete Project", systemImage: "trash")
+                Label("Delete Note", systemImage: "trash")
             }
         }
         .confirmationDialog(

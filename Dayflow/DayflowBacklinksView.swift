@@ -210,7 +210,7 @@ struct DayflowBacklinksView: View {
     // Session 20) rather than threading one shared method across files.
     private func mentionTypeLabel(for relativePath: String) -> String {
         if relativePath.hasPrefix("Calendar/") { return "Daily Note" }
-        if relativePath.hasPrefix("Notes/Projects/") { return "Project" }
+        if relativePath.hasPrefix("Notes/Projects/") { return "Note" }
         if relativePath.hasPrefix("Notes/Places/") { return "Place" }
         if relativePath.hasPrefix("Notes/People/") { return "Person" }
         if relativePath.hasPrefix("Notes/Horizons/") { return "Horizon" }
