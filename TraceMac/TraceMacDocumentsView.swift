@@ -884,7 +884,7 @@ struct TraceMacDocumentsView: View {
                         let ghostY    = max(160, min(previewH + previewDrag, total - 140))
 
                         VStack(spacing: 0) {
-                            docViewer(for: doc)
+                            MacDocumentViewer(doc: doc, zoom: zoom, find: find)
                                 .frame(height: previewH)
                                 // The viewer draws a document that may be far
                                 // larger than its slot. Without this it paints
@@ -985,6 +985,66 @@ struct TraceMacDocumentsView: View {
         var icon: String  { switch self { case .preview: "doc.fill"; case .note: "note.text" } }
     }
 
+
+
+    // `findChip`, `docViewer(for:)` and `fileSize(at:)` moved to
+    // `MacDocumentViewer` at the foot of this file (D334, Session 94). Those
+    // three private members were, between them, the whole of "draw a document",
+    // and the reading pane on an endeavor has to draw the same one.
+    //
+    // **A view the app already has, never a copy** — D313's rule, and the shape
+    // Session 93 spent a change undoing when a list a comment called canonical
+    // turned out to be in seven files. Nothing about Satchel's own layout moved:
+    // this view still owns `zoom` and `find` and still decides the preview's
+    // height.
+
+    // MARK: - Import
+
+    /// Multi-select, matching the Endeavor rail's `+`. Two doors to the same
+    /// verb disagreeing about whether you may pick two files is the kind of
+    /// difference nobody decides and everybody trips over.
+    private func importDocument() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.prompt = "Add"
+        panel.begin { response in
+            guard response == .OK else { return }
+            for url in panel.urls {
+                _ = try? store?.importDocument(from: url)
+            }
+            Task { await store?.reload() }
+        }
+    }
+
+}
+
+
+// MARK: - The document viewer, for Satchel and for the endeavor pane
+
+/// Draws one document: a PDF, an image, or a card for anything else.
+///
+/// **Extracted, not written** (D334, Session 94). This is exactly what Satchel's
+/// preview has drawn since Session 63, lifted out of `TraceMacDocumentsView` so
+/// that the reading pane on an endeavor (D313) can render the same view rather
+/// than a second one built for 450pt. D313 states the rule and D318 restates it
+/// for Discover: **the pane hosts a view the app already has, drawn narrower.**
+/// Two screens for one job drift, and here the drift would show up as a file
+/// that renders in Satchel and not beside the note.
+///
+/// **`zoom` and `find` are passed in, not owned.** Both are `@Observable`
+/// classes, so a plain `let` observes them, and whoever hosts this view decides
+/// how long they live — Satchel keeps one pair for its whole session; the pane
+/// will want its own so a zoom on the endeavor does not move Satchel's page.
+struct MacDocumentViewer: View {
+
+    let doc: TraceMacDocument
+    let zoom: PreviewZoomController
+    let find: MacPDFFind
+
+    @Environment(NoteStore.self) private var noteStore
+
     /// The match counter over the top-right of the page.
     ///
     /// It shows **zero as a number with a reason**, not as nothing. A PDF opened
@@ -1026,7 +1086,7 @@ struct TraceMacDocumentsView: View {
     }
 
     @ViewBuilder
-    private func docViewer(for doc: TraceMacDocument) -> some View {
+    var body: some View {
         if doc.isPDF, let url = noteStore.resolvedURL(for: doc.relativePath) {
             PDFViewRepresentable(url: url, zoom: zoom, find: find)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1062,26 +1122,6 @@ struct TraceMacDocumentsView: View {
             // controls that would do nothing.
             .onAppear { zoom.detach() }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    // MARK: - Import
-
-    /// Multi-select, matching the Endeavor rail's `+`. Two doors to the same
-    /// verb disagreeing about whether you may pick two files is the kind of
-    /// difference nobody decides and everybody trips over.
-    private func importDocument() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.prompt = "Add"
-        panel.begin { response in
-            guard response == .OK else { return }
-            for url in panel.urls {
-                _ = try? store?.importDocument(from: url)
-            }
-            Task { await store?.reload() }
         }
     }
 

@@ -172,6 +172,27 @@ struct TraceMacEndeavorsView: View {
     /// People and Places used plain `@State`, so a widened column was narrow
     /// again on the next launch.
     @AppStorage("tracemac.column.endeavors") private var listWidth: Double = 200
+    /// The reading pane's width, remembered between launches (D313). A pane he
+    /// has sized is a preference, not a session detail — same reasoning as
+    /// `listWidth`, which has been an `@AppStorage` since it was built.
+    @AppStorage("tracemac.pane.endeavors") private var paneWidth: Double = 460
+
+    /// The document open in the reading pane, or nil when it is closed.
+    ///
+    /// **The path, not the document.** `docStore.documents` is rebuilt by every
+    /// reload, so holding a `TraceMacDocument` would pin a stale copy — the
+    /// title would stop following a rename made in Satchel while the pane was
+    /// open. The path is the identity; the record is looked up when drawn.
+    @State private var paneDocPath: String? = nil
+    /// The pane's own zoom and find, not Satchel's.
+    ///
+    /// One pair per host, which is what `MacDocumentViewer` taking them as
+    /// parameters buys (D334): zooming a page here must not move the page
+    /// Satchel has open, and clearing a highlight there must not clear this one.
+    @State private var paneZoom = PreviewZoomController()
+    @State private var paneFind = MacPDFFind()
+    /// The endeavor whose "Attach from Satchel…" sheet is open.
+    @State private var attachingTo: Endeavor? = nil
 
     // MARK: Derived
 
@@ -354,6 +375,27 @@ struct TraceMacEndeavorsView: View {
                     // half of the feedback: it says where the file is going.
                     HStack(spacing: 0) {
                         detail(e)
+                        // **The pane sits between the body and the rail**
+                        // (D313), so the bands and the note share the narrowing
+                        // and the rail keeps its width. Closing it restores
+                        // exactly today's page because nothing else moved.
+                        if let path = paneDocPath, let doc = paneDocument(path) {
+                            // **`edge: .trailing`, and it is not cosmetic.**
+                            // The resized view is on the RIGHT of this strip;
+                            // every earlier caller put it on the left, and the
+                            // default arithmetic makes a right-hand pane run
+                            // away from the pointer. `MacColumnResizer`'s own
+                            // doc comment records the session that found it.
+                            // `showsLine` for Satchel's filter-pane reason: an
+                            // invisible strip gives you nothing to aim at.
+                            MacColumnResizer(width: $paneWidth,
+                                             minWidth: 320,
+                                             maxWidth: 720,
+                                             edge: .trailing,
+                                             showsLine: true)
+                            readingPane(doc)
+                                .frame(width: paneWidth)
+                        }
                         Divider()
                         rail(e)
                     }
@@ -385,6 +427,15 @@ struct TraceMacEndeavorsView: View {
         // is not a change and a drop a second later is perfectly possible.
         .onChange(of: selected?.id, initial: true) { _, _ in
             MacEndeavorDropTarget.shared.endeavor = selected
+            // **The pane closes when the endeavor changes.** A document is
+            // filed to ONE endeavor, so leaving it open beside a different trip
+            // would put Thanksgiving's itinerary next to Hannah's graduation
+            // and make it look filed there.
+            if paneDocPath != nil {
+                paneFind.detach()
+                paneZoom.detach()
+                paneDocPath = nil
+            }
         }
         // A file the WINDOW's zone caught while this endeavor was on screen. It
         // is already imported and linked; what is left is the reload and the
@@ -476,6 +527,17 @@ struct TraceMacEndeavorsView: View {
         // screen, instead of waiting for the section to be revisited.
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreEndeavorsDidChange)) { _ in
             Task { await store?.reload() }
+        }
+        // **Filing works in both directions now.** Satchel's metadata panel has
+        // been able to file a document TO an endeavor since Session 72; the
+        // endeavor could only ever import a new file from disk. David: *"what
+        // about adding a satchel document to an endeavor itself rather than
+        // from outside of Mac Trace?"* Same verb, second door.
+        .sheet(item: $attachingTo) { e in
+            MacDocumentPicker(linked: documents(for: e).map(\.relativePath),
+                              onToggle: { path in toggleFiling(path, on: e) },
+                              title: "Attach a document",
+                              subtitle: e.name)
         }
         .sheet(isPresented: $showingNew) {
             // `seed` comes last because `seedName` and `seed` are declared
@@ -3175,7 +3237,10 @@ struct TraceMacEndeavorsView: View {
                 if !docs.isEmpty {
                     Text("\(docs.count)").font(MacType.metaEmphasis).foregroundStyle(.tertiary)
                 }
-                Button { chooseDocuments(for: e) } label: {
+                Menu {
+                    Button("Add a File…") { chooseDocuments(for: e) }
+                    Button("Attach from Satchel…") { attachingTo = e }
+                } label: {
                     // 9pt bold to sit level with the `.macLabel()` beside it,
                     // in a 16pt hit area — the glyph belongs to the header's
                     // scale, the target does not have to.
@@ -3184,7 +3249,9 @@ struct TraceMacEndeavorsView: View {
                         .frame(width: 16, height: 16)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 16, height: 16)
                 .foregroundStyle(.secondary)
                 .help("Add a document to \(e.name)")
             }
@@ -3482,14 +3549,149 @@ struct TraceMacEndeavorsView: View {
         }
     }
 
+    /// A chip in the Satchel rail.
+    ///
+    /// **It opens the pane now, it does not leave the endeavor** (D313). David's
+    /// own framing of what a filed document should do: *"a link to that should
+    /// show up somewhere in the endeavor."* Going to Satchel is still one menu
+    /// item away, because reading a document and MANAGING one are different
+    /// jobs and only the second wants the whole Satchel screen.
     private func documentRow(_ d: TraceMacDocument) -> some View {
         Button {
-            deepLinkDocumentPath?.wrappedValue = d.relativePath
-            selectedSection?.wrappedValue      = .documents
+            paneFind.detach()
+            paneZoom.detach()
+            paneDocPath = d.relativePath
         } label: {
             documentRowBody(d).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("Open in Satchel") {
+                deepLinkDocumentPath?.wrappedValue = d.relativePath
+                selectedSection?.wrappedValue      = .documents
+            }
+            Divider()
+            Button("Remove from Endeavor", role: .destructive) { unfile(d) }
+        }
+    }
+
+    /// Files or unfiles an existing Satchel document, from the picker.
+    ///
+    /// **A toggle, not an add.** The sheet shows every document with the ones
+    /// already on this endeavor ticked, so the same click has to be able to
+    /// undo itself — and unticking is the same write `unfile` makes from the
+    /// chip's own menu. Both write `endeavor`, `endeavorName` and `linked_note`
+    /// together, for the reason stated there.
+    ///
+    /// **The picker keeps its own store and its own optimistic tick**, so this
+    /// only has to write and reload the rail's copy.
+    private func toggleFiling(_ path: String, on e: Endeavor) {
+        guard let docStore,
+              let doc = docStore.documents.first(where: { $0.relativePath == path })
+        else { return }
+        let isFiledHere = doc.endeavor == e.id
+        Task { @MainActor in
+            try? docStore.saveSidecar(for: doc,
+                                      title: doc.title,
+                                      tags: doc.tags,
+                                      linkedNote: isFiledHere ? nil : e.relativePath,
+                                      people: doc.people,
+                                      description: doc.description,
+                                      endeavor: isFiledHere
+                                          ? .clear
+                                          : .set(id: e.id, name: e.name))
+            await docStore.reload()
+        }
+    }
+
+    /// Unfiles a document from this endeavor. **The file stays in Satchel.**
+    ///
+    /// David asked for this beside "Open in Satchel", and the pair is the point:
+    /// one says where else to look at it, the other says it does not belong
+    /// here. Neither deletes anything — the only way to lose a document is
+    /// Satchel's own Delete, which is where a destructive verb belongs.
+    ///
+    /// **Both association keys are cleared, not one.** `endeavor` is what the
+    /// Mac's rail filters on and `linked_note` is what the phone's chips filter
+    /// on; clearing one would unfile it on this device and leave it filed on
+    /// the other, which is the Session 69 split all over again. `EndeavorAssignment
+    /// .clear` exists for exactly this and is the reason the parameter is an
+    /// enum rather than an optional.
+    ///
+    /// Marked destructive because it undoes filing, and re-filing means finding
+    /// the document in Satchel again. It is not a confirm: the row is one
+    /// right-click from being put back, and a dialog on every unfile would be
+    /// heavier than the mistake.
+    private func unfile(_ d: TraceMacDocument) {
+        guard let docStore else { return }
+        // If the pane is showing it, close the pane first — a document that is
+        // no longer on this endeavor should not still be open beside its note.
+        if paneDocPath == d.relativePath {
+            paneFind.detach()
+            paneZoom.detach()
+            paneDocPath = nil
+        }
+        Task { @MainActor in
+            try? docStore.saveSidecar(for: d,
+                                      title: d.title,
+                                      tags: d.tags,
+                                      linkedNote: nil,
+                                      people: d.people,
+                                      description: d.description,
+                                      endeavor: .clear)
+            await docStore.reload()
+        }
+    }
+
+    /// The document the pane is showing, looked up fresh each draw.
+    private func paneDocument(_ path: String) -> TraceMacDocument? {
+        docStore?.documents.first { $0.relativePath == path }
+    }
+
+    /// The reading pane (D313).
+    ///
+    /// **It hosts `MacDocumentViewer`, the same view Satchel draws** — never a
+    /// copy written for a narrow column. That is D313's rule and D318 restates
+    /// it for Discover, which is the next thing that wants to live here.
+    private func readingPane(_ doc: TraceMacDocument) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text(doc.title)
+                    .font(MacType.row)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Button {
+                    paneFind.detach()
+                    paneZoom.detach()
+                    paneDocPath = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(MacGlyph.smallBold)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Close the reading pane")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+
+            Divider()
+
+            MacDocumentViewer(doc: doc, zoom: paneZoom, find: paneFind)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The viewer draws a document that may be far wider than this
+                // column; without this it paints over the rail.
+                .clipped()
+                .overlay(alignment: .bottomTrailing) {
+                    if paneZoom.isActive {
+                        PreviewZoomBar(zoom: paneZoom).padding(10)
+                    }
+                }
+        }
+        .background(MacEditorialColor.paper)
     }
 
     private func documentRowBody(_ d: TraceMacDocument) -> some View {

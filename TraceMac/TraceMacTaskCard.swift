@@ -528,7 +528,7 @@ struct MacTaskRow: View {
         // never scans the folder.
         .task(id: task.linkedDocumentPaths) { await loadDocsIfNeeded() }
         .sheet(isPresented: $pickingDocs) {
-            MacTaskDocumentPicker(linked: task.linkedDocumentPaths) { path in
+            MacDocumentPicker(linked: task.linkedDocumentPaths) { path in
                 toggleDocument(path)
             }
             .environment(noteStore)

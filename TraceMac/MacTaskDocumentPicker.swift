@@ -24,13 +24,29 @@
 import SwiftUI
 import AppKit
 
-struct MacTaskDocumentPicker: View {
+/// **Renamed from `MacTaskDocumentPicker` in Session 94.** It grew a second
+/// caller — the Satchel rail on an endeavor, which needs the same "point at a
+/// document you already have" screen — and a type with Task in its name serving
+/// endeavors is a name that promises something the contents do not. The FILE is
+/// still `MacTaskDocumentPicker.swift`; renaming it is an Xcode project edit for
+/// no behavioural gain, and this comment is cheaper than that risk.
+///
+/// **Generalised by two parameters with defaults**, so the task call site reads
+/// exactly as it did. Everything else — its own store, the optimistic tick, the
+/// search field — is unchanged and is why this is reused rather than copied
+/// (D313's rule, and the seven-file list Session 93 had to undo).
+struct MacDocumentPicker: View {
 
-    /// Paths already linked to this task, at the moment the sheet opened.
-    /// Seeds `ticked` and is not read again.
+    /// Paths already linked to whatever opened this, at the moment the sheet
+    /// opened. Seeds `ticked` and is not read again.
     let linked: [String]
-    /// Called with a relative path to toggle. The caller owns the notes.
+    /// Called with a relative path to toggle. The caller owns the writing.
     let onToggle: (String) -> Void
+    /// What this sheet is for. Defaults to the task wording it was built with.
+    var title: String = "Link a document"
+    /// What it is choosing from, or what it is linking TO. The endeavor caller
+    /// puts the trip's name here so the sheet says which one.
+    var subtitle: String = "Satchel"
 
     @Environment(NoteStore.self) private var noteStore
     @Environment(\.dismiss) private var dismiss
@@ -73,8 +89,8 @@ struct MacTaskDocumentPicker: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("Link a document").editorialKicker()
-            Text("Satchel")
+            Text(title).editorialKicker()
+            Text(subtitle)
                 .font(MacEditorialType.fieldValue)
                 .foregroundStyle(MacEditorialColor.muted)
         }
