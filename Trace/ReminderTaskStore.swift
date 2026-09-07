@@ -891,6 +891,35 @@ final class ReminderTaskStore {
         }
     }
 
+    /// Moves a task into a named list, creating the list if it does not exist.
+    ///
+    /// **`ensureList`, not `calendar(named:)`, and that is the whole point of
+    /// this method existing** (D349). `update(list:)` resolves with
+    /// `calendar(named:)`, which answers nil for a list that is not there and
+    /// then quietly skips the move - so "send this to Work" on a Mac with no
+    /// Work list would report success having changed nothing. The Todoist
+    /// hand-off is started from a context menu with the card shut, where there
+    /// is nothing on screen to notice the difference.
+    ///
+    /// Nothing else about the reminder is touched: no date rule runs here,
+    /// because this move is not a when-decision and Work is not a refusing
+    /// list.
+    func moveToList(taskID: String, named name: String) async -> Bool {
+        guard await ensureAccess(),
+              let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder,
+              let cal = ensureList(named: name) else { return false }
+        if reminder.calendar?.title == name { return true }
+        reminder.calendar = cal
+        do {
+            try store.save(reminder, commit: true)
+            await fetch()
+            return true
+        } catch {
+            lastError = "Could not move the reminder. \(error.localizedDescription)"
+            return false
+        }
+    }
+
     /// A named list, created if missing — same source-picking as
     /// `personalList()`.
     private func ensureList(named name: String) -> EKCalendar? {

@@ -122,9 +122,31 @@ class TraceMacDocumentStore {
                 let relativePath = "\(folder)/\(filename)"
                 let ext = (filename as NSString).pathExtension.lowercased()
 
-                // Documents section is for binary/media files only.
-                // Skip .txt and .md files — those are notes and belong in Journal sections.
-                guard !["txt","md","markdown","text"].contains(ext) else { continue }
+                // **`.md` is never a document, and cannot be.** A document's
+                // sidecar path is its own path with the extension swapped for
+                // `.md`, so a markdown document would be its own metadata file.
+                guard !["md","markdown"].contains(ext) else { continue }
+
+                // **`.txt` is a document only when this app wrote one** (D337,
+                // Session 95). The original rule here was "Documents is for
+                // binary/media files only — skip .txt and .md, those are notes",
+                // and it was right for every file that arrives from outside:
+                // the window's drop zone still refuses a dropped `.txt` and
+                // routes it to `importAsNote`.
+                //
+                // Research readings broke that assumption from the inside. They
+                // are prose the app writes INTO Satchel on purpose (D313), and
+                // an unconditional extension test filtered them out after they
+                // had been written — the file was on disk and invisible in both
+                // the rail and Satchel, which is how David found this.
+                //
+                // A sidecar beside it is what tells the two apart, and it is
+                // not a proxy: a loose note dropped into the folder by hand has
+                // no sidecar and is still skipped, exactly as before.
+                if ["txt","text"].contains(ext) {
+                    let companion = String(relativePath.dropLast(ext.count + 1)) + ".md"
+                    guard noteStore.fileExists(companion) else { continue }
+                }
 
                 let sidecarRelative = relativePath.hasSuffix(".\(ext)")
                     ? String(relativePath.dropLast(ext.count + 1)) + ".md"
@@ -151,6 +173,14 @@ class TraceMacDocumentStore {
                     fsDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.creationDate] as? Date
                 }
 
+                // **When it landed, from the filename** (D347). Every import
+                // writes `yyyy-MM-dd-HHmmss-` at the front and nothing edits
+                // it afterwards, which makes it a better record of arrival than
+                // the filesystem — iCloud rewrites creation dates when it
+                // materialises a file, so `fsDate` can be the day the Mac
+                // downloaded it rather than the day it was filed.
+                let arrivedAt = Self.arrivalDate(fromFilename: filename) ?? fsDate
+
                 let doc = TraceMacDocument(
                     relativePath: relativePath,
                     filename: filename,
@@ -172,21 +202,40 @@ class TraceMacDocumentStore {
                     note: body.note,
                     summary: body.summary,
                     extractedText: body.text,
-                    textExtracted: body.hasTextSection
+                    textExtracted: body.hasTextSection,
+                    arrived: arrivedAt,
+                    url: sidecar?.url ?? ""
                 )
                 result.append(doc)
             }
         }
 
-        // Sort newest first
+        // **Newest ARRIVAL first** (D347), not newest printed date. `created`
+        // falls back behind it so a document with no parseable stamp and no
+        // filesystem date still sorts somewhere sensible instead of to the
+        // bottom.
         result.sort {
-            ($0.created ?? .distantPast) > ($1.created ?? .distantPast)
+            let l = $0.arrived ?? $0.created ?? .distantPast
+            let r = $1.arrived ?? $1.created ?? .distantPast
+            return l > r
         }
 
         await MainActor.run {
             documents = result
             isLoading = false
         }
+    }
+
+    /// The `yyyy-MM-dd-HHmmss-` stamp every import writes at the front of a
+    /// filename, or nil for a file that arrived some other way.
+    private static func arrivalDate(fromFilename filename: String) -> Date? {
+        guard filename.count > 18 else { return nil }
+        let stamp = String(filename.prefix(17))
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = .current
+        fmt.dateFormat = "yyyy-MM-dd-HHmmss"
+        return fmt.date(from: stamp)
     }
 
     // MARK: - Sidecar write
@@ -236,7 +285,11 @@ class TraceMacDocumentStore {
         /// Same three-state shape. `nil` preserves (every existing caller),
         /// `.some(date)` sets, `.some(nil)` clears. Added 2026-08-27 so the AI
         /// scan's stated date can be written from the Mac too.
-        remindOn: Date?? = nil
+        remindOn: Date?? = nil,
+        /// Same three-state shape as `icon` and `remindOn`: `nil` preserves
+        /// what is on disk, `.some("")` clears it, `.some(text)` sets it.
+        /// Added last so every existing labelled call site reads unchanged.
+        url: String?? = nil
     ) throws {
         // Preserve whatever Satchel wrote. Disk wins over the in-memory doc,
         // which may be a synthetic value built by a move (see
@@ -282,6 +335,13 @@ class TraceMacDocumentStore {
         switch remindOn {
         case .none:            data.remindOn = existing?.remindOn ?? doc.remindOn
         case .some(let value): data.remindOn = value
+        }
+        switch url {
+        case .none:
+            data.url = existing?.url ?? (doc.url.isEmpty ? nil : doc.url)
+        case .some(let value):
+            let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            data.url = trimmed.isEmpty ? nil : trimmed
         }
 
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
@@ -368,17 +428,69 @@ class TraceMacDocumentStore {
         //
         // The title is the only thing that needs writing in that case; the two
         // association keys stay nil, which is exactly what "filed, not filed to
-        // anything" means. **Both are written when there IS one**, on purpose:
-        // `endeavor` is what Satchel's capture sets and what the Mac's rail
-        // filters on, `linked_note` is what `SatchelDocumentChips` on the phone
-        // filters on. Writing one without the other produces a document that is
-        // visible on one device and invisible on the other.
+        // anything" means. **Both are written when there IS one**, on purpose.
+        //
+        // **Corrected 2026-09-07.** This comment used to claim the phone
+        // filtered on `linked_note` alone, and that filing without it made a
+        // document invisible there. Checked rather than repeated:
+        // `SatchelEndeavor` filters on `endeavor`, and `TraceSatchelHandoff`
+        // accepts either — so does the Mac's rail. Writing both is still right,
+        // because a document filed to an endeavor IS linked to its note and the
+        // second key is what a note-side reader would look for, but nothing
+        // breaks on one alone. The reason is redundancy, not rescue.
         if let endeavor {
             data2.endeavor     = endeavor.id
             data2.endeavorName = endeavor.name
             data2.linkedNote   = endeavor.relativePath
         }
         try noteStore.writeFile(sidecarPath, content: renderSidecar(data2))
+        return relativePath
+    }
+
+    /// Writes text into Satchel as a document, filed to an endeavor.
+    ///
+    /// **`.txt`, not `.md`, and that is forced rather than chosen** (Session
+    /// 95). A document's sidecar path is its own path with the extension
+    /// swapped for `.md`, so a document called `Research.md` would have
+    /// `Research.md` as its own sidecar — the file would be its own metadata.
+    /// `.txt` is the nearest thing that cannot collide.
+    ///
+    /// **The title is the real name; the file on disk carries a timestamp.**
+    /// Same split `importDocument` makes, for the same reason: two research
+    /// runs on one endeavor in one day must not overwrite each other, and the
+    /// timestamp is storage, not something to read in a rail.
+    @discardableResult
+    func createTextDocument(title: String,
+                            text: String,
+                            filedTo endeavor: Endeavor?,
+                            tags: [String] = [],
+                            description: String = "") throws -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd-HHmmss"
+        let safe = title
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        let filename = "\(fmt.string(from: Date()))-\(safe).txt"
+
+        guard let data = text.data(using: .utf8) else {
+            throw NoteStoreError.iCloudUnavailable
+        }
+        let relativePath = try noteStore.writeDocument(data,
+                                                       category: NoteStore.documentFolder(),
+                                                       filename: filename)
+
+        let sidecarPath = String(relativePath.dropLast(4)) + ".md"
+        var sidecar = SidecarData()
+        sidecar.title       = title
+        sidecar.created     = Date()
+        sidecar.tags        = tags
+        sidecar.description = description
+        if let endeavor {
+            sidecar.endeavor     = endeavor.id
+            sidecar.endeavorName = endeavor.name
+            sidecar.linkedNote   = endeavor.relativePath
+        }
+        try noteStore.writeFile(sidecarPath, content: renderSidecar(sidecar))
         return relativePath
     }
 
@@ -512,13 +624,29 @@ class TraceMacDocumentStore {
             // `CleanShot 2026-08-10 at 20.19.45.png` does — and `doc.title`
             // falls back to that filename, so passing it through unchanged when
             // the model declines is correct rather than lazy.
+            // **Icon and tint too, since Session 95 (D343).** The phone's
+            // scanner has asked for both since Session 72 and this one never
+            // did, so a document that arrived on the Mac came out grey and
+            // Unclassified while the same document captured on the phone came
+            // out coloured and typed. David, looking at his list: *"can we make
+            // many of the icons in satchel more colorful. the ones at the top
+            // are all grey."* They were the ones the Mac had scanned.
+            //
+            // Grey is not a missing colour — `resolvedTint` returns grey for a
+            // document with no KIND, deliberately (Session 72: colour says what
+            // kind of thing a document is, and an untyped one is honestly
+            // uncoloured rather than borrowing a hue that means something else).
+            // The defect was never the rule; it was one scanner not answering
+            // the question.
             try? saveSidecar(
                 for: doc,
                 title: result.title ?? doc.title,
                 tags: result.tags,
                 linkedNote: doc.linkedNote,
                 people: doc.people,
-                description: result.description
+                description: result.description,
+                icon: .some(result.icon),
+                tint: .some(result.tint)
             )
         }
         await reload()
@@ -646,6 +774,13 @@ class TraceMacDocumentStore {
         var linkedNote: String?
         var people: [String] = []
         var description: String?
+        /// Sidecar key `url` (D350). Every note on `remindOn` below applies: a
+        /// key this store does not know is a key this store DELETES, because
+        /// `saveSidecar` rebuilds the frontmatter from this struct. Added to
+        /// `IOSDocumentStore` in the same pass for that reason - one store
+        /// knowing it is worse than neither, since the phone would then strip
+        /// it on its next save and the loss would look like the Mac's bug.
+        var url: String?
         var endeavor: String?
         var endeavorName: String?
         var pinned: Bool?
@@ -847,6 +982,11 @@ class TraceMacDocumentStore {
         // presence here: emitting the same key in a different order makes every
         // document edited on both machines rewrite its sidecar on each save,
         // which is the iCloud churn the comment above is about.
+        // `url` sits between `description` and `remind`, and `IOSDocumentStore`
+        // emits it in the same place. Key ORDER is part of this format's
+        // contract: the same keys in a different order rewrites the file on
+        // every save and churns iCloud for nothing.
+        if let url = data.url, !url.isEmpty { content += "url: \(url)\n" }
         if let remind = data.remindOn { content += "remind: \(fmt.string(from: remind))\n" }
         if let icon = data.icon { content += "icon: \(icon.rawValue)\n" }
         if let tint = data.tint { content += "tint: \(tint.rawValue)\n" }
@@ -920,6 +1060,12 @@ class TraceMacDocumentStore {
             case "description":
                 // Strip surrounding double quotes if present
                 data.description = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+
+            case "url":
+                // `maxSplits: 1` above is what makes this safe: the colon in
+                // `https://` stays in the value.
+                let v = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                data.url = v.isEmpty ? nil : v
 
             // MARK: Satchel keys — read and preserved, never written by Mac UI
             case "endeavor":

@@ -13,6 +13,8 @@ struct TraceMacSettingsView: View {
     @State private var showClaudeKey   = false
     @State private var googlePlacesKey: String = ""
     @State private var showGooglePlacesKey = false
+    @State private var todoistKey:     String = ""
+    @State private var showTodoistKey  = false
     @State private var saved = false
     /// Seeded from the matcher on appear, written back on Return. Not
     /// `@AppStorage`: the value lives in iCloud KVS so the phone inherits it,
@@ -60,13 +62,51 @@ struct TraceMacSettingsView: View {
                     // on trust — and while it reads Keychain: no, something did
                     // not migrate and this is the only place that would say so.
                     Text(ClaudeKeyStore.isSecured
-                         ? "Stored in the macOS Keychain. Used for Ask, OT and Billiards scans."
-                         : "Not stored yet. Used for Ask, OT and Billiards scans.")
+                         ? "Stored in the macOS Keychain. Used for Ask, Research, OT and Billiards scans."
+                         : "Not stored yet. Used for Ask, Research, OT and Billiards scans.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button(showClaudeKey ? "Hide" : "Show") {
                         showClaudeKey.toggle()
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                }
+
+                // **Research's own line, beside Ask** (D314). Both buttons
+                // spend the same key and leave the Mac, and they do not leave
+                // it with the same thing or to the same place: Ask sends the
+                // note corpus and talks only to Anthropic, Research sends one
+                // endeavor and has Anthropic fetch live pages on its behalf.
+                // A settings screen that showed one key and said nothing about
+                // that difference would be hiding the more surprising of the
+                // two behind the more familiar one.
+                Text("Research also searches the web. It sends the endeavor's name, type, dates, destination and the note's Summary and Plan — never your people, Log, Reference or documents — and Anthropic fetches the pages it reads. It is billed per search on top of the tokens, so it runs only when you press Research.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Todoist") {
+                if showTodoistKey {
+                    TextField("Todoist API Token", text: $todoistKey)
+                } else {
+                    SecureField("Todoist API Token", text: $todoistKey)
+                        .textContentType(.password)
+                }
+                HStack {
+                    // **Says what it can do, not just where it is.** A leaked
+                    // Claude key is a bill; this one is write access to his
+                    // work task list, and the sentence that tells him where it
+                    // lives should also tell him what it is worth (D348).
+                    Text(TodoistKeyStore.isSecured
+                         ? "Stored in the macOS Keychain. Sends Work tasks to your Todoist inbox."
+                         : "Not stored yet. Todoist → Settings → Integrations → Developer. Per-device, like the others.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(showTodoistKey ? "Hide" : "Show") {
+                        showTodoistKey.toggle()
                     }
                     .font(.caption)
                     .buttonStyle(.borderless)
@@ -199,6 +239,7 @@ struct TraceMacSettingsView: View {
             // one-time migration out of the App Group — so simply opening
             // Settings moves an existing key across.
             claudeKey       = ClaudeKeyStore.key
+            todoistKey      = TodoistKeyStore.key
             // GooglePlacesService.swift reads this from plain UserDefaults.standard
             // (not the app-group suite) — matching that read exactly, not the
             // sharedDefaults pattern used above, so Discover search actually finds it.
@@ -223,6 +264,7 @@ struct TraceMacSettingsView: View {
     private func save() {
         sharedDefaults.set(token.trimmingCharacters(in: .whitespaces),     forKey: "notion_token")
         ClaudeKeyStore.set(claudeKey)
+        TodoistKeyStore.set(todoistKey)
         // Plain .standard, not sharedDefaults — see the matching read in .onAppear.
         UserDefaults.standard.set(googlePlacesKey.trimmingCharacters(in: .whitespaces), forKey: "google_places_key")
         saved = true

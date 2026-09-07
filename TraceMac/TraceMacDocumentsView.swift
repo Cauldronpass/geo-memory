@@ -88,6 +88,9 @@ struct TraceMacDocumentsView: View {
     /// The filter pane. Remembered across launches like the column opposite it
     /// — a pane you have to reopen every morning is one you stop opening.
     @AppStorage(SatchelFilterPane.visibleKey) private var showFacets = false
+    /// The document list's width, remembered between launches (D346). Defaults
+    /// to `MacEditorialLayout.listColumnWidth`, the measure D260 settled on.
+    @AppStorage("tracemac.column.satchel") private var listWidth: Double = 400
     @AppStorage(SatchelFilterPane.widthKey) private var facetWidth: Double = SatchelFilterPane.defaultWidth
     /// Only so the header button's tooltip can name the current combination.
     /// The key itself is caught in `TraceMacContentView` — see the note there.
@@ -307,11 +310,23 @@ struct TraceMacDocumentsView: View {
     private var columns: some View {
         HStack(spacing: 0) {
             if !listCollapsed {
-                // The Editorial list measure, fixed (D260). The old draggable
-                // width defaulted to 240, which hid the filter row's fourth
-                // word off the right edge — David: "it's missing the tags
-                // screen." The pane was there; its switch was not on screen.
-                leftColumn
+                // **Draggable again, with a floor** (D346). D260 fixed this
+                // column at 400 because the old draggable version defaulted to
+                // 240 and hid the filter row's fourth word off the right edge —
+                // David: *"it's missing the tags screen."* The pane was there;
+                // its switch was not on screen.
+                //
+                // That was a fault in the DEFAULT and the lack of a minimum,
+                // not in the idea. 400 is now the default and 360 the floor,
+                // which is below nothing that has to fit and well above where
+                // the switch disappears. David: *"Id like to be able to resize
+                // the left rail in Satchel to see the document information
+                // wider on occassion. Right now it is pretty tight for some
+                // documents."*
+                leftColumn.frame(width: listWidth)
+                MacColumnResizer(width: $listWidth,
+                                 minWidth: 360,
+                                 maxWidth: 720)
             }
             CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
             rightColumn.frame(maxWidth: .infinity)
@@ -338,6 +353,32 @@ struct TraceMacDocumentsView: View {
                 store = TraceMacDocumentStore(noteStore: noteStore)
             }
             await store?.reload()
+            // **The Endeavor menu had nothing in it unless you arrived by deep
+            // link** (D342). David: *"the vacation rental booking in Satchel has
+            // nothing for endeavor and wont let me choose anything other than
+            // nothing."* Nothing to do with the file being a PNG — the row is
+            // drawn for every document and always has been.
+            //
+            // `endeavorStore` was built in ONE place: the `.task(id:
+            // deepLinkPath)` below, behind a `guard let path … else { return }`.
+            // Arrive at Satchel by clicking Satchel and that guard returns
+            // immediately, so the store stayed nil, `sortedEndeavors` was empty,
+            // and the menu drew its "None" item and stopped. Jump in from a
+            // search result and the same menu was full.
+            //
+            // **A control that works only on the path nobody takes.** The deep
+            // link was the newer path and got the initialisation; the ordinary
+            // one was never re-checked.
+            if endeavorStore == nil {
+                endeavorStore = TraceMacEndeavorStore(noteStore: noteStore)
+            }
+            await endeavorStore?.reload()
+        }
+        // Endeavors created or renamed elsewhere while this screen is open.
+        // Same reason the documents list listens for its own changes: this view
+        // owns a private copy of a store that another screen writes to.
+        .onReceive(NotificationCenter.default.publisher(for: .noteStoreEndeavorsDidChange)) { _ in
+            Task { await endeavorStore?.reload() }
         }
         // A file arrived under `Documents/` from outside this process — the
         // Dropzone action, Satchel on the phone, or the iPad. Session 69: until
@@ -443,6 +484,21 @@ struct TraceMacDocumentsView: View {
         // you. `square.and.arrow.down` was also the download glyph, which says
         // the file comes from somewhere — true, and not the point.
         .toolbar {
+            // **The same switch, in the window's chrome** (D346). The "Filters"
+            // word at the right of the list's own filter bar stays where it is;
+            // David asked for *"an icon on the top right of the screen"*, which
+            // is where a Mac user looks for a pane toggle and is a different
+            // surface, not a second implementation. Both write one
+            // `@AppStorage` key, so there is nothing that can drift.
+            ToolbarItem {
+                Button { showFacets.toggle() } label: {
+                    Label("Filters", systemImage: showFacets
+                          ? "sidebar.trailing"
+                          : "line.3.horizontal.decrease")
+                }
+                .help((showFacets ? "Hide filters (" : "Show filters (")
+                      + filterShortcut.combo.label + ")")
+            }
             if let doc = selectedDoc, let url = noteStore.resolvedURL(for: doc.relativePath) {
                 ToolbarItem {
                     Button { NSWorkspace.shared.open(url) } label: {
@@ -577,7 +633,7 @@ struct TraceMacDocumentsView: View {
                 handleDrop(providers: providers)
             }
         }
-        .frame(width: MacEditorialLayout.listColumnWidth)
+        .frame(maxWidth: .infinity)
         .background(MacEditorialColor.paper)
         .overlay(alignment: .bottomTrailing) {
             MacEditorialPlus { importDocument() }
@@ -1085,6 +1141,30 @@ struct MacDocumentViewer: View {
         }
     }
 
+    /// Plain text with its web addresses turned into links.
+    ///
+    /// Built by walking the detected ranges in order rather than by mutating an
+    /// `AttributedString` in place: `String` indices and `AttributedString`
+    /// indices are different currencies, and converting between them per match
+    /// is where this goes wrong quietly.
+    nonisolated static func linked(_ text: String) -> AttributedString {
+        let ranges = MacTextExtraction.linkRanges(in: text)
+        guard !ranges.isEmpty else { return AttributedString(text) }
+        var out = AttributedString()
+        var cursor = text.startIndex
+        for (range, url) in ranges {
+            guard range.lowerBound >= cursor else { continue }
+            out += AttributedString(String(text[cursor..<range.lowerBound]))
+            var piece = AttributedString(String(text[range]))
+            piece.link = url
+            piece.underlineStyle = .single
+            out += piece
+            cursor = range.upperBound
+        }
+        out += AttributedString(String(text[cursor...]))
+        return out
+    }
+
     @ViewBuilder
     var body: some View {
         if doc.isPDF, let url = noteStore.resolvedURL(for: doc.relativePath) {
@@ -1101,6 +1181,42 @@ struct MacDocumentViewer: View {
             // bytes are local yet is not, and the two do not belong in one test.
             MacImagePreview(url: url, zoom: zoom)
                 .id(doc.relativePath)
+        } else if doc.isText, let url = noteStore.resolvedURL(for: doc.relativePath) {
+            // **Read here, not handed to TextEdit.** A research document is
+            // prose written for this app to show (D313), and a `.csv` or a
+            // `.log` dropped into Satchel was previously an icon and a byte
+            // count — a preview pane that cannot preview the simplest file
+            // there is.
+            //
+            // Selectable, so a line can be copied out. Not editable: these are
+            // records of what something said on a date, and the note is where
+            // David writes.
+            ScrollView {
+                // **Live links, because the Sources block is a list of places
+                // to go** (D351). David, on a kept research reading: *"The
+                // sources are great but it would be good if they were actual
+                // links i could click."* They were addresses printed as text —
+                // readable, and requiring him to select, copy and paste each
+                // one to use the thing they were written for.
+                //
+                // The detection is `MacTextExtraction.linkRanges`, the same
+                // `NSDataDetector` pass the Links row uses, so a URL is a link
+                // here on exactly the terms it is a chip there. Nothing about
+                // the file changes: this is a rendering of plain text, and the
+                // document on disk stays plain text that Obsidian and every
+                // other reader can open.
+                Text(Self.linked((try? String(contentsOf: url, encoding: .utf8)) ?? ""))
+                    .font(MacType.body)
+                    .textSelection(.enabled)
+                    .tint(Color.teal)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 16)
+            }
+            .id(doc.relativePath)
+            // Nothing zoomable, so the bar hides rather than offering controls
+            // that would do nothing. Same call the branch below makes.
+            .onAppear { zoom.detach() }
         } else if let url = noteStore.resolvedURL(for: doc.relativePath) {
             VStack(spacing: 16) {
                 Image(systemName: "doc")
@@ -1158,7 +1274,11 @@ struct DocListRow: View {
                         .foregroundStyle(MacEditorialColor.ink)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    if let date = doc.created {
+                    // **The date it is SORTED by, not the one printed on it**
+                    // (D347). A list ordered by one date and labelled with
+                    // another reads as unsorted; the document's own date is in
+                    // the metadata panel, where it carries a label saying so.
+                    if let date = doc.arrived ?? doc.created {
                         Text(date, format: .dateTime.day().month(.abbreviated))
                             .editorialListLabel()
                     }
@@ -1366,6 +1486,11 @@ struct DocMetadataPanel: View {
     /// see `MacTextExtraction.links(in:)` for why there is no `links:`
     /// frontmatter key. Recomputed in `load()`, which is once per selection.
     @State private var links: [URL] = []
+    /// The typed URL, sidecar key `url` (D350). **Stored, unlike `links`**, and
+    /// the two rows sit next to each other so the difference is visible: Links
+    /// are addresses printed on the page, this one is the site the document is
+    /// about.
+    @State private var docURL: String = ""
     @State private var tags: [String] = []
     @State private var linkedNote: String = ""
     @State private var people: [String] = []
@@ -1457,6 +1582,7 @@ struct DocMetadataPanel: View {
                 tagsRow
                 peopleRow
                 linksRow
+                urlRow
                 descriptionRow
                 if let err = scanError {
                     Text(err).font(.caption).foregroundStyle(.red)
@@ -1780,10 +1906,34 @@ struct DocMetadataPanel: View {
     /// Six choices, not eight. `amber` is out because orange with a lock means
     /// private app-wide since Session 71, and `red` is held for "needs action" —
     /// a colour that means two things is the problem this row was built to fix.
+    /// Kind — which is also the colour picker, and after D344 had to stop
+    /// saying otherwise.
+    ///
+    /// **The swatch used to draw grey for an unset Kind and the row used to
+    /// call it "Unclassified".** Both were true while colour meant type. Now
+    /// that an unset Kind means "take the icon's colour", a grey dot beside a
+    /// row that renders indigo in the list is the screen contradicting itself —
+    /// warning TWELVE, created by the change two commits ago and fixed here
+    /// rather than left for David to trip over.
+    ///
+    /// So the swatch shows **what will actually be drawn**, and the unset
+    /// option says what it does. Choosing it is how a colour set by hand is
+    /// given back to the icon.
     private var typeRow: some View {
-        HStack {
+        // The icon being edited, not the one on disk: the swatch has to follow
+        // an unsaved icon change or it shows the colour of a moment ago.
+        let liveIcon = docIcon ?? doc.resolvedIcon
+        let drawn = docTint ?? liveIcon.defaultTint
+        return HStack {
             fieldLabel("Kind")
             Menu {
+                Button {
+                    docTint = nil
+                    save()
+                } label: {
+                    Text("Automatic — colour from the icon")
+                }
+                Divider()
                 ForEach(DocumentTint.typeCases, id: \.self) { candidate in
                     Button {
                         docTint = candidate == .gray ? nil : candidate
@@ -1795,9 +1945,9 @@ struct DocMetadataPanel: View {
             } label: {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(MacPalette.documentTint(docTint ?? .gray))
+                        .fill(MacPalette.documentTint(drawn))
                         .frame(width: 9, height: 9)
-                    Text((docTint ?? .gray).typeMeaning ?? "Unclassified")
+                    Text(docTint?.typeMeaning ?? docTint?.label ?? "Automatic")
                         .font(.caption)
                 }
             }
@@ -1950,6 +2100,55 @@ struct DocMetadataPanel: View {
                 }
             }
         }
+    }
+
+    // MARK: - URL
+
+    /// One typed web address for the document (D350). David: *"I could use a
+    /// URL field here that I could add when documents have a related website."*
+    ///
+    /// **The open button appears only when the text can actually be opened**,
+    /// and that is checked on the text as typed rather than assumed from a
+    /// field named URL. A button that is always there and does nothing for half
+    /// its life is the same failure as a screen stating something untrue - it
+    /// claims this is a link before anything has established that it is one.
+    ///
+    /// A bare `kearney.com` is accepted and opened as `https://kearney.com`,
+    /// because typing the scheme is a thing computers should do for you. What
+    /// gets SAVED is exactly what he typed: silently rewriting the field under
+    /// the cursor is how a value stops matching the thing that produced it.
+    private var urlRow: some View {
+        HStack(spacing: 6) {
+            fieldLabel("URL")
+            TextField("https://", text: $docURL)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { save() }
+            if let open = Self.openable(docURL) {
+                Button { openURL(open) } label: {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.caption)
+                        .foregroundStyle(Color.teal)
+                }
+                .buttonStyle(.plain)
+                .help(open.absoluteString)
+            }
+        }
+    }
+
+    /// What this text opens to, or nil when it does not open to anything.
+    ///
+    /// `URL(string:)` alone is far too generous - it accepts "denver airport"
+    /// and hands back a relative URL with no host, which would give the row an
+    /// open button that opens nothing. A host with a dot in it is the test that
+    /// matches what people mean by a web address.
+    nonisolated static func openable(_ text: String) -> URL? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        let candidate = t.lowercased().hasPrefix("http://") || t.lowercased().hasPrefix("https://")
+            ? t : "https://" + t
+        guard let url = URL(string: candidate),
+              let host = url.host, host.contains("."), !host.hasSuffix(".") else { return nil }
+        return url
     }
 
     /// Host without `www.`, plus the last path component when it says something.
@@ -2159,9 +2358,31 @@ struct DocMetadataPanel: View {
                             text: String) {
         let headline = MacTextExtraction.localHeadline(from: text)
 
-        // Title stays with the document's own words. The model writes a
-        // sentence, and a sentence is a description, not a name.
-        if let headline { title = headline.title }
+        // **The model's title first, the headline heuristic behind it.**
+        //
+        // This block used to read "Title stays with the document's own words.
+        // The model writes a sentence, and a sentence is a description, not a
+        // name." That was true of the answer to the question being asked: it
+        // was only ever asked for a summary. Asked for a NAME it gives a name,
+        // so the note was describing a limit of the prompt as if it were a
+        // limit of the model.
+        //
+        // The heuristic stays as the fallback rather than being deleted. It
+        // needs no model at all, which matters on a Mac with Apple Intelligence
+        // switched off — the one machine where this whole path is the only
+        // path.
+        if let suggested = suggestion?.title, !suggested.isEmpty {
+            title = suggested
+        } else if let headline {
+            title = headline.title
+        }
+
+        // **Matched against the real tokens, never taken as given** (D330). A
+        // word the model invented is not an icon this app has, and `parse`
+        // returns nil for one — which leaves whatever David already chose.
+        if let parsed = DocumentIcon.parse(suggestion?.icon) {
+            docIcon = parsed
+        }
 
         if let suggestion, !suggestion.summary.isEmpty {
             description = suggestion.summary
@@ -2300,6 +2521,12 @@ struct DocMetadataPanel: View {
                     // phone shows and edits it. See `remindOn`.
                     if let date = result.remindOn { remindOn = date }
                     if let dated = result.datedOn { docDate = dated }
+                    // D343. Only when the model answered: Run AI on a document
+                    // whose Kind he has already set by hand must not throw that
+                    // away, and a nil here means the model declined rather than
+                    // chose Auto.
+                    if let suggestedIcon = result.icon { docIcon = suggestedIcon }
+                    if let suggestedTint = result.tint { docTint = suggestedTint }
                     // List-only, spelled the list's way, same rule as the phone.
                     for name in result.people
                     where knownPeople.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame })
@@ -2342,6 +2569,7 @@ struct DocMetadataPanel: View {
         docTint = doc.tint
         remindOn = doc.remindOn
         links = MacTextExtraction.links(in: doc.extractedText)
+        docURL = doc.url
         // Cleared on every load, and it was not before Session 69. `userContext`
         // is a hint typed for ONE document; leaving it behind meant the next
         // document inherited it. David selected a Peloton screenshot and found
@@ -2389,10 +2617,19 @@ struct DocMetadataPanel: View {
             // clearing an icon impossible.
             icon: .some(docIcon),
             tint: .some(docTint),
-            remindOn: .some(remindOn)
+            remindOn: .some(remindOn),
+            // Explicit, like the endeavor above: this panel owns the value now,
+            // so an emptied field has to be able to clear the key rather than
+            // being read as "leave whatever is on disk".
+            url: .some(docURL)
         )
         isSaving = false
         onSave(doc)
+        // **Said out loud, not left to the file watcher** (D341). The metadata
+        // query will notice this write eventually; "eventually" is iCloud's
+        // word, and the endeavor rail is often the very next thing he looks at.
+        // The app knows it just wrote, so it says so.
+        NotificationCenter.default.post(name: .reloadDocuments, object: nil)
     }
 
     private func delete() {

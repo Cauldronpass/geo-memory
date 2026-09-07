@@ -37,7 +37,11 @@ struct BlockInfo: Identifiable {
 // MARK: - MarkdownTextStorage
 //
 // NSTextStorage subclass that applies live markdown styling (TextKit 1).
-// Supports: **bold**, - bullet lists, - [ ] / - [x] checkboxes,
+// Supports: **bold**, - bullet lists, checkboxes stored as the Unicode glyphs
+// \u{2610} and \u{2611} (NOT as `- [ ]` / `- [x]`, which are only the typing
+// shorthand `MacTextEditor` swaps for the glyph on the way in - this line said
+// otherwise for a long time and sent a session's worth of seeded checkboxes to
+// the file as literal text),
 // standard URLs, and custom URL schemes (x-devonthink-item://, obsidian://, etc.)
 //
 // Key pattern: applyStyles() modifies `backing` (NSMutableAttributedString) directly,

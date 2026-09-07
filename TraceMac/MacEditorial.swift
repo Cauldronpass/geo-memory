@@ -212,10 +212,28 @@ extension View {
     /// The standfirst over a masthead. Muted by default; a caller that wants
     /// it accent (the endeavor presence line) passes its own colour after.
     func editorialKicker() -> some View {
+        editorialKicker(MacEditorialColor.muted)
+    }
+
+    /// The same kicker in a colour the caller chooses.
+    ///
+    /// **This exists because `.editorialKicker().foregroundStyle(x)` does not
+    /// work, and looks exactly like it should** (D353). The modifier sets its
+    /// own `foregroundStyle` on the way past, and in SwiftUI the one CLOSEST to
+    /// the content wins — so a tint applied after it is silently discarded. The
+    /// endeavor cover band had been passing white for a kicker over a
+    /// photograph since it was written, and rendering muted grey every time.
+    /// Nothing warns about this: the code reads as an override and behaves as a
+    /// no-op.
+    ///
+    /// Any style helper that bakes in a colour has the same trap. If another
+    /// one grows a caller that wants a different tint, give it this overload
+    /// rather than a second `foregroundStyle` at the call site.
+    func editorialKicker(_ tint: Color) -> some View {
         font(MacEditorialType.kicker)
             .textCase(.uppercase)
             .tracking(MacEditorialType.kickerTracking)
-            .foregroundStyle(MacEditorialColor.muted)
+            .foregroundStyle(tint)
     }
 
     /// A section's name on the page. Ink, because a section heading is

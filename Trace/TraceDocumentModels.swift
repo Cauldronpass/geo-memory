@@ -175,21 +175,27 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
         case .passport:  return .teal
         case .id:        return .blue
         case .card:      return .rose
-        case .ticket:    return .indigo
+        // D344 rebalance. Eight tints over twenty-five icons collide by
+        // arithmetic, so the collisions are put where they cost least: two
+        // icons David rarely files side by side may share, the ones that fill
+        // a travel endeavor may not. Ticket left indigo beside plane made a
+        // trip's flights and its shuttles the same colour, which is the one
+        // list where telling them apart matters most.
+        case .ticket:    return .amber
         case .plane:     return .indigo
-        case .train:     return .green
-        case .car:       return .gray
+        case .train:     return .teal
+        case .car:       return .blue
         case .lodging:   return .rose
         case .medical:   return .red
         case .home:      return .green
         case .work:      return .blue
         case .finance:   return .amber
         case .education: return .indigo
-        case .photo:     return .gray
+        case .photo:     return .teal
         case .map:       return .teal
         case .note:      return .blue
         case .manual:    return .gray
-        case .menu:      return .rose
+        case .menu:      return .green
         case .reading:   return .teal
         case .pet:       return .green
         }
@@ -398,6 +404,43 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// `TraceMacDocumentStore.SidecarBody.hasTextSection` for why this is not a
     /// frontmatter key and why the distinction matters.
     var textExtracted: Bool = false
+    /// When this document landed in Satchel, as opposed to the date printed on
+    /// it (D347).
+    ///
+    /// **Two different dates, and the list needs the other one.** `created` is
+    /// the document's OWN date — the scan sets it from what the page says, so a
+    /// rental confirmation for next May carries next May. Sorted by that, a
+    /// booking made today sits above everything for a year, which is right for
+    /// "when is this" and wrong for "what did I just add". David, looking at a
+    /// list headed MAY 10: *"Id like the normal sort order to be by date with
+    /// the newest at the top."* It already was; the date was the wrong one.
+    ///
+    /// Read from the filename's own `yyyy-MM-dd-HHmmss-` stamp, which every
+    /// import writes and nothing edits, falling back to the filesystem's
+    /// creation date. Declared last so no existing call site's argument order
+    /// moves.
+    var arrived: Date? = nil
+
+    /// A website this document is ABOUT, typed by hand. Sidecar key `url`.
+    ///
+    /// David: *"I could use a URL field here that I could add when documents
+    /// have a related website."*
+    ///
+    /// **Not the same thing as the Links row, and that is why it is stored.**
+    /// `TraceMacTextExtraction.links(in:)` finds every address printed ON the
+    /// page and is deliberately derived rather than saved - it cannot go stale
+    /// and it costs no keys. This is the opposite case: the shuttle timetable
+    /// that prompted it has no usable address in its own text, and the booking
+    /// site he actually wants is a fact about the document that the document
+    /// does not contain. Nothing can recompute that, so it has to be written
+    /// down.
+    ///
+    /// A `String` rather than a `URL` so a half-typed address survives a save
+    /// and reads back exactly as he left it. Whether it can be opened is a
+    /// question the row asks at the moment it draws the button.
+    ///
+    /// Declared last so no existing call site's argument order moves.
+    var url: String = ""
 
     /// Tagged `private`. **The single definition, in the file every target
     /// compiles**, because this decides whether the document may be sent.
@@ -413,6 +456,11 @@ struct TraceMacDocument: Identifiable, Hashable {
 
     var isPDF: Bool   { fileExtension == "pdf" }
     var isImage: Bool { ["jpg","jpeg","png","heic","gif","webp"].contains(fileExtension) }
+    /// Plain text this app can read on screen rather than hand to another app
+    /// (Session 95). Added for research documents, which are written as `.txt`
+    /// — but a `.csv` or a `.log` dropped into Satchel is equally readable and
+    /// was previously shown as an icon and a byte count.
+    var isText: Bool { ["txt","md","markdown","csv","tsv","log","json"].contains(fileExtension) }
 
     /// Where this document's sidecar lives: the same path with the extension
     /// swapped for `.md`.
@@ -453,11 +501,30 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// The tint to draw. Never nil — an explicit tint wins, otherwise the
     /// resolved icon's own default, which keeps fallback documents coherent.
     var resolvedTint: DocumentTint {
-        // Session 72: `.gray`, not the icon's swatch colour. Colour is the
-        // document's TYPE now (receipt, confirmation, reference…), which an
-        // icon cannot imply — so an untyped document is honestly uncoloured
-        // rather than borrowing a hue that means something else.
-        tint ?? .gray
+        // **Colour follows the SUBJECT again (D344, 2026-09-07), reversing
+        // Session 72 at David's word.** He asked twice, an hour apart, looking
+        // at the same list: *"can we make many of the icons in satchel more
+        // colorful. the ones at the top are all grey"*, then — once the Mac's
+        // scanner finally answered the type question and painted them —
+        // *"they are all blue. Id like different categories to have different
+        // colors."*
+        //
+        // Both complaints are the same complaint, and Session 72's rule
+        // produced both. Colour meaning TYPE is defensible in the abstract and
+        // fails on his actual library: nearly everything he files is a booking
+        // confirmation, so a colour keyed to type paints one hue down the
+        // whole list and carries no information at all. Keyed to subject it
+        // separates the flight from the hotel from the restaurant, which is
+        // what he is scanning the list for.
+        //
+        // **A hand-set tint still wins**, and is now the only thing that writes
+        // this field — the scanner no longer answers the tint question, so
+        // `tint` means "David chose this" rather than "something chose this".
+        // Set it back to Auto in the panel to fall through to the icon.
+        //
+        // The type axis is not lost. It is the Kind field, in words, where it
+        // cannot be confused with anything else.
+        tint ?? resolvedIcon.defaultTint
     }
 
     /// Type-based fallback: category first (it is the folder David filed it in,

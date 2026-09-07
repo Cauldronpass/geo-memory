@@ -91,6 +91,10 @@ struct TraceMacEndeavorsView: View {
     @State private var resolving: Set<String> = []
     @State private var resolveError: String? = nil
     @State private var showOtherVisits = false
+    /// PLACES' own disclosure, for the visit-derived rows (D354). Separate
+    /// from `showOtherVisits`: they cover different lists in different columns,
+    /// and one flag would open both at once for no reason a reader could see.
+    @State private var showVisitedPlaces = false
     /// The itinerary's fold. Collapsed shows the next two days with
     /// something on them; `MacTextEditor` takes whatever height it is offered
     /// and reports no minimum (Session 80), so an uncapped band would eat the
@@ -127,6 +131,15 @@ struct TraceMacEndeavorsView: View {
     /// True while a dropped document is being read, so the three verbs are
     /// replaced by what is happening rather than staying pressable.
     @State private var parsingDrop = false
+    /// Several bookings read out of one document, waiting to be ticked (D339).
+    @State private var bookingChoice: BookingChoice? = nil
+    /// A document summarised for the note, waiting to be kept (D345).
+    @State private var digest: DigestProposal? = nil
+    @State private var digesting = false
+    @State private var digestFailure: String? = nil
+    /// Which of them are ticked, by index.
+    @State private var pickedBookings: Set<Int> = []
+    @State private var addingBookings = false
     /// Projects + Daily. Read once when the section appears; a note created
     /// while it is open shows up on the next visit, which is the same freshness
     /// the document and visit lists have.
@@ -193,6 +206,22 @@ struct TraceMacEndeavorsView: View {
     @State private var paneFind = MacPDFFind()
     /// The endeavor whose "Attach from Satchel…" sheet is open.
     @State private var attachingTo: Endeavor? = nil
+
+    // MARK: Research (D314, D317, D320)
+
+    /// The Research window is open on this endeavor.
+    @State private var researchOpen = false
+    /// What David typed. **The brief is the press** (D317): nothing leaves the
+    /// Mac without a sentence he wrote, so the verb is dead until this has one.
+    @State private var researchBrief = ""
+    @State private var researchRunning = false
+    /// Why the reading came back with nothing cited under it, when it did
+    /// (D314, second pass). Nil means it was sourced.
+    @State private var researchUnsourced: String? = nil
+    @State private var researchFailure: String? = nil
+    /// The reading, held in the window and written NOWHERE until Keep (D313).
+    /// Discard drops it and nothing on disk ever knew about it.
+    @State private var researchReading: String? = nil
 
     // MARK: Derived
 
@@ -373,31 +402,77 @@ struct TraceMacEndeavorsView: View {
                     // endeavor page and its rail together. The Satchel section
                     // still draws the accent border, which is now the useful
                     // half of the feedback: it says where the file is going.
-                    HStack(spacing: 0) {
-                        detail(e)
-                        // **The pane sits between the body and the rail**
-                        // (D313), so the bands and the note share the narrowing
-                        // and the rail keeps its width. Closing it restores
-                        // exactly today's page because nothing else moved.
-                        if let path = paneDocPath, let doc = paneDocument(path) {
-                            // **`edge: .trailing`, and it is not cosmetic.**
-                            // The resized view is on the RIGHT of this strip;
-                            // every earlier caller put it on the left, and the
-                            // default arithmetic makes a right-hand pane run
-                            // away from the pointer. `MacColumnResizer`'s own
-                            // doc comment records the session that found it.
-                            // `showsLine` for Satchel's filter-pane reason: an
-                            // invisible strip gives you nothing to aim at.
-                            MacColumnResizer(width: $paneWidth,
-                                             minWidth: 320,
-                                             maxWidth: 720,
-                                             edge: .trailing,
-                                             showsLine: true)
-                            readingPane(doc)
-                                .frame(width: paneWidth)
+                    // **A `GeometryReader`, because this row could not fit
+                    // itself and said nothing** (D351). D313's comment above
+                    // claimed the pane narrows the body and "the rail keeps its
+                    // width". At 460pt of pane it does not: 200 list + 460 pane
+                    // + 280 rail plus dividers is ~970 before the body's own
+                    // intrinsic minimum, and past the window's width SwiftUI
+                    // does not scroll or compress — it centres and clips. David
+                    // saw the two halves of that at once: the Satchel rail gone
+                    // off the right edge, and the list column's own headings
+                    // reading "OMING" and "NISHED" where UPCOMING and FINISHED
+                    // had been cut off the left.
+                    //
+                    // **Neither symptom looks like a width problem**, which is
+                    // why it read as a design tradeoff worth asking about
+                    // rather than as a bug. A layout that overflows in silence
+                    // is the same class as a screen stating something untrue:
+                    // the rail was not dropped, it was pushed somewhere nobody
+                    // can see, and nothing was left to say so.
+                    GeometryReader { geo in
+                        let fit = paneFit(available: geo.size.width,
+                                          paneOpen: paneDocPath != nil)
+                        HStack(spacing: 0) {
+                            // **`minWidth: 0`, and it is the whole fix.**
+                            // Without it the body reports the intrinsic minimum
+                            // of its widest band, the row asks for more than the
+                            // window has, and the overflow goes off the RIGHT
+                            // edge — taking the pane's close button with it, so
+                            // the pane could be opened and not shut. My first
+                            // attempt guessed a `detailMinWidth` big enough to
+                            // avoid that, which is the same guess one number
+                            // later: any constant here is a bet about the
+                            // widest band at every window size. Zero is not a
+                            // bet. The body compresses, the pane always fits,
+                            // and `detailMinWidth` goes back to being what it
+                            // is — a preference about when the rail leaves,
+                            // not a floor the layout has to honour.
+                            detail(e)
+                                .frame(minWidth: 0, maxWidth: .infinity)
+                            // **The pane sits between the body and the rail**
+                            // (D313), so the bands and the note share the
+                            // narrowing. Closing it restores exactly today's
+                            // page because nothing else moved.
+                            if let path = paneDocPath, let doc = paneDocument(path) {
+                                // **`edge: .trailing`, and it is not cosmetic.**
+                                // The resized view is on the RIGHT of this
+                                // strip; every earlier caller put it on the
+                                // left, and the default arithmetic makes a
+                                // right-hand pane run away from the pointer.
+                                // `MacColumnResizer`'s own doc comment records
+                                // the session that found it. `showsLine` for
+                                // Satchel's filter-pane reason: an invisible
+                                // strip gives you nothing to aim at.
+                                MacColumnResizer(width: $paneWidth,
+                                                 minWidth: Self.paneMinWidth,
+                                                 maxWidth: 720,
+                                                 edge: .trailing,
+                                                 showsLine: true)
+                                readingPane(doc, railHidden: !fit.showsRail)
+                                    .frame(width: fit.paneWidth)
+                                    // Belt and braces for the same failure: if
+                                    // anything in here ever exceeds the pane
+                                    // again, it is cut off visibly rather than
+                                    // drawn over the window's edge.
+                                    .clipped()
+                            }
+                            if fit.showsRail {
+                                Divider()
+                                rail(e)
+                            }
                         }
-                        Divider()
-                        rail(e)
+                        .frame(width: geo.size.width, alignment: .leading)
                     }
                     // **`contentShape` because a stack's drop area is its
                     // subviews, not its frame.** Every drop zone in this app
@@ -528,11 +603,36 @@ struct TraceMacEndeavorsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .noteStoreEndeavorsDidChange)) { _ in
             Task { await store?.reload() }
         }
+        // **The rail was reading a snapshot from whenever this screen last
+        // appeared** (D341). David: *"when im in satchel and i add a link to an
+        // existing document to an endeavor, Id like for that document to show up
+        // automatically in the endeavor rail."*
+        //
+        // The association was being written correctly the whole time and the
+        // rail's filter already accepted it — what was missing is that this view
+        // builds its OWN `TraceMacDocumentStore`, as every document surface on
+        // the Mac does, and nothing told it to re-read. Satchel's own view has
+        // listened to both of these since it was built; this one listened to
+        // neither.
+        //
+        // Two notifications because they fire for different reasons and both
+        // are real: `noteStoreDocumentsDidChange` is the iCloud metadata query,
+        // which is authoritative but can lag a few seconds, and `reloadDocuments`
+        // is the app telling itself it just wrote something.
+        .onReceive(NotificationCenter.default.publisher(for: .noteStoreDocumentsDidChange)) { _ in
+            Task { await docStore?.reload() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reloadDocuments)) { _ in
+            Task { await docStore?.reload() }
+        }
         // **Filing works in both directions now.** Satchel's metadata panel has
         // been able to file a document TO an endeavor since Session 72; the
         // endeavor could only ever import a new file from disk. David: *"what
         // about adding a satchel document to an endeavor itself rather than
         // from outside of Mac Trace?"* Same verb, second door.
+        .sheet(isPresented: $researchOpen) {
+            if let e = selected { researchWindow(e) }
+        }
         .sheet(item: $attachingTo) { e in
             MacDocumentPicker(linked: documents(for: e).map(\.relativePath),
                               onToggle: { path in toggleFiling(path, on: e) },
@@ -553,7 +653,8 @@ struct TraceMacEndeavorsView: View {
                                  let made = try? await store.create(name: name, type: type,
                                                                     starts: starts, ends: ends,
                                                                     destination: destination,
-                                                                    summary: createSeed?.summary)
+                                                                    summary: createSeed?.summary,
+                                                                    plan: createSeed?.plan ?? [])
                                  justCreated = made
                                  if let made { reveal(made) }
                              },
@@ -1346,29 +1447,66 @@ struct TraceMacEndeavorsView: View {
         }
     }
 
-    /// `MacEditorialPill`'s shape in the band's own tint: white over a
-    /// photograph, where the pill's hairline edge would vanish, and the
-    /// ordinary pill on bare paper.
+    /// The band's three verbs, as glyphs in its top corner (D352).
+    ///
+    /// **Icons, and each one keeps its tooltip**, because D82's rule cuts both
+    /// ways: a glyph that looks like a control must BE a control, and a control
+    /// reduced to a glyph has to still say what it does. Hover gives the words
+    /// the pill used to spell out.
     @ViewBuilder
-    private func coverPill(_ label: String, onCover: Bool, action: @escaping () -> Void) -> some View {
-        if onCover {
-            Button(action: action) {
-                Text(label)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 6)
-                    .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Color.white.opacity(0.65), lineWidth: 1)
-                    }
-                    .contentShape(Rectangle())
+    private func bandControls(_ e: Endeavor) -> some View {
+        let hasCover: Bool = e.cover?.isEmpty == false
+        HStack(spacing: 6) {
+            bandGlyph("photo", onCover: hasCover,
+                      help: hasCover ? "Change cover" : "Add a cover") { coverTarget = e }
+            // **Only where the verb means something** (D317). Research is a
+            // Project's verb and, per D320, a Travel endeavor's — *"this might
+            // be my most used endeavor feature."* A Decision gets Generate
+            // options instead and is not built yet; a Milestone and a Gathering
+            // get neither, and a control that opened a window with nothing
+            // useful to ask would be worse than none.
+            if Self.researchTypes.contains(e.type) {
+                bandGlyph("magnifyingglass", onCover: hasCover,
+                          help: "Ask the web about \(e.name)") {
+                    researchBrief = ""
+                    researchReading = nil
+                    researchFailure = nil
+                    researchOpen = true
+                }
             }
-            .buttonStyle(.plain)
-        } else {
-            MacEditorialPill(label: label, action: action)
+            bandGlyph("slider.horizontal.3", onCover: hasCover,
+                      help: "Endeavor settings") { settingsTarget = e }
         }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+    }
+
+    /// One band glyph.
+    ///
+    /// Over a photograph it carries its own dark disc: the TOP of a cover has
+    /// no gradient behind it (the gradient darkens the bottom, where the title
+    /// sits), so a bare white glyph would vanish against a pale sky — which is
+    /// most holiday photographs.
+    private func bandGlyph(_ symbol: String,
+                           onCover: Bool,
+                           help: String,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(onCover ? Color.white : MacEditorialColor.ink)
+                .frame(width: 26, height: 26)
+                .background {
+                    if onCover {
+                        Circle().fill(Color.black.opacity(0.32))
+                    } else {
+                        Circle().fill(MacEditorialColor.ink.opacity(0.06))
+                    }
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     /// One drag in progress. A struct rather than a tuple because `@State`
@@ -1478,8 +1616,29 @@ struct TraceMacEndeavorsView: View {
                     // The cover and the gradient are decoration. They should
                     // never have been in the hit path at all.
                     .allowsHitTesting(false)
-                LinearGradient(colors: [.clear, .black.opacity(0.55)],
-                               startPoint: .top, endPoint: .bottom)
+                // **Four stops, not two, and the bottom is darker** (D353).
+                // The old two-stop ramp reached 0.55 only at the very bottom
+                // edge, which is under the TITLE. The kicker sits a line above
+                // that, where the ramp was still around a quarter of its
+                // strength — so over a bright photograph (David's Thanksgiving
+                // table: pale pie, white cloth) it read as nothing at all:
+                // *"the words within the endeavor banner number of days etc are
+                // not visible due to the color."*
+                //
+                // The title survived because it is large and bold and sits in
+                // the dark part; the kicker is small caps at 85% white. Two
+                // pieces of text on one band, one legible and one not, is a
+                // gradient tuned for the wrong line.
+                //
+                // Clear through the top half on purpose: that is the
+                // photograph, and it is also where the band's glyphs sit, and
+                // they carry their own discs.
+                LinearGradient(stops: [
+                    .init(color: .clear,               location: 0.00),
+                    .init(color: .black.opacity(0.12), location: 0.45),
+                    .init(color: .black.opacity(0.58), location: 0.72),
+                    .init(color: .black.opacity(0.82), location: 1.00)
+                ], startPoint: .top, endPoint: .bottom)
                     .frame(height: Self.coverHeight)
                     .allowsHitTesting(false)
                 coverDragTarget(e)
@@ -1491,33 +1650,48 @@ struct TraceMacEndeavorsView: View {
             // Editorial type; over a photograph in white, on bare paper in ink.
             let hasCover: Bool = e.cover?.isEmpty == false
             let textTint: Color = hasCover ? Color.white : MacEditorialColor.ink
-            let kickerTint: Color = hasCover ? Color.white.opacity(0.85) : MacEditorialColor.muted
-            HStack(alignment: .lastTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(bandKicker(e))
-                        .editorialKicker()
-                        .foregroundStyle(kickerTint)
-                        .lineLimit(1)
-                    Text(e.name)
-                        .font(MacEditorialType.masthead)
-                        .foregroundStyle(textTint)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                // On the band, because the band is the thing they change. Over
-                // a photograph the pills read in white; on bare paper they are
-                // the only affordance saying a cover is possible at all.
-                HStack(spacing: 7) {
-                    coverPill(hasCover ? "Cover" : "Add cover", onCover: hasCover) { coverTarget = e }
-                        .help(hasCover ? "Change cover" : "Add a cover")
-                    coverPill("Settings", onCover: hasCover) { settingsTarget = e }
-                        .help("Endeavor settings")
-                }
+            // 0.95 over a photograph, not 0.85. Muted grey is right on paper,
+            // where the contrast is already there; over an image the same
+            // softening is the difference between quiet and unreadable.
+            let kickerTint: Color = hasCover ? Color.white.opacity(0.95) : MacEditorialColor.muted
+            // **The name gets the whole line back** (D352). Three text pills
+            // sharing the baseline row took roughly 250pt of a band whose whole
+            // job is to say which endeavor this is, and every title in David's
+            // vault had collapsed to one word and an ellipsis: *"all my
+            // endeavors have one word on the title with '...' after it because
+            // it is cut off by the three buttons."* The controls moved to the
+            // band's top corner, where they overlap nothing and cost the title
+            // nothing.
+            VStack(alignment: .leading, spacing: 2) {
+                Text(bandKicker(e))
+                    // The tint goes INSIDE the helper. Written as
+                    // `.editorialKicker().foregroundStyle(kickerTint)` it did
+                    // nothing at all - see the overload's note.
+                    .editorialKicker(kickerTint)
+                    .lineLimit(1)
+                    // **A shadow as well as the gradient**, because a gradient
+                    // is a bet about the photograph underneath it and a pale
+                    // subject can beat any fixed ramp. The shadow travels with
+                    // the letters, so it holds wherever the image is bright.
+                    // Nothing on bare paper, where ink on paper needs none.
+                    .shadow(color: .black.opacity(hasCover ? 0.55 : 0), radius: 3, y: 1)
+                Text(e.name)
+                    .font(MacEditorialType.masthead)
+                    .foregroundStyle(textTint)
+                    .lineLimit(1)
+                    .shadow(color: .black.opacity(hasCover ? 0.45 : 0), radius: 4, y: 1)
+                    // A long name shrinks a little before it truncates. The
+                    // masthead is the largest type on the page, so 0.75 of it
+                    // is still a masthead — and a name read in full slightly
+                    // smaller beats a name read as its first word.
+                    .minimumScaleFactor(0.75)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, MacEditorialLayout.margin)
             .padding(.bottom, 14)
         }
         .frame(height: e.cover?.isEmpty == false ? Self.coverHeight : Self.bareBandHeight)
+        .overlay(alignment: .topTrailing) { bandControls(e) }
         .overlay(alignment: .bottom) { MacEditorialRule.ink }
         // Attached HERE, not beside `.sheet(isPresented: $showingNew)` on the
         // outer VStack. Two `.sheet` modifiers on the same view is a long-
@@ -1563,8 +1737,16 @@ struct TraceMacEndeavorsView: View {
                     Divider().padding(.vertical, 6)
                 }
 
-                // DESTINATIONS moved into the body as PLACES (D273). Nothing
-                // is drawn twice on one screen — warning FIVE.
+                // DESTINATIONS moved into the body as PLACES (D273). That
+                // comment used to end "Nothing is drawn twice on one screen —
+                // warning FIVE", and it had been untrue since the first trip
+                // with more than a few check-ins: PLACES promoted every visit
+                // in range, so the log's rows and the band's rows were the same
+                // rows. D354 collapses the visit-derived half of PLACES behind
+                // its own disclosure, which is the rule this section already
+                // followed. **The two lists still hold the same visits** — one
+                // collapsed line each rather than forty rows — and merging them
+                // outright is the real answer, kept as its own design session.
 
                 linkedNotesSection(e)
                 Divider().padding(.vertical, 6)
@@ -1835,26 +2017,37 @@ struct TraceMacEndeavorsView: View {
                                    isOpen: true,
                                    onToggle: { openTaskID = nil },
                                    onChanged: { Task { await ReminderTaskStore.shared.refreshAll() } },
-                                   trailing: .dateElseList)
+                                   trailing: .dateElseList,
+                                   // **Attaching has to be reversible from
+                                   // inside the app.** Session 72's rule,
+                                   // David's own: a recorded judgement has to
+                                   // be visible to be challenged. Attaching the
+                                   // wrong task is one wrong click, and without
+                                   // this the only way back is editing the
+                                   // notes by hand in Apple's Reminders.
+                                   //
+                                   // Still this view's item and not the shared
+                                   // row's - removal from an endeavor is
+                                   // meaningless on Today or in the Inbox, and
+                                   // putting it on `MacTaskRow` would be one
+                                   // verb with two meanings (warning FIVE). It
+                                   // is HANDED IN rather than wrapped around
+                                   // the row because the row now has a context
+                                   // menu of its own, and the inner menu wins:
+                                   // wrapping would delete this item in silence
+                                   // (D349).
+                                   extraMenuItems: {
+                                       AnyView(Group {
+                                           Divider()
+                                           Button("Remove from \(e.name)") {
+                                               Task { _ = await detachTask(task, from: e) }
+                                           }
+                                       })
+                                   })
                             .frame(minWidth: Self.taskCardWidth, maxWidth: 560)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 12)
                             .environment(noteStore)
-                    }
-                    // **Attaching has to be reversible from inside the app.**
-                    // Session 72's rule, David's own: a recorded judgement has
-                    // to be visible to be challenged. Attaching the wrong task
-                    // is one wrong click, and without this the only way back is
-                    // editing the notes by hand in Apple's Reminders.
-                    //
-                    // On the row where this view draws it, NOT on `MacTaskRow`
-                    // itself. Removal from an endeavor is meaningless on Today
-                    // or in the Inbox, and putting it on the shared row would
-                    // be one verb with two meanings (warning FIVE).
-                    .contextMenu {
-                        Button("Remove from \(e.name)") {
-                            Task { _ = await detachTask(task, from: e) }
-                        }
                     }
             }
         }
@@ -2529,6 +2722,28 @@ struct TraceMacEndeavorsView: View {
         var id: String { rawValue }
     }
 
+    /// A summary of a filed document, proposed for the endeavor's note (D345).
+    private struct DigestProposal: Identifiable {
+        var section: String
+        var text: String
+        let readBy: String
+        let documentTitle: String
+        var id: String { documentTitle }
+    }
+
+    /// More than one booking read out of a single document (D339).
+    ///
+    /// **A list, not N sheets.** A round-trip itinerary is two rows and a
+    /// return leg is not a separate decision; opening the booking sheet twice
+    /// would make it one. The rows show what will be saved so they can be read
+    /// before Add, which is the review the sheet was providing, and every row
+    /// stays editable on the itinerary afterwards.
+    private struct BookingChoice: Identifiable {
+        let parses: [BookingParse]
+        let documentPath: String
+        var id: String { "choice-\(documentPath)" }
+    }
+
     /// A document that has just been filed against this endeavor and is waiting
     /// for David to say what it is (D322).
     ///
@@ -2582,7 +2797,10 @@ struct TraceMacEndeavorsView: View {
         var seedNotice: String? {
             guard case .seeded(let parse, _) = self else { return nil }
             if !parse.hasAnything {
-                return "Couldn't read this document — the file is in Satchel."
+                // The refusal's own words when there are any, the generic
+                // sentence only when there are none (D338).
+                return parse.failureNote
+                    ?? "Couldn't read this document — the file is in Satchel."
             }
             // **The date warning outranks the count.** Both can be true at
             // once, and of the two, a year that may be wrong is the one that
@@ -2591,7 +2809,12 @@ struct TraceMacEndeavorsView: View {
             var lines: [String] = []
             if let warning = parse.dateWarning { lines.append(warning) }
             if parse.found > 1 {
-                lines.append("\(parse.found) bookings in this document — showing the first.")
+                // **Says what was NOT done, not just what was found.** v1 seeds
+                // the first booking and leaves the rest; a line reading only "3
+                // found" would let him assume the others landed somewhere.
+                lines.append("\(parse.found) bookings in this document. "
+                           + "This sheet is the first one — add the others yourself, "
+                           + "or drop the file again after saving this.")
             }
             return lines.isEmpty ? nil : lines.joined(separator: " ")
         }
@@ -3083,6 +3306,27 @@ struct TraceMacEndeavorsView: View {
     @ViewBuilder
     private func placesSection(_ e: Endeavor) -> some View {
         let rows: [EndeavorPlace] = endeavorPlaces(e)
+        // **Attached rows are the band; visits collapse** (D354).
+        //
+        // David, on Megan's Wedding Week finished with 24 visits: *"you warned
+        // me about the places overlap with the rail... i see this as
+        // untenable."* PLACES listed his 3 attached places plus all 21 visits
+        // in range, and the rail's Trip log listed the same visits — the same
+        // list twice, full length, side by side. Tolerable on a five-visit
+        // trip and unusable on a real one.
+        //
+        // **This is not a new opinion; it is the rail's own rule, finally
+        // applied to both lists.** The Trip log already collapses unlogged
+        // visits behind "Also that day", and its comment says why: *"They are
+        // the pool the log is selected from, and a pool is only interesting
+        // while you are choosing from it."* That is exactly as true in the
+        // body. D273's comment claiming "Nothing is drawn twice on one screen"
+        // had been false since the first trip with more than a few check-ins.
+        //
+        // Nothing is hidden and nothing is deleted: the count is on the lid,
+        // and every row keeps its menu, its state and its click-through.
+        let attached = rows.filter { $0.attached }
+        let visited  = rows.filter { !$0.attached }
         VStack(alignment: .leading, spacing: 0) {
             bandHeader("Places",
                        count: rows.count,
@@ -3092,7 +3336,28 @@ struct TraceMacEndeavorsView: View {
             if rows.isEmpty {
                 bandEmpty("Nowhere attached yet.")
             } else {
-                ForEach(rows) { row in placeRow(row, in: e) }
+                ForEach(attached) { row in placeRow(row, in: e) }
+                if attached.isEmpty, !visited.isEmpty {
+                    // A band whose only content is a closed lid reads as empty.
+                    // Say what is behind it before asking him to open it.
+                    bandEmpty("Nowhere attached yet \u{2014} the visits below are where you actually went.")
+                }
+                if !visited.isEmpty {
+                    DisclosureGroup(isExpanded: $showVisitedPlaces) {
+                        ForEach(visited) { row in placeRow(row, in: e) }
+                    } label: {
+                        // Same weight as the rows it reveals, one step down in
+                        // colour — the rule the rail's disclosure had to learn
+                        // when David missed it entirely: a control's weight
+                        // follows what is behind it, not what it looks like.
+                        Text(visited.count == 1
+                             ? "Also visited (1)"
+                             : "Also visited (\(visited.count))")
+                            .font(MacEditorialType.taskTitle)
+                            .foregroundStyle(MacEditorialColor.muted)
+                    }
+                    .padding(.top, 8)
+                }
             }
         }
         .padding(.horizontal, MacEditorialLayout.margin)
@@ -3324,6 +3589,42 @@ struct TraceMacEndeavorsView: View {
         .popover(item: $docPrompt, arrowEdge: .trailing) { prompt in
             dropPromptCard(prompt, for: e)
         }
+        .popover(item: $bookingChoice, arrowEdge: .trailing) { choice in
+            bookingChoiceCard(choice, for: e)
+        }
+        .popover(item: $digest, arrowEdge: .trailing) { proposal in
+            digestCard(proposal, for: e)
+        }
+        // **Progress and failure in the same place, over the page.** This
+        // action has no window of its own until it succeeds, so a failure with
+        // nowhere to appear would read as nothing happening — which is exactly
+        // what D338 was about. Tap it to dismiss.
+        .overlay(alignment: .top) {
+            if digesting {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading the document…").font(MacType.meta).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(MacEditorialColor.paper, in: Capsule())
+                .overlay(Capsule().strokeBorder(MacEditorialColor.ink.opacity(0.12)))
+                .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                .padding(.top, 10)
+            } else if let digestFailure {
+                Text(digestFailure)
+                    .font(MacType.meta)
+                    .foregroundStyle(MacEditorialColor.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .frame(maxWidth: 420)
+                    .background(MacEditorialColor.paper, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(MacEditorialColor.accent.opacity(0.35)))
+                    .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                    .padding(.top, 10)
+                    .onTapGesture { self.digestFailure = nil }
+            }
+        }
     }
 
     private func chooseDocuments(for e: Endeavor) {
@@ -3510,6 +3811,7 @@ struct TraceMacEndeavorsView: View {
         parsingDrop = true
         Task { @MainActor in
             var parse = BookingParse()
+            var parses: [BookingParse] = []
             if locally {
                 // The tag goes on first, and the reload after it is what makes
                 // `doc.isPrivate` true for anything that looks later.
@@ -3529,13 +3831,34 @@ struct TraceMacEndeavorsView: View {
                 // line an unreadable document gets. That is not an error to
                 // explain; it is what happened.
                 let tagged = docStore.documents.first { $0.relativePath == prompt.path } ?? doc
-                parse = await DocumentScanService.parseBookingLocally(doc: tagged,
-                                                                      noteStore: noteStore)
-                    ?? BookingParse()
+                parses = await DocumentScanService.parseBookingLocally(doc: tagged,
+                                                                       noteStore: noteStore)
+                parse = parses.first ?? BookingParse()
+                // **Say WHY the on-device read gave nothing** (D338). "Turn on
+                // Apple Intelligence in System Settings" is something he can
+                // act on; "couldn't read this document" is not, and they were
+                // the same sentence.
+                if !parse.hasAnything, case .unavailable(let why) = MacLocalIntelligence.availability {
+                    parse.failureNote = why
+                } else if !parse.hasAnything, MacLocalIntelligence.availability == .notBuilt {
+                    parse.failureNote = "The on-device model is not available in this build."
+                }
             } else {
-                parse = (try? await DocumentScanService.parseBooking(doc: doc,
-                                                                     noteStore: noteStore))
-                    ?? BookingParse()
+                do {
+                    parses = try await DocumentScanService.parseBooking(doc: doc,
+                                                                        noteStore: noteStore)
+                    parse = parses.first ?? BookingParse()
+                } catch {
+                    // **Keep the reason.** A `try?` here turned "this document
+                    // is tagged private and nothing about it has been sent"
+                    // into "couldn't read this document", which is a different
+                    // statement and not a true one. David hit exactly that:
+                    // he read a document privately, which tags it, then pressed
+                    // Read confirmation on the same document and was told the
+                    // app could not read it (D338).
+                    parse = BookingParse()
+                    parse.failureNote = error.localizedDescription
+                }
             }
 
             parsingDrop = false
@@ -3545,7 +3868,115 @@ struct TraceMacEndeavorsView: View {
             // still on screen and simply does not appear — no error, no sheet.
             // One hop is enough; this is not a guess at a duration.
             try? await Task.sleep(nanoseconds: 150_000_000)
-            bookingTarget = .seeded(parse, documentPath: prompt.path)
+            // One booking goes straight to the sheet, as it always has. Several
+            // go to the tick list first (D339) — the sheet edits ONE row and a
+            // round trip is two.
+            if parses.count > 1 {
+                pickedBookings = Set(parses.indices)
+                bookingChoice = BookingChoice(parses: parses, documentPath: prompt.path)
+            } else {
+                bookingTarget = .seeded(parses.first ?? parse, documentPath: prompt.path)
+            }
+        }
+    }
+
+    /// The tick list (D339).
+    private func bookingChoiceCard(_ choice: BookingChoice, for e: Endeavor) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(choice.parses.count) bookings in this document")
+                    .macLabel().foregroundStyle(.tertiary)
+                Text("Which of these are yours?").font(MacType.row)
+            }
+            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
+
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(choice.parses.enumerated()), id: \.offset) { index, parse in
+                        Toggle(isOn: Binding(
+                            get: { pickedBookings.contains(index) },
+                            set: { on in
+                                if on { pickedBookings.insert(index) }
+                                else { pickedBookings.remove(index) }
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(bookingChoiceName(parse)).font(MacType.row).lineLimit(1)
+                                Text(bookingChoiceDetail(parse))
+                                    .font(MacType.meta)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 7)
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+
+            Divider()
+            HStack {
+                if addingBookings {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+                Button("Cancel") { bookingChoice = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button(pickedBookings.count == 1 ? "Add 1" : "Add \(pickedBookings.count)") {
+                    addPickedBookings(choice, to: e)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(pickedBookings.isEmpty || addingBookings)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+        }
+        .frame(width: 380)
+    }
+
+    private func bookingChoiceName(_ parse: BookingParse) -> String {
+        BookingKind.writtenName(kind: parse.kind ?? "Other",
+                                provider: parse.provider ?? "",
+                                number: parse.number ?? "",
+                                from: parse.from ?? "",
+                                to: parse.to ?? "",
+                                start: parse.start,
+                                end: parse.end)
+    }
+
+    /// The second line: when it is and what it cost, which is what tells two
+    /// legs of one trip apart at a glance.
+    private func bookingChoiceDetail(_ parse: BookingParse) -> String {
+        var bits: [String] = []
+        if let start = parse.start {
+            bits.append(start.formatted(parse.hasTime
+                ? .dateTime.day().month(.abbreviated).hour().minute()
+                : .dateTime.day().month(.abbreviated)))
+        }
+        if let cost = parse.cost {
+            bits.append(cost.formatted(.currency(code: parse.currency ?? "USD")))
+        }
+        return bits.isEmpty ? (parse.confirmation ?? "No date or figure") : bits.joined(separator: " · ")
+    }
+
+    /// Writes the ticked rows. **Nothing before Add**, same rule as the sheet.
+    private func addPickedBookings(_ choice: BookingChoice, to e: Endeavor) {
+        addingBookings = true
+        let picked = choice.parses.enumerated()
+            .filter { pickedBookings.contains($0.offset) }
+            .map(\.element)
+        Task { @MainActor in
+            for parse in picked {
+                // Who is not guessed. The sheet offers the endeavor's people
+                // ticked; a row written without a sheet takes nobody, and he
+                // adds people by opening the row — which is one click and
+                // honest, where inventing an attendee would not be.
+                let booking = parse.asBooking(endeavorID: e.id, whoIDs: [])
+                try? await notionService.saveBooking(booking)
+            }
+            addingBookings = false
+            bookingChoice = nil
         }
     }
 
@@ -3566,12 +3997,281 @@ struct TraceMacEndeavorsView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
+            // **The same three verbs a dropped file gets** (D322), on a
+            // document that is already here. David: *"I added a file to satchel
+            // this time and then added that to the endeavor rail but i have no
+            // way currently to get AI to process."* Dropping the file a second
+            // time was the only route, which D331 turned into a re-read but
+            // still means finding the original on disk.
+            //
+            // **It raises the existing card rather than calling the parser.**
+            // One popover, one set of verbs, one "Reading…" — a menu that went
+            // straight to the parse would be a second path to the same place
+            // with no privacy choice and no progress, and privacy is the whole
+            // reason that card exists.
+            Button("Read this document…") {
+                docPrompt = DocDropPrompt(path: d.relativePath)
+            }
+            Button("Summarise into the note…") { summarise(d) }
             Button("Open in Satchel") {
                 deepLinkDocumentPath?.wrappedValue = d.relativePath
                 selectedSection?.wrappedValue      = .documents
             }
             Divider()
             Button("Remove from Endeavor", role: .destructive) { unfile(d) }
+        }
+    }
+
+    /// The types whose AI verb is Research (D317, D320).
+    private static let researchTypes: Set<String> = ["Project", "Travel"]
+
+    /// The Research window (D317).
+    ///
+    /// **One box, one verb, and a line saying what leaves the Mac.** The same
+    /// shape as Create on the Endeavors room, and deliberately so: D317's whole
+    /// point is one component with three verbs, so the three cannot drift.
+    ///
+    /// **After the press the reading replaces the box**, with Keep and Discard.
+    /// Nothing is written anywhere until Keep — D313 is explicit about it, and
+    /// it is what makes a bad answer cost nothing.
+    private func researchWindow(_ e: Endeavor) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(e.name) · \(e.type)").macLabel().foregroundStyle(.tertiary)
+                Text("Research").font(MacType.heading)
+            }
+            .padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 10)
+
+            Divider()
+
+            if let why = researchUnsourced, researchReading != nil {
+                Text("Nothing was cited. \(why) Read this as Claude's general knowledge rather than as anything it looked up.")
+                    .font(MacType.meta)
+                    .foregroundStyle(MacEditorialColor.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18).padding(.top, 10)
+            }
+
+            if let reading = researchReading {
+                ScrollView {
+                    Text(reading)
+                        .font(MacType.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(18)
+                }
+                .frame(height: 380)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    TextEditor(text: $researchBrief)
+                        .font(MacType.body)
+                        .scrollContentBackground(.hidden)
+                        .frame(height: 110)
+                        .padding(6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(MacEditorialColor.ink.opacity(0.18), lineWidth: 1)
+                        )
+                        .padding(.horizontal, 16).padding(.top, 14)
+
+                    // **Printed every time, so the rule never has to be
+                    // remembered** (D317). It says what is true for THIS
+                    // endeavor: a Travel brief carries the dates and the
+                    // destination, a Project's carries the note's own words.
+                    Text(researchSendsLine(e))
+                        .font(MacType.meta)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 18).padding(.top, 10).padding(.bottom, 4)
+                }
+            }
+
+            if let researchFailure {
+                Text(researchFailure)
+                    .font(MacType.meta)
+                    .foregroundStyle(MacEditorialColor.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18).padding(.top, 8)
+            }
+
+            Divider()
+            HStack {
+                if researchRunning {
+                    ProgressView().controlSize(.small)
+                    Text("Reading the web…").font(MacType.meta).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if researchReading != nil {
+                    Button("Discard") { researchOpen = false }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Keep") { keepResearch(e) }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel") { researchOpen = false }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Research") { runResearch(e) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(researchBriefIsEmpty || researchRunning)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+        }
+        .frame(width: 520)
+    }
+
+    private var researchBriefIsEmpty: Bool {
+        researchBrief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The slice of the endeavor that goes with the brief (D317), **and the
+    /// list of what is in it**, built together.
+    ///
+    /// **One function, because the line on screen and the bytes on the wire
+    /// have to be the same thing.** Build 1 had a sends-line that read the note
+    /// and a placeholder that sent nothing, which was harmless only because
+    /// nothing was sent. The moment a real call exists, two functions deciding
+    /// separately what a Travel endeavor contributes is a screen that describes
+    /// a send it is not making — warning TWELVE, in the one place where the
+    /// claim is specifically about privacy.
+    private func researchPayload(_ e: Endeavor) -> (text: String, sends: [String]) {
+        // The name and type are named in the list because they are in `lines`.
+        // A sends-line that started at "your brief" while the payload opened
+        // with the endeavor's name would understate the send, which is the same
+        // failure as overstating it and easier to miss.
+        var sends: [String] = ["your brief", "the endeavor's name and type"]
+        var lines: [String] = ["Endeavor: \(e.name) (\(e.type))"]
+
+        if e.type == "Travel" {
+            if let starts = e.starts {
+                let fmt = DateFormatter()
+                fmt.dateFormat = "d MMM yyyy"
+                let span = e.ends.map { "\(fmt.string(from: starts)) to \(fmt.string(from: $0))" }
+                    ?? fmt.string(from: starts)
+                lines.append("Dates: \(span)")
+                sends.append("the trip's dates")
+            }
+            if let place = e.destination, !place.isEmpty {
+                lines.append("Destination: \(place)")
+                sends.append("where it is")
+            }
+        }
+
+        let body = EndeavorFile.splitRaw((try? noteStore.readFile(e.relativePath)) ?? "").body
+        let summary = EndeavorFile.section("Summary", in: body)
+        if !summary.isEmpty {
+            lines.append("Summary from my note:\n\(summary)")
+            sends.append("the note's Summary")
+        }
+        let plan = EndeavorFile.section("Plan", in: body)
+        if !plan.isEmpty {
+            lines.append("Plan from my note:\n\(plan)")
+            sends.append("the note's Plan")
+        }
+        return (lines.joined(separator: "\n"), sends)
+    }
+
+    /// What the faint line says, which is what is actually sent.
+    ///
+    /// **Written from the endeavor in front of him, not a fixed string.** A
+    /// sentence that names Summary and Plan on an endeavor whose note is empty
+    /// would be describing a send that did not happen.
+    private func researchSendsLine(_ e: Endeavor) -> String {
+        "Sends: " + researchPayload(e).sends.joined(separator: ", ")
+             + ". Searches the web. Not sent: your people, Log, Reference, documents."
+    }
+
+    /// Asks the web and puts the answer in the window.
+    ///
+    /// Build 1 returned a fixed reading with no call, so that the pill, the
+    /// window, Keep, Discard, the document and the pane could be proved without
+    /// a model in the middle making every failure ambiguous. This is build 2:
+    /// only this method's body changed, exactly as that comment predicted.
+    ///
+    /// **A reading built on zero searches is reported, not hidden.** The whole
+    /// premise of this verb (D314) is that the answer came off the web rather
+    /// than out of the model's memory, and the one case where that is not true
+    /// looks identical on screen unless the screen says so.
+    private func runResearch(_ e: Endeavor) {
+        guard !researchBriefIsEmpty else { return }
+        researchRunning = true
+        researchFailure = nil
+        researchUnsourced = nil
+        let brief = researchBrief.trimmingCharacters(in: .whitespacesAndNewlines)
+        let context = researchPayload(e).text
+        Task { @MainActor in
+            do {
+                let reading = try await MacResearchService.run(brief: brief, context: context)
+
+                // **A run whose SEARCH failed is a failure, not a reading with
+                // a caveat.** The banner was honest and still not enough: it
+                // put a red line over 400 words of general knowledge and left
+                // Keep sitting there, so the end of the path was still a
+                // Satchel document titled "Research · Hannah's Graduation"
+                // holding something nothing was read for. D314 exists to stop
+                // this button becoming the model's memory; a warning the reader
+                // may click past is not stopping it.
+                //
+                // Narrower than "unsourced", deliberately. A model that
+                // searched fine and simply wrote an uncited paragraph HAS read
+                // something, and that reading keeps its banner and its Keep.
+                // Only a tool that never answered gets thrown away, and the
+                // brief survives so Research can be pressed again.
+                if let failure = reading.searchError, reading.isUnsourced {
+                    researchFailure = failure + " Nothing was searched, so there is nothing to keep."
+                    researchRunning = false
+                    return
+                }
+
+                researchReading = reading.rendered
+                // On screen as well as inside the text. The note in `rendered`
+                // travels with the document when he presses Keep; this one is
+                // what he sees BEFORE deciding whether to keep it, which is the
+                // moment the warning is worth anything.
+                researchUnsourced = reading.isUnsourced
+                    ? "Claude searched and could not use what it found."
+                    : nil
+            } catch {
+                researchFailure = error.localizedDescription
+            }
+            researchRunning = false
+        }
+    }
+
+    /// Keep: file the reading as a Satchel document and open the pane on it.
+    ///
+    /// **This is the only write in the whole verb** (D313). Discard closes the
+    /// window and nothing on disk ever knew the reading existed, which is what
+    /// makes a bad answer free.
+    ///
+    /// **The title is the fixed form** — `Research · <name> · <date>` — so a
+    /// rerun next week is a second dated chip beside this one rather than an
+    /// overwrite, and the rail reads as a history.
+    private func keepResearch(_ e: Endeavor) {
+        guard let docStore, let reading = researchReading else { return }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "d MMM yyyy"
+        let title = "Research · \(e.name) · \(fmt.string(from: Date()))"
+        Task { @MainActor in
+            do {
+                let path = try docStore.createTextDocument(
+                    title: title,
+                    text: reading,
+                    filedTo: e,
+                    tags: ["research"],
+                    description: researchBrief.trimmingCharacters(in: .whitespacesAndNewlines))
+                await docStore.reload()
+                researchOpen = false
+                researchReading = nil
+                // Straight into the pane it belongs in. Two sheets and a pane
+                // cannot swap in one turn of the run loop — Session 92 found
+                // that between the drop popover and the booking sheet.
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                paneFind.detach()
+                paneZoom.detach()
+                paneDocPath = path
+            } catch {
+                researchFailure = error.localizedDescription
+            }
         }
     }
 
@@ -3602,6 +4302,121 @@ struct TraceMacEndeavorsView: View {
                                           : .set(id: e.id, name: e.name))
             await docStore.reload()
         }
+    }
+
+    /// Reads a filed document and proposes what to add to the note (D345).
+    ///
+    /// David: *"Sometimes i will have a document that is only describing things
+    /// about the trip… take the information in the document and summarize it
+    /// and add that summary or whatever relevant detail is helpful to the
+    /// endeavor note itself within the appropriate note section."*
+    ///
+    /// **D313 said the app never writes in the note on its own, and it still
+    /// does not.** That decision was written against APPENDING research to the
+    /// note unasked, and its two reasons were crowding and the note being
+    /// David's voice. This is asked for, per document, and lands only on Keep —
+    /// so the half that mattered survives: nothing arrives in his note that he
+    /// has not read first.
+    private func summarise(_ d: TraceMacDocument) {
+        guard let e = selected else { return }
+        digesting = true
+        digestFailure = nil
+        Task { @MainActor in
+            do {
+                let result = try await DocumentScanService.summariseDocument(
+                    doc: d, noteStore: noteStore, endeavor: e)
+                digesting = false
+                digest = DigestProposal(section: result.section,
+                                        text: result.text,
+                                        readBy: result.readBy,
+                                        documentTitle: d.title)
+            } catch {
+                digesting = false
+                digestFailure = error.localizedDescription
+            }
+        }
+    }
+
+    /// The proposal, before anything is written.
+    private func digestCard(_ proposal: DigestProposal, for e: Endeavor) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(proposal.documentTitle).macLabel().foregroundStyle(.tertiary).lineLimit(1)
+                Text("Add to the note").font(MacType.row)
+            }
+            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 9)
+
+            Divider()
+
+            // **Editable before it lands.** It is going into his note in his
+            // voice, so the last hand on it should be his.
+            TextEditor(text: Binding(
+                get: { digest?.text ?? "" },
+                set: { digest?.text = $0 }
+            ))
+            .font(MacType.body)
+            .scrollContentBackground(.hidden)
+            .frame(height: 150)
+            .padding(6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(MacEditorialColor.ink.opacity(0.18), lineWidth: 1)
+            )
+            .padding(.horizontal, 14).padding(.top, 12)
+
+            HStack(spacing: 8) {
+                Text("Under").font(MacType.meta).foregroundStyle(.tertiary)
+                Picker("", selection: Binding(
+                    get: { digest?.section ?? "Reference" },
+                    set: { digest?.section = $0 }
+                )) {
+                    ForEach(DocumentScanService.noteSections, id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+                Text(proposal.readBy).font(MacType.meta).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 4)
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("Discard") { digest = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add to note") { keepDigest(proposal, on: e) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled((digest?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+        }
+        .frame(width: 420)
+    }
+
+    /// Writes it into the note, under the chosen heading.
+    ///
+    /// **Through `editorActions.applyToBody`, not by writing the file.**
+    /// The first build wrote `e.relativePath` directly and the text never
+    /// appeared. It was reaching disk; the EDITOR did not know. That view holds
+    /// the body in its own `@State`, loaded once per note, so a write
+    /// underneath it is invisible on screen and gets overwritten by the next
+    /// debounced save — the append would have been silently undone by the next
+    /// keystroke.
+    ///
+    /// `applyToBody` is the app's existing answer to "something outside the
+    /// editor wants to change this note", and `addToLog` two hundred lines
+    /// below has used it for visits since it was built. **Read the app's own
+    /// idioms before inventing a mechanism** — the same rule Session 92 paid
+    /// for with a hand-rolled notification, and I walked past it again.
+    ///
+    /// The editor's own `saveTransform` re-reads the frontmatter off disk, so
+    /// nothing here has to think about it.
+    private func keepDigest(_ proposal: DigestProposal, on e: Endeavor) {
+        guard let text = digest?.text, let section = digest?.section else { return }
+        editorActions.applyToBody? { body in
+            EndeavorFile.appending(text, under: section, in: body)
+        }
+        digest = nil
     }
 
     /// Unfiles a document from this endeavor. **The file stays in Satchel.**
@@ -3653,14 +4468,81 @@ struct TraceMacEndeavorsView: View {
     /// **It hosts `MacDocumentViewer`, the same view Satchel draws** — never a
     /// copy written for a narrow column. That is D313's rule and D318 restates
     /// it for Discover, which is the next thing that wants to live here.
-    private func readingPane(_ doc: TraceMacDocument) -> some View {
+    /// The narrowest the reading pane is worth drawing at.
+    static let paneMinWidth: Double = 320
+    /// How much body is worth keeping before the rail is asked to leave.
+    ///
+    /// **A preference, not a floor the layout must honour**, and the difference
+    /// cost a round trip. Used as a floor it was a bet about the widest band at
+    /// every window size, it lost, and the row overflowed off the right edge
+    /// with the pane's close button on it. The body now carries `minWidth: 0`
+    /// and compresses; this number only decides WHEN the rail steps aside.
+    static let detailMinWidth: Double = 420
+
+    /// How wide the pane may actually be here, and whether the rail survives.
+    ///
+    /// **Something has to give on a laptop screen, and the choice is made here
+    /// rather than by the clipping.** With the pane open there is not room for
+    /// a 200 list, a readable body, a 460 pane AND a 280 rail; the rail is what
+    /// goes, because the pane is showing a document that is already IN the rail
+    /// and the rail's other rows are one close-button away. It comes back on
+    /// its own the moment there is room — widen the window or drag the pane
+    /// narrower and it reappears, which is what makes this a tradeoff rather
+    /// than a decision taken away from him.
+    private func paneFit(available: Double, paneOpen: Bool) -> (paneWidth: Double, showsRail: Bool) {
+        let railW = Double(MacEditorialLayout.railWidth)
+        guard paneOpen else { return (0, true) }
+        // Chrome: the pane's resizer and the rail's divider.
+        let chrome: Double = 12
+        let withRail = available - Self.detailMinWidth - railW - chrome
+        if withRail >= Self.paneMinWidth {
+            return (min(paneWidth, withRail), true)
+        }
+        let withoutRail = available - Self.detailMinWidth - chrome
+        // The floor may not exceed the room. `max(paneMinWidth, ...)` alone
+        // hands back 320 on a window that has less than 320 to give, which puts
+        // the overflow straight back — the close button off the edge again, on
+        // a narrower Mac instead of this one.
+        let wanted = max(Self.paneMinWidth, min(paneWidth, withoutRail))
+        return (min(wanted, max(0, available - chrome)), false)
+    }
+
+    private func readingPane(_ doc: TraceMacDocument, railHidden: Bool) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
+                // **The title yields first.** It is the one thing here that
+                // can be shortened without losing a verb, and it was instead
+                // holding its full width and pushing the close button out of
+                // the window.
                 Text(doc.title)
                     .font(MacType.row)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Spacer(minLength: 8)
+                    .layoutPriority(0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // **The title says WHICH document; this says where it lives.**
+                // David, looking at a kept research reading: *"Id like to have
+                // the pill or a link on this extra screen to click and go to
+                // the source document in Satchel."* The verb already existed on
+                // the rail chip's context menu, which is exactly the wrong
+                // place to have to go back to when the document is open in
+                // front of you — and the rail is often not even on screen now.
+                Button {
+                    deepLinkDocumentPath?.wrappedValue = doc.relativePath
+                    selectedSection?.wrappedValue      = .documents
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "tray.full")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Satchel").font(MacType.meta)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(MacEditorialColor.ink.opacity(0.06)))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Open this document in Satchel")
                 Button {
                     paneFind.detach()
                     paneZoom.detach()
@@ -3677,6 +4559,39 @@ struct TraceMacEndeavorsView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
+
+            // **Says where the rail went** (D351). It steps aside so the pane
+            // can be read at a usable width, and a rail that simply vanished
+            // would be indistinguishable from the overflow bug this replaced.
+            if railHidden {
+                HStack(spacing: 5) {
+                    Image(systemName: "sidebar.right")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text("Documents rail hidden.")
+                        .font(MacType.meta)
+                    // **The way out sits on the sentence that explains why you
+                    // want one.** David, with the close button pushed off the
+                    // window: *"i have no way to exit this research document
+                    // window now."* One × in a corner was a single point of
+                    // failure for the only exit from a pane that also hides the
+                    // rail it was opened from.
+                    Button("Close pane") {
+                        paneFind.detach()
+                        paneZoom.detach()
+                        paneDocPath = nil
+                    }
+                    .buttonStyle(.plain)
+                    .font(MacType.meta)
+                    .foregroundStyle(Color.teal)
+                    Text("to bring it back, or widen the window.")
+                        .font(MacType.meta)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
 
             Divider()
 
@@ -3908,6 +4823,33 @@ struct MacEndeavorSheet: View {
                 if !isEdit, !seedNames.isEmpty {
                     Section("From your sentence") {
                         ForEach(seedNames) { item in seedNameRow(item) }
+                    }
+                }
+
+                // **Shown before they are written, not discovered afterwards**
+                // (D352). Save puts these into the note's Plan as tick boxes;
+                // a sheet that said nothing about them would be writing a list
+                // into his note that he first meets by scrolling to it. Read
+                // only here — the note is where a plan is edited, and a second
+                // editable copy on this sheet would be two places to change one
+                // list.
+                if !isEdit, let tasks = seed?.plan, !tasks.isEmpty {
+                    Section("Plan") {
+                        ForEach(tasks, id: \.self) { task in
+                            HStack(spacing: 7) {
+                                Image(systemName: "square")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.tertiary)
+                                Text(task).font(MacType.row)
+                            }
+                            // An SF Symbol here and a `\u{2610}` in the file are
+                            // the same box: the note editor draws that glyph as
+                            // this symbol. The preview matches what the note
+                            // will look like, not what the file will contain.
+                        }
+                        Text("Added to the note's Plan as tick boxes.")
+                            .font(MacType.meta)
+                            .foregroundStyle(.secondary)
                     }
                 }
 

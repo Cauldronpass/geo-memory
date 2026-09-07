@@ -44,6 +44,508 @@ enum DocumentScanError: LocalizedError {
     }
 }
 
+// MARK: - Todoist (D348, Session 95)
+
+/// Sends one task to Todoist, and nothing else.
+///
+/// **Lives in this file rather than a new one** so `project.pbxproj` is
+/// untouched, the same trade Session 92 made for the booking parse. It has
+/// nothing to do with document scanning and the file's name will be wrong
+/// about it; that is recorded here rather than paid for with an Xcode project
+/// edit in a session that has already shipped a lot uncompiled.
+///
+/// **One call, no sync.** Trace does not read Todoist back, does not track
+/// completion there, and does not hold an id it would have to keep valid. The
+/// task LEAVES — the reminder is completed and the day note records the
+/// hand-off (D348) — so there is nothing here that can drift out of step with
+/// what David sees at work.
+enum TodoistService {
+
+    enum SendError: LocalizedError {
+        case noToken
+        case http(Int, String)
+        case noResponse
+        /// A named project that Todoist does not have. Its own case rather
+        /// than an `http` because it is not a failure of the call - the call
+        /// succeeded and the answer was "no such project".
+        case noProject(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .noToken:
+                return "No Todoist token on this Mac. Add one in Settings (⌘,). "
+                     + "Tokens are stored per-device, so the one on your phone does not carry over."
+            case .http(let code, let body):
+                // 401 is the one worth naming: it is the only failure here that
+                // has an action attached to it.
+                if code == 401 {
+                    return "Todoist refused the token. Check it in Settings (⌘,)."
+                }
+                return "Todoist error \(code): \(body.prefix(160))"
+            case .noResponse:
+                return "No response from Todoist."
+            case .noProject(let name):
+                // **Named, and NOT sent to the Inbox instead.** A silent
+                // fallback would tick the task off here and write the day-note
+                // line saying it went to GBU while it sat in the Inbox: a
+                // record making a statement that is not true, which is the one
+                // failure this vault keeps having to correct.
+                return "No Todoist project called \(name). Create it in Todoist, or send it to the Inbox."
+            }
+        }
+    }
+
+    /// The unified v1 API. `rest/v2` answered 410 Gone, and its own body said so
+    /// more accurately than the published docs did: the docs still described v2
+    /// as current while the endpoint had already been retired. The wire format
+    /// is unchanged from v2 (JSON body, Bearer auth, `content` / `description` /
+    /// `due_date` as yyyy-MM-dd, string `id` back), so only the URL moved.
+    private static let endpoint = URL(string: "https://api.todoist.com/api/v1/tasks")!
+    private static let projectsEndpoint = URL(string: "https://api.todoist.com/api/v1/projects")!
+
+    /// Creates the task in Todoist's Inbox and returns its id.
+    ///
+    /// **Inbox, not a chosen project**, and deliberately for now: he triages at
+    /// work, and a default project picked here would be one more thing to keep
+    /// right in two places. A project picker is a Settings line and one extra
+    /// call whenever that stops being true.
+    ///
+    /// The due date is sent as a plain `YYYY-MM-DD` in `due_date`, which Todoist
+    /// reads in the account's own timezone. Sending a timestamp instead would
+    /// make a 9am task land at 4am for anyone whose Todoist timezone is not
+    /// this Mac's, and the date is the only part that matters here.
+    ///
+    /// `project` names a Todoist project to file it under; nil keeps the Inbox
+    /// behaviour above. The name is resolved against David's real project list
+    /// rather than a table of ids pasted into Settings, because a pasted id is
+    /// a second place to keep right and goes stale silently when a project is
+    /// renamed or rebuilt. A name Todoist does not have throws rather than
+    /// falling back - see `noProject`.
+    static func send(title: String, notes: String?, due: Date?,
+                     project: String? = nil) async throws -> String {
+        let token = TodoistKeyStore.key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { throw SendError.noToken }
+
+        var payload: [String: Any] = ["content": title]
+        if let project {
+            payload["project_id"] = try await projectID(named: project, token: token)
+        }
+        if let notes, !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["description"] = notes
+        }
+        if let due {
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "en_US_POSIX")
+            fmt.timeZone = .current
+            fmt.dateFormat = "yyyy-MM-dd"
+            payload["due_date"] = fmt.string(from: due)
+        }
+
+        var req = URLRequest(url: endpoint)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // **A request id, so a retry cannot double-post.** Todoist treats a
+        // repeated X-Request-Id as the same create and returns the original
+        // task. Nothing retries today; the header costs one line and means a
+        // future retry is safe by construction rather than by nobody having
+        // written one yet.
+        req.setValue(UUID().uuidString, forHTTPHeaderField: "X-Request-Id")
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw SendError.noResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw SendError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+        // The id is not used today — nothing here reads Todoist back — so a
+        // response this cannot parse is not a failure, it is a task that was
+        // created and whose id nobody wanted. Returning "" says exactly that.
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = obj["id"] as? String else { return "" }
+        return id
+    }
+
+    /// Lowercased project name to id, filled on first use and kept for the life
+    /// of the app run.
+    ///
+    /// **Cached, because the six names are fixed and his projects are not
+    /// renamed mid-afternoon.** Fetching per send would put a second network
+    /// call in front of every hand-off to buy freshness nothing here needs. The
+    /// cost is that a project created in Todoist after this app launched is not
+    /// found until relaunch, which `noProject` says plainly enough to act on.
+    private static var projectIDs: [String: String] = [:]
+
+    /// Resolves a project name against Todoist's own list.
+    ///
+    /// Matching is forgiving in ONE direction only: exact (case-insensitive)
+    /// first, then a comparison with everything that is not a letter or digit
+    /// removed, so the menu's `FP&A` finds a project called `FP & A` or `FPA`.
+    /// It never matches a prefix or a substring - `Travel` must not silently
+    /// land in `Travel Ops`.
+    private static func projectID(named name: String, token: String) async throws -> String {
+        let key = normalise(name)
+        if let hit = projectIDs[key] { return hit }
+
+        var fetched: [String: String] = [:]
+        var cursor: String? = nil
+        // Todoist v1 pages its lists. A dozen projects fit in one page, but a
+        // loop stopping at the first page would go wrong quietly, and only for
+        // the projects at the bottom of it.
+        repeat {
+            var comps = URLComponents(url: projectsEndpoint, resolvingAgainstBaseURL: false)!
+            var items = [URLQueryItem(name: "limit", value: "200")]
+            if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
+            comps.queryItems = items
+            var req = URLRequest(url: comps.url!)
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse else { throw SendError.noResponse }
+            guard (200...299).contains(http.statusCode) else {
+                throw SendError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+            }
+            let root = try? JSONSerialization.jsonObject(with: data)
+            // v1 answers `{"results": [...], "next_cursor": ...}`; v2 answered a
+            // bare array. Both are read, so the shape moving in either direction
+            // is not a silently empty list.
+            let rows: [[String: Any]]
+            if let obj = root as? [String: Any] {
+                rows = obj["results"] as? [[String: Any]] ?? []
+                cursor = obj["next_cursor"] as? String
+            } else {
+                rows = root as? [[String: Any]] ?? []
+                cursor = nil
+            }
+            for row in rows {
+                guard let n = row["name"] as? String else { continue }
+                let id = (row["id"] as? String) ?? (row["id"] as? Int).map(String.init)
+                guard let id else { continue }
+                fetched[normalise(n)] = id
+                fetched[n.lowercased()] = id
+            }
+        } while cursor != nil
+
+        projectIDs = fetched
+        guard let hit = fetched[key] ?? fetched[name.lowercased()] else {
+            throw SendError.noProject(name)
+        }
+        return hit
+    }
+
+    private static func normalise(_ s: String) -> String {
+        s.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+}
+
+// MARK: - Research (D314)
+
+/// What a research run came back with.
+struct MacResearchReading: Sendable {
+    /// The prose, as the model wrote it.
+    var text: String
+    /// Every page it actually read, in the order it read them, deduplicated by
+    /// URL. Title first, address second.
+    var sources: [(title: String, url: String)]
+    /// How many searches it ran. Kept for the footer line, but NOT the test
+    /// for whether this reading came off the web - see `isUnsourced`.
+    var searches: Int
+
+    /// **Nothing it read is under this reading**, whether it searched or not.
+    ///
+    /// The first version of this guard tested `searches == 0`, and David's
+    /// first real run walked straight through it: the model spent all five
+    /// searches, found nothing it could cite, and wrote three paragraphs of
+    /// general knowledge - the memory-wearing-a-paragraph D314 forbids,
+    /// arriving with a search count of five. The COUNT was never the question.
+    /// A reading with no sources under it has nothing behind it, and that is
+    /// as true at fifty searches as at none.
+    var isUnsourced: Bool { sources.isEmpty }
+
+    /// What the SEARCH TOOL said went wrong, if anything, in David's words
+    /// rather than the model's.
+    ///
+    /// **The model's excuse is not the error.** Two runs in a row came back
+    /// with a polite sentence - *"I ran out of search attempts for this turn"*,
+    /// then *"the tool has hit its call limit for this response"* - describing
+    /// a failure it cannot actually see the cause of, and both times the real
+    /// answer was sitting unread in a `web_search_tool_result` block this code
+    /// was skipping. One of those excuses was even wrong: the second run had a
+    /// cap of ten and had not run a single search.
+    ///
+    /// This app's own rule, from `MacAskService.explain`: say which of
+    /// configuration or fault it is. A model narrating its own tool failure can
+    /// do neither, because it was not told.
+    var searchError: String?
+
+    /// The reading as it is written to the Satchel document and shown in the
+    /// window: the prose, then a Sources block.
+    ///
+    /// **The sources are part of the TEXT, not decoration around it.** Keep
+    /// files this as a plain document (D313) and the pane renders that file;
+    /// a source list living only in the window would be gone the moment it was
+    /// kept, which is the half of the answer you most need next week.
+    var rendered: String {
+        guard !sources.isEmpty else {
+            let why = searchError
+                ?? "Claude ran \(searches == 1 ? "1 search" : "\(searches) searches") and cited nothing."
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                 + "\n\n[No sources. \(why) Read everything above as Claude's general "
+                 + "knowledge rather than as anything it looked up.]"
+        }
+        var out = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        out += "\n\nSources\n"
+        for (i, s) in sources.enumerated() {
+            let title = s.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            out += title.isEmpty ? "\(i + 1). \(s.url)\n"
+                                 : "\(i + 1). \(title) — \(s.url)\n"
+        }
+        return out
+    }
+}
+
+/// The third AI path: the brief plus a slice of the endeavor, to Anthropic,
+/// **with the server-side web search tool switched on** (D314).
+///
+/// David: *"we definately need the AI to be able to look at the web for this
+/// use case which is different i assume from the other AI buttons."* It is.
+/// `MacLocalIntelligence` never leaves the Mac and cannot see the web;
+/// `MacAskService` sends the note corpus with no tools, so its answer about a
+/// price is its memory. Neither can do this job.
+///
+/// **There is no local fallback, deliberately.** A Research button that
+/// silently dropped to the on-device model would produce confident unsourced
+/// prices — the exact failure D316's tilde exists to prevent. No key means an
+/// error saying so, never a quieter answer.
+enum MacResearchService {
+
+    private static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
+
+    /// Sonnet, matching `MacAskService`. The job is reading a handful of pages
+    /// and writing a paragraph, not reasoning hard about them.
+    private static let model = "claude-sonnet-5"
+
+    /// **Ten, raised from five on the first real run.** David asked for
+    /// Thanksgiving rental-car prices and got back "I ran out of search
+    /// attempts for this turn": five is enough to look one thing up and not
+    /// enough to compare several, which is most of what this button is for.
+    /// The ceiling still exists because this bills per search rather than per
+    /// press - a guard against a runaway loop, not a budget.
+    private static let maxSearches = 10
+
+    enum ResearchError: LocalizedError {
+        case noKey
+        case api(String)
+        case empty
+
+        var errorDescription: String? {
+            switch self {
+            case .noKey:
+                return "No Claude key on this Mac. Add one in Settings (⌘,). "
+                     + "Research always searches the web — it has no offline mode."
+            case .api(let message):
+                return message
+            case .empty:
+                return "Claude answered with nothing. Try the brief again, more specifically."
+            }
+        }
+    }
+
+    static func run(brief: String, context: String) async throws -> MacResearchReading {
+        let key = ClaudeKeyStore.key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw ResearchError.noKey }
+
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": 2000,
+            "system": systemPrompt,
+            // One extra entry in the request body, which is all D314 said it
+            // would take.
+            "tools": [[
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": maxSearches
+            ]],
+            "messages": [[
+                "role": "user",
+                "content": context.isEmpty ? brief : context + "\n\nBrief: " + brief
+            ]]
+        ]
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue(key,                forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01",       forHTTPHeaderField: "anthropic-version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Several live web fetches happen inside this one call, so it is the
+        // slowest request the app makes. 60s has not been enough in testing.
+        request.timeoutInterval = 180
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ResearchError.api("No HTTP response from Claude.")
+        }
+        guard http.statusCode == 200 else { throw explain(status: http.statusCode, body: data) }
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let blocks = json?["content"] as? [[String: Any]] ?? []
+
+        var text = ""
+        var sources: [(title: String, url: String)] = []
+        var seen = Set<String>()
+        var searches = 0
+        var searchFailure: String? = nil
+
+        for block in blocks {
+            switch block["type"] as? String {
+            case "text":
+                text += block["text"] as? String ?? ""
+                // Citations hang off the text block that used them, which is
+                // why the sources come out in the order he will read them.
+                for c in block["citations"] as? [[String: Any]] ?? [] {
+                    guard let url = c["url"] as? String, !seen.contains(url) else { continue }
+                    seen.insert(url)
+                    sources.append((title: c["title"] as? String ?? "", url: url))
+                }
+            case "server_tool_use":
+                searches += 1
+            case "web_search_tool_result":
+                // **`content` is an ARRAY of results, or a single object when
+                // the search FAILED.** Reading only the array is what let two
+                // runs report a vague excuse with the real cause one field
+                // away.
+                if let failure = block["content"] as? [String: Any],
+                   failure["type"] as? String == "web_search_tool_result_error" {
+                    searchFailure = failure["error_code"] as? String ?? "unknown"
+                    continue
+                }
+                // **Read as well as the citations, and not instead of them.** A
+                // model that searched and then wrote an uncited sentence would
+                // otherwise produce a reading with no sources at all, which
+                // looks exactly like a reading it made up. Cited pages keep
+                // their place at the front; the rest follow.
+                for r in block["content"] as? [[String: Any]] ?? [] {
+                    guard let url = r["url"] as? String, !seen.contains(url) else { continue }
+                    seen.insert(url)
+                    sources.append((title: r["title"] as? String ?? "", url: url))
+                }
+            default:
+                break
+            }
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw ResearchError.empty }
+        return MacResearchReading(text: trimmed,
+                                  sources: sources,
+                                  searches: searches,
+                                  searchError: searchFailure.map(explainSearch))
+    }
+
+    /// The search tool's own error code, as a sentence naming what to do.
+    ///
+    /// `too_many_requests` is the one worth spelling out: web search carries an
+    /// **organisation-level rate limit separate from the per-request cap**, so
+    /// a run can fail having made no searches at all while `max_uses` sat
+    /// untouched at ten. That is not a Trace limit and not a key problem, and
+    /// without this sentence it arrives as the model apologising for something
+    /// it has guessed at.
+    private static func explainSearch(_ code: String) -> String {
+        switch code {
+        case "too_many_requests":
+            return "Anthropic rate-limited web search for your workspace, not Trace, and not your key. "
+                 + "Web search has its own organisation limit separate from this app's cap of \(maxSearches) "
+                 + "per press — see Console ▸ Settings ▸ Rate limits. Waiting a minute usually clears it."
+        case "max_uses_exceeded":
+            return "Claude used all \(maxSearches) searches without reaching an answer. "
+                 + "A narrower brief usually gets there in fewer."
+        case "unavailable":
+            return "Anthropic's web search had an internal error. Failed searches are not billed; try again."
+        case "query_too_long":
+            return "Claude built a search query that was too long. Try a shorter brief."
+        case "invalid_tool_input":
+            return "Anthropic rejected the search query as malformed. Worth reporting if it repeats."
+        case "request_too_large":
+            return "The search request was too large for Anthropic to accept."
+        default:
+            return "Web search failed: \(code)."
+        }
+    }
+
+    /// Same shape as `MacAskService.explain`: name the thing to change, never
+    /// paste the server's JSON on screen.
+    private static func explain(status: Int, body: Data) -> ResearchError {
+        let raw = String(data: body, encoding: .utf8) ?? ""
+        let detail: String = {
+            guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let error = json["error"] as? [String: Any],
+                  let message = error["message"] as? String else {
+                return String(raw.prefix(200))
+            }
+            return message
+        }()
+        switch status {
+        case 401, 403:
+            return .api("Claude refused the key on this Mac. Check it in Settings (⌘,). \(detail)")
+        case 429:
+            return .api("Rate limited by your Anthropic workspace, not by Trace. "
+                      + "Raise the per-minute limit for this model in the Console, "
+                      + "under Settings ▸ Workspaces ▸ Limits. \(detail)")
+        case 400 where detail.lowercased().contains("web search"):
+            // Not a tool-level error code: an administrator turning web search
+            // off for the organisation fails the whole request instead.
+            return .api("Web search is switched off for your Anthropic organisation, so Research "
+                      + "cannot work. An admin re-enables it at Console ▸ Settings ▸ Privacy. \(detail)")
+        case 500...599:
+            return .api("Anthropic had a server error (\(status)). Nothing was sent twice; try again.")
+        default:
+            return .api("Claude returned HTTP \(status). \(detail)")
+        }
+    }
+
+    /// **Short, and it asks for prices with dates attached.**
+    ///
+    /// A research reading whose numbers have no as-of date is a reading that
+    /// silently rots: read again in March, "$240" reads as today's price. The
+    /// tilde rule is D316's and applies here for the same reason — a figure
+    /// carrying false precision is worse than a range.
+    private static let systemPrompt = """
+    You are researching one thing for David, who will read this once and act on it.
+
+    Search the web before answering. Never answer a question about prices,
+    availability, opening hours or anything else that changes, from memory.
+
+    You have a limited number of searches. Spend them on specific queries rather
+    than broad ones, and stop as soon as you can answer.
+
+    Some questions cannot be answered from the web at all: a live rental car or
+    flight price for particular dates exists only inside a booking engine and is
+    on no page. When that is the case, say so in your FIRST sentence, say why,
+    and name what would actually answer it. Then stop. Do not fill the space
+    with general background about the topic - a short honest "the web does not
+    hold this, here is where to look" is the useful answer, and three paragraphs
+    of context is not.
+
+    Write plain prose in short paragraphs. No preamble, no restating the brief,
+    no offer to help further. Lead with the answer.
+
+    No markdown. No asterisks for bold, no hashes for headings, no bullet
+    characters. This is read as plain text in a window and filed as a plain text
+    document, so **like this** arrives on screen with the asterisks showing.
+    Emphasise by writing the important thing first, not by decorating it.
+
+    Rules for numbers:
+    - Give a range with a tilde (~$180–240) rather than false precision.
+    - Say when a price or a fact was current, and name the page it came from in
+      the sentence when the reader would want to check it.
+    - If the web did not answer something, say that plainly instead of guessing.
+      "I could not find X" is a useful sentence.
+
+    Keep it under 400 words unless the brief asks for a list.
+    """
+}
+
 // MARK: - What a confirmation turned into
 
 /// A dropped confirmation, read into the fields `MacBookingSheet` already has
@@ -87,6 +589,15 @@ struct BookingParse {
     /// Set when the year the model returned is not a year the document prints
     /// (D330). Shown at the top of the sheet, above the fields it is about.
     var dateWarning: String?  = nil
+    /// Why nothing was read, in the words of the thing that refused (D338).
+    ///
+    /// **Every failure used to collapse into "Couldn't read this document."**
+    /// That sentence is true of a photograph of a deck and false of a document
+    /// the app declined to send because it is tagged private — and the second
+    /// is a refusal David can act on, while the first is not. `DocumentScanError`
+    /// has always carried the real words; they were being thrown away by a
+    /// `try?` at the call site.
+    var failureNote: String?  = nil
 
     /// True when there is something worth putting on a sheet.
     ///
@@ -124,6 +635,9 @@ struct EndeavorDraft {
     var destination: String? = nil
     /// Prose for the note's `## Summary`, in the endeavor's own skeleton.
     var summary: String?     = nil
+    /// Things to do, one per line, which become `- [ ]` boxes under `## Plan`
+    /// (D352). Empty when the text asked for none.
+    var plan: [String]       = []
     var peopleNamed: [String] = []
     var placesNamed: [String] = []
 
@@ -131,7 +645,7 @@ struct EndeavorDraft {
     var hasAnything: Bool {
         (name?.isEmpty == false) || type != nil || starts != nil
             || (destination?.isEmpty == false) || (summary?.isEmpty == false)
-            || !peopleNamed.isEmpty || !placesNamed.isEmpty
+            || !peopleNamed.isEmpty || !placesNamed.isEmpty || !plan.isEmpty
     }
 }
 
@@ -155,6 +669,52 @@ struct EndeavorSeedName: Identifiable, Hashable {
     let kind: Kind
     let exists: Bool
     var id: String { "\(kind)-\(name.lowercased())" }
+}
+
+extension BookingParse {
+
+    /// This parse as a `Booking`, for the tick list (D339).
+    ///
+    /// **The sheet's `draft()` stays where it is.** That one reads the fields
+    /// David has been editing and is the only thing that may write what he
+    /// typed; this one reads the parse and is the only thing that may write
+    /// what was read. Two callers, two sources, deliberately not merged — a
+    /// single function taking both would have to decide which wins, and that
+    /// decision belongs to whether a sheet was opened at all.
+    func asBooking(endeavorID: String, whoIDs: [String]) -> Booking {
+        let kindValue = kind ?? "Other"
+        let labels = BookingKind.labels(for: kindValue)
+        var noteLines: [String] = []
+        if let notes, !notes.isEmpty { noteLines.append(notes) }
+        if let currency, currency.uppercased() != "USD" {
+            noteLines.append("Printed in \(currency.uppercased()). The cost above is that figure, not converted.")
+        }
+        return Booking(
+            id: "",
+            name: BookingKind.writtenName(kind: kindValue,
+                                          provider: provider ?? "",
+                                          number: number ?? "",
+                                          from: from ?? "",
+                                          to: to ?? "",
+                                          start: start,
+                                          end: end),
+            kind: kindValue,
+            endeavorID: endeavorID,
+            whoIDs: whoIDs,
+            start: start,
+            end: end,
+            hasTime: start != nil && hasTime,
+            from: labels.from == nil ? nil : from,
+            to: to,
+            provider: provider,
+            number: number,
+            confirmation: confirmation,
+            notes: noteLines.joined(separator: "\n"),
+            cost: cost,
+            // A confirmation is a booking somebody made (D319).
+            booked: true,
+            status: nil)
+    }
 }
 
 // MARK: - Service
@@ -225,6 +785,112 @@ enum DocumentScanService {
         }
     }
 
+    // MARK: - Summarising a document into the note (D345, Session 95)
+
+    /// What a document says that is worth having in the endeavor's own note.
+    struct DocumentDigest {
+        /// One of the note's five headings, chosen by whatever read it.
+        var section: String
+        var text: String
+        /// Which model produced it, said out loud on the confirm step so the
+        /// answer is never anonymous.
+        var readBy: String
+    }
+
+    /// The five headings an endeavor note has (`EndeavorFile.skeleton`).
+    static let noteSections = ["Summary", "Plan", "Open items", "Log", "Reference"]
+
+    /// Reads a filed document and proposes what to add to the endeavor's note.
+    ///
+    /// **The privacy tag decides which model reads it, and nothing is asked.**
+    /// D322's card exists because a freshly dropped file has no tag yet; a
+    /// document already sitting on an endeavor has been through that door
+    /// already, and asking twice would be asking a question that has an answer
+    /// on disk. Tagged private goes to the on-device model; untagged goes to
+    /// the cloud. The confirm step names which one, so the choice is visible
+    /// even though it was not re-asked.
+    ///
+    /// **It proposes; it never writes.** D313 is explicit that the note is
+    /// David's voice and the app does not write in it on its own, which is why
+    /// research became a document instead. This does not reverse that — it
+    /// keeps the half that matters. The summary is shown first and only lands
+    /// on Keep, exactly as Research does.
+    static func summariseDocument(doc: TraceMacDocument,
+                                  noteStore: NoteStore,
+                                  endeavor: Endeavor) async throws -> DocumentDigest {
+        guard let url = noteStore.resolvedURL(for: doc.relativePath) else {
+            throw DocumentScanError.noContent
+        }
+        let text = await Task.detached { MacTextExtraction.extract(from: url) }.value
+
+        // ── The private path: read here, sent nowhere ────────────────────────
+        if doc.isPrivate {
+            guard let text, text.contains(where: { $0.isLetter || $0.isNumber }) else {
+                throw DocumentScanError.noContent
+            }
+            guard let facts = await MacLocalIntelligence.suggest(
+                text: text,
+                hint: "This document is filed to \(endeavor.name), a \(endeavor.type.lowercased())."
+            ), !facts.summary.isEmpty else {
+                throw DocumentScanError.noContent
+            }
+            // **Reference, always, on this path.** The on-device model returns
+            // one sentence and is not asked to choose a heading — a model that
+            // struggles with an arrival time should not be picking where in his
+            // note something goes.
+            return DocumentDigest(section: "Reference",
+                                  text: facts.summary,
+                                  readBy: "Read on this Mac")
+        }
+
+        // ── The cloud path ───────────────────────────────────────────────────
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DocumentScanError.noKey
+        }
+
+        let prompt = """
+        A document has been filed to something the owner is planning. Read it and say what is worth keeping in their own notes about it. Return JSON only — no explanation, no markdown fences.
+
+        What it is filed to: "\(endeavor.name)", a \(endeavor.type.lowercased())\(endeavor.destination.map { ", in \($0)" } ?? "").
+
+        Return exactly this structure:
+        {
+          "section": "Reference",
+          "text": "Check-in 4 pm, check-out 10 am. Four bedrooms, sleeps 5. Kayaks and paddleboards on site. Early check-out can be requested on the day for a fee."
+        }
+
+        Rules:
+        - section: exactly one of Summary, Plan, Open items, Log, Reference. Summary is what this endeavor IS. Plan is what is going to happen. Open items are things still to decide or do. Log is what already happened. **Reference is standing detail you would look up later, and is the right answer for most documents.**
+        - text: the useful facts, in plain prose, written for the owner's own notes. Two to five short sentences, or a few lines. No preamble, no "this document says", no heading.
+        - **Only what the document actually states.** Never add advice, context or anything you know from elsewhere.
+        - Leave out what the endeavor already records: dates and places it obviously knows, and anything that is a booking — flights, hotel reservations and their confirmation codes belong on the itinerary, not in prose.
+        - If the document holds nothing worth keeping, return an empty string for text.
+        - Return valid JSON only. No other text.
+
+        The document:
+        \(String((text ?? "").prefix(8_000)))
+        """
+
+        guard let text, text.contains(where: { $0.isLetter || $0.isNumber }) else {
+            throw DocumentScanError.noContent
+        }
+        let body = requestBody(textPrompt: prompt, maxTokens: 900, modelName: bookingModel)
+        let raw = try await sendRaw(body: body)
+        guard let data = raw.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw DocumentScanError.parseError("Could not parse JSON: \(raw.prefix(200))")
+        }
+        let digest = (obj["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !digest.isEmpty else { throw DocumentScanError.noContent }
+        let proposed = (obj["section"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+        // Matched against the five in code. A heading the model invented is not
+        // a heading this note has, and appending under it would quietly grow a
+        // sixth section (D330's rule, on a different field).
+        let section = noteSections.first { $0.caseInsensitiveCompare(proposed) == .orderedSame }
+            ?? "Reference"
+        return DocumentDigest(section: section, text: digest, readBy: "Read by Claude")
+    }
+
     // MARK: - Create parsing (D317, D321, Session 93)
 
     /// Turns a sentence into the fields of the New Endeavor sheet.
@@ -262,6 +928,7 @@ enum DocumentScanService {
           "ends": "2027-03-17",
           "destination": "Savannah",
           "summary": "Four days in Savannah over spring break, driving down from Chicago.",
+          "plan": ["Book the hotel", "Reserve a car"],
           "people": ["Hannah"],
           "places": ["Savannah"]
         }
@@ -271,7 +938,8 @@ enum DocumentScanService {
         - type: exactly one of Travel, Milestone, Gathering, Project, Decision. Travel is a trip. Milestone is a dated life event like a graduation or a wedding. Gathering is people coming together without travel being the point. Project is work with an outcome. Decision is a choice being weighed between options. Null if none of the five fits.
         - starts / ends: "YYYY-MM-DD". Null when the text implies no date. A single day gives the same date twice. Never guess a date from the type — a trip with no timing stated has no dates.
         - destination: where it happens, as a person would say it — "Savannah", "Fort Collins, CO", "Kyoto". Null for anything not tied to a place.
-        - summary: one short paragraph in plain prose, written back to the person as a statement of what this is. Their own words and facts, nothing added. Two or three sentences at most.
+        - summary: one short paragraph in plain prose, written back to the person as a statement of what this is. Their own words and facts, nothing added. Two or three sentences at most. It must NOT list or describe the things still to be done — those go in "plan" and writing them here as well says the same thing twice, once in the wrong place.
+        - plan: the things they still have to do, one short imperative per item — "Book the flights", "Arrange dog boarding". These become tick boxes, so write each as an action, not as a note about actions. [] when the text names nothing to do. Asking for "a checklist" or "checkboxes" without saying what goes on it is not itself an item; return [] rather than inventing tasks.
         - people: every person the text names, exactly as written, first names included. [] if none.
         - places: every place the text names. [] if none. The destination may also appear here.
         - Never invent a person, a place, a date or a detail the text does not contain. A field the text does not support is null or empty.
@@ -316,6 +984,9 @@ enum DocumentScanService {
         draft.ends        = localDate(obj["ends"]).date
         draft.destination = string("destination")
         draft.summary     = string("summary")
+        // Through `names`, so a model that answers with a stray empty string
+        // does not become an empty tick box nobody can name or tick.
+        draft.plan        = names("plan")
         draft.peopleNamed = names("people")
         draft.placesNamed = names("places")
         return draft
@@ -336,7 +1007,7 @@ enum DocumentScanService {
     /// "could not read it" from "read it and it holds no booking". Both open
     /// the same sheet with the same line; keeping them distinct here costs
     /// nothing and a future third answer will need it.
-    static func parseBooking(doc: TraceMacDocument, noteStore: NoteStore) async throws -> BookingParse {
+    static func parseBooking(doc: TraceMacDocument, noteStore: NoteStore) async throws -> [BookingParse] {
         guard !doc.isPrivate else { throw DocumentScanError.isPrivate }
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw DocumentScanError.noKey
@@ -366,10 +1037,10 @@ enum DocumentScanService {
                                             + "\n\nDocument text:\n" + preview,
                                        maxTokens: 900, modelName: bookingModel)
                 let raw = try await sendRaw(body: body)
-                var parse = try decodeBooking(raw)
+                var parses = try decodeBookings(raw)
                 // The prompt asks; this checks. Asking has failed on two models.
-                reconcileYear(&parse, printed: years)
-                return parse
+                for i in parses.indices { reconcileYear(&parses[i], printed: years) }
+                return parses
             }
             // No text layer — a scanned or photographed confirmation. Same
             // branch `scanPDF` takes, for the same reason.
@@ -379,7 +1050,7 @@ enum DocumentScanService {
             let body = requestBody(imageData: rendered, textPrompt: prompt, maxTokens: 900,
                                    modelName: bookingModel)
             let raw = try await sendRaw(body: body)
-            return try decodeBooking(raw)
+            return try decodeBookings(raw)
         }
 
         if doc.isImage {
@@ -391,7 +1062,7 @@ enum DocumentScanService {
             let body = requestBody(imageData: imageData, textPrompt: prompt, maxTokens: 900,
                                    modelName: bookingModel)
             let answer = try await sendRaw(body: body)
-            return try decodeBooking(answer)
+            return try decodeBookings(answer)
         }
 
         throw DocumentScanError.unsupportedFormat
@@ -414,12 +1085,12 @@ enum DocumentScanService {
     /// text, a model that returned nothing usable. The caller shows the same
     /// empty sheet and the same line as an unreadable document, because from
     /// where David is standing that is what happened.
-    static func parseBookingLocally(doc: TraceMacDocument, noteStore: NoteStore) async -> BookingParse? {
-        guard let url = noteStore.resolvedURL(for: doc.relativePath) else { return nil }
+    static func parseBookingLocally(doc: TraceMacDocument, noteStore: NoteStore) async -> [BookingParse] {
+        guard let url = noteStore.resolvedURL(for: doc.relativePath) else { return [] }
 
         let text = await Task.detached { MacTextExtraction.extract(from: url) }.value
-        guard let text, text.contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
-        guard let facts = await MacLocalIntelligence.parseBooking(text: text) else { return nil }
+        guard let text, text.contains(where: { $0.isLetter || $0.isNumber }) else { return [] }
+        guard let facts = await MacLocalIntelligence.parseBooking(text: text) else { return [] }
 
         func value(_ raw: String) -> String? {
             let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -447,13 +1118,22 @@ enum DocumentScanService {
             if let amount = Double(digits), amount > 0 { parse.cost = amount }
         }
 
-        // Same rule the cloud decode uses: fields without a count is one
-        // booking, and no fields at all is nothing read.
-        parse.found = parse.hasAnything ? 1 : 0
+        // The count the model gave, floored at one when it read anything at
+        // all. Same rule the cloud decode uses, and the same sentence at the
+        // top of the sheet — "3 bookings in this document, showing the first"
+        // — so a three-leg itinerary says so whichever model read it (D338).
+        // **One booking, and a count of how many there were.** The on-device
+        // model reads a single booking well enough and reading several at once
+        // is past it — it produced two different arrival times for one leg on
+        // consecutive runs. So the private path keeps v1's shape and says how
+        // many it saw; the cloud path returns them all (D339). A list of one is
+        // the same type either way, which is what lets the caller stop caring
+        // which model answered.
+        parse.found = max(facts.bookingCount, parse.hasAnything ? 1 : 0)
         // And the same year check. A smaller model is likelier to need it, not
         // less, and the text is already in hand.
         reconcileYear(&parse, printed: documentYears(text))
-        return parse.hasAnything ? parse : nil
+        return parse.hasAnything ? [parse] : []
     }
 
     /// Every four-digit year the document prints.
@@ -556,6 +1236,8 @@ enum DocumentScanService {
         Return exactly this structure:
         {
           "found": 1,
+          "bookings": [
+          {
           "kind": "Flight",
           "provider": "United",
           "number": "UA 1642",
@@ -567,11 +1249,14 @@ enum DocumentScanService {
           "cost": 318.40,
           "currency": "USD",
           "notes": null
+          }
+          ]
         }
 
         Rules:
-        - found: how many separate bookings this document holds. A round trip printed as two flights is 2. One hotel stay is 1. If it holds no booking at all, return 0 and null for every other field.
-        - Describe the FIRST booking only. Ignore the rest.
+        - found: how many separate bookings this document holds, and the length of the bookings array. **Describe every one of them**, in the order they are printed.
+        - A round trip printed as an outbound and a return is 2 bookings. **Connecting legs of one journey are ONE booking**, not two: DEN to STL to ORD on one ticket, one day, is a single flight from DEN to ORD. Use the first leg's departure and the last leg's arrival, and put the connection in notes.
+        - A hotel stay is 1. A car rental is 1. If the document holds no booking at all, return 0 and an empty array.
         - kind: exactly one of Flight, Shuttle, Train, Hotel, Car rental, Parking, Other. Null if it is none of those.
         - provider: who is providing it — the airline, the hotel brand, the rental company, the shuttle operator.
         - number: their reference for the thing itself, the one printed on the ticket or the door — a flight number, a room number, a rental reservation number. Null if none is printed.
@@ -596,12 +1281,34 @@ enum DocumentScanService {
     /// `"318.40"` or `"$318.40"`, and a Kind can come back correct but
     /// lowercase. Fixing that here is cheaper than explaining it in the prompt
     /// and, unlike the prompt, it cannot be ignored.
-    private static func decodeBooking(_ cleaned: String) throws -> BookingParse {
+    /// Every booking the document holds, in printed order (D339).
+    ///
+    /// **v1 read one and said how many there were.** David hit the limit three
+    /// times on one round-trip itinerary — *"i have three flights on this
+    /// itinary… the other flights are not there"* — which is three times more
+    /// than a limitation gets to be described as a design.
+    ///
+    /// **Tolerant of both shapes.** An older answer, or a model that ignores
+    /// the array, comes back as one flat object; that still decodes, as a
+    /// single booking. A shape rule enforced only by a prompt is not enforced.
+    private static func decodeBookings(_ cleaned: String) throws -> [BookingParse] {
         guard let data = cleaned.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw DocumentScanError.parseError("Could not parse JSON: \(cleaned.prefix(200))")
         }
+        let declared = (obj["found"] as? NSNumber)?.intValue ?? 0
+        let rows = (obj["bookings"] as? [[String: Any]]) ?? [obj]
+        var out: [BookingParse] = []
+        for row in rows {
+            var parse = decodeOne(row)
+            guard parse.hasAnything else { continue }
+            parse.found = max(declared, rows.count)
+            out.append(parse)
+        }
+        return out
+    }
 
+    private static func decodeOne(_ obj: [String: Any]) -> BookingParse {
         func string(_ key: String) -> String? {
             guard let raw = obj[key] as? String else { return nil }
             let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -638,16 +1345,6 @@ enum DocumentScanService {
             if let value = Double(cleanedCost), value > 0 { parse.cost = value }
         }
         if parse.cost == nil { parse.currency = nil }
-
-        if let n = obj["found"] as? NSNumber {
-            parse.found = n.intValue
-        } else if let s = string("found"), let value = Int(s) {
-            parse.found = value
-        }
-        // A model that filled the fields and forgot the count has found one.
-        // Leaving it at zero would put "Couldn't read this document" above a
-        // sheet that is plainly full.
-        if parse.found == 0, parse.hasAnything { parse.found = 1 }
 
         return parse
     }
@@ -841,6 +1538,7 @@ enum DocumentScanService {
           "tags": ["tag1", "tag2", "tag3"],
           "description": "One to two sentence summary of what this document is.",
           "title": "Short descriptive title" or null,
+          "icon": "one token from the icon list below",
           "remind": "YYYY-MM-DD" or null,
           "dated": "YYYY-MM-DD" or null,
           "people": ["Exact Name From List"]
@@ -853,6 +1551,9 @@ enum DocumentScanService {
         - dated: the date printed on the document as when it was issued or when the event it records happened, as "YYYY-MM-DD" — a receipt's transaction date, a statement date, an event date. Null if none is printed.
         - people: names from this list ONLY, exactly as spelled, of anyone the document is about, for, or from, or whom the owner's context names: [\(knownPeople.joined(separator: ", "))]. Return [] if none apply. Never return a name that is not on the list.
         - title: suggest a short human-readable title (3–6 words, title case) ONLY if the filename looks auto-generated (e.g. IMG_xxxx, CleanShot timestamp, DSC_xxxx, screenshot dates, random strings). The original filename is: \(filename). If the filename is already descriptive, return null for title. If the image has recognizable content, use that for the title. If the content is unrecognizable or too generic to name meaningfully (e.g. a plain portrait with no context, a blank or unclear photo), use the fallback title "Image \(stamp)".
+        - icon: EXACTLY one token from this list, nothing else. Choose what the document is ABOUT — its subject, the part of life it belongs to — NOT what kind of artifact it is. A receipt from a restaurant is "menu". A vet bill is "pet". The fact that something is a receipt, a bill or a screenshot is carried by the tint below and by the tags, so never spend the icon on it. Only fall back to a form-based token ("receipt", "card", "photo", "document") when the document genuinely has no subject.
+        \(DocumentIcon.promptGuide)
+        - If you are unsure of the icon, use "document".
         - Return valid JSON only. No other text.\(contextLine)
         \(content.map { "\n\nDocument text:\n\($0)" } ?? "")
         """
@@ -968,6 +1669,12 @@ enum DocumentScanService {
         }()
 
         return DocumentScanResult(tags: tags, description: description, title: title,
+                                  icon: DocumentIcon.parse(obj["icon"] as? String),
+                                  // **Not asked for, deliberately** (D344). The
+                                  // colour is the icon's now, and a model answer
+                                  // here would land in the one field that means
+                                  // "David chose this".
+                                  tint: nil,
                                   remindOn: DocumentScanResult.parseRemind(obj["remind"]),
                                   datedOn: DocumentScanResult.parseRemind(obj["dated"]),
                                   people: (obj["people"] as? [String]) ?? [])

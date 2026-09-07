@@ -108,6 +108,23 @@ struct MacTaskRow: View {
     /// existing call site's memberwise argument order moves.
     var titleLines: Int = 1
 
+    /// Extra context-menu items the host contributes, drawn under this row's
+    /// own hand-off items.
+    ///
+    /// **This exists because an inner `.contextMenu` silently REPLACES an outer
+    /// one** (D349). The endeavor rail wraps this row in its own menu carrying
+    /// "Remove from <endeavor>"; the moment this row grew a menu of its own,
+    /// that item would have disappeared with nothing on screen to say so - a
+    /// working verb deleted by a change to a different file. Handing the items
+    /// in merges the two menus instead of letting the nearer one win.
+    ///
+    /// The host supplies its own `Divider()` inside the closure, so a row with
+    /// no extras draws no stray separator. It has a default, so no existing
+    /// call site changes, and it sits after `titleLines` and before
+    /// `endeavorNames` - both of which keep their relative order, which is what
+    /// memberwise initialisation actually cares about.
+    var extraMenuItems: () -> AnyView = { AnyView(EmptyView()) }
+
     /// Every endeavor's name, so the row can mark a task that is on one
     /// (Session 87). David: *"could you add a small icon indicator when i look
     /// at the task that is in an endeavor."*
@@ -159,10 +176,82 @@ struct MacTaskRow: View {
     private var store: ReminderTaskStore { ReminderTaskStore.shared }
 
     @Environment(NoteStore.self) private var noteStore
+    /// The Todoist hand-off (D348). One task at a time; the row is gone the
+    /// moment it succeeds, so there is no "sent" state to keep here.
+    @State private var sendingToTodoist = false
+    @State private var todoistError: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if isOpen { card } else { collapsed }
+            // **Here, not inside the card** (D349). The hand-off can now be
+            // started from the row's context menu with the card shut, and on a
+            // task that is not in Work at all - neither of which draws
+            // `todoistControl`. Progress and failure reported only in a place
+            // the trigger does not require you to be looking at is a silent
+            // failure with extra steps.
+            handoffStatus
+        }
+        .contextMenu {
+            todoistMenu
+            extraMenuItems()
+        }
+    }
+
+    /// The right-click hand-off (D349). David: *"When i click it the list
+    /// becomes work automatically and then it sends it to todoist... This would
+    /// be a one button approach."*
+    ///
+    /// **Two items, because they answer two different questions.** The plain
+    /// one is the reflex - a work thing showed up, get it off this Mac, triage
+    /// it at work later. The submenu is for the times he already knows where it
+    /// belongs, and choosing then saves a triage pass at the other end.
+    ///
+    /// Absent on a Logbook row: a completed task has already left, and offering
+    /// to send it again would make a second Todoist task out of finished work.
+    @ViewBuilder
+    private var todoistMenu: some View {
+        if !completed {
+            Button { sendToTodoist() } label: {
+                Label("Send to Todoist", systemImage: "arrow.up.forward.app")
+            }
+            Menu {
+                ForEach(Self.todoistProjects, id: \.self) { name in
+                    Button(name) { sendToTodoist(project: name) }
+                }
+            } label: {
+                Label("Send to Todoist Project", systemImage: "folder")
+            }
+        }
+    }
+
+    /// His six work projects, in his own order and spelling.
+    ///
+    /// **A fixed list, not the projects fetched from Todoist**, and on purpose:
+    /// these six are where his work actually goes, and a live menu would put
+    /// every shared and archived project he has ever been added to in front of
+    /// him on a right-click. The names are still checked against Todoist when
+    /// one is chosen - `TodoistService.projectID(named:)` resolves it and says
+    /// so plainly when there is no such project - so a rename at work surfaces
+    /// as a clear refusal rather than a task filed somewhere unexpected.
+    static let todoistProjects = ["GBU", "Treasury", "FP&A", "Travel", "Personnel", "General"]
+
+    @ViewBuilder
+    private var handoffStatus: some View {
+        if sendingToTodoist {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Sending to Todoist\u{2026}")
+                    .font(MacEditorialType.meta)
+                    .foregroundStyle(MacEditorialColor.muted)
+            }
+            .padding(.bottom, 6)
+        } else if let todoistError {
+            Text(todoistError)
+                .font(MacEditorialType.meta)
+                .foregroundStyle(MacEditorialColor.accent)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 6)
         }
     }
 
@@ -636,6 +725,14 @@ struct MacTaskRow: View {
                     Text(list)
                         .font(MacEditorialType.fieldValue)
                         .foregroundStyle(MacEditorialColor.ink)
+                }
+                // **Only on Work, and only when it is not already gone**
+                // (D348). This app is personal; Todoist is where work is
+                // actually tracked. A send button on a personal task would be
+                // offering to file his dentist appointment with his employer.
+                if Self.isWorkList(list), !completed {
+                    MacEditorialRule.hair
+                    fieldRow("Work") { todoistControl }
                 }
             }
             if let alarm = task.alarmTimeString {
@@ -1427,6 +1524,132 @@ struct MacTaskRow: View {
                                    clearDate: false, list: task.list, notes: task.notes)
             onChanged()
         }
+    }
+
+    /// Which list means work. A `Set` rather than one string so a second
+    /// spelling ("Work", "Kearney") is a one-word change and not a new rule.
+    static let workLists: Set<String> = ["work"]
+
+    /// The spelling used when the app CREATES the list. `workLists` says what
+    /// counts as work; this says what to call it when there is none yet.
+    static let workListName = "Work"
+
+    static func isWorkList(_ name: String?) -> Bool {
+        guard let name else { return false }
+        return workLists.contains(name.lowercased())
+    }
+
+    /// Send this task to Todoist and take it off this Mac (D348).
+    ///
+    /// David's own shape: *"if i press the button it sends it to todoist and
+    /// checks off the task in reminders. But in addition it creates a 'Work
+    /// Items' header in the Day Note and under that header it creates the task
+    /// that was moved as a checkbox item."*
+    @ViewBuilder
+    private var todoistControl: some View {
+        HStack(spacing: 8) {
+            // Progress and errors are drawn by `handoffStatus` on the row
+            // itself, so there is exactly one place that reports a hand-off
+            // whichever way it was started.
+            if !sendingToTodoist {
+                Button { sendToTodoist() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Send to Todoist")
+                    }
+                    .font(MacEditorialType.fieldValue)
+                    .foregroundStyle(MacEditorialColor.ink)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Create it in Todoist, tick it here, and note it in today's journal")
+            }
+        }
+    }
+
+    /// **Send, then note, then complete — in that order, and it matters.**
+    ///
+    /// If the send fails nothing else happens and the task is still here, which
+    /// is the only safe direction: a task ticked off locally and never created
+    /// at work is work that has silently vanished. The day-note line is written
+    /// before the tick for the same reason — the note is the record that the
+    /// hand-off happened, and a tick with no record is the state nobody can
+    /// reconstruct.
+    ///
+    /// **The Work move happens AFTER the send, not before** (D349), even though
+    /// David described it the other way round: *"the list becomes work
+    /// automatically and then it sends it to todoist."* The end state is
+    /// identical and the failure state is not. Moving first and then failing to
+    /// send leaves a personal task sitting in Work having been changed by a
+    /// menu press that reported an error - a half-done hand-off he would have
+    /// to notice and undo. Sending first means a failure changes nothing at
+    /// all, which is the invariant the rest of this method already keeps.
+    ///
+    /// The move goes through `moveToList`, which creates the Work list if this
+    /// Mac has not got one, rather than `update(list:)`, which would skip the
+    /// move in silence.
+    private func sendToTodoist(project: String? = nil) {
+        sendingToTodoist = true
+        todoistError = nil
+        let day = task.date ?? Date()
+        Task { @MainActor in
+            do {
+                _ = try await TodoistService.send(title: task.title,
+                                                  notes: task.notes,
+                                                  due: task.date,
+                                                  project: project)
+                if !Self.isWorkList(task.list) {
+                    _ = await store.moveToList(taskID: task.id, named: Self.workListName)
+                }
+                logToDayNote(title: task.title, on: day, project: project)
+                await store.complete(taskID: task.id)
+                sendingToTodoist = false
+                onChanged()
+            } catch {
+                sendingToTodoist = false
+                todoistError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Writes `- [x] <title> → Todoist` under `## Work Items` in that day's note.
+    ///
+    /// **The tick means handed off, and the arrow says so.** A bare checked box
+    /// in his own journal would claim the work is done when it is still open at
+    /// Todoist — a record making a statement that is not true, which is the one
+    /// failure this vault keeps having to correct. The arrow is what makes the
+    /// same tick honest.
+    ///
+    /// The heading is created if the day has none, and the day's file is
+    /// created if there is no day yet: a hand-off on a day David has not
+    /// written in must still leave a record.
+    private func logToDayNote(title: String, on day: Date, project: String? = nil) {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd"
+        let path = NoteStore.dailyFolder + "/" + fmt.string(from: day) + ".md"
+        let existing = (try? noteStore.readFile(path)) ?? ""
+        // The project is named in the line when there was one, so the journal
+        // records WHERE it went and not only that it went. `→ Todoist` on its
+        // own would read the same for an Inbox drop and a filed GBU task.
+        //
+        // **`\u{2611}`, not `- [x]`** (D352, second pass). D348 shipped the
+        // markdown form earlier this session and it was wrong the whole time:
+        // this vault stores a ticked box as the glyph, `- [x] ` is only the
+        // typing shorthand `MacTextEditor` swaps on the way in, and text
+        // written straight to a file never meets that swap. The line therefore
+        // rendered as literal characters AND was invisible to
+        // `TraceMacJournalView`'s open/done counts, which filter on the two
+        // glyphs — a hand-off that did not count towards the day it happened
+        // on. Found while fixing the same mistake in the endeavor skeleton.
+        let line = project.map { "\u{2611} \(title) → Todoist (\($0))" }
+                 ?? "\u{2611} \(title) → Todoist"
+        // Idempotent: pressing twice on a task that failed to complete the
+        // first time must not write the line twice.
+        guard !existing.contains(line) else { return }
+        let updated = EndeavorFile.appending(line, under: "Work Items", in: existing)
+        try? noteStore.writeFile(path, content: updated)
     }
 
     /// The `[[wikilinks]]` are kept and the visible prose replaced, so editing a

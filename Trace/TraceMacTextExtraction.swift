@@ -125,6 +125,57 @@ enum MacTextExtraction {
     /// `http` and `https` only. A phone number or an email address that the
     /// detector also recognises is a different kind of thing and belongs in a
     /// different row, if it ever earns one.
+    /// The same addresses, but as RANGES in the original text, for rendering
+    /// the words in place as links (D351).
+    ///
+    /// **Not built on `links(in:)`, and the differences are the reason.** That
+    /// one deduplicates and stops at twelve, which is right for a row of chips
+    /// and wrong here: a document naming the same site in three paragraphs
+    /// should have three live links, and the thirteenth source in a research
+    /// reading should not be the one that quietly is not clickable. What the
+    /// two DO share is the rules — the trailing-punctuation strip and the
+    /// http/https test, both in `cleanedURL` so they cannot drift apart.
+    nonisolated static func linkRanges(in text: String) -> [(Range<String.Index>, URL)] {
+        guard !text.isEmpty,
+              let detector = try? NSDataDetector(
+                  types: NSTextCheckingResult.CheckingType.link.rawValue)
+        else { return [] }
+
+        let ns = text as NSString
+        var out: [(Range<String.Index>, URL)] = []
+        for match in detector.matches(in: text,
+                                      range: NSRange(location: 0, length: ns.length)) {
+            guard let raw = match.url?.absoluteString,
+                  var range = Range(match.range, in: text) else { continue }
+            let matched = String(text[range])
+            guard let url = cleanedURL(from: raw) else { continue }
+            // The strip has to move the RANGE too, or the link would cover a
+            // full stop the URL itself no longer contains — the underline would
+            // disagree with where the click goes.
+            var trimmed = matched
+            while let last = trimmed.last, ".,;:!?)]'\"".contains(last) {
+                trimmed.removeLast()
+                range = range.lowerBound..<text.index(before: range.upperBound)
+            }
+            guard !trimmed.isEmpty else { continue }
+            out.append((range, url))
+        }
+        return out
+    }
+
+    /// The scheme and punctuation rules, in one place because two callers use
+    /// them and a rule copied is a rule that diverges.
+    nonisolated static func cleanedURL(from raw: String) -> URL? {
+        var raw = raw
+        while let last = raw.last, ".,;:!?)]'\"".contains(last) { raw.removeLast() }
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.host != nil
+        else { return nil }
+        return url
+    }
+
     nonisolated static func links(in text: String) -> [URL] {
         guard !text.isEmpty,
               let detector = try? NSDataDetector(
@@ -136,13 +187,13 @@ enum MacTextExtraction {
         var out: [URL] = []
         for match in detector.matches(in: text,
                                       range: NSRange(location: 0, length: ns.length)) {
-            guard var raw = match.url?.absoluteString else { continue }
-            while let last = raw.last, ".,;:!?)]\'\"".contains(last) { raw.removeLast() }
-            guard let url = URL(string: raw),
-                  let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https",
-                  url.host != nil,
-                  seen.insert(raw.lowercased()).inserted
+            // Through `cleanedURL`, not a second copy of the same two rules.
+            // They were duplicated here for one session and `linkRanges`'s
+            // comment already claimed they were shared, which would have made
+            // the comment the thing that was wrong rather than the code.
+            guard let raw = match.url?.absoluteString,
+                  let url = cleanedURL(from: raw),
+                  seen.insert(url.absoluteString.lowercased()).inserted
             else { continue }
             out.append(url)
             // A page of small print can carry dozens. Twelve is more than anyone

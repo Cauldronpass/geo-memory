@@ -724,9 +724,37 @@ enum EndeavorFile {
     /// the note rather than a frontmatter field because that is where he reads
     /// it, and because `## Summary` is already what the AI window will send
     /// back to the model later (D317).
-    static func skeleton(summary: String? = nil) -> String {
+    /// `plan` becomes real `- [ ]` lines under `## Plan` (D352).
+    ///
+    /// **Checkboxes, not a sentence about checkboxes.** David asked Create for
+    /// an endeavor with "checkboxes for things i have to do", and the model had
+    /// nowhere to put them, so they came back inside the Summary paragraph as
+    /// *"there's still a checklist to complete, including booking airfare and
+    /// booking shuttles"* — prose describing a to-do list, in the one section
+    /// that is not a to-do list. A field with no home ends up in the field next
+    /// to it.
+    static func skeleton(summary: String? = nil, plan: [String] = []) -> String {
         let opening = (summary?.trimmingCharacters(in: .whitespacesAndNewlines))
             .flatMap { $0.isEmpty ? nil : $0 } ?? ""
+        let tasks = plan
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            // **`\u{2610}`, not `- [ ]`, and the comment above was WRONG when
+            // it first said this** (D352, second pass). The vault stores a
+            // checkbox as the Unicode glyph; `- [ ] ` is only a TYPING
+            // shorthand that `MacTextEditor`'s swap table rewrites to the glyph
+            // as you type it. Text written straight to the file never passes
+            // through that table, so seeded lines stayed literal `- [ ] Book
+            // airfare` next to the real boxes David types. He photographed one
+            // of each to show the difference.
+            //
+            // `MarkdownTextStorage`'s own header comment claims it supports
+            // "- [ ] / - [x] checkboxes"; its styling code matches only the two
+            // glyphs. **A stale comment sent me to the wrong format** — the
+            // format is decided at `MarkdownTextStorage.applyStyles`, and that
+            // is the only place worth reading.
+            .map { "\u{2610} " + $0 }
+            .joined(separator: "\n")
         return """
         ## Summary
 
@@ -734,6 +762,7 @@ enum EndeavorFile {
 
         ## Plan
 
+        \(tasks)
 
         ## Open items
 
@@ -744,6 +773,78 @@ enum EndeavorFile {
         ## Reference
 
         """
+    }
+
+    /// The text under one `## ` heading in an endeavor note, trimmed.
+    ///
+    /// **Empty is a real answer.** The AI window's faint line names Summary and
+    /// Plan only when they have something in them (D317), because a sentence
+    /// promising to send a section that is blank describes a send that does not
+    /// happen. So this returns "" rather than nil for a heading that exists and
+    /// holds nothing, and the caller cannot tell those apart — deliberately,
+    /// because for this purpose they are the same.
+    ///
+    /// Stops at the next `## `, so `## Summary` does not swallow `## Plan`.
+    static func section(_ heading: String, in body: String) -> String {
+        var out: [String] = []
+        var inside = false
+        for line in body.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("## ") {
+                if inside { break }
+                inside = trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces)
+                    .caseInsensitiveCompare(heading) == .orderedSame
+                continue
+            }
+            if inside { out.append(line) }
+        }
+        return out.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The body with `text` added at the end of one `## ` section (D345).
+    ///
+    /// **Appends, never replaces.** What is under a heading is David's, and a
+    /// summary arriving beside it is an addition to his note rather than a
+    /// version of it. A blank line separates them so two additions on two days
+    /// do not run together.
+    ///
+    /// **A heading that is not there is created at the end**, rather than the
+    /// text being dropped. An endeavor note written before a section existed,
+    /// or edited by hand into a different shape, must still be able to receive
+    /// something — silently discarding it would be the worst of the three
+    /// possible answers.
+    static func appending(_ text: String, under heading: String, in body: String) -> String {
+        let addition = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !addition.isEmpty else { return body }
+
+        var lines = body.components(separatedBy: "\n")
+        var start: Int? = nil
+        var end = lines.count
+        for (i, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("## ") else { continue }
+            if start != nil { end = i; break }
+            if trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces)
+                .caseInsensitiveCompare(heading) == .orderedSame {
+                start = i
+            }
+        }
+
+        guard start != nil else {
+            var out = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !out.isEmpty { out += "\n\n" }
+            return out + "## \(heading)\n\n" + addition + "\n"
+        }
+
+        // Back up over the blank lines the section ends with, so the addition
+        // lands under the last written line rather than after a gap.
+        var insertAt = end
+        while insertAt > (start! + 1),
+              lines[insertAt - 1].trimmingCharacters(in: .whitespaces).isEmpty {
+            insertAt -= 1
+        }
+        lines.insert(contentsOf: ["", addition], at: insertAt)
+        return lines.joined(separator: "\n")
     }
 
     /// A brand-new endeavor, not yet written anywhere.
@@ -759,6 +860,10 @@ enum EndeavorFile {
                             placeID: String? = nil,
                             stampsCaptures: Bool? = nil,
                             summary: String? = nil,
+                            /// Seeded `- [ ]` lines for `## Plan` (D352).
+                            /// Declared after `summary` so no existing labelled
+                            /// call site moves.
+                            plan: [String] = [],
                             existingIDs: [String]) -> Endeavor {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmed.isEmpty ? "Untitled" : trimmed
@@ -776,7 +881,7 @@ enum EndeavorFile {
             stampsCaptures: stampsCaptures
                 ?? Endeavor.defaultStampsCaptures(starts: starts, ends: ends),
             relativePath: "\(folder)/\(safeFilename(finalName)).md",
-            body: skeleton(summary: summary)
+            body: skeleton(summary: summary, plan: plan)
         )
     }
 

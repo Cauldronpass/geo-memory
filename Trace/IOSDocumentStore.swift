@@ -104,7 +104,9 @@ class iOSDocumentStore {
                     note: body.note,
                     summary: body.summary,
                     extractedText: body.text,
-                    textExtracted: body.hasTextSection
+                    textExtracted: body.hasTextSection,
+                    arrived: nil,
+                    url: sidecar?.url ?? ""
                 )
                 result.append(doc)
             }
@@ -170,6 +172,9 @@ class iOSDocumentStore {
         data.linkedNote  = (linkedNote?.isEmpty ?? true) ? nil : linkedNote
         data.people      = people
         data.description = description
+        // Preserved, never set from here: iOS has no URL row yet, and a store
+        // that rebuilds frontmatter without a key is a store that deletes it.
+        data.url          = existing?.url ?? (doc.url.isEmpty ? nil : doc.url)
 
         data.endeavor     = resolvedString(new: endeavor,     existing: existing?.endeavor)
         data.endeavorName = resolvedString(new: endeavorName, existing: existing?.endeavorName)
@@ -216,6 +221,7 @@ class iOSDocumentStore {
             linkedNote: doc.linkedNote,
             people: doc.people,
             description: doc.description,
+            url: doc.url.isEmpty ? nil : doc.url,
             endeavor: doc.endeavor,
             endeavorName: doc.endeavorName,
             pinned: doc.pinned,
@@ -438,6 +444,11 @@ class iOSDocumentStore {
         var linkedNote: String?
         var people: [String]
         var description: String?
+        /// Sidecar key `url` (D350). Mirrors `TraceMacDocumentStore`. Present
+        /// here so the phone's next save does not strip a URL typed on the Mac
+        /// - the `remind` bug, which is the reason that field carries the
+        /// longest comment in this file.
+        var url: String?
         var endeavor: String?
         var endeavorName: String?
         var pinned: Bool?
@@ -453,6 +464,7 @@ class iOSDocumentStore {
             linkedNote: String? = nil,
             people: [String] = [],
             description: String? = nil,
+            url: String? = nil,
             endeavor: String? = nil,
             endeavorName: String? = nil,
             pinned: Bool? = nil,
@@ -467,6 +479,7 @@ class iOSDocumentStore {
             self.linkedNote = linkedNote
             self.people = people
             self.description = description
+            self.url = url
             self.endeavor = endeavor
             self.endeavorName = endeavorName
             self.pinned = pinned
@@ -646,6 +659,9 @@ class iOSDocumentStore {
             let escaped = trimmedDesc.replacingOccurrences(of: "\"", with: "'")
             content += "description: \"\(escaped)\"\n"
         }
+        // Between `description` and `remind`, byte-identical to
+        // `TraceMacDocumentStore.renderSidecar`. See the note there on order.
+        if let url = data.url, !url.isEmpty { content += "url: \(url)\n" }
         if let remind = data.remindOn { content += "remind: \(fmt.string(from: remind))\n" }
         if let icon = data.icon { content += "icon: \(icon.rawValue)\n" }
         if let tint = data.tint { content += "tint: \(tint.rawValue)\n" }
@@ -703,6 +719,9 @@ class iOSDocumentStore {
                 let stripped = value.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
                 data.people = stripped.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             case "description": data.description = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            case "url":
+                let v = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                data.url = v.isEmpty ? nil : v
 
             // MARK: Satchel keys (scope doc §4)
             case "endeavor":

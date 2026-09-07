@@ -78,7 +78,8 @@ final class TraceMacEndeavorStore {
                 starts: Date?,
                 ends: Date?,
                 destination: String? = nil,
-                summary: String? = nil) async throws -> Endeavor {
+                summary: String? = nil,
+                plan: [String] = []) async throws -> Endeavor {
         let endeavor = EndeavorFile.newEndeavor(
             name: name,
             type: type,
@@ -86,6 +87,7 @@ final class TraceMacEndeavorStore {
             ends: ends,
             destination: destination,
             summary: summary,
+            plan: plan,
             existingIDs: endeavors.map(\.id)
         )
         try noteStore.writeFile(endeavor.relativePath,
