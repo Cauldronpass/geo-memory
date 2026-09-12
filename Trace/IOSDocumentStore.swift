@@ -156,7 +156,13 @@ class iOSDocumentStore {
         /// without `remindOn`, so every full save from Satchel's editor or
         /// capture sheet silently deleted the reminder date — the same bug the
         /// Mac store fixed for itself and recorded at its top.
-        remindOn: Date?? = nil
+        remindOn: Date?? = nil,
+        /// Same three-state shape as `remindOn`: `nil` preserves what is on
+        /// disk, `.some("")` clears the key, `.some(text)` sets it. Added
+        /// Session 96 with Satchel's URL row - until then this method could
+        /// only preserve `url`, which was right while nothing on the phone
+        /// could type one and wrong the moment something could.
+        url: String?? = nil
     ) throws {
         let existing = parseSidecar(at: doc.sidecarPath)
         // Read the body back BEFORE rewriting. Every caller that does not know
@@ -172,9 +178,18 @@ class iOSDocumentStore {
         data.linkedNote  = (linkedNote?.isEmpty ?? true) ? nil : linkedNote
         data.people      = people
         data.description = description
-        // Preserved, never set from here: iOS has no URL row yet, and a store
-        // that rebuilds frontmatter without a key is a store that deletes it.
-        data.url          = existing?.url ?? (doc.url.isEmpty ? nil : doc.url)
+        // **Preserve-by-default, exactly as the Mac store does it** (D350). A
+        // store that rebuilds frontmatter without a key is a store that DELETES
+        // that key on its next save, which is the Session 63 `remind` bug. Every
+        // caller that knows nothing about `url` still passes nil and still keeps
+        // it; only Satchel's URL row passes a value.
+        switch url {
+        case .none:
+            data.url = existing?.url ?? (doc.url.isEmpty ? nil : doc.url)
+        case .some(let value):
+            let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            data.url = trimmed.isEmpty ? nil : trimmed
+        }
 
         data.endeavor     = resolvedString(new: endeavor,     existing: existing?.endeavor)
         data.endeavorName = resolvedString(new: endeavorName, existing: existing?.endeavorName)

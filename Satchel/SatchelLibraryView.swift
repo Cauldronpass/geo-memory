@@ -2331,6 +2331,10 @@ struct SatchelDocumentDetailView: View {
     /// than computed in `body` because `body` re-renders on every keystroke in
     /// the title field and the detector is not free.
     @State private var links: [URL] = []
+    /// Sidecar `url:` - one web address he typed himself. See `urlField`, and
+    /// note that it is the opposite of `links` above: that one is recomputed
+    /// from the page every load, this one cannot be recomputed at all.
+    @State private var docURL = ""
 
     /// The live copy from the store, so a re-scan or a pin toggle is reflected
     /// without popping the screen.
@@ -2366,6 +2370,7 @@ struct SatchelDocumentDetailView: View {
                 dateField
                 remindField
                 linksField
+                urlField
                 tasksField
                 // "Filed to" sits ABOVE the typed note and Summary as of
                 // 2026-07-28. It used to be second from the bottom, next to
@@ -2761,7 +2766,7 @@ struct SatchelDocumentDetailView: View {
                                 Image(systemName: "link")
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundStyle(Color.teal)
-                                Text(linkLabel(url))
+                                Text(TraceMacDocument.webLabel(url))
                                     .font(.system(size: 12.5, weight: .medium))
                                     .foregroundStyle(Color.satchelInk)
                                     .lineLimit(1)
@@ -2782,16 +2787,47 @@ struct SatchelDocumentDetailView: View {
         }
     }
 
-    /// Host without `www.`, plus the last path component when it adds meaning
-    /// and the whole thing still fits on one line of a phone.
-    private func linkLabel(_ url: URL) -> String {
-        var host = url.host ?? url.absoluteString
-        if host.lowercased().hasPrefix("www.") { host = String(host.dropFirst(4)) }
-        let last = url.pathComponents.last ?? ""
-        if last.count > 1, last != "/", host.count + last.count < 44 {
-            return "\(host)/\(last)"
+
+    // MARK: URL
+
+    /// One web address the document is ABOUT, typed by hand (D350, iOS half).
+    ///
+    /// **Directly under Links, and that adjacency is the explanation.** The row
+    /// above is every address printed ON the page, recomputed on every load and
+    /// stored nowhere. This one is a fact about the document that the document
+    /// does not contain - the shuttle timetable with no booking site anywhere in
+    /// its own text - so nothing can recompute it and it has to be written down.
+    /// Two rows that look alike and are opposites: side by side, the difference
+    /// is at least visible.
+    ///
+    /// **The open button appears only when the text can actually be opened**,
+    /// tested on what he typed rather than assumed from a field named URL. A
+    /// button that is always there and does nothing for half its life claims
+    /// this is a link before anything has established that it is one. The test
+    /// is `TraceMacDocument.openableURL`, the same one the Mac row asks.
+    private var urlField: some View {
+        field("URL") {
+            HStack(spacing: 10) {
+                TextField("https://", text: $docURL)
+                    .font(.system(size: 13))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .onChange(of: docURL) { _, _ in dirty = true }
+
+                if let open = TraceMacDocument.openableURL(docURL) {
+                    Button { openURL(open) } label: {
+                        Image(systemName: "arrow.up.forward")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.teal)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .satchelCard()
         }
-        return host
     }
 
     // MARK: Tasks (Session 81, D234 — the iOS half of D230)
@@ -3410,6 +3446,7 @@ struct SatchelDocumentDetailView: View {
         people = doc.people
         docDate = doc.created ?? Date()
         links = MacTextExtraction.links(in: doc.extractedText)
+        docURL = doc.url
     }
 
     private func save() {
@@ -3448,6 +3485,7 @@ struct SatchelDocumentDetailView: View {
             && note == doc.note
             && remindOn == doc.remindOn
             && people == doc.people
+            && docURL.trimmingCharacters(in: .whitespacesAndNewlines) == doc.url
             && Calendar.current.isDate(docDate, inSameDayAs: doc.created ?? .distantPast)
         if unchanged {
             dirty = false
@@ -3477,7 +3515,12 @@ struct SatchelDocumentDetailView: View {
             // preserved. The two never write over each other — that separation
             // is the whole reason they are different sections.
             note: note,
-            remindOn: .some(remindOn)
+            remindOn: .some(remindOn),
+            // Passed explicitly on every save, not only when it has a value:
+            // this screen owns the field, so an emptied box has to be able to
+            // remove the key. `nil` here would mean "preserve", and clearing a
+            // URL would silently do nothing.
+            url: .some(docURL)
         )
         dirty = false
         Task { await store.reload() }

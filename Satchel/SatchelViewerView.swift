@@ -1,5 +1,7 @@
 import SwiftUI
 import PDFKit
+import ImageIO
+import UniformTypeIdentifiers
 
 // MARK: - SatchelViewerView
 //
@@ -29,7 +31,17 @@ struct SatchelViewerView: View {
     @Environment(\.openURL) private var openURL
     @State private var noteStore = NoteStore.shared
     @State private var endeavorStore = SatchelEndeavorStore()
-    @State private var showRemindSheet = false
+    /// **One sheet host, one presentation.** This screen had a single `.sheet`
+    /// for Remind me, and adding a second modifier for the tasks panel is the
+    /// mistake this codebase has now made twice: *"two `.sheet` modifiers on one
+    /// view is a coin flip and the later one wins silently"* (the Mac's D36),
+    /// which is exactly how Dayflow's task sheet lost its date picker. A case
+    /// rather than a race, and a third sheet is another case.
+    private enum ViewerSheet: String, Identifiable {
+        case remind, tasks
+        var id: String { rawValue }
+    }
+    @State private var sheet: ViewerSheet? = nil
     @State private var remindDue = Date()
     @State private var remindState: ReminderButtonState = .idle
     @State private var pageCount: Int = 0
@@ -74,7 +86,12 @@ struct SatchelViewerView: View {
                 }
             }
         }
-        .sheet(isPresented: $showRemindSheet) { remindSheet }
+        .sheet(item: $sheet) { which in
+            switch which {
+            case .remind: remindSheet
+            case .tasks:  tasksSheet
+            }
+        }
         .task {
             await endeavorStore.reload()
             guard document.isPDF, let fileURL else { return }
@@ -156,6 +173,8 @@ struct SatchelViewerView: View {
                 Spacer(minLength: 0)
             }
 
+            descriptionLines
+
             filedToStrip
                 .padding(.top, 11)
 
@@ -201,6 +220,32 @@ struct SatchelViewerView: View {
         return names.count == 1 ? names[0] : "\(names.count) people"
     }
 
+    /// What the document actually SAYS, two lines of it.
+    ///
+    /// **Everything else on this card is about the file and nothing was about
+    /// the contents.** PDF, two pages, the date, the tags, where it is filed -
+    /// all true, none of it telling him which Marriott receipt this is. The
+    /// description was written by the scan or by him and then shown only inside
+    /// Edit info, which is the same complaint that put the endeavor and the
+    /// linked note on this card in the first place: Edit info was doing double
+    /// duty as the only way to READ.
+    ///
+    /// **Two lines, clamped, and never a third.** This is a caption under a
+    /// document, not the document. A description long enough to need scrolling
+    /// belongs to the sheet that can edit it.
+    @ViewBuilder
+    private var descriptionLines: some View {
+        let text = current.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            Text(text)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Color.satchelSecondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 9)
+        }
+    }
+
     // MARK: Filed to
     //
     // WHAT THIS FIXES. David, 2026-07-30: *"I dont even have a way to know what
@@ -225,13 +270,27 @@ struct SatchelViewerView: View {
         // Tasks and people join the test, or a document carrying three open
         // tasks and no endeavor would draw "Unfiled" beside a chip saying it has
         // three open tasks — the strip contradicting itself in one row.
+        // A typed URL counts, for the same reason tasks and people do: a chip
+        // saying `marriott.com` beside a chip saying "Unfiled" is the strip
+        // contradicting itself in one row. And the case "Unfiled" exists for is
+        // a document straight out of the scanner, which cannot have a URL -
+        // Edit info is the only place one can be typed, so a document carrying
+        // one has already been through the door this chip opens.
         let hasFiling = current.endeavorName?.isEmpty == false
             || noteName != nil
             || !current.tags.isEmpty
             || !current.people.isEmpty
             || openTaskCount > 0
+            || TraceMacDocument.openableURL(current.url) != nil
 
-        HStack(spacing: 6) {
+        // **Wraps rather than squeezes.** This was a plain `HStack` while it
+        // held at most three chips. The URL is a fifth, and a chip row that
+        // cannot fit compresses every `lineLimit(1)` label in it at once - the
+        // endeavor name and the host both truncating to nothing, on the row
+        // whose entire purpose is that he can READ this without opening Edit
+        // info. `SatchelFlowLayout` is the tag field's own layout, so a second
+        // line here looks like the second line of tags directly below it.
+        SatchelFlowLayout(spacing: 6) {
             if let endeavor = current.endeavorName, !endeavor.isEmpty {
                 if let url = endeavorAppURL(for: current.endeavor) {
                     Button { openURL(url) } label: {
@@ -257,6 +316,21 @@ struct SatchelViewerView: View {
                 }
             }
 
+            // **The typed URL, and it is the one chip here that can always be
+            // tapped** (D355, D358). A person is a name with no record to open
+            // and a document with two tasks has no single task to open, so both
+            // of those are told rather than tapped. A URL has exactly one
+            // destination by definition. It was invisible on this card until
+            // now, readable only by opening Edit info, which is precisely the
+            // thing this row exists to stop.
+            if let web = TraceMacDocument.openableURL(current.url) {
+                Button { openURL(web) } label: {
+                    chip(TraceMacDocument.webLabel(web), symbol: "link",
+                         tint: Color.teal, navigates: true)
+                }
+                .buttonStyle(.plain)
+            }
+
             if current.pinned {
                 chip("In Kit", symbol: "pin.fill", tint: Color.satchelPin, navigates: false)
             } else if let trip = kitTrip {
@@ -276,21 +350,31 @@ struct SatchelViewerView: View {
             // These are the two that were not: the tasks band lives inside Edit
             // info, and `people` was on the model and drawn nowhere at all.
             //
-            // **Neither navigates, and that is a decision.** A person is stored
-            // as a NAME in the sidecar, not a record id, and no `person` route
-            // exists in any of the three apps — a chip that opened a search
-            // would be pretending. Tasks have `dayflow://task?id=`, which needs
-            // ONE id: it would work for a document with a single task and not
-            // for one with two, and a chip that sometimes acts is worse than a
-            // chip that never does. This file's own rule, three chips above: a
-            // chip that both tells you something and commits you to something is
-            // how a row ends up doing two jobs.
+            // **People are told; tasks now act** (D359, and the second half of
+            // this note is a correction).
             //
-            // Edit info's band remains where you ACT on them. This row's whole
-            // job is that you no longer have to go there to KNOW.
+            // A person is stored as a NAME in the sidecar, not a record id, and
+            // no `person` route exists in any of the three apps, so a chip that
+            // opened a search would be pretending. That still holds.
+            //
+            // Tasks were told for a reason about ROUTES: `dayflow://task?id=`
+            // needs one id, so the chip would open something for a document with
+            // one task and nothing for a document with two, and a chip that
+            // sometimes acts is worse than one that never does. The reasoning
+            // was right and the conclusion settled for too little. **The answer
+            // was never a route.** `SatchelDocTasksPanel` already shows,
+            // completes, unticks and creates, and it works the same for one task
+            // or six - it was simply buried inside Edit info, which is the trip
+            // this row exists to save. Pressing the chip presents it here.
+            //
+            // Editing a task is still the task apps' job (the panel's own rule,
+            // D177): this is ticking and adding, not a second task editor.
             if openTaskCount > 0 {
-                chip(openTaskCount == 1 ? "1 task" : "\(openTaskCount) tasks",
-                     symbol: "circle.dashed", tint: Color.satchelBlue, navigates: false)
+                Button { sheet = .tasks } label: {
+                    chip(openTaskCount == 1 ? "1 task" : "\(openTaskCount) tasks",
+                         symbol: "circle.dashed", tint: Color.satchelBlue, navigates: true)
+                }
+                .buttonStyle(.plain)
             }
 
             if let people = peopleLabel {
@@ -310,7 +394,6 @@ struct SatchelViewerView: View {
                 .buttonStyle(.plain)
             }
 
-            Spacer(minLength: 0)
         }
     }
 
@@ -400,7 +483,7 @@ struct SatchelViewerView: View {
                 remindDue = current.remindOn
                     ?? Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
                 remindState = .idle
-                showRemindSheet = true
+                sheet = .remind
             } label: {
                 actionLabel(current.remindOn == nil ? "Remind me" : "Due " +
                             current.remindOn!.formatted(.dateTime.month(.abbreviated).day()),
@@ -481,12 +564,49 @@ struct SatchelViewerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showRemindSheet = false }
+                    Button("Cancel") { sheet = nil }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") { addReminder() }
                         .fontWeight(.semibold)
                         .disabled(remindState == .working)
+                }
+            }
+        }
+    }
+
+    /// The tasks band, presented over the document (D359).
+    ///
+    /// **The document's title is the heading, not "Tasks".** The panel already
+    /// carries its own TASKS label, its done summary and its + button. A sheet
+    /// titled Tasks sitting above a section titled TASKS is the same word twice
+    /// on one screen, and the fix for that is to delete the weaker copy rather
+    /// than reword both - the note already written against the Endeavor screen
+    /// naming itself three times. What this sheet has to say is WHICH document
+    /// these belong to, because it is covering it.
+    ///
+    /// **Full height, not half.** A half sheet would show the document behind it
+    /// and read better, right up until he presses `+`: the compose field is at
+    /// the bottom of the panel and the keyboard rises over exactly that part of
+    /// a medium detent, so the one control he just asked for would be the one
+    /// under his thumb and out of sight.
+    ///
+    /// The count on the chip follows a tick without anything here refreshing it:
+    /// the panel completes through the shared task store, which this screen
+    /// already reads.
+    private var tasksSheet: some View {
+        NavigationStack {
+            ScrollView {
+                SatchelDocTasksPanel(document: current)
+                    .padding(.top, 10)
+            }
+            .satchelBackground()
+            .navigationTitle(current.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { sheet = nil }
+                        .fontWeight(.semibold)
                 }
             }
         }
@@ -532,7 +652,7 @@ struct SatchelViewerView: View {
                     ReminderService.link(id, to: key)
                 }
                 remindState = .idle
-                showRemindSheet = false
+                sheet = nil
             } catch ReminderService.Failure.denied {
                 remindState = .failed("Date saved. Satchel does not have access to Reminders, so no notification was set. Settings › Privacy › Reminders.")
             } catch {
@@ -549,7 +669,7 @@ struct SatchelViewerView: View {
             // Clearing the date here has to close the reminder there, or the
             // notification outlives the thing that asked for it.
             await ReminderService.complete(key: key)
-            showRemindSheet = false
+            sheet = nil
         }
     }
 
@@ -706,12 +826,40 @@ struct SatchelImagePreview: View {
 
         let target = url
         let loaded: UIImage? = await Task.detached(priority: .userInitiated) {
-            guard let data = try? Data(contentsOf: target) else { return nil }
-            return UIImage(data: data)
+            SatchelImagePreview.downsampled(at: target)
         }.value
 
         image = loaded
         isLoading = false
+    }
+
+    /// Decode at screen size rather than at full resolution.
+    ///
+    /// **A phone screenshot is 3.2 megapixels and decodes to about 12MB of
+    /// memory** to be drawn 400 points tall. `UIImage(data:)` keeps every one of
+    /// those pixels alive for the whole time the viewer is open, and a document
+    /// photographed rather than screenshotted is several times worse.
+    /// `CGImageSourceCreateThumbnailAtIndex` does the scaling during decode, so
+    /// the full-size bitmap never exists.
+    ///
+    /// **2600 on the long edge, not the screen's own width.** Zoom goes to 4x,
+    /// and an image decoded at exactly fit size turns to mush the moment he
+    /// pinches in to read a check number, which is most of why this viewer
+    /// zooms at all.
+    nonisolated static func downsampled(at url: URL, maxPixel: CGFloat = 2600) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel
+        ]
+        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+            return UIImage(cgImage: cg)
+        }
+        // A format ImageIO will not thumbnail still has to be viewable.
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return UIImage(data: data)
     }
 }
 
@@ -770,8 +918,6 @@ final class ZoomableImageScrollView: UIScrollView, UIScrollViewDelegate {
     func setImage(_ image: UIImage) {
         guard imageView.image !== image else { return }
         imageView.image = image
-        imageView.frame = CGRect(origin: .zero, size: image.size)
-        contentSize = image.size
         lastBounds = .zero          // force a rescale on next layout
         setNeedsLayout()
     }
@@ -780,22 +926,39 @@ final class ZoomableImageScrollView: UIScrollView, UIScrollViewDelegate {
         super.layoutSubviews()
         if bounds.size != lastBounds {
             lastBounds = bounds.size
-            configureScale()
+            applyFit()
         }
         centreContent()
     }
 
-    /// Fit the whole image on screen to begin with. Zooming OUT past fit is
-    /// pointless, so fitted is the minimum; 4x fit is a sane ceiling for reading
-    /// a serial number off a photographed label.
-    private func configureScale() {
+    /// Size the image view to the FITTED size and leave `zoomScale` at 1.
+    ///
+    /// **The fit used to live in `zoomScale` and that is why a screenshot filled
+    /// the stage at native size.** The image view was framed at the image's full
+    /// pixel size and the scroll view was then asked to zoom out to fit. When
+    /// that assignment does not take — and it did not, on a 1206x2622 screenshot
+    /// in a 460-point stage — nothing reports an error: the view simply draws at
+    /// 1:1 and you are looking at a third of one line of text with no way to
+    /// tell whether the image, the file or the screen is wrong.
+    ///
+    /// Baking the fit into the frame cannot half-work. The view is the size it
+    /// is drawn at, zoom starts at 1 and goes to 4, and every bounds change
+    /// recomputes it. Same reasoning `SatchelPDFView` already relies on.
+    private func applyFit() {
         guard let size = imageView.image?.size, size.width > 0, size.height > 0,
               bounds.width > 0, bounds.height > 0 else { return }
 
         let fit = min(bounds.width / size.width, bounds.height / size.height)
-        minimumZoomScale = fit
-        maximumZoomScale = max(fit * 4, 1.5)
-        zoomScale = fit
+        let fitted = CGSize(width: (size.width * fit).rounded(),
+                            height: (size.height * fit).rounded())
+
+        // Reset before resizing: a leftover transform from a previous fit would
+        // multiply against the new frame instead of replacing it.
+        zoomScale = 1
+        minimumZoomScale = 1
+        maximumZoomScale = 4
+        imageView.frame = CGRect(origin: .zero, size: fitted)
+        contentSize = fitted
     }
 
     private func centreContent() {

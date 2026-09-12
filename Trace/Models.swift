@@ -293,6 +293,104 @@ struct ClaudeAPIKeySection: View {
     }
 }
 
+// MARK: - Todoist token
+
+/// The Todoist token, for the Work chip on Dayflow's task card (D368).
+///
+/// **Beside the Claude key deliberately.** Both are pasted secrets that leave
+/// the device, both are per-device, and a person who has found one should find
+/// the other in the same place rather than learning that Dayflow keeps its
+/// secrets in two rooms.
+///
+/// **Per device, and the footer says so out loud.** `TodoistKeyStore` reads the
+/// Mac's keychain on macOS and this device's App Group defaults on iOS, and App
+/// Groups do not cross devices. The Mac having a working token is exactly the
+/// thing that makes a phone with none look broken rather than unconfigured,
+/// which is why the sentence is here and not left to be discovered.
+struct TodoistKeySection: View {
+
+    @State private var entry = ""
+    @State private var editing = false
+    @State private var storedKey = ""
+
+    private var trimmedEntry: String {
+        entry.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var masked: String {
+        guard !storedKey.isEmpty else { return "Not set" }
+        guard storedKey.count > 12 else { return "Set" }
+        return "\(storedKey.prefix(6))…\(storedKey.suffix(4))"
+    }
+
+    @ViewBuilder
+    private var secureEntryField: some View {
+        #if os(iOS)
+        SecureField("API token", text: $entry)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+        #else
+        SecureField("API token", text: $entry)
+            .autocorrectionDisabled()
+        #endif
+    }
+
+    var body: some View {
+        Section {
+            if editing {
+                secureEntryField
+                HStack {
+                    // `.borderless` on every button: a Form row with more than
+                    // one Button hands them all the row's tap, which is how Save
+                    // came to run Cancel first and store an empty string (see
+                    // the Claude key section's own note).
+                    Button("Cancel") {
+                        entry = ""
+                        editing = false
+                    }
+                    .buttonStyle(.borderless)
+
+                    Spacer()
+
+                    Button("Save") {
+                        TodoistKeyStore.set(entry)
+                        storedKey = TodoistKeyStore.key
+                        entry = ""
+                        editing = false
+                    }
+                    .buttonStyle(.borderless)
+                    .fontWeight(.semibold)
+                    .disabled(trimmedEntry.isEmpty)
+                }
+            } else {
+                LabeledContent("Token") {
+                    Text(masked)
+                        .foregroundStyle(storedKey.isEmpty ? Color.secondary : Color.secondary)
+                        .monospaced()
+                }
+                Button(storedKey.isEmpty ? "Add token" : "Replace token") {
+                    entry = ""
+                    editing = true
+                }
+                .buttonStyle(.borderless)
+
+                if !storedKey.isEmpty {
+                    Button("Remove token", role: .destructive) {
+                        TodoistKeyStore.set("")
+                        storedKey = ""
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+        } header: {
+            Text("Todoist token")
+        } footer: {
+            Text("Used by the Work list on the task card, which sends straight to your Todoist Inbox instead of creating a reminder. Stored on this device only — the token on your Mac does not carry over. Todoist ▸ Settings ▸ Integrations ▸ Developer.")
+        }
+        .onAppear { storedKey = TodoistKeyStore.key }
+    }
+}
+
 // MARK: - Place categories
 
 /// Guessing a place's category from what Google already told us.

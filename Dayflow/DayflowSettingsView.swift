@@ -105,6 +105,7 @@ struct DayflowSettingsView: View {
                 // because it is the only iOS app in the family with a Settings
                 // screen at all.
                 ClaudeAPIKeySection()
+                TodoistKeySection()
             }
             .listStyle(.insetGrouped)
             // `Form`/`List` paint their own opaque .systemGroupedBackground

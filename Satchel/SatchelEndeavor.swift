@@ -514,17 +514,27 @@ enum KitMembership {
 
         /// Whether the Library should offer a way INTO the Kit screen at all.
         ///
-        /// `showsSeeAll` alone was wrong, and David found it by asking whether he
-        /// could still choose how many slots a trip gets. He can — the stepper is
-        /// on the Kit screen — but with four or fewer items there was **no door to
-        /// that screen**, so the setting existed and could not be reached. The
-        /// original rule was written when the screen only listed documents; it
-        /// now also holds the one control Kit has.
-        var showsKitDoor: Bool { showsSeeAll || activeTrip != nil }
+        /// **Always, whenever Kit has anything in it** (D364). This condition has
+        /// now been wrong twice, in the same direction, for the same reason.
+        ///
+        /// First it was `showsSeeAll` alone, and David found it by asking whether
+        /// he could still choose how many slots a trip gets: he could, the stepper
+        /// is on the Kit screen, but with four or fewer items there was no door to
+        /// that screen. The fix added `|| activeTrip != nil`, which repaired the
+        /// case he had asked about and left the general one broken — with a few
+        /// pins and no trip in progress, Kit still had no way in. He found that
+        /// one too, by asking how to open Kit.
+        ///
+        /// The lesson is the shape of the fix, not the condition: **a door was
+        /// being rationed by how much was behind it**, while the screen behind it
+        /// holds reordering, removal and the only setting Kit has, none of which
+        /// depend on the count. A section that draws at all has somewhere to go.
+        var showsKitDoor: Bool { !all.isEmpty }
 
-        /// "Show all" when there is more than the grid can hold, otherwise the
-        /// door is really about the slots setting and should say so.
-        var kitDoorLabel: String { showsSeeAll ? "Show all" : "Adjust" }
+        /// "Show all" when there is more than the grid can hold; otherwise the
+        /// grid is already showing everything and the door is about managing
+        /// what is there, so it says so.
+        var kitDoorLabel: String { showsSeeAll ? "Show all" : "Manage" }
     }
 
     /// Grid is **always at most 4 tiles**. Kit's footprint on the Library never

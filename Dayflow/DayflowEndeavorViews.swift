@@ -502,6 +502,12 @@ struct DayflowEndeavorView: View {
     @State private var attachedExpanded = false
     /// The schedule band's fold. Two days, like the Mac's (Session 88).
     @State private var scheduleExpanded = false
+    /// The PLACES band's fold: visit-derived rows, closed by default (D354,
+    /// iOS half). **Its own flag, not `scheduleExpanded` or `attachedExpanded`**
+    /// - one flag shared between two folds opens both at once for no reason a
+    /// reader could see, which is the same note the Mac wrote when it kept this
+    /// separate from the rail's.
+    @State private var showVisitedPlaces = false
     /// How far each OPEN TASKS row is slid, keyed by task id (Session 88).
     @State private var taskRowOffsets: [String: CGFloat] = [:]
     /// Which booking the sheet is editing, or which band's `+` opened it.
@@ -1668,13 +1674,62 @@ struct DayflowEndeavorView: View {
     @ViewBuilder
     private func placesBand(_ e: Endeavor) -> some View {
         let rows = endeavorPlaces(e)
+        // **Attached rows are the band; visits collapse** (D354, iOS half).
+        //
+        // David, on Megan's Wedding Week finished with 24 visits: *"you warned
+        // me about the places overlap with the rail... i see this as
+        // untenable."* The Mac had the worse version of it - PLACES and the
+        // rail's Trip log printing the same list twice, side by side - and this
+        // screen has no rail, so only half of that reason ports. The half that
+        // does is the half that matters here: 3 places he chose and 21 he
+        // merely passed through, at equal weight, down a phone.
+        //
+        // **The rule is the Trip log's own, applied to a second list.** Its
+        // comment: *"They are the pool the log is selected from, and a pool is
+        // only interesting while you are choosing from it."*
+        //
+        // Nothing is hidden and nothing is deleted. The header still counts all
+        // of them, so 24 on the lid and 3 + 21 underneath agrees, and every
+        // collapsed row keeps its state, its tap through to the Place record and
+        // its context menu - including "Add to this endeavor", which promotes it
+        // into the band proper.
+        let attached = rows.filter { $0.attached }
+        let visited  = rows.filter { !$0.attached }
         VStack(alignment: .leading, spacing: 0) {
             bandHeader("Places", count: rows.count,
                        addLabel: "Attach a place") { attaching = .place }
             if rows.isEmpty {
                 bandEmpty("Nowhere attached yet.")
             } else {
-                ForEach(rows) { row in placeRow(row, in: e) }
+                ForEach(attached) { row in placeRow(row, in: e) }
+                if attached.isEmpty, !visited.isEmpty {
+                    // A band whose only content is a closed lid reads as empty.
+                    // Say what is behind it before asking him to open it.
+                    bandEmpty("Nowhere attached yet \u{2014} the visits below are where you actually went.")
+                }
+                if !visited.isEmpty {
+                    if showVisitedPlaces {
+                        ForEach(visited) { row in placeRow(row, in: e) }
+                    }
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) { showVisitedPlaces.toggle() }
+                    } label: {
+                        // The schedule band's fold, in the same words and the
+                        // same weight, because it is the same gesture. A second
+                        // idiom for "there is more below" is a second thing to
+                        // learn on one screen.
+                        Text(showVisitedPlaces
+                             ? "SHOW FEWER"
+                             : (visited.count == 1 ? "ALSO VISITED (1)"
+                                                   : "ALSO VISITED (\(visited.count))"))
+                            .font(.system(size: 10, weight: .medium))
+                            .tracking(1.4)
+                            .foregroundStyle(Color.dayflowMuted)
+                            .padding(.top, 8)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .padding(.horizontal, 24)

@@ -66,6 +66,13 @@ struct DayflowTaskEditSheet: View {
         case document
         /// A place or a person opened FROM the Linked section.
         case record(WikiLinkTarget)
+        /// A project note opened from the Linked section.
+        case projectNote(String)
+        /// A daily note opened from the Linked section.
+        ///
+        /// `Date` is not `Identifiable` and two different days must be two
+        /// different presentations, so the id carries the day.
+        case dailyNote(Date)
         /// An endeavor opened from the Linked section.
         ///
         /// **Presented here rather than routed to.** `dayflow://endeavor?id=`
@@ -82,6 +89,8 @@ struct DayflowTaskEditSheet: View {
             case .link(let kind):    return "link-" + kind.rawValue
             case .document:          return "document"
             case .record(let t):     return "record-" + t.id
+            case .projectNote(let n):return "note-" + n
+            case .dailyNote(let d):  return "daily-\(d.timeIntervalSince1970)"
             case .endeavor(let id):  return "endeavor-" + id
             }
         }
@@ -465,6 +474,15 @@ struct DayflowTaskEditSheet: View {
                     NavigationStack {
                         DayflowWikiSummaryView(target: target)
                     }
+                case .projectNote(let title):
+                    NavigationStack {
+                        DayflowProjectNoteView(title: title) { subSheet = nil }
+                    }
+                case .dailyNote(let day):
+                    DayflowNoteFullPageView(selectedDate: Binding(
+                        get: { day },
+                        set: { _ in }
+                    ))
                 case .endeavor(let id):
                     NavigationStack {
                         DayflowEndeavorView(endeavorID: id)
@@ -586,29 +604,44 @@ struct DayflowTaskEditSheet: View {
     /// Opens a linked record from the Linked section, through the shared
     /// resolver. `openURL` covers notes and endeavors; the record cases hand
     /// back to this sheet's own `wikiLinkTarget` sheet.
-    /// **Everything opens INSIDE this sheet.** `follow`'s default for an
-    /// endeavor and a note is `openURL`, which asks the app to present a
-    /// screen - and a sheet cannot ask the app to present something over
-    /// itself. So this host overrides every case it can and hands `follow` an
-    /// `openURL` it will only reach for a daily note, which has nowhere else
-    /// to go from here.
+    /// **Everything opens INSIDE this sheet, and nothing routes out of it.**
     ///
-    /// The note case still routes, and that is the one path in this sheet that
-    /// will queue rather than open. Left rather than guessed at: it needs the
-    /// sheet to dismiss FIRST and then route, and this file's sibling comment
-    /// on `openNote` records that a dismissal and a presentation in the same
-    /// turn is how the routed destination gets dropped. Its own change.
+    /// `follow`'s defaults use `openURL`, which asks the APP to present a
+    /// screen - and a sheet cannot ask the app to present something over
+    /// itself. The console said so twice while the endeavor link was still
+    /// routing: *"only presenting a single sheet is supported. The next sheet
+    /// will be presented when the currently presented sheet gets dismissed."*
+    /// A queued presentation behind a sheet nobody dismisses is a dead link.
+    ///
+    /// The alternative was dismiss-then-route, and it is the worse answer
+    /// here: `openNote` in `DayflowEndeavorViews` records that a dismissal and
+    /// a presentation in the same turn is how the routed destination gets
+    /// dropped, and that it has to wait on the presentation's own `onDismiss`
+    /// - which the HOST owns, not this sheet. Presenting in place needs no
+    /// timing and no cooperation from a file this one should not be reaching
+    /// into.
+    ///
+    /// So this deliberately uses `resolve` rather than `follow`: every case is
+    /// answered locally. `follow` stays the right call for hosts that ARE a
+    /// screen and can route.
     private func resolveLink(_ name: String) {
         switch DayflowWikiLink.resolve(name) {
         case .place(let place):    subSheet = .record(.place(place))
         case .person(let person):  subSheet = .record(.person(person))
         case .endeavor(let id, _): subSheet = .endeavor(id)
+        case .dailyNote(let day):  subSheet = .dailyNote(day)
+        case .note(let note):
+            // A daily note in the notes list resolves by its own date so the
+            // full page opens on the right day; anything else is a project
+            // note, opened by title. Same split `openNote` makes on the
+            // endeavor screen, for the same reason: those two screens exist
+            // and re-implementing either here would be a second answer.
+            if note.isDaily, let day = DayflowRelatedNotesEngine.parseDailyNoteDate(note.title) {
+                subSheet = .dailyNote(day)
+            } else {
+                subSheet = .projectNote(note.title)
+            }
         case .miss(let miss):      wikiMiss = DayflowWikiMissNotice(name: name, miss: miss)
-        case .note, .dailyNote:
-            DayflowWikiLink.follow(name,
-                                   openURL: openURL,
-                                   onRecord: { subSheet = .record($0) },
-                                   onMiss: { wikiMiss = $0 })
         }
     }
 

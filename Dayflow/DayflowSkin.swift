@@ -116,6 +116,15 @@ extension Color {
     static let dayflowHairline = editorial(0xE9E8E4, 0x33302A)
     /// The one accent — active tab, TODAY pill, source chips.
     static let dayflowAccent = editorial(0xC24D2A, 0xD0603C)
+
+    /// Todoist's blue, for the one control on the task card that leaves the
+    /// phone (D368). **A second accent, which this skin otherwise forbids** —
+    /// the sidebar's six colours were retired precisely for having no meaning.
+    /// This one has exactly one: it marks the difference between filing a
+    /// reminder and posting to somebody else's server, which is the most useful
+    /// thing about that row and cannot be said in the accent everything else
+    /// already wears.
+    static let dayflowTodoist = editorial(0x2F6FB3, 0x6BA3DD)
     /// Body copy a step softer than ink (day note text, the weekday).
     static let dayflowNoteText = editorial(0x33302A, 0xCFC8B8)
     /// The floating + — ink square in light, ACCENT square in dark (the

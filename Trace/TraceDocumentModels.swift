@@ -442,6 +442,53 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// Declared last so no existing call site's argument order moves.
     var url: String = ""
 
+    /// What a typed address opens to, or nil when it does not open to anything.
+    ///
+    /// **On the model rather than in either app's editor, because both draw the
+    /// same button from the same string.** The Mac wrote this test first
+    /// (D350) and Satchel needs precisely the same answer: a row that offered
+    /// to open `kearney.com` on the phone and refused it on the Mac would be
+    /// one field disagreeing with itself about what it holds, and the two
+    /// copies would drift on the first fix made to only one of them.
+    ///
+    /// `URL(string:)` alone is far too generous - it accepts "denver airport"
+    /// and hands back a relative URL with no host, which would give the row an
+    /// open button that opens nothing. A host with a dot in it is the test that
+    /// matches what people mean by a web address.
+    ///
+    /// A bare `kearney.com` is accepted and opened as `https://kearney.com`.
+    /// What gets SAVED is still exactly what he typed: rewriting the field
+    /// under the cursor is how a value stops matching the thing that produced
+    /// it.
+    static func openableURL(_ text: String) -> URL? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        let candidate = t.lowercased().hasPrefix("http://") || t.lowercased().hasPrefix("https://")
+            ? t : "https://" + t
+        guard let url = URL(string: candidate),
+              let host = url.host, host.contains("."), !host.hasSuffix(".") else { return nil }
+        return url
+    }
+
+    /// A web address as a phone-width label: host without `www.`, plus the last
+    /// path component when it says something and the whole thing still fits on
+    /// one line.
+    ///
+    /// **Here for the same reason `openableURL` is** (D355). Three screens draw
+    /// this now - the Mac's Links row, Satchel's Links row, and Satchel's URL
+    /// chip - and it was already copied byte for byte into two of them before
+    /// the third asked for it. A label is a smaller thing to get wrong than a
+    /// validator and it drifts the same way.
+    static func webLabel(_ url: URL) -> String {
+        var host = url.host ?? url.absoluteString
+        if host.lowercased().hasPrefix("www.") { host = String(host.dropFirst(4)) }
+        let last = url.pathComponents.last ?? ""
+        if last.count > 1, last != "/", host.count + last.count < 44 {
+            return "\(host)/\(last)"
+        }
+        return host
+    }
+
     /// Tagged `private`. **The single definition, in the file every target
     /// compiles**, because this decides whether the document may be sent.
     ///

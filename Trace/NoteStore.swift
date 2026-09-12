@@ -177,6 +177,125 @@ enum ClaudeKeyStore {
     }
 }
 
+/// The Todoist API token (D348, Session 95).
+///
+/// **Its own store, sharing `ClaudeKeyStore`'s mechanics rather than copying
+/// them.** Same keychain on macOS, same App Group fallback elsewhere, same
+/// per-device honesty — App Groups do not cross devices, so the Mac's token and
+/// the phone's are separate objects and always were.
+///
+/// The failure mode is worth stating because it is different from Claude's. A
+/// leaked Claude key is a bill; a leaked Todoist token is **write access to his
+/// work task list**. Same storage, higher stakes, which is the reason it goes
+/// straight to the keychain with no plaintext step rather than inheriting
+/// `ClaudeKeyStore`'s migration path — there is nothing to migrate.
+enum TodoistKeyStore {
+    static let suiteName = ClaudeKeyStore.suiteName
+    static let defaultsKey = "todoist_api_token"
+
+    private static let keychainService = "com.david.trace.todoist"
+    private static let keychainAccount = "api-token"
+
+    static var key: String {
+#if os(macOS)
+        MacKeychain.read(service: keychainService, account: keychainAccount) ?? ""
+#else
+        UserDefaults(suiteName: suiteName)?.string(forKey: defaultsKey) ?? ""
+#endif
+    }
+
+    static var hasKey: Bool { !key.isEmpty }
+
+    static var isSecured: Bool {
+#if os(macOS)
+        !(MacKeychain.read(service: keychainService, account: keychainAccount) ?? "").isEmpty
+#else
+        false
+#endif
+    }
+
+    static func set(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+#if os(macOS)
+        if trimmed.isEmpty {
+            MacKeychain.delete(service: keychainService, account: keychainAccount)
+        } else {
+            _ = MacKeychain.write(trimmed, service: keychainService, account: keychainAccount)
+        }
+#else
+        guard let defaults = UserDefaults(suiteName: suiteName) else { return }
+        if trimmed.isEmpty {
+            defaults.removeObject(forKey: defaultsKey)
+        } else {
+            defaults.set(trimmed, forKey: defaultsKey)
+        }
+#endif
+    }
+
+    static var masked: String {
+        let k = key
+        guard k.count > 12 else { return k.isEmpty ? "Not set" : "Set" }
+        return "\(k.prefix(6))…\(k.suffix(4))"
+    }
+}
+
+#if os(macOS)
+
+/// The keychain calls, once, for every key this app stores (D348).
+///
+/// **Extracted rather than copied.** `ClaudeKeyStore` grew these three as
+/// private members and its own doc comment already names the failure they were
+/// written against: *"the actual problem was that this type is the documented
+/// single reader and four call sites went around it. A parallel store would
+/// have made that five."* A second key store copying the same forty lines is
+/// exactly that parallel store. The update-then-add order in `write` is the
+/// load-bearing part — `SecItemAdd` on an existing item returns
+/// `errSecDuplicateItem` rather than replacing, so add-first silently keeps the
+/// old value on every change after the first.
+enum MacKeychain {
+
+    private static func baseQuery(service: String, account: String) -> [String: Any] {
+        [kSecClass as String:       kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
+    }
+
+    static func read(service: String, account: String) -> String? {
+        var query = baseQuery(service: service, account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    static func write(_ value: String, service: String, account: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        let attributes: [String: Any] = [kSecValueData as String: data]
+        let status = SecItemUpdate(baseQuery(service: service, account: account) as CFDictionary,
+                                   attributes as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
+
+        var insert = baseQuery(service: service, account: account)
+        insert[kSecValueData as String] = data
+        // `AfterFirstUnlock`, not `WhenUnlocked`: background work runs on a Mac
+        // whose screen is locked, and a key unreadable then is a failure for a
+        // reason nobody can see.
+        insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
+    }
+
+    static func delete(service: String, account: String) {
+        SecItemDelete(baseQuery(service: service, account: account) as CFDictionary)
+    }
+}
+
+#endif
+
 // ── Concurrency, Session 65 ───────────────────────────────────────────────
 //
 // The project sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so this class

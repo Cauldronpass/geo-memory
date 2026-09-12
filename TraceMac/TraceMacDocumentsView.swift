@@ -2087,7 +2087,7 @@ struct DocMetadataPanel: View {
                         Button { openURL(url) } label: {
                             HStack(spacing: 3) {
                                 Image(systemName: "link").font(.caption2)
-                                Text(linkLabel(url)).font(.caption).lineLimit(1)
+                                Text(TraceMacDocument.webLabel(url)).font(.caption).lineLimit(1)
                             }
                             .padding(.horizontal, 8).padding(.vertical, 3)
                             .background(Color.teal.opacity(0.12))
@@ -2123,7 +2123,7 @@ struct DocMetadataPanel: View {
             TextField("https://", text: $docURL)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { save() }
-            if let open = Self.openable(docURL) {
+            if let open = TraceMacDocument.openableURL(docURL) {
                 Button { openURL(open) } label: {
                     Image(systemName: "arrow.up.right.square")
                         .font(.caption)
@@ -2135,32 +2135,6 @@ struct DocMetadataPanel: View {
         }
     }
 
-    /// What this text opens to, or nil when it does not open to anything.
-    ///
-    /// `URL(string:)` alone is far too generous - it accepts "denver airport"
-    /// and hands back a relative URL with no host, which would give the row an
-    /// open button that opens nothing. A host with a dot in it is the test that
-    /// matches what people mean by a web address.
-    nonisolated static func openable(_ text: String) -> URL? {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return nil }
-        let candidate = t.lowercased().hasPrefix("http://") || t.lowercased().hasPrefix("https://")
-            ? t : "https://" + t
-        guard let url = URL(string: candidate),
-              let host = url.host, host.contains("."), !host.hasSuffix(".") else { return nil }
-        return url
-    }
-
-    /// Host without `www.`, plus the last path component when it says something.
-    private func linkLabel(_ url: URL) -> String {
-        var host = url.host ?? url.absoluteString
-        if host.lowercased().hasPrefix("www.") { host = String(host.dropFirst(4)) }
-        let last = url.pathComponents.last ?? ""
-        if last.count > 1, last != "/", host.count + last.count < 44 {
-            return "\(host)/\(last)"
-        }
-        return host
-    }
 
     // MARK: - Description + AI scan
 

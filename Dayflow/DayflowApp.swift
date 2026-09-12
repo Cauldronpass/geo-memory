@@ -54,6 +54,7 @@
 //
 
 import SwiftUI
+import AppIntents
 import UserNotifications
 import CoreLocation
 
@@ -70,6 +71,17 @@ struct DayflowApp: App {
     /// system is the honest default. A stored explicit choice still wins.
     @AppStorage("dayflow_appearance") private var appearanceRaw: String = "system"
     @Environment(\.scenePhase) private var scenePhase
+
+    /// **Registered here because a snippet's `@Dependency` is resolved at the
+    /// moment an intent runs, and by then there is nowhere else to do it.**
+    /// The event card and its three buttons all read one shared draft
+    /// (`DayflowEventSnippet.swift`, D362); an unregistered dependency is a
+    /// crash on the first chip tap rather than a compile error, so this line
+    /// and that file live and die together.
+    init() {
+        AppDependencyManager.shared.add { DayflowEventDraft.shared }
+        AppDependencyManager.shared.add { DayflowTaskDraft.shared }
+    }
 
     private var preferredScheme: ColorScheme? {
         switch appearanceRaw {

@@ -62,6 +62,19 @@ enum MacLocalIntelligence {
     struct Suggestion: Sendable {
         let tags: [String]
         let summary: String
+        /// A short name for the document, or empty when the model declined.
+        ///
+        /// **Added Session 95.** `applyLocal` carried a note reading *"Title
+        /// stays with the document's own words. The model writes a sentence,
+        /// and a sentence is a description, not a name."* That was true of the
+        /// answer to the question being asked — the model was only ever asked
+        /// for a summary, and a summary is a sentence. Asked for a NAME it
+        /// gives a name. David: *"the document never changes its title or
+        /// icon… is it possible for local apple intelligence to make a guess."*
+        let title: String
+        /// One of `DocumentIcon`'s tokens, raw. Matched in code, never trusted
+        /// as given (D330).
+        let icon: String
     }
 
     /// A confirmation read on this machine (Session 92, D319/D322).
@@ -87,6 +100,13 @@ enum MacLocalIntelligence {
         let start: String
         let end: String
         let cost: String
+        /// How many bookings the text holds, as the model counted them. Digits
+        /// **Added after David read a three-leg itinerary privately and was
+        /// told nothing about the other two** — the cloud path had said "N
+        /// found, showing the first" since D319 and the on-device path could
+        /// only ever say one, so the same document was honest on one route and
+        /// silent on the other (D338).
+        let bookingCount: Int
     }
 
 #if canImport(FoundationModels)
@@ -98,6 +118,12 @@ enum MacLocalIntelligence {
 
         @Guide(description: "One plain sentence saying what this document is, naming the organisation and the subject if they appear. No preamble, no 'this document'.")
         var summary: String
+
+        @Guide(description: "A short name for this document, 2 to 6 words, title case, as a person would label a folder. Name the organisation and the thing: 'Vrbo Booking Confirmation', 'Prospect Dental Receipt', 'CSU Housing Contract'. Not a sentence and never ending in a full stop. Empty string only if the text names nothing at all.")
+        var title: String
+
+        @Guide(description: "Exactly one of these words and nothing else, choosing what the document is ABOUT rather than what kind of paper it is: document, receipt, contract, legal, passport, id, card, ticket, plane, train, car, lodging, medical, home, work, finance, education, photo, map, note, manual, menu, reading, pet. A restaurant bill is menu. A vet bill is pet. A hotel booking is lodging. A flight is plane. Use document only when it is about nothing in particular.")
+        var icon: String
     }
 
     @Generable
@@ -128,6 +154,14 @@ enum MacLocalIntelligence {
 
         @Guide(description: "The total cost, digits and a decimal point only, for example 318.40. No currency symbol. Empty string if no figure is printed.")
         var cost: String
+
+        /// **An `Int`, not a `String`.** Asked for as digits-in-a-string it can
+        /// come back as "", "three", "1 booking" or a sentence, and every one
+        /// of those parses to nothing — which silently becomes "1 booking" and
+        /// says nothing about the rest. Guided generation can enforce a number;
+        /// it cannot enforce a number spelled inside a string.
+        @Guide(description: "How many separate bookings this text holds. A round trip printed as an outbound and a return is 2. Connecting legs of one journey count as 1, not 2. Use 1 if you cannot tell.")
+        var bookingCount: Int
     }
 
     /// Reads a confirmation without the text leaving this Mac (D322).
@@ -179,7 +213,8 @@ enum MacLocalIntelligence {
                                 to: d.to,
                                 start: d.start,
                                 end: d.end,
-                                cost: d.cost)
+                                cost: d.cost,
+                                bookingCount: d.bookingCount)
         } catch {
             return nil
         }
@@ -241,13 +276,19 @@ enum MacLocalIntelligence {
                 instructions: """
                 You label personal documents for a private filing system. \
                 You are precise and brief. You never invent facts that are not \
-                in the text or in the owner's description.
+                in the text or in the owner's description. A title is a name, \
+                not a sentence.
                 """
             )
             let reply = try await session.respond(to: prompt, generating: DocumentFacts.self)
             let facts = reply.content
-            return Suggestion(tags: clean(facts.tags), summary: facts.summary
-                .trimmingCharacters(in: .whitespacesAndNewlines))
+            return Suggestion(tags: clean(facts.tags),
+                              summary: facts.summary
+                                .trimmingCharacters(in: .whitespacesAndNewlines),
+                              title: facts.title
+                                .trimmingCharacters(in: .whitespacesAndNewlines),
+                              icon: facts.icon
+                                .trimmingCharacters(in: .whitespacesAndNewlines))
         } catch {
             return nil
         }
