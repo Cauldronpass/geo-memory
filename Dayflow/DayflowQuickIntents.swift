@@ -78,7 +78,7 @@ struct AddDayflowTaskIntent: AppIntent {
     func perform() async throws -> some IntentResult & ShowsSnippetIntent {
         let draft = DayflowTaskDraft.shared
         draft.reset()
-        draft.justAdded = nil
+        draft.finished = false
         if let day { draft.when = .on(day) }
         draft.applyRules(changed: "")
 
@@ -86,6 +86,62 @@ struct AddDayflowTaskIntent: AppIntent {
             await draft.save(title: taskTitle)
         }
         return .result(snippetIntent: DayflowTaskSnippetIntent())
+    }
+}
+
+// MARK: - Reading the day
+
+/// The day's blocks, and two ways of printing a time.
+///
+/// **Deleted by accident and restored here (D371).** A range replace that
+/// rewrote the task action ran from that struct to the next `MARK`, and this
+/// enum was sitting between them. Nothing complained at the time because
+/// nothing in this file used it — every caller is in `DayflowEventSnippet.swift`
+/// — so the damage was a file away from the edit that caused it.
+///
+/// The exclusions are `CalendarService`'s own: all-day events dropped, and the
+/// placeholder titles it filters at source, `rehab` among them — which is why a
+/// placeholder's hour reads as free rather than as a meeting.
+enum DayflowOpenSlotFinder {
+
+    private static let windowEnd = 22 * 60
+
+    /// `nonisolated`, both of them. They are pure string formatting called from
+    /// view bodies, and under this project's default main-actor isolation an
+    /// unmarked static is main-actor bound — which is the warning Xcode raised
+    /// against `label(start:minutes:)` before this file was cleaned up.
+    nonisolated static func label(start: Int, minutes: Int) -> String {
+        "\(clock(start)) to \(clock(start + minutes))"
+    }
+
+    nonisolated static func clock(_ m: Int) -> String {
+        var comps = DateComponents()
+        comps.hour = m / 60
+        comps.minute = m % 60
+        let date = Calendar.current.date(from: comps) ?? Date()
+        return date.formatted(.dateTime.hour().minute())
+    }
+
+    /// The day's commitments as (start, end, title), minutes from midnight.
+    @MainActor
+    static func busyBlocks(on day: Date) async -> [(start: Int, end: Int, title: String)] {
+        let cal = Calendar.current
+        let events = await CalendarService.shared.fetchDayEvents(for: day)
+        return events
+            .filter { !$0.isAllDay }
+            .filter { !CalendarService.isExcludedPlaceholderTitle($0.title) }
+            .map { ev in
+                let s = cal.component(.hour, from: ev.startDate) * 60
+                      + cal.component(.minute, from: ev.startDate)
+                let e = cal.component(.hour, from: ev.endDate) * 60
+                      + cal.component(.minute, from: ev.endDate)
+                // An event ending past midnight comes back with an end earlier
+                // than its start once both are reduced to minutes of a day.
+                // Treated as running to the end of the window, because the
+                // alternative is a negative block that blocks nothing.
+                return (s, e <= s ? windowEnd : e, ev.title)
+            }
+            .sorted { $0.0 < $1.0 }
     }
 }
 
@@ -235,6 +291,12 @@ struct DayflowAppShortcuts: AppShortcutsProvider {
             phrases: ["Show my day in \(.applicationName)"],
             shortTitle: "Show My Day",
             systemImageName: "calendar.badge.plus"
+        )
+        AppShortcut(
+            intent: DayflowSearchIntent(),
+            phrases: ["Search \(.applicationName)"],
+            shortTitle: "Search",
+            systemImageName: "magnifyingglass"
         )
         AppShortcut(
             intent: AddDayflowNoteIntent(),

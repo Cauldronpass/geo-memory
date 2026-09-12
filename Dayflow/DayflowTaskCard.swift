@@ -94,8 +94,41 @@ final class DayflowTaskDraft {
     /// than doing it quietly. Cleared by the next deliberate tap.
     var correction: String? = nil
 
-    var justAdded: String? = nil
+    /// The paperclip, armed before the name is asked (D369).
+    ///
+    /// **Armed beforehand rather than offered afterwards, and that follows from
+    /// the card closing on success.** The first design put a Link button on a
+    /// confirmation, which meant keeping a confirmation card up after every
+    /// capture to hold a control used maybe one time in twenty. David: *"why do
+    /// i want the same card to reappear at all... isnt that confirmation a step
+    /// that adds friction itself?"* Once the card closes, there is no afterwards
+    /// to decide in, so the decision moves to the only place left — and that is
+    /// the right trade, because it costs one glyph on a card he is already
+    /// looking at rather than a screen after every task.
+    var wantsLink = false
+
+    /// What was just created, so the picker can attach to it without looking
+    /// anything up.
+    var createdTaskID: String? = nil
+    var createdTaskTitle: String? = nil
+    /// True while the document and note picker is showing.
+    var linking = false
+    var linked: String? = nil
+
+    /// Set when a capture finished and nothing more is wanted. The card draws
+    /// almost nothing in this state, so if iOS keeps the overlay up rather than
+    /// dismissing it, what remains is one line and not a whole card.
+    var finished = false
+
     var justAddedToTodoist = false
+    /// What was filed and where, for the one line the card leaves behind.
+    ///
+    /// **It exists for dictation** (D378). Typed, he knows what he typed. Spoken,
+    /// the two things worth checking are whether it heard the words and whether
+    /// it found the date — and "Added" answers neither. Cheap enough to show on
+    /// every route rather than only the voice one, and a second confirmation
+    /// shape for one entry method would be a second thing to maintain.
+    var landedLine: String? = nil
     var failure: String? = nil
 
     /// The month grid, shared in spirit with the day card's.
@@ -110,6 +143,13 @@ final class DayflowTaskDraft {
         correction = nil
         failure = nil
         showingMonth = false
+        wantsLink = false
+        landedLine = nil
+        linking = false
+        linked = nil
+        finished = false
+        createdTaskID = nil
+        createdTaskTitle = nil
     }
 
     // MARK: The two rules the card teaches
@@ -157,30 +197,102 @@ final class DayflowTaskDraft {
 
     // MARK: Writing
 
+    /// **The words are read for a date, on every route** (D377).
+    ///
+    /// `TaskLineParser` already does this for the app's own quick add: a trailing
+    /// date phrase becomes a due day, "at 3pm" becomes an alarm, and `//` splits
+    /// off a note. Reusing it means typing and dictating behave identically, and
+    /// it means Siri — "add a task to Dayflow", then speak — lands a dated task
+    /// without this card ever being on screen.
+    ///
+    /// **The date has to be at the END, and that is the parser's rule, not a
+    /// limitation to apologise for.** Todoist parses a date anywhere, which is
+    /// why "monday sync notes" there gives you a task called "sync notes". This
+    /// one fails by doing nothing rather than by eating a word.
+    ///
+    /// **An explicit tap always beats the words.** The parsed date is applied
+    /// only when he has not chosen a when himself — otherwise saying "Friday"
+    /// while Tomorrow is lit would make one of the two silently lose, and it
+    /// would be the one he pressed.
     func save(title raw: String) async {
-        let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = TaskLineParser.parse(raw)
+        // The parser cleans the title it cuts from a date phrase; a line with no
+        // date never goes through that path, so a dictated "Buy toothpaste."
+        // would keep its full stop. Same trim, same reason (D379).
+        let fallback = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " .!?;,"))
+        let title = parsed.title.isEmpty ? fallback : parsed.title
         guard !title.isEmpty else { return }
         failure = nil
 
+        if let spoken = parsed.date, when == .anytime {
+            when = .on(spoken)
+            // The store's own rule then moves it: a dated capture cannot sit in
+            // Inbox, so it graduates to Personal (D262/D225). David asked for
+            // exactly that behaviour without knowing it already existed.
+            applyRules(changed: "when")
+        }
+
         if destination.isTodoist {
-            await sendToTodoist(title)
+            await sendToTodoist(title, notes: parsed.note)
         } else {
-            await fileInReminders(title)
+            await fileInReminders(title, notes: parsed.note, remindAt: parsed.remindAt)
         }
     }
 
-    private func fileInReminders(_ title: String) async {
+    private func fileInReminders(_ title: String, notes: String? = nil,
+                                 remindAt: Date? = nil) async {
         // Someday is a list, not a date — that is what "not now" means here.
         let list = when == .someday ? ReminderTaskStore.somedayListName : destination.listName
-        let ok = await ReminderTaskStore.shared.addTask(
-            title: title, date: when.date, list: list
+        let id = await ReminderTaskStore.shared.addTaskReturningID(
+            title: title, date: when.date, list: list, notes: notes,
+            // Only when the phrase actually carried a time. "friday" is a due
+            // date; "friday at 3pm" is a due date and an alarm.
+            remindAt: remindAt
         )
-        if ok {
-            justAdded = title
-            justAddedToTodoist = false
-            reset()
-        } else {
+        guard let id else {
             failure = "Could not save the task. Check Reminders access in iOS Settings."
+            return
+        }
+        let landed = "\(title) — \(destination.label)\(when.isDated ? ", " + when.label : "")"
+        let wanted = wantsLink
+        // The chip store loads lazily and the picker is about to read it. Asked
+        // for here rather than in the view, because a view that fetches while
+        // drawing is how a list comes up empty on the one run that matters.
+        if wanted { await TraceSatchelChipStore.shared.refresh() }
+        reset()
+        createdTaskID = id
+        createdTaskTitle = title
+        landedLine = landed
+        justAddedToTodoist = false
+        // Armed, so the picker opens on the task just made. Not armed, so this
+        // is over and the card says so in one line and goes away.
+        linking = wanted
+        finished = !wanted
+    }
+
+    /// Writes the link into the task's notes.
+    ///
+    /// **One marker line, the same one Satchel and the Mac already read**
+    /// (D227): `satchel:doc:<relativePath>` for a document, `[[Name]]` for a
+    /// note. Nothing is written to the document or the note — the link lives in
+    /// exactly one place, which is why the panels that show it can never
+    /// disagree with each other.
+    func link(marker: String, label: String) async {
+        guard let id = createdTaskID, let title = createdTaskTitle else { return }
+        let store = ReminderTaskStore.shared
+        let existing = store.allTasks.first { $0.id == id }?.notes ?? ""
+        guard !existing.contains(marker) else {
+            linked = label
+            return
+        }
+        let merged = existing.isEmpty ? marker : existing + "\n" + marker
+        let ok = await store.update(taskID: id, title: title, date: when.date,
+                                    clearDate: false, list: nil, notes: merged)
+        if ok {
+            linked = label
+        } else {
+            failure = "Could not attach that."
         }
     }
 
@@ -189,13 +301,18 @@ final class DayflowTaskDraft {
     /// to Todoist has none of that, so a failed send leaves nothing behind and
     /// nothing lives in two systems — which was D348's point, reached by a
     /// shorter road.
-    private func sendToTodoist(_ title: String) async {
+    private func sendToTodoist(_ title: String, notes: String? = nil) async {
         do {
-            _ = try await TodoistService.send(title: title, notes: nil, due: when.date)
+            _ = try await TodoistService.send(title: title, notes: notes, due: when.date)
             logToDayNote(title)
-            justAdded = title
-            justAddedToTodoist = true
+            let landed = "\(title) — Todoist\(when.isDated ? ", " + when.label : "")"
             reset()
+            createdTaskTitle = title
+            landedLine = landed
+            justAddedToTodoist = true
+            // **No link step for Work.** It went to Todoist and Reminders never
+            // saw it, so there is nothing on this phone to attach a document to.
+            finished = true
         } catch {
             // **No queue.** A task he believed had reached work, sitting in a
             // retry buffer, is the failure this design exists to avoid. The
@@ -253,7 +370,7 @@ struct DayflowPickListIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         guard let d = DayflowTaskDraft.Destination(rawValue: list) else { return .result() }
-        draft.justAdded = nil
+        draft.finished = false
         draft.correction = nil
         draft.destination = d
         draft.applyRules(changed: "list")
@@ -276,7 +393,7 @@ struct DayflowPickWhenIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        draft.justAdded = nil
+        draft.finished = false
         draft.correction = nil
         switch when {
         case "today":    draft.when = .today
@@ -298,7 +415,7 @@ struct DayflowTaskMonthIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        draft.justAdded = nil
+        draft.finished = false
         draft.showingMonth.toggle()
         if draft.showingMonth { draft.monthAnchor = draft.when.date ?? Date() }
         return .result()
@@ -352,6 +469,92 @@ struct DayflowTaskPickDayIntent: AppIntent {
     }
 }
 
+/// Arming the paperclip.
+struct DayflowToggleLinkIntent: AppIntent {
+    static var title: LocalizedStringResource = "Attach Something"
+    static var openAppWhenRun: Bool = false
+    static var isDiscoverable: Bool = false
+
+    @Dependency private var draft: DayflowTaskDraft
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        draft.wantsLink.toggle()
+        return .result()
+    }
+}
+
+/// Attaching one document or note to the task just made.
+struct DayflowLinkIntent: AppIntent {
+    static var title: LocalizedStringResource = "Attach This"
+    static var openAppWhenRun: Bool = false
+    static var isDiscoverable: Bool = false
+
+    @Parameter(title: "Marker") var marker: String
+    @Parameter(title: "Label")  var label: String
+
+    init() {}
+    init(marker: String, label: String) { self.marker = marker; self.label = label }
+
+    @Dependency private var draft: DayflowTaskDraft
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        await draft.link(marker: marker, label: label)
+        return .result()
+    }
+}
+
+/// Closing the picker.
+struct DayflowDoneLinkingIntent: AppIntent {
+    static var title: LocalizedStringResource = "Done"
+    static var openAppWhenRun: Bool = false
+    static var isDiscoverable: Bool = false
+
+    @Dependency private var draft: DayflowTaskDraft
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        draft.linking = false
+        draft.finished = true
+        return .result()
+    }
+}
+
+/// What there is to attach.
+///
+/// **Six of each, newest first.** Enough that the thing he was just looking at
+/// is there, few enough that it is a glance rather than a list. Both read the
+/// stores the apps already keep, so nothing here is a second index that can
+/// drift from what Satchel and Dayflow show.
+enum DayflowLinkables {
+
+    struct Doc { let path: String; let title: String }
+
+    @MainActor
+    static func recentDocuments(limit: Int = 6) -> [Doc] {
+        TraceSatchelChipStore.shared.all
+            .sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+            .prefix(limit)
+            .map { Doc(path: $0.relativePath, title: $0.title) }
+    }
+
+    /// Standing notes, not daily ones: a task linked to "2026-09-12" says
+    /// nothing a due date does not already say.
+    static func recentNotes(limit: Int = 6) -> [String] {
+        let names = (try? NoteStore.shared.listFiles(in: NoteStore.projectsFolder)) ?? []
+        return names
+            .map { $0.replacingOccurrences(of: ".md", with: "") }
+            .sorted { lhs, rhs in
+                let l = NoteStore.shared.fileModifiedDate("\(NoteStore.projectsFolder)/\(lhs).md") ?? .distantPast
+                let r = NoteStore.shared.fileModifiedDate("\(NoteStore.projectsFolder)/\(rhs).md") ?? .distantPast
+                return l > r
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+}
+
 /// The only step that asks him for anything, and it comes last.
 struct DayflowNameTaskIntent: AppIntent {
     static var title: LocalizedStringResource = "Save the Task"
@@ -366,9 +569,58 @@ struct DayflowNameTaskIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         await draft.save(title: taskTitle)
+        // Ends without a snippet, which dismisses the card. See the note below
+        // on why this had to be split into two intents.
         return .result()
     }
 }
+
+/// The same save, but it leaves the card up on the link picker.
+///
+/// **Two intents for one button, because of a return type** (D372). Ending
+/// without a snippet is what dismisses the card, and that is a property of the
+/// TYPE `perform` returns, not of a value it chooses at runtime. A single intent
+/// that returned a snippet only when the paperclip was armed cannot be written:
+/// Swift needs one return type, and `some IntentResult` and
+/// `some IntentResult & ShowsSnippetIntent` are different ones.
+///
+/// So the decision moves up a level, to which intent the button carries. The
+/// card already knows whether the paperclip is armed at the moment it draws the
+/// button, which is exactly when it has to choose.
+struct DayflowNameAndLinkTaskIntent: AppIntent {
+    static var title: LocalizedStringResource = "Save and Attach"
+    static var openAppWhenRun: Bool = false
+    static var isDiscoverable: Bool = false
+
+    @Parameter(title: "Task", requestValueDialog: "What is the task?")
+    var taskTitle: String
+
+    @Dependency private var draft: DayflowTaskDraft
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ShowsSnippetIntent {
+        await draft.save(title: taskTitle)
+        return .result(snippetIntent: DayflowTaskSnippetIntent())
+    }
+}
+
+// MARK: - Why there is no confirmation card
+//
+// David: *"why do i want the same card to reappear at all... isnt that
+// confirmation a step that adds friction itself?"* He is right. He chose the
+// list, chose the when and typed the name; "added to Inbox" tells him something
+// he already knows while making him dismiss a card to be rid of it, several
+// times a day.
+//
+// So on success this intent simply ends. A failure still draws, because that is
+// the only case with something to say, and an armed paperclip still draws,
+// because he asked for the next step.
+//
+// **The order of that reasoning is worth keeping.** The confirmation card was
+// not defended on its own merits — it survived because the Link button needed
+// somewhere to live, and the button was then justified by the card being there.
+// Two weak things holding each other up. Removing the card is what moved the
+// paperclip to where it belongs.
 
 // MARK: - The card
 
@@ -380,11 +632,17 @@ struct DayflowTaskCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("New task")
-                .font(.dayflowSerif(16))
-                .foregroundStyle(Color.dayflowInk)
+            if !draft.finished {
+                Text(draft.linking ? "Link something" : "New task")
+                    .font(.dayflowSerif(16))
+                    .foregroundStyle(Color.dayflowInk)
+            }
 
-            if draft.showingMonth {
+            if draft.finished {
+                finishedLine
+            } else if draft.linking {
+                linkPicker
+            } else if draft.showingMonth {
                 monthGrid
             } else {
                 label("LIST")
@@ -489,17 +747,7 @@ struct DayflowTaskCard: View {
         VStack(alignment: .leading, spacing: 0) {
             Divider().overlay(Color.dayflowHairline).padding(.top, 13)
 
-            if let added = draft.justAdded {
-                HStack(spacing: 7) {
-                    Image(systemName: "checkmark.circle.fill")
-                    Text("“\(added)” \(draft.justAddedToTodoist ? "sent to Todoist" : "added to \(draft.destination.label)")")
-                        .lineLimit(2)
-                    Spacer(minLength: 0)
-                }
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(draft.justAddedToTodoist ? Color.dayflowTodoist : Color.dayflowAccent)
-                .padding(.top, 11)
-            } else if draft.tokenMissing {
+            if draft.tokenMissing {
                 // Said before he types a name, not after the send fails.
                 VStack(alignment: .leading, spacing: 4) {
                     Text("No Todoist token on this iPhone.")
@@ -530,17 +778,167 @@ struct DayflowTaskCard: View {
             }
 
             if !draft.tokenMissing {
-                Button(intent: DayflowNameTaskIntent()) {
-                    Text(isWork ? "Name it and send" : "Name it and add")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(tint))
-                        .foregroundStyle(Color.white)
+                HStack(spacing: 9) {
+                    // **Which intent, decided here.** Dismissal is a property of
+                    // the return type, so the choice cannot live inside one
+                    // intent — see `DayflowNameAndLinkTaskIntent`.
+                    if draft.wantsLink && !isWork {
+                        Button(intent: DayflowNameAndLinkTaskIntent()) {
+                            saveLabel
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Button(intent: DayflowNameTaskIntent()) {
+                            saveLabel
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    // **A glyph, not a button, and only for Reminders tasks.**
+                    // This is used perhaps one capture in twenty; anything
+                    // wider would make a rare thing look like a step. Work has
+                    // no paperclip at all because nothing local exists to
+                    // attach to, which is better than one that fails.
+                    if !isWork {
+                        Button(intent: DayflowToggleLinkIntent()) {
+                            Image(systemName: draft.wantsLink ? "paperclip.circle.fill" : "paperclip")
+                                .font(.system(size: 15, weight: .semibold))
+                                .frame(width: 38, height: 38)
+                                .overlay(RoundedRectangle(cornerRadius: 10)
+                                    .stroke(draft.wantsLink ? tint : Color.dayflowHairline, lineWidth: 1))
+                                .foregroundStyle(draft.wantsLink ? tint : Color.dayflowMuted)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
+                .padding(.top, 11)
+
+                if draft.wantsLink && !isWork {
+                    HStack(spacing: 5) {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("You will be asked what to attach.")
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(tint)
+                    .padding(.top, 7)
+                }
+            }
+        }
+    }
+
+    private var saveLabel: some View {
+        Text(isWork ? "Name it and send" : "Name it and add")
+            .font(.system(size: 13, weight: .semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(tint))
+            .foregroundStyle(Color.white)
+    }
+
+    // MARK: Finished
+
+    /// **One line, because the card is supposed to be gone.**
+    ///
+    /// On success the naming intent ends without returning a snippet, which
+    /// should dismiss the overlay. If iOS keeps it up anyway, this is what
+    /// stays: a sentence, not a card that has to be dismissed. Belt and braces
+    /// for a behaviour that cannot be tested anywhere but on the phone.
+    private var finishedLine: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "checkmark.circle.fill")
+            Text(draft.landedLine ?? (draft.justAddedToTodoist ? "Sent to Todoist" : "Added"))
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 12.5, weight: .semibold))
+        .foregroundStyle(draft.justAddedToTodoist ? Color.dayflowTodoist : Color.dayflowAccent)
+    }
+
+    // MARK: Linking
+
+    /// Recent documents and recent notes, as chips.
+    ///
+    /// **Recent rather than searchable, deliberately.** A card cannot hold a
+    /// text field, so a searchable version would mean the system asking him to
+    /// type, then a list of matches — three screens to do what the app does in
+    /// two taps, and a weaker copy of a picker that already exists. The case
+    /// this serves is the thing he was just looking at, and recency answers that
+    /// exactly.
+    private var linkPicker: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(draft.createdTaskTitle ?? "")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Color.dayflowMuted)
+                .lineLimit(1)
+                .padding(.top, 4)
+
+            if let linked = draft.linked {
+                HStack(spacing: 7) {
+                    Image(systemName: "checkmark.circle.fill")
+                    Text("\(linked) linked")
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(Color.dayflowAccent)
                 .padding(.top, 11)
             }
+
+            if let failure = draft.failure {
+                Text(failure)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.dayflowAccent)
+                    .padding(.top, 9)
+            }
+
+            let documents = DayflowLinkables.recentDocuments()
+            if !documents.isEmpty {
+                label("DOCUMENTS")
+                DayflowSnippetFlow(spacing: 6) {
+                    ForEach(documents, id: \.path) { doc in
+                        Button(intent: DayflowLinkIntent(marker: ThingsTask.documentMarkerPrefix + doc.path,
+                                                         label: doc.title)) {
+                            chip(doc.title, selected: false,
+                                 accent: Color.dayflowAccent, faded: false)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            let notes = DayflowLinkables.recentNotes()
+            if !notes.isEmpty {
+                label("NOTES")
+                DayflowSnippetFlow(spacing: 6) {
+                    ForEach(notes, id: \.self) { name in
+                        Button(intent: DayflowLinkIntent(marker: "[[\(name)]]", label: name)) {
+                            chip(name, selected: false,
+                                 accent: Color.dayflowAccent, faded: false)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if documents.isEmpty && notes.isEmpty {
+                Text("Nothing recent to attach.")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Color.dayflowMuted)
+                    .padding(.top, 11)
+            }
+
+            Button(intent: DayflowDoneLinkingIntent()) {
+                Text("Done")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.dayflowPanel))
+                    .foregroundStyle(Color.dayflowInk)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 12)
         }
     }
 
@@ -606,11 +1004,26 @@ struct DayflowTaskCard: View {
                         Button(intent: DayflowTaskPickDayIntent(year: comps.year ?? 2026,
                                                                 month: comps.month ?? 1,
                                                                 day: dayNumber)) {
+                            // **Today is the accent; the chosen day is the
+                            // filled circle** (D375). Bold alone was the only
+                            // mark today had, and next to thirty other numerals
+                            // a weight change is not a landmark — which is what
+                            // today is for in a month grid: the thing every
+                            // other date is judged against. When today IS the
+                            // chosen day the circle fills with the accent
+                            // instead of ink, so one square never has to carry
+                            // two different meanings in the same colour.
                             Text("\(dayNumber)")
-                                .font(.system(size: 13, weight: isToday ? .bold : .regular))
-                                .foregroundStyle(isSelected ? Color.white : Color.dayflowInk)
+                                .font(.system(size: 13,
+                                              weight: isToday || isSelected ? .semibold : .regular))
+                                .foregroundStyle(isSelected ? Color.white
+                                                 : (isToday ? Color.dayflowAccent : Color.dayflowInk))
                                 .frame(width: 26, height: 26)
-                                .background(Circle().fill(isSelected ? Color.dayflowInk : Color.clear))
+                                .background(
+                                    Circle().fill(isSelected
+                                                  ? (isToday ? Color.dayflowAccent : Color.dayflowInk)
+                                                  : Color.clear)
+                                )
                                 .frame(height: 30)
                                 .contentShape(Rectangle())
                         }

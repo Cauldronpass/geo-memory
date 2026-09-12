@@ -79,8 +79,21 @@ struct DayflowApp: App {
     /// crash on the first chip tap rather than a compile error, so this line
     /// and that file live and die together.
     init() {
-        AppDependencyManager.shared.add { DayflowEventDraft.shared }
-        AppDependencyManager.shared.add { DayflowTaskDraft.shared }
+        // **`assumeIsolated`, and it is honest here rather than a silencer.**
+        // An `App`'s `init()` is nonisolated as far as the compiler is
+        // concerned, and these three drafts are main-actor types, so merely
+        // naming `.shared` warns. In fact app initialisation runs on the main
+        // thread in every case this ships in, including the background launch
+        // an intent causes — which is exactly the claim `assumeIsolated` makes.
+        //
+        // Registering here rather than from a view's `.task` is deliberate: an
+        // intent can run with no window on screen, and a dependency registered
+        // by a view that never appeared is a crash on the first button press.
+        MainActor.assumeIsolated {
+            AppDependencyManager.shared.add(dependency: DayflowEventDraft.shared)
+            AppDependencyManager.shared.add(dependency: DayflowTaskDraft.shared)
+            AppDependencyManager.shared.add(dependency: DayflowSearchDraft.shared)
+        }
     }
 
     private var preferredScheme: ColorScheme? {
@@ -126,6 +139,12 @@ struct DayflowApp: App {
                     DayflowLocationPrimer.primeIfNeeded()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .noteStoreInboxDidChange)) { _ in
+                    Task { await DayflowInboxBadge.refresh() }
+                }
+                // Tasks move in and out of the Inbox without any note being
+                // written, so the note-inbox notification alone would leave the
+                // badge right only by coincidence (D377).
+                .onChange(of: ReminderTaskStore.shared.revision) { _, _ in
                     Task { await DayflowInboxBadge.refresh() }
                 }
                 // Re-read the pin index whenever the app comes back to the
@@ -196,14 +215,56 @@ struct DayflowApp: App {
 /// actual notification, so accepting the one prompt this triggers doesn't
 /// open the door to banners or sounds later.
 enum DayflowInboxBadge {
+    /// **Which halves count is a setting now** (Session 99). David asked for
+    /// it the same day he asked what the badge was: a number you can't
+    /// decompose is a number you learn to ignore. Two switches, both on by
+    /// default, so the badge behaves exactly as it did for anyone who never
+    /// opens Settings. Both off means no badge at all — cleared, not frozen
+    /// at its last value, and no authorization prompt.
+    nonisolated static var countsNotes: Bool {
+        UserDefaults.standard.object(forKey: "dayflow_badge_notes") as? Bool ?? true
+    }
+    nonisolated static var countsTasks: Bool {
+        UserDefaults.standard.object(forKey: "dayflow_badge_tasks") as? Bool ?? true
+    }
+
+    /// **Tasks waiting in the Inbox list, plus unfiled note captures** (D377).
+    ///
+    /// It counted only `Notes/Inbox/` until now, and that number had not served
+    /// him: the one thing in it was a test capture from July that he found in
+    /// September, by asking what the badge was for. Meanwhile the pile he
+    /// actually triages — undated tasks in the Inbox list — was never on the
+    /// icon at all.
+    ///
+    /// **Both, summed, and the sum is defensible here for one reason:** they are
+    /// the same pile in two shapes. Inbox means "captured, not yet decided" for
+    /// both, and the answer to either is the same gesture — open Dayflow and
+    /// triage. A badge whose number mixes two things you would act on
+    /// differently would be worse than no badge; this one does not.
     static func refresh() async {
         let center = UNUserNotificationCenter.current()
+        let wantsNotes = countsNotes
+        let wantsTasks = countsTasks
+        // Both off: clear and leave. `setBadgeCount` never prompts, so this
+        // is safe to call even on a build that has never asked for badge
+        // permission.
+        guard wantsNotes || wantsTasks else {
+            try? await center.setBadgeCount(0)
+            return
+        }
         let settings = await center.notificationSettings()
         if settings.authorizationStatus == .notDetermined {
             _ = try? await center.requestAuthorization(options: [.badge])
         }
-        let count = (try? NoteStore.shared.listFiles(in: "Notes/Inbox").count) ?? 0
-        try? await center.setBadgeCount(count)
+        var total = 0
+        if wantsNotes {
+            total += (try? NoteStore.shared.listFiles(in: "Notes/Inbox").count) ?? 0
+        }
+        if wantsTasks {
+            await ReminderTaskStore.shared.refreshAll()
+            total += ReminderTaskStore.shared.inboxCount
+        }
+        try? await center.setBadgeCount(total)
     }
 }
 

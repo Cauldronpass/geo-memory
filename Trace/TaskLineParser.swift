@@ -184,8 +184,23 @@ enum TaskLineParser {
         }
 
         guard !head.isEmpty else { return result(nil) }
-        if let hit = tableMatch(head, now: now) { return result(hit) }
-        if let hit = detectorMatch(head, now: now) { return result(hit) }
+
+        // **Trailing sentence punctuation comes off before the date is looked
+        // for** (D379). Dictation adds it: iOS punctuates automatically, so
+        // "buy toothpaste tomorrow" arrives as "Buy toothpaste tomorrow." and
+        // the match, which requires the head to END with the date word, sees
+        // "omorrow." and refuses. The word was in the right place and the full
+        // stop hid it.
+        //
+        // Stripped from the head used for MATCHING only. `head` itself is
+        // returned untouched, because it is what the title falls back to and
+        // what the un-parse restores, and quietly editing his words is the
+        // failure this parser's whole trailing-only rule exists to avoid.
+        let matchable = head.trimmingCharacters(in: CharacterSet(charactersIn: " .!?,;"))
+        guard !matchable.isEmpty else { return result(nil) }
+
+        if let hit = tableMatch(matchable, now: now) { return result(hit) }
+        if let hit = detectorMatch(matchable, now: now) { return result(hit) }
         return result(nil)
     }
 
@@ -336,7 +351,9 @@ enum TaskLineParser {
             title = String(title.dropLast(last.count))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        title = title.trimmingCharacters(in: CharacterSet(charactersIn: " ,-–—:@"))
+        // `.!?;` joined the set with dictation (D379): "Buy toothpaste." is a
+        // sentence and "Buy toothpaste" is a task, and he spoke the second one.
+        title = title.trimmingCharacters(in: CharacterSet(charactersIn: " ,-–—:@.!?;"))
         return title.isEmpty ? nil : title
     }
 }

@@ -429,7 +429,6 @@ final class ReminderTaskStore {
         }
     }
 
-    @discardableResult
     /// `remindAt` (Session 80): capture can now carry a time. "Call the Wrigley
     /// office tomorrow at 3pm" parses to a due DAY plus an alarm, and until now
     /// there was no way to set the second one at creation — you had to add the
@@ -440,10 +439,28 @@ final class ReminderTaskStore {
     /// same-day rule matches `update(taskID:)`: an alarm on the due day puts
     /// the time ON the due date (Reminders then shows "Tuesday 3:00 PM"), while
     /// a lead-time alarm leaves the due date day-only.
+    ///
+    /// **The body moved to `addTaskReturningID` (D369)** and this is now a call
+    /// through it with the id thrown away, so every existing caller reads
+    /// unchanged and there is one creation path rather than two.
+    ///
+    /// **Added for Dayflow's task card** (D369), which offers to link a document
+    /// to the task it has just created and so has to know which one that is.
+    /// The alternative was re-fetching and matching on title, which picks the
+    /// wrong one the second time he captures the same words.
+    ///
+    @discardableResult
     func addTask(title: String, toToday: Bool = false, date: Date? = nil,
                  list: String? = nil, notes: String? = nil,
                  remindAt: Date? = nil) async -> Bool {
-        guard await ensureAccess() else { return false }
+        await addTaskReturningID(title: title, toToday: toToday, date: date,
+                                 list: list, notes: notes, remindAt: remindAt) != nil
+    }
+
+    func addTaskReturningID(title: String, toToday: Bool = false, date: Date? = nil,
+                            list: String? = nil, notes: String? = nil,
+                            remindAt: Date? = nil) async -> String? {
+        guard await ensureAccess() else { return nil }
         let reminder = EKReminder(eventStore: store)
         reminder.title = title
         if let notes, !notes.isEmpty { reminder.notes = notes }
@@ -497,10 +514,10 @@ final class ReminderTaskStore {
         do {
             try store.save(reminder, commit: true)
             await fetch()
-            return true
+            return reminder.calendarItemIdentifier
         } catch {
             lastError = "Could not add the reminder. \(error.localizedDescription)"
-            return false
+            return nil
         }
     }
 

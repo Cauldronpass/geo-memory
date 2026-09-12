@@ -688,94 +688,21 @@ struct ContentView: View {
             consumeAddEventQuickAction()
         }
         .onOpenURL { url in
-            if url.host == "task" {
-                pendingTaskLinkID = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                    .queryItems?.first(where: { $0.name == "id" })?.value
-                resolvePendingTaskLink()
-            } else if url.host == "addEvent" {
-                // The widget's + always wanted event mode; it gets the
-                // composer directly now.
-                showEventComposer = true
-            } else if url.host == "openJot" {
-                if let jotURL = URL(string: "jot://open") {
-                    UIApplication.shared.open(jotURL)
-                }
-            } else if url.host == "endeavor" {
-                // dayflow://endeavor?id=japan-2026 — Satchel's jump from a
-                // document filed to a trip. By id, since that is what the
-                // sidecar carries and what survives the note being renamed.
-                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                   let id = comps.queryItems?.first(where: { $0.name == "id" })?.value {
-                    pendingEndeavorID = id
-                    resolveNoteRoute()
-                }
-            } else if url.host == "note" {
-                // dayflow://note?path=Calendar/2026-07-29.md
-                // dayflow://note?path=Notes/Endeavors/Japan.md
-                // dayflow://note?path=Notes/Projects/Kitchen.md
-                //
-                // Parsed with `URLComponents`, not by string surgery: an
-                // Endeavor called "Mum & Dad's 50th" carries both a space and
-                // an ampersand, and an unescaped ampersand truncates the path.
-                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                   let path = comps.queryItems?.first(where: { $0.name == "path" })?.value {
-                    pendingNotePath = path
-                    resolveNoteRoute()
-                }
-            } else if url.host == "launch" {
-                // The launcher widget's four tiles (Session 68).
-                //
-                // **A widget can only ever hand its URL to its own container**,
-                // so the tiles cannot address Jot, Trace or Satchel directly —
-                // they address Dayflow, and Dayflow re-opens the real scheme.
-                // Same shape as `openCalendar` below, which hands off to
-                // Fantastical, and the only route an extension has.
-                //
-                // **`today` is no longer a no-op.** Session 68 reasoned that
-                // opening Dayflow IS the action, and left the tile doing nothing
-                // beyond the launch. That is true only when Dayflow happens to
-                // already be showing today, and it usually is not: `selectedDate`
-                // survives backgrounding, and the screen can be sitting under a
-                // full-screen cover (Browse, the full-page note) or a sheet
-                // (Settings, Quick Add). So the tile labelled Today could land on
-                // Tomorrow, on a calendar grid, or on last Thursday's note.
-                //
-                // Same mistake as D82 in a different costume: the behaviour was
-                // reasoned about from what the code would do, not from what a
-                // person tapping a button called "Today" is asking for. A tile
-                // that names a destination has to arrive there.
-                //
-                // Covers are cleared before the date is set, so the reset is
-                // never applied to a screen the user cannot see.
-                let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                    .queryItems?.first(where: { $0.name == "target" })?.value
-                if target == "today" {
-                    showNoteFullPage  = false
-                    showSettings      = false
-                    showEventComposer = false
-                    selectedDate      = DayflowRelativeDay.today.date()
-                } else {
-                    let scheme: String? = {
-                        switch target {
-                        case "capture": return "jot://"
-                        case "checkin": return "trace://checkin"
-                        case "file":    return "satchel://scan"
-                        default:        return nil          // anything unknown
-                        }
-                    }()
-                    if let scheme, let dest = URL(string: scheme) {
-                        UIApplication.shared.open(dest)
-                    }
-                }
-            } else if url.host == "openCalendar" {
-                if let fantasticalURL = URL(string: "fantastical2://") {
-                    UIApplication.shared.open(fantasticalURL, options: [:]) { success in
-                        if !success, let calShowURL = URL(string: "calshow://") {
-                            UIApplication.shared.open(calShowURL)
-                        }
-                    }
-                }
-            }
+            handleDeepLink(url)
+        }
+        // The same link, handed over directly (D376). See `DayflowRouteInbox`:
+        // a `dayflow://` URL opened from Dayflow's own intents brings the app
+        // forward without `onOpenURL` firing, so the card's taps arrive here.
+        .onChange(of: DayflowRouteInbox.shared.pending?.serial) { _, _ in
+            if let url = DayflowRouteInbox.shared.consume() { handleDeepLink(url) }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Drained on becoming active as well: the intent delivers while the
+            // Shortcuts card is still on top, which is before this scene is
+            // frontmost, and a route resolved under a covering overlay is a
+            // route nobody sees land.
+            guard phase == .active else { return }
+            if let url = DayflowRouteInbox.shared.consume() { handleDeepLink(url) }
         }
         // Cold launch, first attempt. 50ms is a guess and IS SOMETIMES WRONG —
         // David hit exactly that on 2026-07-29: the first tap of "Open in
@@ -1002,6 +929,106 @@ struct ContentView: View {
     /// An unrecognised prefix IS cleared — People and Places belong to Trace and
     /// Horizons has no screen to open yet, so retrying forever would just leave a
     /// stale path waiting to fire at a confusing moment.
+    /// Every `dayflow://` route, in one place.
+    ///
+    /// **Extracted from `.onOpenURL` so a second caller can reach it**
+    /// (D376). Dayflow's own search card asks the system to open a
+    /// `dayflow://` URL while Dayflow is already the running app, and in
+    /// that case the app is brought forward without `onOpenURL` firing —
+    /// so the link arrived nowhere. `DayflowRouteInbox` hands the same URL
+    /// to this method directly. One routing table, two doors into it;
+    /// two tables would be the drift this file has already paid for.
+    private func handleDeepLink(_ url: URL) {
+        if url.host == "task" {
+            pendingTaskLinkID = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "id" })?.value
+            resolvePendingTaskLink()
+        } else if url.host == "addEvent" {
+            // The widget's + always wanted event mode; it gets the
+            // composer directly now.
+            showEventComposer = true
+        } else if url.host == "openJot" {
+            if let jotURL = URL(string: "jot://open") {
+                UIApplication.shared.open(jotURL)
+            }
+        } else if url.host == "endeavor" {
+            // dayflow://endeavor?id=japan-2026 — Satchel's jump from a
+            // document filed to a trip. By id, since that is what the
+            // sidecar carries and what survives the note being renamed.
+            if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+               let id = comps.queryItems?.first(where: { $0.name == "id" })?.value {
+                pendingEndeavorID = id
+                resolveNoteRoute()
+            }
+        } else if url.host == "note" {
+            // dayflow://note?path=Calendar/2026-07-29.md
+            // dayflow://note?path=Notes/Endeavors/Japan.md
+            // dayflow://note?path=Notes/Projects/Kitchen.md
+            //
+            // Parsed with `URLComponents`, not by string surgery: an
+            // Endeavor called "Mum & Dad's 50th" carries both a space and
+            // an ampersand, and an unescaped ampersand truncates the path.
+            if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+               let path = comps.queryItems?.first(where: { $0.name == "path" })?.value {
+                pendingNotePath = path
+                resolveNoteRoute()
+            }
+        } else if url.host == "launch" {
+            // The launcher widget's four tiles (Session 68).
+            //
+            // **A widget can only ever hand its URL to its own container**,
+            // so the tiles cannot address Jot, Trace or Satchel directly —
+            // they address Dayflow, and Dayflow re-opens the real scheme.
+            // Same shape as `openCalendar` below, which hands off to
+            // Fantastical, and the only route an extension has.
+            //
+            // **`today` is no longer a no-op.** Session 68 reasoned that
+            // opening Dayflow IS the action, and left the tile doing nothing
+            // beyond the launch. That is true only when Dayflow happens to
+            // already be showing today, and it usually is not: `selectedDate`
+            // survives backgrounding, and the screen can be sitting under a
+            // full-screen cover (Browse, the full-page note) or a sheet
+            // (Settings, Quick Add). So the tile labelled Today could land on
+            // Tomorrow, on a calendar grid, or on last Thursday's note.
+            //
+            // Same mistake as D82 in a different costume: the behaviour was
+            // reasoned about from what the code would do, not from what a
+            // person tapping a button called "Today" is asking for. A tile
+            // that names a destination has to arrive there.
+            //
+            // Covers are cleared before the date is set, so the reset is
+            // never applied to a screen the user cannot see.
+            let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "target" })?.value
+            if target == "today" {
+                showNoteFullPage  = false
+                showSettings      = false
+                showEventComposer = false
+                selectedDate      = DayflowRelativeDay.today.date()
+            } else {
+                let scheme: String? = {
+                    switch target {
+                    case "capture": return "jot://"
+                    case "checkin": return "trace://checkin"
+                    case "file":    return "satchel://scan"
+                    default:        return nil          // anything unknown
+                    }
+                }()
+                if let scheme, let dest = URL(string: scheme) {
+                    UIApplication.shared.open(dest)
+                }
+            }
+        } else if url.host == "openCalendar" {
+            if let fantasticalURL = URL(string: "fantastical2://") {
+                UIApplication.shared.open(fantasticalURL, options: [:]) { success in
+                    if !success, let calShowURL = URL(string: "calshow://") {
+                        UIApplication.shared.open(calShowURL)
+                    }
+                }
+            }
+        }
+    }
+
     private func resolveNoteRoute() {
         resolveEndeavorRoute()
 

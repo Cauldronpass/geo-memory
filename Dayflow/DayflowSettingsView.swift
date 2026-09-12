@@ -9,151 +9,81 @@ import EventKit
 // the Things integration entirely — this screen's real, urgent trigger was
 // David installing the first TestFlight build on his actual phone and
 // discovering there was no way to configure the Things Mini-bridge URL/token
-// at all (they'd only ever been seeded on the Simulator via a Terminal
-// `defaults write` command, invisible and unreachable from a real device).
-// So this screen is really two things bolted together: the Things config
-// UI that's now load-bearing/required, plus the originally-scoped Default
-// Calendar + Sync items. Also added an Appearance override (System/Light/
-// Dark) since David asked about it in the same conversation and Settings is
-// the obvious home for it — not in the original mockup scope, small enough
-// to fold in here rather than defer.
+// at all. That original screen is now the six sub-screens below.
 //
-// All persistence is via `@AppStorage` (backed by `UserDefaults.standard`)
-// using the exact same keys `ThingsService.swift`'s `baseURL()`/`authorize()`
-// already read (`things_api_url`, `things_api_token`) — typing in this
-// screen IS saving, live, no separate save step, and the very next
-// `ThingsService` fetch anywhere in the app picks up the new values
-// automatically.
+// **Restructured into a menu, Session 99 (2026-09-12).** David: *"the settings
+// screen itself ... is starting to get very congested and I think we need
+// menus now."* It was ten Sections in one scroll, in the order they were
+// added rather than any order you would look in, and the two that matter most
+// day to day (Reminders access, Refresh) sat above three calendar blocks and
+// two API keys. The root is now a short list of six destinations and every
+// old Section moved, unchanged, into one of them.
 //
-// **"Calendars Shown in Agenda" section added 2026-07-20 (Session 14),
-// David asked for this directly.** Separate from "Default Calendar" below —
-// that one controls where a *new* event gets written (single choice, an
-// event can only live on one calendar); this one is a checkbox multi-select
-// controlling which calendars' events get READ into the Agenda/Upcoming/
-// Calendar-search surfaces (e.g. hide Birthdays/Holidays, show two of
-// several work + personal calendars). Backed by `CalendarService`'s new
-// `includedCalendarsForDayflow()` filter — see that file's comment for the
-// storage format and the "empty = show everything" default.
+// The push navigation is a `NavigationStack`, which Session 34 deliberately
+// removed — but for the native large-title nav bar it drew, not for the
+// stack itself. So every screen here, root and pushed, hides the system bar
+// (`.toolbar(.hidden, for: .navigationBar)`) and draws the same custom
+// serif header the rest of the app uses. A pushed screen's `dismiss()` pops;
+// only the root's `dismiss()` closes the sheet.
+//
+// All persistence is still `@AppStorage` on `UserDefaults.standard`: typing
+// or toggling in these screens IS saving, live, no separate save step.
 
 struct DayflowSettingsView: View {
     @Environment(\.dismiss) private var dismiss
-
     @AppStorage("dayflow_appearance") private var appearanceRaw: String = "light"
-    /// Session 77 — morning summary notification. Defaults mirror
-    /// DayflowMorningSummary's own reads (on, 8:00).
-    @AppStorage("morning_summary_enabled") private var morningSummaryEnabled: Bool = true
-    @State private var morningSummaryTime: Date = Calendar.current.date(
-        bySettingHour: DayflowMorningSummary.fireMinutes / 60,
-        minute: DayflowMorningSummary.fireMinutes % 60,
-        second: 0, of: Date()) ?? Date()
-    @AppStorage("default_calendar_identifier") private var defaultCalendarID: String = ""
-    @AppStorage("dayflow_included_calendar_ids") private var includedCalendarIDsRaw: String = ""
-
-    @State private var availableCalendars: [EKCalendar] = []
-    @State private var lastSyncedText: String = "Never"
-    @State private var isSyncing = false
-    /// What the last Sync Now did. **The button used to report nothing at all**,
-    /// so a failed sync and a successful one looked identical — which is how
-    /// David could sync today and still be looking at a list from yesterday
-    /// without anything telling him.
-    @State private var syncStatus: String? = nil
-    /// **TEMPORARY, added 2026-07-25** — widget weather debug readout. The
-    /// widget face is too small to show a full error string legibly
-    /// (confirmed: David couldn't read it even zoomed into a screenshot),
-    /// so `DayflowWidget.swift`'s `fetchWeather()` now also writes the full,
-    /// untruncated failure text to the shared App Group UserDefaults; this
-    /// screen reads it back with real space to show it and lets David
-    /// copy/paste it directly instead of a screenshot. Remove this state var,
-    /// `loadWeatherDebugText()`, and `weatherDebugSection` once weather is
-    /// confirmed working — see Dayflow-HANDOFF.md for the matching widget-side
-    /// removal checklist.
-    @State private var weatherDebugText: String = "(not loaded yet)"
-
 
     var body: some View {
-        // Skin fix 2026-07-22 (Session 34). Was `NavigationStack { Form {
-        // ... }.navigationTitle("Settings").toolbar { Button("Done") } }` —
-        // the native large-title nav bar (bold sans-serif, plain white),
-        // David's own flagged mismatch against the rest of the app's warm/
-        // serif look. Dropped the `NavigationStack` (not needed — no push
-        // navigation happens inside this Form, every Picker here is inline/
-        // segmented, not a push destination) in favor of the same plain-
-        // VStack-plus-custom-header pattern every other Dayflow screen
-        // already uses (DayflowNotesView.swift etc.), so Settings stops being
-        // the one screen built a structurally different way.
-        VStack(spacing: 0) {
-            header
-            Form {
-                weatherDebugSection
-                thingsSection
-                morningSummarySection
-                // MOVED UP, 2026-08-14 (Session 71). It was below the calendar
-                // sections under a bare "Sync" header, which reads as a global
-                // sync and is where David went looking for it and did not find
-                // it: *"That section of settings is not in the Things section
-                // but rather toward the bottom of the settings screen."* It has
-                // always been Things and nothing else — the button calls
-                // `ThingsService.refreshAll()` and the row reads
-                // `ThingsService.lastFetched`. A control filed under the wrong
-                // heading is a control you have to already know about.
-                syncSection
-                appearanceSection
-                calendarSection
-                includedCalendarsSection
-                // One entry here serves Trace, Satchel and the Mac too — they
-                // all read the same App Group key. Dayflow gets the field
-                // because it is the only iOS app in the family with a Settings
-                // screen at all.
-                ClaudeAPIKeySection()
-                TodoistKeySection()
+        NavigationStack {
+            VStack(spacing: 0) {
+                header
+                Form {
+                    Section {
+                        NavigationLink { DayflowRemindersSettings() } label: {
+                            settingsRow("Tasks & Reminders", icon: "checklist",
+                                        value: reminderAccessSummary)
+                        }
+                        NavigationLink { DayflowNotificationsSettings() } label: {
+                            settingsRow("Notifications", icon: "bell", value: nil)
+                        }
+                        NavigationLink { DayflowCalendarSettings() } label: {
+                            settingsRow("Calendars", icon: "calendar", value: nil)
+                        }
+                    }
+                    Section {
+                        NavigationLink { DayflowAppearanceSettings() } label: {
+                            settingsRow("Appearance", icon: "paintbrush",
+                                        value: appearanceRaw.capitalized)
+                        }
+                        NavigationLink { DayflowConnectionsSettings() } label: {
+                            settingsRow("Connections", icon: "key", value: nil)
+                        }
+                    }
+                    // TEMP — goes when the widget weather bug is closed out.
+                    Section {
+                        NavigationLink { DayflowDiagnosticsSettings() } label: {
+                            settingsRow("Diagnostics", icon: "stethoscope", value: nil)
+                        }
+                    }
+                }
+                .listStyle(.insetGrouped)
+                // `Form`/`List` paint their own opaque .systemGroupedBackground
+                // by default — hiding it is required before the gradient below
+                // can show through.
+                .scrollContentBackground(.hidden)
             }
-            .listStyle(.insetGrouped)
-            // `Form`/`List` paint their own opaque .systemGroupedBackground
-            // by default — hiding it is required before the gradient below
-            // can show through, the same "background painted on/under the
-            // wrong layer" issue Session 30 hit with `NavigationStack`.
-            .scrollContentBackground(.hidden)
-        }
-        // Same warm gradient as the rest of the app. Each Form Section
-        // already renders as its own rounded white block (inset-grouped
-        // style), which reads close enough to the app's card language
-        // without rebuilding every row/Picker/SecureField by hand — that
-        // rewrite would be a lot of surface area to get right with no
-        // simulator in this sandbox to verify against. See DayflowSkin.swift.
-        .dayflowSkinBackground()
-        .task {
-            availableCalendars = await CalendarService.shared.availableCalendars()
-            updateLastSyncedText()
-            loadWeatherDebugText()
+            .dayflowSkinBackground()
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 
-    // MARK: TEMP — Widget Weather Debug (see weatherDebugText's declaration)
-
-    private var weatherDebugSection: some View {
-        Section {
-            Text(weatherDebugText)
-                .font(.system(size: 12, design: .monospaced))
-                .textSelection(.enabled)
-            Button("Refresh") { loadWeatherDebugText() }
-        } header: {
-            Text("TEMP: Widget Weather Debug")
-        } footer: {
-            Text("Temporary diagnostic screen. Shows the widget's last weather-fetch attempt and, on failure, the full error — long-press the text above to copy it. This section and the widget code writing to it get removed once weather works.")
+    private var reminderAccessSummary: String? {
+        switch ReminderTaskStore.shared.accessGranted {
+        case .some(true):  return nil
+        case .some(false): return "Not allowed"
+        case .none:        return "Not set up"
         }
     }
-
-    private func loadWeatherDebugText() {
-        // Inlined rather than `AppGroup.identifier` — that type turns out
-        // not to be in the Dayflow target's membership either (build error:
-        // "Cannot find 'AppGroup' in scope"), same situation
-        // DayflowWidget.swift's own comment already flags for the widget
-        // extension. Must match `group.com.david.trace` used everywhere else.
-        weatherDebugText = UserDefaults(suiteName: "group.com.david.trace")?
-            .string(forKey: "dayflowWidgetWeatherDebugTextFull") ?? "(no debug text written yet — widget hasn't run since this key was added, or App Group isn't shared correctly)"
-    }
-
-    // MARK: Header
 
     private var header: some View {
         HStack {
@@ -171,17 +101,104 @@ struct DayflowSettingsView: View {
         .padding(.top, 14)
         .padding(.bottom, 4)
     }
+}
 
-    // MARK: Reminders
-    //
-    // 2026-08-27. This was the Things Integration section: a Mac Mini bridge
-    // URL, a Bearer token and a Test Connection button. Tasks now come from
-    // Apple Reminders through EventKit, so the only setting is whether Dayflow
-    // is allowed to read them. `things_api_url` / `things_api_token` are left
-    // in UserDefaults untouched; nothing reads them until `ThingsService` is
-    // deleted with the export.
+// MARK: - Menu row
 
-    private var thingsSection: some View {
+/// One line of the root menu. `value` is the at-a-glance state worth seeing
+/// without opening the screen — and it is deliberately nil when there is
+/// nothing wrong, so the only text that ever appears here is text that
+/// deserves a look.
+@ViewBuilder
+private func settingsRow(_ title: String, icon: String, value: String?) -> some View {
+    HStack(spacing: 12) {
+        Image(systemName: icon)
+            .font(.system(size: 15))
+            .foregroundStyle(Color.dayflowInk.opacity(0.7))
+            .frame(width: 22)
+        Text(title)
+        Spacer()
+        if let value {
+            Text(value)
+                .font(.system(size: 14))
+                .foregroundStyle(value == "Not allowed" ? Color.orange : Color.secondary)
+        }
+    }
+}
+
+// MARK: - Sub-screen scaffold
+
+/// Every pushed settings screen: custom serif header with a back chevron,
+/// the same warm gradient, the system nav bar hidden. `dismiss()` here pops
+/// back to the menu rather than closing the Settings sheet.
+private struct DayflowSettingsScreen<Content: View>: View {
+    // `content` is declared LAST on purpose: the trailing closure at every
+    // call site binds to the final parameter of the synthesized memberwise
+    // init, and an @Environment property sitting after it makes that match
+    // depend on Swift's backward-scanning rule rather than on the obvious
+    // reading.
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.dayflowInk)
+                        .frame(width: 50, height: 32, alignment: .leading)
+                }
+                Spacer()
+                Text(title)
+                    .font(.dayflowSerif(20))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer()
+                Color.clear.frame(width: 50, height: 32)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 4)
+            Form { content() }
+                .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
+        }
+        .dayflowSkinBackground()
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+// MARK: - Tasks & Reminders
+//
+// 2026-08-27. This was the Things Integration section: a Mac Mini bridge
+// URL, a Bearer token and a Test Connection button. Tasks now come from
+// Apple Reminders through EventKit, so the only setting is whether Dayflow
+// is allowed to read them. `things_api_url` / `things_api_token` are left
+// in UserDefaults untouched; nothing reads them until `ThingsService` is
+// deleted with the export.
+//
+// Refresh lives here too. It moved up out of the calendar block in Session 71
+// because David went looking for it under Things and did not find it; the
+// menu makes that permanent — it has always been Reminders and nothing else.
+
+private struct DayflowRemindersSettings: View {
+    @State private var lastSyncedText: String = "Never"
+    @State private var isSyncing = false
+    /// What the last Sync Now did. **The button used to report nothing at all**,
+    /// so a failed sync and a successful one looked identical.
+    @State private var syncStatus: String? = nil
+
+    var body: some View {
+        DayflowSettingsScreen(title: "Tasks & Reminders") {
+            accessSection
+            refreshSection
+        }
+        .task { updateLastSyncedText() }
+    }
+
+    private var accessSection: some View {
         Section {
             HStack {
                 Text("Access")
@@ -213,6 +230,92 @@ struct DayflowSettingsView: View {
         }
     }
 
+    private var refreshSection: some View {
+        Section {
+            Button(isSyncing ? "Syncing…" : "Sync Now") {
+                isSyncing = true
+                syncStatus = nil
+                Task {
+                    // `/today` ONLY before reporting. It is the list the Agenda
+                    // draws and the only one `lastError` describes; the other
+                    // three are browse-view sources and cost up to 60 seconds
+                    // more between them. Answering after 20 rather than 80 is
+                    // the difference between a slow button and a stuck one.
+                    await ReminderTaskStore.shared.fetch()
+                    await MainActor.run {
+                        isSyncing = false
+                        updateLastSyncedText()
+                        if let error = ReminderTaskStore.shared.lastError {
+                            syncStatus = "Could not read Reminders. \(error)"
+                        } else {
+                            syncStatus = "Up to date."
+                        }
+                    }
+                    // Behind the answer, not in front of it.
+                    await ReminderTaskStore.shared.refreshBrowseLists()
+                }
+            }
+            .disabled(isSyncing)
+            HStack {
+                Text("Last synced")
+                Spacer()
+                Text(lastSyncedText).foregroundStyle(.secondary)
+            }
+            if let syncStatus {
+                Text(syncStatus)
+                    .font(.caption)
+                    // `Color.` on both branches, explicitly. Bare `.secondary`
+                    // resolves to `HierarchicalShapeStyle` and bare `.orange` to
+                    // `Color`, and a ternary needs one type.
+                    .foregroundStyle(syncStatus.hasPrefix("Up to date") ? Color.secondary : Color.orange)
+            }
+            // Shown whether or not Sync Now was pressed this visit: a stale list
+            // is the thing worth knowing about on arrival, not on request.
+            if syncStatus == nil, ReminderTaskStore.shared.isShowingStaleTasks {
+                Text("The last refresh failed, so the Agenda is showing an older list.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("Refresh")
+        } footer: {
+            Text("Dayflow refreshes on its own whenever Reminders changes, including from the Watch or Siri. This button is for reassurance.")
+        }
+    }
+
+    private func updateLastSyncedText() {
+        guard let date = ReminderTaskStore.shared.lastFetched else {
+            lastSyncedText = "Never"
+            return
+        }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        lastSyncedText = f.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: - Notifications
+
+private struct DayflowNotificationsSettings: View {
+    /// Session 77 — morning summary notification. Defaults mirror
+    /// DayflowMorningSummary's own reads (on, 8:00).
+    @AppStorage("morning_summary_enabled") private var morningSummaryEnabled: Bool = true
+    @State private var morningSummaryTime: Date = Calendar.current.date(
+        bySettingHour: DayflowMorningSummary.fireMinutes / 60,
+        minute: DayflowMorningSummary.fireMinutes % 60,
+        second: 0, of: Date()) ?? Date()
+    /// Session 99 — which halves of the Inbox the app icon badge counts.
+    /// Keys and defaults must match `DayflowInboxBadge.countsNotes/countsTasks`.
+    @AppStorage("dayflow_badge_notes") private var badgeNotes: Bool = true
+    @AppStorage("dayflow_badge_tasks") private var badgeTasks: Bool = true
+
+    var body: some View {
+        DayflowSettingsScreen(title: "Notifications") {
+            morningSummarySection
+            badgeSection
+        }
+    }
+
     private var morningSummarySection: some View {
         Section {
             Toggle("Morning summary", isOn: $morningSummaryEnabled)
@@ -221,7 +324,7 @@ struct DayflowSettingsView: View {
                            displayedComponents: .hourAndMinute)
             }
         } header: {
-            Text("Notifications")
+            Text("Morning Summary")
         } footer: {
             Text("One notification each morning listing the day's tasks. Nothing is sent on a day with no dated tasks. Tasks given their own time also ring when that time arrives.")
         }
@@ -236,20 +339,59 @@ struct DayflowSettingsView: View {
         }
     }
 
-    private var appearanceSection: some View {
-        Section("Appearance") {
-            Picker("Appearance", selection: $appearanceRaw) {
-                Text("System").tag("system")
-                Text("Light").tag("light")
-                Text("Dark").tag("dark")
-            }
-            .pickerStyle(.segmented)
+    /// The number on the Home Screen icon. Either switch on its own is a
+    /// clean number; both on is the sum, which holds together because Inbox
+    /// means the same thing on both sides — captured, not yet decided — and
+    /// the answer to either is the same gesture. Both off clears the badge.
+    private var badgeSection: some View {
+        Section {
+            Toggle("Unfiled notes", isOn: $badgeNotes)
+            Toggle("Inbox tasks", isOn: $badgeTasks)
+        } header: {
+            Text("App Icon Badge")
+        } footer: {
+            Text(badgeFooter)
+        }
+        .onChange(of: badgeNotes) { _, _ in
+            Task { await DayflowInboxBadge.refresh() }
+        }
+        .onChange(of: badgeTasks) { _, _ in
+            Task { await DayflowInboxBadge.refresh() }
         }
     }
 
-    // MARK: Default Calendar
+    private var badgeFooter: String {
+        switch (badgeNotes, badgeTasks) {
+        case (true, true):
+            return "The badge counts notes sitting in the Notes Inbox plus undated tasks in the Reminders Inbox list. Turn one off to count only the other."
+        case (true, false):
+            return "The badge counts notes sitting in the Notes Inbox."
+        case (false, true):
+            return "The badge counts undated tasks in the Reminders Inbox list."
+        case (false, false):
+            return "No badge. The app icon shows no number."
+        }
+    }
+}
 
-    private var calendarSection: some View {
+// MARK: - Calendars
+
+private struct DayflowCalendarSettings: View {
+    @AppStorage("default_calendar_identifier") private var defaultCalendarID: String = ""
+    @AppStorage("dayflow_included_calendar_ids") private var includedCalendarIDsRaw: String = ""
+    @State private var availableCalendars: [EKCalendar] = []
+
+    var body: some View {
+        DayflowSettingsScreen(title: "Calendars") {
+            defaultCalendarSection
+            includedCalendarsSection
+        }
+        .task {
+            availableCalendars = await CalendarService.shared.availableCalendars()
+        }
+    }
+
+    private var defaultCalendarSection: some View {
         Section {
             if availableCalendars.isEmpty {
                 Text("No calendars found — check Calendar access for Dayflow in the iOS Settings app.")
@@ -266,11 +408,6 @@ struct DayflowSettingsView: View {
         } header: {
             Text("Default Calendar")
         } footer: {
-            // Corrected 2026-07-20 (Session 14) — this used to say "that write
-            // path isn't built yet, so this doesn't do anything visible
-            // today," which was true when this screen was first built
-            // (Session 7) but went stale once Calendar write support shipped
-            // in Session 10. Caught while adding the section below.
             Text("New events created in Dayflow are written here. If a calendar isn't picked, Dayflow falls back to your iPhone's own default calendar for new events.")
         }
     }
@@ -338,77 +475,86 @@ struct DayflowSettingsView: View {
                 }
             }
         } header: {
-            Text("Calendars Shown in Agenda")
+            Text("Shown in Agenda")
         } footer: {
             Text("Unchecked calendars won't show events in the Agenda, Upcoming, Calendar, or Search views — for example, hiding Birthdays or Holidays. All calendars show by default until you uncheck something here. This doesn't affect where new events are written (see Default Calendar above).")
         }
     }
+}
 
-    // MARK: Sync
+// MARK: - Appearance
 
+private struct DayflowAppearanceSettings: View {
+    @AppStorage("dayflow_appearance") private var appearanceRaw: String = "light"
 
-    private var syncSection: some View {
-        Section {
-            Button(isSyncing ? "Syncing…" : "Sync Now") {
-                isSyncing = true
-                syncStatus = nil
-                Task {
-                    // `/today` ONLY before reporting. It is the list the Agenda
-                    // draws and the only one `lastError` describes; the other
-                    // three are browse-view sources and cost up to 60 seconds
-                    // more between them. Answering after 20 rather than 80 is
-                    // the difference between a slow button and a stuck one.
-                    await ReminderTaskStore.shared.fetch()
-                    await MainActor.run {
-                        isSyncing = false
-                        updateLastSyncedText()
-                        // `lastError` is set and cleared by `/today` alone, so
-                        // it describes exactly the list the Agenda draws.
-                        if let error = ReminderTaskStore.shared.lastError {
-                            syncStatus = "Could not read Reminders. \(error)"
-                        } else {
-                            syncStatus = "Up to date."
-                        }
-                    }
-                    // Behind the answer, not in front of it.
-                    await ReminderTaskStore.shared.refreshBrowseLists()
+    var body: some View {
+        DayflowSettingsScreen(title: "Appearance") {
+            Section {
+                Picker("Appearance", selection: $appearanceRaw) {
+                    Text("System").tag("system")
+                    Text("Light").tag("light")
+                    Text("Dark").tag("dark")
                 }
+                .pickerStyle(.segmented)
+            } footer: {
+                Text("Light is the app's designed look. System follows your iPhone's own light/dark setting.")
             }
-            .disabled(isSyncing)
-            HStack {
-                Text("Last synced")
-                Spacer()
-                Text(lastSyncedText).foregroundStyle(.secondary)
-            }
-            if let syncStatus {
-                Text(syncStatus)
-                    .font(.caption)
-                    // `Color.` on both branches, explicitly. Bare `.secondary`
-                    // resolves to `HierarchicalShapeStyle` and bare `.orange` to
-                    // `Color`, and a ternary needs one type.
-                    .foregroundStyle(syncStatus.hasPrefix("Up to date") ? Color.secondary : Color.orange)
-            }
-            // Shown whether or not Sync Now was pressed this visit: a stale list
-            // is the thing worth knowing about on arrival, not on request.
-            if syncStatus == nil, ReminderTaskStore.shared.isShowingStaleTasks {
-                Text("The last refresh failed, so the Agenda is showing an older list.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-        } header: {
-            Text("Refresh")
-        } footer: {
-            Text("Dayflow refreshes on its own whenever Reminders changes, including from the Watch or Siri. This button is for reassurance.")
         }
     }
+}
 
-    private func updateLastSyncedText() {
-        guard let date = ReminderTaskStore.shared.lastFetched else {
-            lastSyncedText = "Never"
-            return
+// MARK: - Connections
+
+private struct DayflowConnectionsSettings: View {
+    var body: some View {
+        DayflowSettingsScreen(title: "Connections") {
+            // One entry here serves Trace, Satchel and the Mac too — they
+            // all read the same App Group key. Dayflow gets the field
+            // because it is the only iOS app in the family with a Settings
+            // screen at all.
+            ClaudeAPIKeySection()
+            TodoistKeySection()
         }
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        lastSyncedText = f.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: - Diagnostics
+//
+// **TEMPORARY, added 2026-07-25** — widget weather debug readout. The widget
+// face is too small to show a full error string legibly (confirmed: David
+// couldn't read it even zoomed into a screenshot), so `DayflowWidget.swift`'s
+// `fetchWeather()` also writes the full, untruncated failure text to the
+// shared App Group UserDefaults; this screen reads it back with real space to
+// show it and lets David copy/paste it directly instead of a screenshot.
+// Remove this whole struct and its row in the root menu once weather is
+// confirmed working — see Dayflow-HANDOFF.md for the matching widget-side
+// removal checklist.
+
+private struct DayflowDiagnosticsSettings: View {
+    @State private var weatherDebugText: String = "(not loaded yet)"
+
+    var body: some View {
+        DayflowSettingsScreen(title: "Diagnostics") {
+            Section {
+                Text(weatherDebugText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                Button("Refresh") { loadWeatherDebugText() }
+            } header: {
+                Text("Widget Weather")
+            } footer: {
+                Text("Temporary diagnostic. Shows the widget's last weather-fetch attempt and, on failure, the full error — long-press the text above to copy it. This screen and the widget code writing to it get removed once weather works.")
+            }
+        }
+        .task { loadWeatherDebugText() }
+    }
+
+    private func loadWeatherDebugText() {
+        // Inlined rather than `AppGroup.identifier` — that type turns out
+        // not to be in the Dayflow target's membership either (build error:
+        // "Cannot find 'AppGroup' in scope"). Must match
+        // `group.com.david.trace` used everywhere else.
+        weatherDebugText = UserDefaults(suiteName: "group.com.david.trace")?
+            .string(forKey: "dayflowWidgetWeatherDebugTextFull") ?? "(no debug text written yet — widget hasn't run since this key was added, or App Group isn't shared correctly)"
     }
 }

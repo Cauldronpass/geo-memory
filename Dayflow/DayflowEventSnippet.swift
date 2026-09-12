@@ -80,8 +80,11 @@ final class DayflowEventDraft {
 
     private init() {}
 
-    static let windowStart = 7 * 60
-    static let windowEnd   = 22 * 60
+    /// `nonisolated`, because `timeline` reads them and is pure arithmetic. Two
+    /// integers have nothing to be isolated about; the annotation is only needed
+    /// because this project defaults its types to the main actor.
+    nonisolated static let windowStart = 7 * 60
+    nonisolated static let windowEnd   = 22 * 60
 
     // MARK: Reading the day
 
@@ -117,7 +120,7 @@ final class DayflowEventDraft {
     /// **Zero-length gaps are kept and marked, not dropped.** Three meetings
     /// running into each other is a fact about the day; a list that silently
     /// omitted the joins would read as gaps he could not see.
-    static func timeline(from busy: [(start: Int, end: Int, title: String)]) -> [Line] {
+    nonisolated static func timeline(from busy: [(start: Int, end: Int, title: String)]) -> [Line] {
         let sorted = busy.sorted { $0.start < $1.start }
         var out: [Line] = []
         var cursor = windowStart
@@ -226,7 +229,6 @@ struct DayflowEventSnippetIntent: SnippetIntent {
 struct DayflowShiftDayIntent: AppIntent {
     static var title: LocalizedStringResource = "Change the Day"
     static var openAppWhenRun: Bool = false
-    static var isDiscoverable: Bool = false
     /// **Off the Shortcuts list** (D367). Every `AppIntent` in the app target
     /// shows up as a buildable action, and these nine are the card's own
     /// buttons: "Use This Gap" and "Choose a Start Time" mean nothing without a
@@ -656,12 +658,21 @@ struct DayflowDayCard: View {
                                                             month: comps.month ?? 1,
                                                             day: dayNumber)) {
                             VStack(spacing: 2) {
+                                // Same treatment as the task card's grid
+                                // (D375): today is the accent, the chosen day is
+                                // the filled circle, and today-and-chosen fills
+                                // with the accent so one square never carries two
+                                // meanings in one colour.
                                 Text("\(dayNumber)")
-                                    .font(.system(size: 13, weight: isToday ? .bold : .regular))
-                                    .foregroundStyle(isSelected ? Color.white : Color.dayflowInk)
+                                    .font(.system(size: 13,
+                                                  weight: isToday || isSelected ? .semibold : .regular))
+                                    .foregroundStyle(isSelected ? Color.white
+                                                     : (isToday ? Color.dayflowAccent : Color.dayflowInk))
                                     .frame(width: 26, height: 26)
                                     .background(
-                                        Circle().fill(isSelected ? Color.dayflowInk : Color.clear)
+                                        Circle().fill(isSelected
+                                                      ? (isToday ? Color.dayflowAccent : Color.dayflowInk)
+                                                      : Color.clear)
                                     )
                                 Circle()
                                     .fill((draft.monthCounts[dayNumber] ?? 0) > 0
@@ -847,7 +858,7 @@ struct DayflowDayCard: View {
         .padding(.top, 12)
     }
 
-    static func duration(_ minutes: Int) -> String {
+    nonisolated static func duration(_ minutes: Int) -> String {
         if minutes <= 0 { return "0m" }
         let h = minutes / 60, m = minutes % 60
         if h == 0 { return "\(m)m" }
