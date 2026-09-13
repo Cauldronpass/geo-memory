@@ -130,6 +130,11 @@ struct ContentView: View {
     /// Session 89 (D297) — the fourth word on the day nav. True while the
     /// running list of days has replaced the top half of the page.
     @State private var daysMode = false
+    /// The day as blocks against a clock (Session 103). A cover rather than a
+    /// swap of the top half, unlike `daysMode`: this screen brings its own
+    /// date picker and its own task band, so it is a place you go rather than
+    /// a different answer to "which day".
+    @State private var showDayBlocks = false
     /// Added 2026-07-24 (Session 44 addendum 10) — David's Inbox concept,
     /// reached by swiping right on the home screen (see the `.gesture(...)`
     /// on this screen's root VStack below), deliberately NOT part of
@@ -198,6 +203,10 @@ struct ContentView: View {
     /// only observes the state to hide its floating + while selecting.
     @State private var selection = DayflowTodaySelection.shared
     @State private var endeavorRoute: EndeavorRouteRef? = nil
+    /// The week note being read, presented as its own cover (D394). Cleared by
+    /// `route` alongside the others so a week note cannot swallow a later
+    /// hand-off the way the Endeavor sheet once did.
+    @State private var weekNoteRoute: WeekRouteRef? = nil
     /// Set alongside `showNotes` so `DayflowNotesView` opens straight into a
     /// project instead of its browse list.
     @State private var routedProjectTitle: String? = nil
@@ -729,6 +738,14 @@ struct ContentView: View {
         // Cover, not sheet (Session 78: endeavors get the full view); the
         // slide is killed by presenting inside a disabled-animation
         // transaction (openEndeavorInstant) — the screen crossfades itself.
+        .fullScreenCover(isPresented: $showDayBlocks) {
+            // Opens on whatever day the home screen is showing, so the two
+            // never disagree about which day is being looked at.
+            DayflowDayBlocksView(date: selectedDate) { showDayBlocks = false }
+        }
+        .fullScreenCover(item: $weekNoteRoute) { ref in
+            DayflowWeekNoteView(relativePath: ref.path) { weekNoteRoute = nil }
+        }
         .fullScreenCover(item: $endeavorRoute) { ref in
             NavigationStack {
                 DayflowEndeavorView(endeavorID: ref.id)
@@ -757,9 +774,17 @@ struct ContentView: View {
         let id: String
     }
 
+    /// The week note being read (D394). Same one-field wrapper, same reason:
+    /// `Notes/Horizons/2026-W37.md` is a path, and a path is not Identifiable.
+    struct WeekRouteRef: Identifiable, Hashable {
+        let id: String
+        var path: String { id }
+    }
+
     // MARK: - Search routing
 
     /// Whether this app can actually show the thing.
+    /// (State for the week-note cover lives with the other routes below.)
     ///
     /// **Asked before the cover closes**, so a row that cannot be routed expands
     /// its text in place instead of dismissing search and landing nowhere.
@@ -791,7 +816,13 @@ struct ContentView: View {
         // phone, route it the way the widget's dayflow://task deep link
         // already does (`pendingTaskLinkID` / `resolvePendingTaskLink`) —
         // nothing new needs inventing.
-        case .weeklyNote, .task, .preview:
+        case .weeklyNote:
+            // **Was `false`, for the whole of this app's life** (D394). The
+            // comment above still records why: Horizons had no screen. It has
+            // one now — `DayflowWeekNoteView` — so a week note found in search
+            // opens instead of expanding in place and going nowhere.
+            return true
+        case .task, .preview:
             return false
         }
     }
@@ -823,7 +854,14 @@ struct ContentView: View {
         case .document(let path):
             guard let url = TraceSatchelHandoff.documentURL(path: path) else { return }
             openURL(url)
-        case .weeklyNote, .task, .preview:
+        case .weeklyNote(let filename):
+            // The case carries a BARE FILENAME, not a path — it rides the Mac's
+            // `pendingHorizonsFile`, which predates the note-path binding. The
+            // folder is added here rather than changing the enum, which four
+            // Mac screens also read.
+            let name = filename.hasSuffix(".md") ? filename : filename + ".md"
+            route { weekNoteRoute = WeekRouteRef(id: "Notes/Horizons/" + name) }
+        case .task, .preview:
             // Declined by `canOpenFromSearch`, so this is unreachable. Left
             // exhaustive rather than `default:` so a new case has to be thought
             // about here instead of silently falling through to nothing.
@@ -850,7 +888,8 @@ struct ContentView: View {
     /// where clearing does more harm than the stuck route it prevents.
     private var isPresentingSomething: Bool {
         showNotes || showNoteFullPage || showNotesInbox || showSettings
-            || showEventComposer || endeavorRoute != nil
+            || showEventComposer || endeavorRoute != nil || weekNoteRoute != nil
+            || showDayBlocks
             || DayflowQuickFindRouter.shared.show
     }
 
@@ -877,6 +916,8 @@ struct ContentView: View {
             showSettings = false
             showEventComposer = false
             endeavorRoute = nil
+            weekNoteRoute = nil
+            showDayBlocks = false
             DayflowQuickFindRouter.shared.show = false
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { present() }
@@ -960,6 +1001,24 @@ struct ContentView: View {
                 pendingEndeavorID = id
                 resolveNoteRoute()
             }
+        } else if url.host == "day" {
+            // dayflow://day               the day in blocks, on today
+            // dayflow://day?date=2026-09-17
+            //
+            // **A URL before a native intent**, which is the lesson from
+            // Satchel's scan action: a one-step Open URL shortcut on the
+            // Action Button does this today with no code, and an `AppIntent`
+            // is only worth building when it carries a parameter the URL
+            // cannot — which, for "show me that day", it does not.
+            if let raw = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "date" })?.value {
+                let f = DateFormatter()
+                f.locale = Locale(identifier: "en_US_POSIX")
+                f.dateFormat = "yyyy-MM-dd"
+                if let day = f.date(from: raw) { selectedDate = day }
+            }
+            route { showDayBlocks = true }
+
         } else if url.host == "note" {
             // dayflow://note?path=Calendar/2026-07-29.md
             // dayflow://note?path=Notes/Endeavors/Japan.md
@@ -1093,10 +1152,16 @@ struct ContentView: View {
                 showNotes = true
             }
 
+        } else if path.hasPrefix("Notes/Horizons/") {
+            // **Added D394.** Until then this fell into the `else` below with a
+            // comment saying Horizons had no deep link — true while it had no
+            // screen, and a stale claim the moment it got one.
+            pendingNotePath = nil
+            route { weekNoteRoute = WeekRouteRef(id: path) }
+
         } else {
             // Notes/People and Notes/Places are Trace's, and Satchel sends those
-            // to `trace://note`. Notes/Horizons has no deep link yet — logged as
-            // part of E35 rather than half-built here.
+            // to `trace://note`.
             pendingNotePath = nil
         }
     }
@@ -1155,8 +1220,28 @@ struct ContentView: View {
             // matching it costs nothing and buys back the room.
             dayPill
             Spacer(minLength: 24)
+            blocksButton
             daysButton
         }
+    }
+
+    /// **A glyph, not a fifth word.** The comment above records what happened
+    /// the last time this row grew: four words plus a phantom fifth did not
+    /// fit and YESTERDAY wrapped to two lines on David's build. BLOCKS would
+    /// have been the fifth word.
+    private var blocksButton: some View {
+        Button {
+            UISelectionFeedbackGenerator().selectionChanged()
+            route { showDayBlocks = true }
+        } label: {
+            Image(systemName: "calendar.day.timeline.left")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color.dayflowFaint)
+                .frame(width: 30, height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("The day in blocks")
     }
 
     private func iconButton(systemName: String, action: @escaping () -> Void) -> some View {

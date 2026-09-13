@@ -178,10 +178,18 @@ final class DayflowSearchDraft {
             return nil
         case .endeavor(let id):
             return route(scheme: "dayflow", host: "endeavor", key: "id", value: id)
-        case .weeklyNote, .person, .place, .preview:
-            // Horizons is a Trace concept Dayflow deliberately has no screen
-            // for, and people and places live in Trace. Readable on the card,
-            // not tappable — this codebase has already spent an evening on
+        case .weeklyNote(let filename):
+            // **Was nil, with Horizons listed below as a Trace concept Dayflow
+            // has no screen for** (D394). It has one now, so the row is
+            // tappable. The case carries a bare filename, not a path — it
+            // rides the Mac's `pendingHorizonsFile` — so the folder is added
+            // here rather than changing an enum four Mac screens read.
+            let name = filename.hasSuffix(".md") ? filename : filename + ".md"
+            return route(scheme: "dayflow", host: "note", key: "path",
+                         value: "Notes/Horizons/" + name)
+        case .person, .place, .preview:
+            // People and places live in Trace. Readable on the card, not
+            // tappable — this codebase has already spent an evening on
             // controls that advertised actions they could not perform.
             return nil
         }

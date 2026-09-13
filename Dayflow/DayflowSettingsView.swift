@@ -445,6 +445,16 @@ private struct DayflowCalendarSettings: View {
             ids.remove(id)
         }
         includedCalendarIDsRaw = ids.sorted().joined(separator: ",")
+        // Tell the day surfaces, or the change does not appear until the app is
+        // relaunched — see the notification's own comment for how that looked
+        // from the outside.
+        NotificationCenter.default.post(name: .dayflowIncludedCalendarsDidChange, object: nil)
+    }
+
+    /// How many of the saved identifiers actually resolve right now. The
+    /// number the READ side will really use, not the number of ticks on screen.
+    private var effectiveCount: Int {
+        availableCalendars.filter { includedCalendarIDs.contains($0.calendarIdentifier) }.count
     }
 
     private var includedCalendarsSection: some View {
@@ -462,8 +472,21 @@ private struct DayflowCalendarSettings: View {
                             Circle()
                                 .fill(Color(cgColor: cal.cgColor ?? CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1)))
                                 .frame(width: 10, height: 10)
-                            Text(cal.title)
-                                .foregroundStyle(.primary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(cal.title)
+                                    .foregroundStyle(.primary)
+                                // **Two rows can wear the same name.** A work
+                                // account subscribed twice lists twice here,
+                                // identically, and there is no way to tell
+                                // which checkmark belongs to which — which is
+                                // exactly the state David was trying to
+                                // diagnose on 2026-09-13. The source says it.
+                                if let source = cal.source?.title, !source.isEmpty {
+                                    Text(source)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                             Spacer()
                             if isCalendarIncluded(cal.calendarIdentifier) {
                                 Image(systemName: "checkmark")
@@ -477,7 +500,22 @@ private struct DayflowCalendarSettings: View {
         } header: {
             Text("Shown in Agenda")
         } footer: {
-            Text("Unchecked calendars won't show events in the Agenda, Upcoming, Calendar, or Search views — for example, hiding Birthdays or Holidays. All calendars show by default until you uncheck something here. This doesn't affect where new events are written (see Default Calendar above).")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Unchecked calendars won't show events in the Agenda, Upcoming, Calendar, or Search views — for example, hiding Birthdays or Holidays. All calendars show by default until you uncheck something here. This doesn't affect where new events are written (see Default Calendar above).")
+                // **The fallback used to be invisible, and that is a screen
+                // making a claim that is not true** (Session 103). If none of
+                // the saved identifiers still resolve — an account removed and
+                // re-added gives its calendars new ones — the read filter
+                // returns nil and EVERY calendar shows, while every checkmark
+                // here carries on looking obeyed. Now it says so.
+                if !includedCalendarIDsRaw.isEmpty && effectiveCount == 0 {
+                    Text("None of your saved choices match a calendar on this phone any more, so every calendar is showing. Re-check the ones you want.")
+                        .foregroundStyle(.orange)
+                } else if !includedCalendarIDsRaw.isEmpty {
+                    Text("Showing \(effectiveCount) of \(availableCalendars.count) calendars.")
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }

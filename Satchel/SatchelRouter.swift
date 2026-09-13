@@ -26,6 +26,24 @@ import Observation
 //   satchel://all                           all documents, sorted and filterable
 //   satchel://search?q=passport             Library with a search already run
 //   satchel://document?path=Documents/…     open one document in the viewer
+//   satchel://savelink?url=…                file a web address as a document
+//
+// `savelink` is D390's door (Session 103). Trace and Dayflow long-press a link
+// — printed in an endeavor note, or a place's website field — and hand the
+// address across with where it came from:
+//
+//   satchel://savelink?url=https://x.com/y&place=Scratchboard%20Kitchen
+//   satchel://savelink?url=https://x.com/y&endeavor=<id>&endeavor_name=Japan
+//   satchel://savelink?url=https://x.com/y&note=Notes/Places/la-bella.md
+//   …&return=trace://place?id=<notion id>   where to send him back to
+//
+// **The direction of travel is the whole point, and it is the rule this file
+// already states below.** The obvious build was for Trace to write the
+// `.webloc` and its sidecar itself and show its own confirmation, which would
+// have made Trace a second writer of sidecars — the one thing
+// `TraceSatchelHandoff.swift` says in capitals it must never become again.
+// Trace sends an address and an origin; Satchel decides whether it is already
+// a document, names it from the page, writes the sidecar and says what it did.
 //
 // All four capture routes also accept `&note=<note relative path>`:
 //
@@ -60,6 +78,9 @@ final class SatchelRouter {
     var pendingSearch: String?
     /// Set when a URL asks to push a screen. The Library appends it to its path.
     var pendingDestination: SatchelDeepLink?
+    /// Set when a URL asks for a web address to be filed (D390). Drained by the
+    /// Library in `drainRouter`, exactly as the capture sources are.
+    var pendingSaveLink: SatchelSaveLinkRequest?
 
     func handle(_ url: URL) {
         guard url.scheme?.lowercased() == "satchel" else { return }
@@ -104,6 +125,22 @@ final class SatchelRouter {
         case "all":      pendingDestination = .allDocuments
         case "search":
             pendingSearch = value("q") ?? value("query") ?? ""
+        case "savelink", "link":
+            // An address with no scheme is forgiven the way a note path with no
+            // extension is: `openableURL` adds `https://`, and refuses anything
+            // that is not a host. A `savelink` with nothing usable in it does
+            // nothing rather than filing a document named after a typo.
+            if let raw = value("url") ?? value("address"),
+               let url = TraceMacDocument.openableURL(raw),
+               ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                pendingSaveLink = SatchelSaveLinkRequest(
+                    url: url,
+                    place: value("place")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    endeavorID: value("endeavor"),
+                    endeavorName: value("endeavor_name") ?? value("endeavorname"),
+                    noteLink: noteLink,
+                    returnURL: value("return").flatMap { URL(string: $0) })
+            }
         case "document":
             // Accept `?path=` or a trailing path, so both of these work:
             //   satchel://document?path=Documents/Inbox/x.pdf
@@ -146,6 +183,28 @@ final class SatchelRouter {
         }
         return path
     }
+}
+
+// MARK: - Save a link (D390)
+
+/// Everything `satchel://savelink` carries, in one value.
+///
+/// One struct rather than five `pending…` properties on the router, for the
+/// reason the capture request already learned: separate properties are two
+/// mutations a later refactor can split apart, and the half that gets dropped
+/// is always the origin — the whole point of the hand-off.
+struct SatchelSaveLinkRequest: Hashable {
+    let url: URL
+    /// A place NAME, because `places:` holds names. It is also why a renamed
+    /// place loses the association, which is D385's choice and not revisited
+    /// here.
+    let place: String?
+    let endeavorID: String?
+    let endeavorName: String?
+    let noteLink: String?
+    /// Where to offer to send him back to, if the sender said. Satchel opens
+    /// it only on a deliberate tap, never on its own.
+    let returnURL: URL?
 }
 
 // MARK: - Deep link targets

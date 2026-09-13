@@ -50,12 +50,30 @@ struct CaptureSummaryView: View {
 
     /// Resolved via Capture.placeID against notion.places — see header
     /// comment for why Capture.placeName itself isn't used here.
+    /// The one place this card names the spot.
+    ///
+    /// **It used to be printed twice** — navigation title and body headline —
+    /// which was survivable while pins matched a nearby place and read
+    /// "Sorelle Italian Market" in both. D398 stopped pins looking up places,
+    /// so `placeID` is now nil on every pin and both lines fell through to
+    /// "Dropped Pin", one above the other. David, seeing it: *"the 'dropped
+    /// Pin' is still there twice."*
+    ///
+    /// The fallback order changed with it. `placeName` used to be ignored
+    /// deliberately, because every caller set it to a timestamp string and the
+    /// field was "page title" wearing a place's name. **The pin now writes the
+    /// street address there** (D401), so it is worth reading — and a capture
+    /// old enough to hold a timestamp still reads better than "Dropped Pin".
     private var displayName: String {
-        guard let capture, let placeID = capture.placeID,
-              let place = notion.places.first(where: { $0.id == placeID }) else {
-            return "Dropped Pin"
+        if let capture, let placeID = capture.placeID,
+           let place = notion.places.first(where: { $0.id == placeID }) {
+            return place.name
         }
-        return place.name
+        if let name = capture?.placeName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty {
+            return name
+        }
+        return "Dropped Pin"
     }
 
     var body: some View {
@@ -77,7 +95,10 @@ struct CaptureSummaryView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .navigationTitle(isLoading ? "" : displayName)
+            // **"Pin", not the name.** The name is the headline four points
+            // below this; a title bar repeating it is the duplication David
+            // reported, and a card this short has no need of a second label.
+            .navigationTitle(isLoading ? "" : "Pin")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -126,17 +147,58 @@ struct CaptureSummaryView: View {
             }
 
             VStack(spacing: 10) {
+                // **Was "Open in Trace", and it had stopped meaning anything**
+                // (Session 103). David: *"the link still says open in trace
+                // which means nothing now."* He is right: this card IS the
+                // capture, so opening Trace only drew the same card in another
+                // app. What Trace can do that Dayflow cannot is make this spot
+                // a Place — places are Trace's, and "this one is worth keeping"
+                // is the only thing left to say about a pin you are looking at.
                 Button {
                     var comps = URLComponents()
                     comps.scheme = "trace"
-                    comps.host = "capture"
+                    comps.host = "saveplace"
                     comps.queryItems = [URLQueryItem(name: "id", value: capture.id)]
                     if let url = comps.url { openURL(url) }
                 } label: {
-                    Label("Open in Trace", systemImage: "arrow.up.forward.app")
+                    Label("Save as a Place", systemImage: "mappin.and.ellipse")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+
+                // **Context, which the preview above cannot give** (D403).
+                // David: *"show that pin in Trace Discover tab on the map next
+                // to my other places… nice to see context."* The static map
+                // here says where the point is; Discover says what of his is
+                // around it, which is the question actually being asked.
+                if let lat = capture.gpsLat, let lon = capture.gpsLon {
+                    Button {
+                        // **Both paths, because this card runs in two apps.**
+                        // Inside Trace, `openURL` on a `trace://` URL does
+                        // nothing at all — D376's lesson, in Dayflow's own
+                        // words — so the router is what carries it. Inside
+                        // Dayflow or Jot the router is inert and the URL is
+                        // what crosses. Exactly one is live either way.
+                        TraceDiscoverRouter.shared.pin = DiscoverDroppedPin(
+                            latitude: lat, longitude: lon, label: displayName)
+                        var comps = URLComponents()
+                        comps.scheme = "trace"
+                        comps.host = "discover"
+                        comps.queryItems = [
+                            URLQueryItem(name: "lat", value: String(lat)),
+                            URLQueryItem(name: "lon", value: String(lon)),
+                            URLQueryItem(name: "label", value: displayName)
+                        ]
+                        if let url = comps.url { openURL(url) }
+                        // The map is the destination; a card still covering it
+                        // is the same dead end in a different costume.
+                        dismiss()
+                    } label: {
+                        Label("Show on My Map", systemImage: "map.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
 
                 if let lat = capture.gpsLat, let lon = capture.gpsLon,
                    let mapsURL = URL(string: "https://maps.google.com/?q=\(lat),\(lon)") {

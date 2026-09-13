@@ -272,7 +272,45 @@ final class CalendarService {
             // its own separate list, as it always has.
             .filter { !Self.isExcludedPlaceholderTitle($0.title ?? "") }
             .sorted { $0.startDate < $1.startDate }
-        return events.map { makeEvent($0) }
+        return Self.deduped(events).map { makeEvent($0) }
+    }
+
+    /// One row per occurrence, however many times EventKit hands it over.
+    ///
+    /// **This was not the cause of the duplication it was written for**
+    /// (Session 103, D399 corrected). David's doubled day turned out to be the
+    /// running app never re-reading the Calendars setting after he changed it —
+    /// a relaunch cleared it. Kept anyway, and only because of what the key
+    /// below cannot do: it removes a byte-identical occurrence and nothing
+    /// else, so it can neither hide a second calendar nor change any day that
+    /// was already right. It is a guard, not a fix for anything observed.
+    ///
+    /// **Found 2026-09-13 (Session 103) on the new blocks screen**, where a
+    /// duplicate is impossible to read as anything else: every meeting drew as
+    /// two side-by-side columns and "Rob M PTO" listed twice in the all-day
+    /// band. It was doing the same thing in THE DAY and in the agenda before
+    /// that, where a repeated row reads as a repeat rather than a defect, which
+    /// is why it went unnoticed.
+    ///
+    /// **The key is `eventIdentifier` PLUS `startDate`, and both halves are
+    /// load-bearing.** EventKit gives every occurrence of a recurring series
+    /// the same `eventIdentifier`, so identifier alone would collapse a genuine
+    /// twice-in-one-day standup into one row — a screen hiding a real meeting.
+    /// The pair is exact: same series, same occurrence, therefore the same
+    /// thing twice.
+    ///
+    /// **It deliberately does NOT dedupe on title and time.** If the same
+    /// meeting arrives from two different calendars they carry two different
+    /// identifiers and both survive this — which is correct, because that is a
+    /// duplicated subscription, a real problem with the account, and a filter
+    /// that silently merged them would hide it forever. If duplicates persist
+    /// after this, that is the answer, not a failure of this function.
+    static func deduped(_ events: [EKEvent]) -> [EKEvent] {
+        var seen = Set<String>()
+        return events.filter { ev in
+            let key = "\(ev.eventIdentifier ?? "")|\(ev.startDate?.timeIntervalSinceReferenceDate ?? 0)"
+            return seen.insert(key).inserted
+        }
     }
 
     /// Timed-event count per day of `month` — the New Event composer's busy
@@ -545,4 +583,20 @@ final class CalendarService {
             eventIdentifier: ev.eventIdentifier
         )
     }
+}
+
+extension Notification.Name {
+    /// Posted when the Dayflow "Shown in Agenda" calendar choice changes.
+    ///
+    /// **Because a setting nobody re-reads is a setting that did not change**
+    /// (Session 103, D399). `includedCalendarsForDayflow()` reads
+    /// `UserDefaults` on every fetch, so the value was always current — but
+    /// nothing on screen re-fetched. Day surfaces reload on a date change or a
+    /// return to the foreground, and returning from a Settings sheet inside the
+    /// same app is neither. So David unticked eight calendars, watched the
+    /// duplicates stay exactly where they were, and reasonably concluded the
+    /// setting did nothing. It took a relaunch to prove otherwise, which is a
+    /// diagnosis no one should have to make.
+    static let dayflowIncludedCalendarsDidChange =
+        Notification.Name("com.david.dayflow.includedCalendarsDidChange")
 }

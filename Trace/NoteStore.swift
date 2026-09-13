@@ -1337,6 +1337,31 @@ class NoteStore {
         return isoCalendar.date(from: comps)
     }
 
+    /// The shape of a new week note, and **the only definition of it**
+    /// (Session 103). The check-in writer below used to hold this template as a
+    /// local string; the phone's week-note screen now needs the same shape when
+    /// it opens a week whose file does not exist yet. Two copies of a file's
+    /// template is D266's warning in miniature: one side writes six bullets and
+    /// a rule, the other writes something almost the same, and nothing looks
+    /// broken until a screen splices on a separator the other side never wrote.
+    ///
+    /// The `---` line and the `Check-in Log:` marker below it are load-bearing:
+    /// the phone's week screen edits ONLY what sits above that rule and splices
+    /// the log back untouched, so a check-in that lands mid-edit survives.
+    nonisolated static func weekLabel(for date: Date) -> String {
+        let w = isoWeek(for: date)
+        return String(format: "Week %d \u{2014} %d", w.week, w.year)
+    }
+
+    nonisolated static func weekTemplate(for date: Date) -> String {
+        "# \(weekLabel(for: date))\n\n\u{2022} \n\u{2022} \n\u{2022} \n\u{2022} \n\u{2022} \n\u{2022} \n\n---\n\nCheck-in Log:\n"
+    }
+
+    /// The rule the week screen splits on, and the marker that identifies the
+    /// machine-written half beneath it.
+    nonisolated static let weekLogRule = "---"
+    nonisolated static let weekLogMarker = "Check-in Log:"
+
     /// Appends a check-in entry to the current week's Horizons note under a "Check-in Log:" section.
     /// Creates the note with a bullet-list template if it doesn't exist yet.
     /// New days get their own bold sub-header; multiple check-ins on the same day stack beneath it.
@@ -1346,7 +1371,6 @@ class NoteStore {
         // ISO week path: Notes/Horizons/YYYY-Www.md — through the shared
         // definition since Session 89, so the phone's Days and Weeks lists
         // cannot name a different file than this writer creates.
-        let (year, week) = Self.isoWeek(for: date)
         let relativePath = Self.weekPath(for: date)
 
         // Day sub-header: "**Monday (07-06)**"
@@ -1356,9 +1380,8 @@ class NoteStore {
         dayFmt.dateFormat = "EEEE (MM-dd)"
         let dayHeader = "**\(dayFmt.string(from: date))**"
 
-        // Template for new weekly notes
-        let weekLabel = String(format: "Week %d — %d", week, year)
-        let template = "# \(weekLabel)\n\n• \n• \n• \n• \n• \n• \n\n---\n\nCheck-in Log:\n"
+        // Template for new weekly notes — one definition, in `weekTemplate` above.
+        let template = Self.weekTemplate(for: date)
 
         // Ensure Horizons folder exists
         let horizonsURL = documentsURL.appendingPathComponent("Notes/Horizons")
@@ -1373,7 +1396,7 @@ class NoteStore {
         }
 
         // Ensure Check-in Log section exists at the bottom
-        let logMarker = "Check-in Log:"
+        let logMarker = Self.weekLogMarker
         if !content.contains(logMarker) {
             if !content.hasSuffix("\n") { content += "\n" }
             content += "\n---\n\nCheck-in Log:\n"

@@ -40,18 +40,18 @@
 //  ── Grouped by week, and what that does NOT do here ─────────────────────
 //
 //  Weeks are the grouping on the Mac (D255) and they are the grouping here.
-//  **A week rule on the Mac also OPENS that week's note; this one does not**,
-//  and the week headings are deliberately drawn as headings rather than as
-//  rows so that nothing on this screen looks like a door that is not one
-//  (warning FIFTEEN).
+//  **The week heading now opens that week's note, as the Mac's rule does**
+//  (D394, Session 103). It did not until then, and the reason is worth keeping
+//  because it is what the fix had to get around: the phone's day note card and
+//  the editor under it are date-shaped all the way down, from the card's own
+//  `relativePath` to `NoteStore.readDailyNote(date:)`, and a week note is
+//  `Notes/Horizons/YYYY-Www.md`, which is not a date. Teaching that stack to
+//  take a FILE instead of a DAY would have been a change every screen sharing
+//  the editor inherits. `DayflowWeekNoteView` is a separate screen instead, so
+//  nothing here changed except that the heading became a button.
 //
-//  The reason is worth stating rather than leaving as a gap: the phone's day
-//  note card and the editor under it are date-shaped all the way down, from
-//  the card's own `relativePath` to `NoteStore.readDailyNote(date:)`. A week
-//  note is `Notes/Horizons/YYYY-Www.md`, which is not a date, so opening one
-//  means teaching that whole stack to take a FILE instead of a DAY. That is a
-//  change every screen sharing the editor would inherit, and it deserves its
-//  own session rather than a ride-along in this one.
+//  The heading is a door in BOTH grains: the week rules above the days, and
+//  the rows in the Weeks grain, which previously had no OPEN action at all.
 //
 //  ── Pinned days ─────────────────────────────────────────────────────────
 //
@@ -83,6 +83,18 @@ struct DayflowDaysList: View {
     /// notes in a list is a list you have to scroll to compare, which is the
     /// thing this is meant to save.
     @State private var expanded: Date? = nil
+    /// The week note being read, if any (D394). Hosted here rather than handed
+    /// up through a second closure parameter: this view is constructed with a
+    /// trailing closure at its only call site, and a second closure property
+    /// would silently capture it.
+    @State private var openWeek: WeekTarget? = nil
+
+    /// One-field Identifiable wrapper, the same pattern the rest of this app
+    /// uses for `.sheet(item:)` on a plain String.
+    private struct WeekTarget: Identifiable {
+        let path: String
+        var id: String { path }
+    }
 
     private let cal = Calendar.current
 
@@ -131,12 +143,17 @@ struct DayflowDaysList: View {
                     ForEach(weekEntries) { entry in
                         row(entry, weekly: true)
                         if expanded.map({ cal.isDate($0, inSameDayAs: entry.date) }) ?? false {
-                            // No OPEN door on a week. The check-in writer
-                            // CREATES a week file from a template when one is
-                            // missing, so an editor reached from here could
-                            // mint an empty scaffold that syncs everywhere.
-                            // Weeks are for reading until that is deliberate.
-                            expansion(entry, openable: false)
+                            // **Now a door (D394).** The old objection was that
+                            // an editor reached from here could mint an empty
+                            // scaffold that syncs everywhere, because the
+                            // check-in writer creates a week file from a
+                            // template when one is missing. `DayflowWeekNoteView`
+                            // writes nothing on open, and refuses to create a
+                            // file for an empty edit, so reading a week costs
+                            // no file.
+                            expansion(entry,
+                                      openLabel: "OPEN THIS WEEK",
+                                      open: { openWeek = WeekTarget(path: NoteStore.weekPath(for: entry.date)) })
                         }
                         Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                     }
@@ -147,7 +164,7 @@ struct DayflowDaysList: View {
                     ForEach(days) { entry in
                         row(entry)
                         if expanded.map({ cal.isDate($0, inSameDayAs: entry.date) }) ?? false {
-                            expansion(entry)
+                            expansion(entry, open: { onOpen(entry.date) })
                         }
                         Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                     }
@@ -156,6 +173,9 @@ struct DayflowDaysList: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task { await load() }
+        .fullScreenCover(item: $openWeek) { target in
+            DayflowWeekNoteView(relativePath: target.path) { openWeek = nil }
+        }
     }
 
     // MARK: - Masthead
@@ -256,24 +276,37 @@ struct DayflowDaysList: View {
         NoteStore.weekStart(for: date)
     }
 
+    /// **A door since D394**, matching the Mac's week rule. The small arrow is
+    /// the whole difference in dress: a heading that opens something has to
+    /// look like it does, or it is warning FIFTEEN wearing the other face.
     private func weekHeading(_ days: [Entry]) -> some View {
         let start = weekStart(days.first?.date ?? Date())
         let f = DateFormatter()
         f.dateFormat = cal.isDate(start, equalTo: Date(), toGranularity: .year)
             ? "d MMMM" : "d MMMM yyyy"
         let thisWeek = cal.isDate(start, equalTo: Date(), toGranularity: .weekOfYear)
-        return HStack(alignment: .firstTextBaseline) {
-            Text(thisWeek ? "THIS WEEK" : "WEEK OF \(f.string(from: start).uppercased())")
-                .font(.system(size: 10, weight: .bold))
-                .tracking(1.8)
-                .foregroundStyle(thisWeek ? Color.dayflowAccent : Color.dayflowFaint)
-            Spacer()
-            Text("\(days.count)")
-                .font(.system(size: 10))
-                .foregroundStyle(Color.dayflowFaint)
+        return Button {
+            UISelectionFeedbackGenerator().selectionChanged()
+            openWeek = WeekTarget(path: NoteStore.weekPath(for: start))
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(thisWeek ? "THIS WEEK" : "WEEK OF \(f.string(from: start).uppercased())")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.8)
+                    .foregroundStyle(thisWeek ? Color.dayflowAccent : Color.dayflowFaint)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(thisWeek ? Color.dayflowAccent : Color.dayflowFaint)
+                Spacer()
+                Text("\(days.count)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.dayflowFaint)
+            }
+            .padding(.top, 16)
+            .padding(.bottom, 4)
+            .contentShape(Rectangle())
         }
-        .padding(.top, 16)
-        .padding(.bottom, 4)
+        .buttonStyle(.plain)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.dayflowInk).frame(height: 1)
         }
@@ -327,7 +360,9 @@ struct DayflowDaysList: View {
     /// a day you wrote a lot in should not push the next four days off the
     /// screen while you are browsing them.
     @ViewBuilder
-    private func expansion(_ entry: Entry, openable: Bool = true) -> some View {
+    private func expansion(_ entry: Entry,
+                           openLabel: String = "OPEN THIS DAY",
+                           open: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if entry.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("Nothing written that day.")
@@ -345,12 +380,12 @@ struct DayflowDaysList: View {
                 .frame(maxHeight: 260)
                 .scrollIndicators(.hidden)
             }
-            if openable {
+            if let open {
                 Button {
-                    onOpen(entry.date)
+                    open()
                 } label: {
                     HStack(spacing: 6) {
-                        Text("OPEN THIS DAY")
+                        Text(openLabel)
                             .font(.system(size: 10, weight: .semibold))
                             .tracking(1.5)
                         Image(systemName: "arrow.up.right")

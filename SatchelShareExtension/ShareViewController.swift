@@ -329,12 +329,19 @@ class ShareViewController: UIViewController {
     /// which files them like any other document and fills `url:` from them.
     ///
     /// **The plist is written here as well as in `TraceMacDocument.weblocData`,
-    /// and that is a target-membership fact, not a choice.** This extension
-    /// compiles `AppGroup.swift` and nothing else from `Trace/`; folding the
-    /// model file in is a `project.pbxproj` edit, which waits for a window with
-    /// Xcode closed. Three lines, one key, and the reader on the model is the
-    /// only parser. If the membership is ever widened, delete this and call the
-    /// model's.
+    /// and that duplication was MEASURED and kept (D395, Session 103).** The
+    /// earlier note here said to delete this and call the model's as soon as a
+    /// window with Xcode closed allowed the `project.pbxproj` edit. That window
+    /// came. `Trace/TraceDocumentModels.swift` was checked first and imports
+    /// Foundation only, with no reference to any other shared type, so adding
+    /// it to this target would have compiled — but it is 874 lines, and the
+    /// duplication it removes is the two lines below that build a one-key
+    /// dictionary and serialise it. The key is Apple's, fixed since 2001, and
+    /// the only PARSER is still the model's `url(inWebloc:)`, so there is no
+    /// second reader to drift from. Widening an app extension's membership by
+    /// an entire model file to delete two lines is the worse trade. Do not
+    /// reopen this on the membership argument alone; reopen it if the extension
+    /// ever needs the model for something real.
     private func loadWebURL(from provider: NSItemProvider) async -> (data: Data, filename: String, contentType: String)? {
         await withCheckedContinuation { continuation in
             let once = OneShot<(data: Data, filename: String, contentType: String)>(continuation)

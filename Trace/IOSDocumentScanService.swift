@@ -44,7 +44,7 @@ enum iOSDocumentScanError: LocalizedError {
         case .noContent:           return "Claude returned no content."
         case .apiError(let msg):   return "API error: \(msg)"
         case .parseError(let msg): return "Parse error: \(msg)"
-        case .unsupportedFormat:   return "Unsupported file format."
+        case .unsupportedFormat:   return "This file type can't be read. Type what it is in the context field and press Ask AI again."
         }
     }
 }
@@ -102,6 +102,36 @@ enum iOSDocumentScanService {
                                        existingTags: existingTags, userContext: userContext,
                                        filenameIsGenerated: filenameIsGenerated,
                                        knownPeople: knownPeople)
+        } else if doc.isText,
+                  let raw = try? String(contentsOf: fileURL, encoding: .utf8),
+                  !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // **A text file is content too** (D405). `.txt`, `.md`, `.csv` and
+            // the rest of `isText` were falling into the throw below, so a
+            // research note Satchel itself had written could not be read by the
+            // thing that reads documents.
+            return try await callClaude(textPrompt: buildPrompt(
+                content: String(raw.prefix(3000)), existingTags: existingTags,
+                isText: true, filename: doc.filename, userContext: userContext,
+                filenameIsGenerated: filenameIsGenerated, knownPeople: knownPeople))
+        } else if !userContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // **The context is not a hint, it is the content** (D405).
+            //
+            // David shared something from the NYT whose format this service does
+            // not read, typed what it was into the context field, pressed Ask AI
+            // and got a refusal: *"it refused to use my context to come up with
+            // tags and name."* Right, and the shape of the mistake is worth
+            // naming. `userContext` was only ever passed alongside a document's
+            // extracted text, so the one case where it is the ONLY thing
+            // available was the one case that threw it away — the service gave
+            // up before looking at what he had actually supplied.
+            //
+            // `buildPrompt` already calls it "authoritative". Here it is all
+            // there is, and a sentence he typed about a file beats nothing at
+            // all by a distance.
+            return try await callClaude(textPrompt: buildPrompt(
+                content: nil, existingTags: existingTags,
+                isText: true, filename: doc.filename, userContext: userContext,
+                filenameIsGenerated: filenameIsGenerated, knownPeople: knownPeople))
         } else {
             throw iOSDocumentScanError.unsupportedFormat
         }

@@ -29,20 +29,26 @@ struct DiscoverQuery: Equatable {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = text.lowercased()
 
-        // "within 10 miles of X" / "within 5 km of X"
+        // "within 10 miles of X" / "within 5 km of X" / "within 5 miles" (of here)
         let within = try! NSRegularExpression(
-            pattern: #"^(.*?)\s+within\s+(\d+(?:\.\d+)?)\s*(miles?|mi|km|kilometers?|kilometres?)\s+(?:of|from)\s+(.+)$"#,
+            pattern: #"^(.*?)\s+within\s+(\d+(?:\.\d+)?)\s*(miles?|mi|km|kilometers?|kilometres?)(?:\s+(?:of|from)\s+(.+))?$"#,
             options: [.caseInsensitive])
         if let m = within.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
            let termsR = Range(m.range(at: 1), in: text),
            let numR = Range(m.range(at: 2), in: text),
            let unitR = Range(m.range(at: 3), in: text),
-           let anchorR = Range(m.range(at: 4), in: text),
            let number = Double(text[numR]) {
             let unit = text[unitR].lowercased()
             let meters = unit.hasPrefix("k") ? number * 1_000 : number * 1_609.34
+            var anchor: String? = nil
+            if m.range(at: 4).location != NSNotFound, let anchorR = Range(m.range(at: 4), in: text) {
+                let a = String(text[anchorR]).trimmingCharacters(in: .whitespaces)
+                if !["me", "here", "my location"].contains(a.lowercased()) { anchor = a }
+            }
+            // "within 5 miles" and nothing after it: the circle is around
+            // the phone. David's first real search was exactly this.
             return DiscoverQuery(terms: String(text[termsR]).trimmingCharacters(in: .whitespaces),
-                                 anchorName: String(text[anchorR]).trimmingCharacters(in: .whitespaces),
+                                 anchorName: anchor,
                                  radiusMeters: meters)
         }
 
@@ -73,12 +79,17 @@ struct DiscoverQuery: Equatable {
         return coord
     }
 
-    /// What the chip under the search field says: "Traverse City · 10 mi".
+    /// Whether the sentence asked for anything beyond a plain term.
+    var hasScope: Bool { anchorName != nil || radiusMeters != nil }
+
+    /// What the chip under the search field says: "Traverse City · 10 mi",
+    /// or "here · 5 mi" when only a radius was given.
     var anchorLabel: String? {
-        guard let anchorName else { return nil }
-        guard let radiusMeters else { return anchorName }
+        guard hasScope else { return nil }
+        let name = anchorName ?? "here"
+        guard let radiusMeters else { return name }
         let miles = radiusMeters / 1_609.34
         let shown = miles >= 10 ? String(format: "%.0f mi", miles) : String(format: "%.1f mi", miles)
-        return "\(anchorName) · \(shown)"
+        return "\(name) · \(shown)"
     }
 }

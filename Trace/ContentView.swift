@@ -63,6 +63,25 @@ struct ContentView: View {
     /// Session 48 follow-up — failure feedback for quickPinToNote(_:_:)
     /// (Home's FAB Quick Pin variants). Drives a plain .alert; nil = hidden.
     @State private var quickPinFailedMessage: String? = nil
+    /// A `trace://capture?id=` arrival (D401). Presents the capture itself
+    /// rather than a drawer that cannot render one.
+    @State private var captureFromURL: String? = nil
+    /// A `trace://saveplace?id=` arrival — the capture card's one action that
+    /// only Trace can perform (Session 103). Resolved asynchronously because
+    /// the sheet takes a whole `Capture`, not an id.
+    @State private var savePlaceCapture: Capture? = nil
+    /// A pin being shown on the Discover map for context (D403). Cleared by
+    /// tapping it there, so it never outstays the question it answered.
+    @State private var discoverPin: DiscoverDroppedPin? = nil
+    /// The in-app path for "Show on My Map" (D403 fix). See
+    /// `TraceDiscoverRouter` for why a URL cannot do this job from inside
+    /// Trace itself.
+    @State private var discoverRouter = TraceDiscoverRouter.shared
+
+    /// One-field Identifiable wrapper, so a capture id can drive
+    /// `.sheet(item:)`. `String` is not Identifiable — the same reason
+    /// `EndeavorRouteRef` exists over in Dayflow.
+    private struct CaptureRouteID: Identifiable { let id: String }
     // Session 48 (Trace redesign) — removed showingLifeContextMenu,
     // isPeopleContext, isActivityContext, showingFABLogWorkout,
     // showingFABLogBilliards. Life tab is retired (see LifeView.swift's new
@@ -228,7 +247,12 @@ struct ContentView: View {
         Button("🚗 Parked here")         { quickPinToNote(label: "Parked", emoji: "🚗") }
         Button("🌄 Scenic spot")         { quickPinToNote(label: "Scenic", emoji: "🌄") }
         Button("⭐ Notable")             { quickPinToNote(label: "Notable", emoji: "⭐") }
-        Button("📍 Address")             { quickPinToNote(label: "Address", emoji: "📍") }
+        // **"📍 Address" was removed here** (D398). It passed the literal
+        // string "Address" as the label and geocoded nothing, so it wrote
+        // "📍 Address · 3:42 PM" into the note — a button named after a thing
+        // it never produced. Now that "Pin here" resolves the street address
+        // itself, the honest version of that button IS "Pin here", and keeping
+        // a second one would be two doors to one behaviour.
         Button("Cancel", role: .cancel) { }
     }
     @ViewBuilder private var fabPlacesButtons: some View {
@@ -289,7 +313,7 @@ struct ContentView: View {
                 }
                 .tabItem { Label("Places", systemImage: "mappin") }
                 .tag(1)
-                DiscoverView()
+                DiscoverView(droppedPin: $discoverPin)
                     .tabItem { Label("Discover", systemImage: "magnifyingglass") }
                     .tag(2)
                 // Session 48 — Life tab retired, People promoted in its place
@@ -687,7 +711,52 @@ struct ContentView: View {
                 // pre-existing gap, not fixed here — so for now this just opens the
                 // drawer, same "if not feasible, just open the drawer" fallback
                 // addendum 6 itself pre-approved for this exact case.
-                withAnimation(.easeInOut(duration: 0.3)) { showingDrawer = true }
+                //
+                // **That fallback expired on 2026-09-13 (D401).** David followed
+                // a pin's marker out of the daily note, through the capture
+                // card's "Open in Trace", and landed on an EMPTY inbox drawer —
+                // which reads as the link being broken, because functionally it
+                // is. The drawer renders `Notes/Inbox` markdown and has never
+                // rendered a Notion capture, so the fallback could only ever
+                // have shown nothing for this kind of link.
+                //
+                // `CaptureSummaryView` takes an id and loads the capture
+                // itself — five screens already present it that way — so the
+                // link now lands on the thing it names.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let id = comps.queryItems?.first(where: { $0.name == "id" })?.value,
+                   !id.isEmpty {
+                    captureFromURL = id
+                } else {
+                    withAnimation(.easeInOut(duration: 0.3)) { showingDrawer = true }
+                }
+            case "discover":
+                // trace://discover?lat=..&lon=..&label=..
+                //
+                // Drops a pin on the Discover map and switches to that tab, so
+                // a saved location can be seen among his own places instead of
+                // alone on a card. No pending/retry machinery: the tab and the
+                // pin are both plain @State, and nothing here waits on Notion.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let lat = comps.queryItems?.first(where: { $0.name == "lat" })?.value.flatMap(Double.init),
+                   let lon = comps.queryItems?.first(where: { $0.name == "lon" })?.value.flatMap(Double.init) {
+                    let label = comps.queryItems?.first(where: { $0.name == "label" })?.value
+                    discoverPin = DiscoverDroppedPin(latitude: lat, longitude: lon,
+                                                     label: label?.isEmpty == false ? label! : "Dropped Pin")
+                    selectedTab = 2
+                }
+            case "saveplace":
+                // From `CaptureSummaryView`'s primary button. Trace owns
+                // places, so turning a dropped pin into one is the single
+                // thing that hand-off can offer which the card itself cannot.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                   let id = comps.queryItems?.first(where: { $0.name == "id" })?.value,
+                   !id.isEmpty {
+                    Task { @MainActor in
+                        if notion.places.isEmpty { await notion.fetchPlaces() }
+                        savePlaceCapture = try? await notion.fetchCapture(id: id)
+                    }
+                }
             case "note":
                 // trace://note?path=Notes/People/Mitch%20Weiss.md
                 // trace://note?path=Notes/Places/la-bella.md
@@ -738,19 +807,80 @@ struct ContentView: View {
             case "addperson":   showingFABAddPerson = true
             case "addnote":   showingAddCapture = true
             case "pin":       quickPin()
+            case "pinhere":
+                // **A SECOND pin route, not a repointing of the first**
+                // (Session 103). `trace://pin` above opens `QuickPinLabelSheet`
+                // and saves a Capture; this one is the Home FAB's "Pin here",
+                // which fires with no sheet at all and writes the marker
+                // straight into today's daily note with a 500 m place match.
+                // Two genuinely different things, so they get two names —
+                // silently changing what an existing URL does is what the
+                // `adddocument` case above refuses to do for the same reason.
+                //
+                // Optional `label` and `emoji` give the named variants their
+                // own shortcuts, exactly as the FAB's four buttons do:
+                //   trace://pinhere
+                //   trace://pinhere?label=Parked&emoji=%F0%9F%9A%97
+                //
+                // Nothing is presented, so there is no tab to select and no
+                // async Notion data to wait on: `quickPinToNote` does its own
+                // location wait-loop and reports its own failure.
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                    let items = comps.queryItems ?? []
+                    func value(_ name: String) -> String? {
+                        let raw = items.first { $0.name.lowercased() == name }?.value?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        return (raw?.isEmpty ?? true) ? nil : raw
+                    }
+                    quickPinToNote(label: value("label"), emoji: value("emoji"))
+                } else {
+                    quickPinToNote(label: nil, emoji: nil)
+                }
             case "homefab":
                 // Session 48 follow-up — trace://homefab, for a Shortcuts/Action
                 // Button/Back Tap binding so David can jump straight to the
-                // Home tab's FAB menu (Check In / Log Interaction / Add Agenda /
-                // the four Pin variants) without opening the app and tapping the
+                // Home tab's FAB menu without opening the app and tapping the
                 // "+" manually. selectedTab and showingActionSheet are both plain
                 // @State read by mainTabStack/fabContext each render, so setting
                 // both together here is enough — no delay/retry needed like
                 // checkin/loginteraction above, since nothing here depends on
                 // async-loaded Notion data.
+                //
+                // **The menu it opens changed in D391 and this comment did not**
+                // (corrected Session 103). It used to say "Check In / Log
+                // Interaction / Add Agenda / the four Pin variants". It is now
+                // three: Check In, Log Interaction, Pin Here — the four named
+                // pins moved one step inside Pin Here, and Add Agenda Item left
+                // this menu entirely for the People tab's own. The ROUTE is
+                // unaffected, and `selectedTab = 0` still means Home: the tabs
+                // carry explicit `.tag()` values, so removing the Notes tab in
+                // D392 shifted no index. A comment describing a menu that no
+                // longer exists is the same class of wrong as a screen doing
+                // it, just slower to find.
                 selectedTab = 0
                 showingActionSheet = true
             default: break
+            }
+        }
+        .sheet(item: Binding(
+            get: { captureFromURL.map { CaptureRouteID(id: $0) } },
+            set: { captureFromURL = $0?.id }
+        )) { route in
+            NavigationStack {
+                CaptureSummaryView(captureID: route.id)
+                    .environment(NotionService.shared)
+            }
+        }
+        .onChange(of: discoverRouter.pin) { _, pin in
+            guard let pin else { return }
+            discoverPin = pin
+            selectedTab = 2
+            discoverRouter.pin = nil
+        }
+        .sheet(item: $savePlaceCapture) { capture in
+            NavigationStack {
+                SaveCaptureAsPlaceSheet(capture: capture)
+                    .environment(NotionService.shared)
             }
         }
         .sheet(item: $visitFromURL) { visit in
@@ -905,62 +1035,14 @@ struct ContentView: View {
     /// still links to a real Trace place when one is nearby.
     private func quickPinToNote(label: String?, emoji: String?) {
         Task { @MainActor in
-            if LocationManager.shared.location == nil {
-                LocationManager.shared.requestPermission()
-                LocationManager.shared.startUpdating()
-                for _ in 0..<20 {
-                    if LocationManager.shared.location != nil { break }
-                    try? await Task.sleep(nanoseconds: 150_000_000)
+            do {
+                let result = try await QuickPin.drop(label: label, emoji: emoji)
+                await notion.fetchCaptures()
+                if !result.linked {
+                    quickPinFailedMessage = "Pinned to today's note. Couldn't reach Notion, so it isn't linked to a capture."
                 }
-            }
-            guard let loc = LocationManager.shared.location else {
-                quickPinFailedMessage = "Couldn't get your location — check Location Services, then try again."
-                return
-            }
-
-            let formatter = DateFormatter()
-            formatter.dateFormat = "h:mm a"
-            let timeStr = formatter.string(from: Date())
-
-            if notion.places.isEmpty { await notion.fetchPlaces() }
-            // Auto-link to the nearest Trace place within 500 m — same logic
-            // as QuickPinLabelSheet.swift's save() and dropPin().
-            let nearbyPlace = notion.places.filter { p in
-                CLLocation(latitude: p.latitude, longitude: p.longitude).distance(from: loc) <= 500
-            }.min { a, b in
-                CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: loc)
-                    < CLLocation(latitude: b.latitude, longitude: b.longitude).distance(from: loc)
-            }
-
-            let display: String
-            if let label {
-                let prefix = emoji.map { "\($0) " } ?? ""
-                display = "\(prefix)\(label) · \(timeStr)"
-            } else {
-                display = nearbyPlace != nil ? "📍 \(nearbyPlace!.name) · \(timeStr)" : "📍 Dropped Pin · \(timeStr)"
-            }
-
-            let pageID: String
-            do {
-                pageID = try await notion.saveCapture(
-                    notes: display,
-                    placeID: nearbyPlace?.id,
-                    placeName: nearbyPlace?.name ?? display,
-                    lat: loc.coordinate.latitude,
-                    lon: loc.coordinate.longitude,
-                    photoURL: nil
-                )
             } catch {
-                quickPinFailedMessage = "Couldn't save the pin — try again."
-                return
-            }
-            await notion.fetchCaptures()
-
-            let marker = "[\(display)](capture://open?id=\(pageID)) "
-            do {
-                try NoteStore.shared.appendToDailyNote(marker)
-            } catch {
-                quickPinFailedMessage = "Pin saved, but couldn't add it to today's note — check iCloud and try again from Notes."
+                quickPinFailedMessage = error.localizedDescription
             }
         }
     }

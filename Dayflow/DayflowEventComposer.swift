@@ -61,11 +61,29 @@ struct DayflowEventComposer: View {
     private static let windowStart = 7 * 60
     private static let windowEnd = 22 * 60
 
-    init(initialDate: Date = Date(), onSaved: @escaping (Date) -> Void = { _ in }) {
+    /// Open with the block already where he tapped (Session 103).
+    ///
+    /// `DayflowDayBlocksView` opens this composer from an empty stretch of the
+    /// timeline, and the whole point of tapping 2:30 is that the event starts
+    /// at 2:30. Optional, so the two existing callers keep the next-half-hour
+    /// and 9:00 defaults below exactly as they were.
+    ///
+    /// Clamped into the track's own 7:00–22:00 window rather than trusted: the
+    /// timeline shows more hours than the track does, and a block positioned
+    /// outside the window would be dragged from a place it cannot be drawn.
+    init(initialDate: Date = Date(),
+         initialStartMinutes: Int? = nil,
+         onSaved: @escaping (Date) -> Void = { _ in }) {
         self.initialDate = initialDate
         self.onSaved = onSaved
         _eventDate = State(initialValue: Calendar.current.startOfDay(for: initialDate))
         _displayedMonth = State(initialValue: Calendar.current.startOfDay(for: initialDate))
+        if let asked = initialStartMinutes {
+            let snapped = (asked / 15) * 15
+            _startMinutes = State(initialValue:
+                min(max(snapped, Self.windowStart), Self.windowEnd - 60))
+            return
+        }
         // Today starts at the next half hour; any other day at 9:00.
         if Calendar.current.isDateInToday(initialDate) {
             let cal = Calendar.current

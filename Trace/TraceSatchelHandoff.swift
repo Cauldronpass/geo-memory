@@ -302,6 +302,13 @@ struct SatchelDocumentChips: View {
     /// associated with documents."* They were, in the sidecar; the phone never
     /// read it.
     var personName: String? = nil
+    /// When the host is a place's page, its name: documents whose sidecar
+    /// `places:` names it appear alongside the linked ones. D390, Session 103,
+    /// and the same gap `personName` closed — `places:` was added to the
+    /// sidecar in D385 and, until this, **nothing anywhere read it**, so a link
+    /// filed to a place landed somewhere with no window. Defaulted nil so the
+    /// other hosts are untouched.
+    var placeName: String? = nil
 
     @State private var chipStore = TraceSatchelChipStore.shared
     @State private var noteStore = NoteStore.shared
@@ -321,6 +328,13 @@ struct SatchelDocumentChips: View {
                     && !linked.contains(where: { $0.relativePath == doc.relativePath })
             }.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
             linked += named
+        }
+        if let placeName {
+            let here = chipStore.all.filter { doc in
+                doc.places.contains { $0.caseInsensitiveCompare(placeName) == .orderedSame }
+                    && !linked.contains(where: { $0.relativePath == doc.relativePath })
+            }.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+            linked += here
         }
         guard let dueOn else { return linked }
         let cal = Calendar.current
@@ -550,6 +564,57 @@ struct SatchelDocumentChips: View {
 /// is Satchel's own FAB rule (scope §5, Photos) applied unchanged: the urgent
 /// path stays one tap and nothing becomes a menu. Scanning a receipt at the
 /// place whose note is on screen is the case that motivated the hand-off.
+/// The `satchel://savelink` hand-off (D390, Session 103).
+///
+/// **A URL, not a write.** This whole file exists because Trace hands across
+/// intent and never data, and Save to Satchel is the case where the temptation
+/// to break that rule is strongest: Trace has the address, it has the place,
+/// and writing a two-line plist would have kept David on the screen he was
+/// reading. It would also have made Trace a second writer of sidecars, which
+/// the header above forbids in capitals. So this builds a URL and stops.
+///
+/// `returnTo` is what buys back the app switch: Satchel's confirmation offers a
+/// way back to where the link came from. For a place that is the existing
+/// `trace://note?path=Notes/Places/<name>.md` route, which resolves by matching
+/// the place's NAME against Notion and so works whether or not the place has a
+/// note file — no new route was needed.
+enum SatchelSaveLinkHandoff {
+
+    static func url(address: String,
+                    place: String? = nil,
+                    endeavorID: String? = nil,
+                    endeavorName: String? = nil,
+                    note: String? = nil,
+                    returnTo: String? = nil) -> URL? {
+        guard let resolved = TraceMacDocument.openableURL(address) else { return nil }
+        var comps = URLComponents()
+        comps.scheme = "satchel"
+        comps.host = "savelink"
+        var items = [URLQueryItem(name: "url", value: resolved.absoluteString)]
+        if let place, !place.isEmpty { items.append(URLQueryItem(name: "place", value: place)) }
+        if let endeavorID, !endeavorID.isEmpty {
+            items.append(URLQueryItem(name: "endeavor", value: endeavorID))
+        }
+        if let endeavorName, !endeavorName.isEmpty {
+            items.append(URLQueryItem(name: "endeavor_name", value: endeavorName))
+        }
+        if let note, !note.isEmpty { items.append(URLQueryItem(name: "note", value: note)) }
+        if let returnTo, !returnTo.isEmpty { items.append(URLQueryItem(name: "return", value: returnTo)) }
+        comps.queryItems = items
+        return comps.url
+    }
+
+    /// Where Satchel should offer to send him back to, for a place.
+    static func placeReturn(placeName: String) -> String {
+        let file = NoteStore.shared.placeNoteFilename(for: placeName)
+        var comps = URLComponents()
+        comps.scheme = "trace"
+        comps.host = "note"
+        comps.queryItems = [URLQueryItem(name: "path", value: "Notes/Places/\(file).md")]
+        return comps.url?.absoluteString ?? ""
+    }
+}
+
 struct SatchelAddDocumentButton: View {
 
     /// How the control renders. Two presentations because the two hosts are

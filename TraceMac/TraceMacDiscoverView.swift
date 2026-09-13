@@ -101,6 +101,9 @@ struct TraceMacDiscoverView: View {
     /// be its own small lie. Same split as the phone's (D138).
     @State private var searchNotice: String?
     @State private var searchTask: Task<Void, Never>?
+    /// The anchor the current results are centred on, when the sentence named
+    /// one (D393). Nil means the search was around the map, as it always was.
+    @State private var activeAnchor: DiscoverQuery?
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var cameraCenter: CLLocationCoordinate2D?
@@ -435,6 +438,18 @@ struct TraceMacDiscoverView: View {
                     .onChange(of: searchText) { _, newValue in
                         scheduleSearch(newValue)
                     }
+                    // Return is what reads the text as a SENTENCE (D393). The
+                    // phone gates its parse on submit for a reason the Mac
+                    // needs more, not less: this field searches as you type, so
+                    // parsing every keystroke would geocode "coffee in Eva"
+                    // halfway through "Evanston" and move the map to whatever
+                    // that resolves to. Typing behaves exactly as before.
+                    .onSubmit {
+                        searchTask?.cancel()
+                        let trimmed = searchText.trimmingCharacters(in: .whitespaces)
+                        guard !trimmed.isEmpty, showSearchPlaces else { return }
+                        searchTask = Task { await runSearch(trimmed, submitted: true) }
+                    }
                     // Writing `searchText` is the whole handoff: the `onChange`
                     // above runs the search, so this needs no second trigger and
                     // cannot get out of step with typing.
@@ -449,6 +464,8 @@ struct TraceMacDiscoverView: View {
                     Button {
                         searchText = ""
                         searchResults = []
+                        activeAnchor = nil
+                        searchNotice = nil
                     } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                     }
@@ -457,6 +474,33 @@ struct TraceMacDiscoverView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+
+            // The anchor the results are centred on (D393). Visible so a search
+            // "in Evanston" is never mistaken for one around the current view,
+            // and clearable so the next search is around the map again.
+            if let activeAnchor, let label = activeAnchor.anchorLabel {
+                Divider()
+                HStack(spacing: 6) {
+                    Image(systemName: "scope")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                    Text("Around \(label)")
+                        .font(.caption.weight(.medium))
+                    Spacer(minLength: 0)
+                    Button {
+                        self.activeAnchor = nil
+                        // Writing `searchText` is the whole handoff, as with the
+                        // deep link above: `onChange` runs the plain search.
+                        searchText = activeAnchor.terms
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Search around the map instead")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
 
             if let err = searchError {
                 Text(err)
@@ -609,6 +653,7 @@ struct TraceMacDiscoverView: View {
             searchResults = []
             searchError = nil
             searchNotice = nil
+            activeAnchor = nil
             return
         }
         // Search source toggled off — the typed text still filters Saved
@@ -622,19 +667,61 @@ struct TraceMacDiscoverView: View {
         }
     }
 
-    private func runSearch(_ query: String) async {
+    private func runSearch(_ query: String, submitted: Bool = false) async {
         isSearching = true
         searchError = nil
         searchNotice = nil
+
+        // **A sentence, not just a term** (D393, the Mac half). "pizza within
+        // 10 miles of Traverse City" is read for its anchor and radius, the
+        // anchor is geocoded, and the search is RESTRICTED to that circle
+        // instead of biased around the map. A sentence naming no anchor
+        // searches around the map as it always did. An anchor that does not
+        // resolve says so rather than silently searching somewhere else.
+        let parsed = submitted ? DiscoverQuery.parse(query)
+                               : DiscoverQuery(terms: query, anchorName: nil, radiusMeters: nil)
+        let terms = parsed.terms.isEmpty ? query : parsed.terms
+        var anchorCenter: CLLocationCoordinate2D?
+        if parsed.hasScope {
+            if let anchorName = parsed.anchorName {
+                anchorCenter = await DiscoverQuery.geocode(anchorName)
+                if anchorCenter == nil {
+                    searchNotice = "Couldn't place \"\(anchorName)\" on the map, so this is around the current view."
+                }
+            } else {
+                // "within 5 miles" with no place named: a circle around the map.
+                anchorCenter = cameraCenter
+            }
+        }
+        guard !Task.isCancelled else { isSearching = false; return }
+        let fallbackCenter = anchorCenter ?? cameraCenter
+
         do {
-            let results = try await GooglePlacesService.shared.textSearch(query: query, coordinate: cameraCenter)
+            let results: [GooglePlace]
+            if let anchorCenter {
+                activeAnchor = parsed
+                results = try await GooglePlacesService.shared.textSearch(
+                    query: terms,
+                    center: anchorCenter,
+                    radiusMeters: parsed.radiusMeters ?? DiscoverQuery.defaultRadiusMeters)
+            } else {
+                activeAnchor = nil
+                results = try await GooglePlacesService.shared.textSearch(query: terms, coordinate: cameraCenter)
+            }
             guard !Task.isCancelled else { return }
             if results.isEmpty {
                 // Google ran and matched nothing. Ask MapKit before concluding
                 // the place does not exist — the two indexes genuinely differ.
-                await fallBackToAppleMaps(query, googleFailure: nil)
+                await fallBackToAppleMaps(terms, near: fallbackCenter, googleFailure: nil)
             } else {
                 searchResults = results
+                // The camera has to follow the anchor or the results sit off
+                // screen while the map is still over the old town, which reads
+                // as no results at all.
+                if let anchorCenter {
+                    focus(on: anchorCenter,
+                          radiusMeters: parsed.radiusMeters ?? DiscoverQuery.defaultRadiusMeters)
+                }
             }
         } catch {
             guard !Task.isCancelled else { return }
@@ -644,7 +731,7 @@ struct TraceMacDiscoverView: View {
             // same as still working. `AppleMapsSearchService` needs no key, no
             // billing and no quota, so the Mac's Discover now survives the
             // thing that took the phone's out for an entire trip (D137/D138).
-            await fallBackToAppleMaps(query, googleFailure: error.localizedDescription)
+            await fallBackToAppleMaps(terms, near: fallbackCenter, googleFailure: error.localizedDescription)
         }
         isSearching = false
     }
@@ -653,10 +740,12 @@ struct TraceMacDiscoverView: View {
     /// them, blue note if Google had failed), Apple found nothing and Google had
     /// failed (show Google's error, which is still the actionable fact), Apple
     /// found nothing and Google was merely empty (plain no-results).
-    private func fallBackToAppleMaps(_ query: String, googleFailure: String?) async {
+    private func fallBackToAppleMaps(_ query: String,
+                                     near center: CLLocationCoordinate2D?,
+                                     googleFailure: String?) async {
         let appleResults = (try? await AppleMapsSearchService.search(
             query: query,
-            near: cameraCenter
+            near: center
         )) ?? []
         guard !Task.isCancelled else { return }
 
@@ -664,14 +753,20 @@ struct TraceMacDiscoverView: View {
             searchResults = []
             searchError = googleFailure
                 ?? "No results. If this persists, check the Google Places key in Settings."
-            searchNotice = nil
+            // Keep a "couldn't place X" notice (D393) — it is the reason the
+            // search happened where it did, and it outlives an empty result.
             return
         }
 
         searchResults = appleResults
         searchError = nil
-        searchNotice = googleFailure.map { "Google Places unavailable. Showing Apple Maps results. (\($0))" }
+        // **Append, do not replace.** A "couldn't place Evanston" notice set by
+        // the anchor parse is the more useful of the two facts, and overwriting
+        // it would leave a screen saying results are around the current view
+        // with nothing on screen to say why.
+        let fallbackNote = googleFailure.map { "Google Places unavailable. Showing Apple Maps results. (\($0))" }
             ?? "Google found nothing. Showing Apple Maps results."
+        searchNotice = [searchNotice, fallbackNote].compactMap { $0 }.joined(separator: " ")
     }
 
     // MARK: - List
@@ -880,6 +975,20 @@ struct TraceMacDiscoverView: View {
     }
 
     // MARK: - Map helpers
+
+    /// Frame a circle of `radiusMeters` around `coordinate` (D393). `focusOn`
+    /// below uses a fixed 0.03-degree span, which is right for a single pin and
+    /// far too tight for "within 10 miles of Traverse City": the results would
+    /// be real and off screen, which reads as none.
+    private func focus(on coordinate: CLLocationCoordinate2D, radiusMeters: Double) {
+        let delta = (radiusMeters * 2.2) / 111_320.0
+        withAnimation {
+            cameraPosition = .region(MKCoordinateRegion(
+                center: coordinate,
+                span: MKCoordinateSpan(latitudeDelta: delta, longitudeDelta: delta)
+            ))
+        }
+    }
 
     private func focusOn(_ coordinate: CLLocationCoordinate2D) {
         withAnimation {

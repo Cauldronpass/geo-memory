@@ -23,6 +23,14 @@ struct DiscoverView: View {
     @Environment(NotionService.self) private var notion
     @Environment(LocationManager.self) private var locationManager
 
+    /// A dropped pin handed in from somewhere else, to be shown among the
+    /// saved places for context (D403). Nil almost always.
+    ///
+    /// **An optional Binding, the shape `TraceMacDiscoverView.deepLinkQuery`
+    /// already uses**, so the one existing `DiscoverView()` call site did not
+    /// have to learn about it.
+    var droppedPin: Binding<DiscoverDroppedPin?>? = nil
+
     @State private var searchText = ""
     /// The town and radius the last search was centred on (D393), shown as
     /// a chip under the field so it can be seen and cleared. Nil when the
@@ -149,7 +157,12 @@ struct DiscoverView: View {
         ZStack(alignment: .top) {
             // MARK: Map
             Map(position: $mapPosition, selection: $selectedMapFeature) {
-                ForEach(tracePlaces) { place in
+                // **Saved places leave the map while a search is showing**
+                // (D393 follow-up, 2026-09-13). David: *"when I type these
+                // search criteria I would want the icons on the map to only
+                // show them not everything like it currently does."* The Saved
+                // filter still shows saved places alone, as before.
+                ForEach(filteredSearchResults.isEmpty || myPlacesOnly ? tracePlaces : []) { place in
                     Annotation(place.name, coordinate: place.coordinate) {
                         Button { activeSheet = .tracePlace(place) } label: {
                             PlacePin(place: place)
@@ -177,9 +190,59 @@ struct DiscoverView: View {
                     }
                 }
 
+                // **The dropped pin, drawn after everything else** so it is
+                // never underneath a saved place — the whole point of sending
+                // it here is to see it against them, and a pin hidden behind
+                // the thing you were comparing it to answers nothing.
+                //
+                // It survives a search, unlike the saved places above: a search
+                // run while a pin is showing is someone asking "what is near
+                // THIS", and removing the this would be the wrong half to hide.
+                if let pin = droppedPin?.wrappedValue {
+                    Annotation(pin.label, coordinate: pin.coordinate) {
+                        Button {
+                            droppedPin?.wrappedValue = nil
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.accentColor)
+                                    .frame(width: 30, height: 30)
+                                Circle()
+                                    .stroke(.white, lineWidth: 2.5)
+                                    .frame(width: 30, height: 30)
+                                Image(systemName: "mappin")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+                            .shadow(radius: 4)
+                        }
+                        .accessibilityLabel("Dropped pin: \(pin.label). Tap to clear.")
+                    }
+                }
+
                 UserAnnotation()
             }
             .mapStyle(.standard)
+            // Centre on a pin the moment one arrives, and again if a second is
+            // sent while this tab is already up.
+            .onChange(of: droppedPin?.wrappedValue) { _, pin in
+                guard let pin else { return }
+                withAnimation {
+                    mapPosition = .region(MKCoordinateRegion(
+                        center: pin.coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
+                    ))
+                }
+            }
+            .task(id: droppedPin?.wrappedValue) {
+                // The arrival case: the tab is being shown for the first time
+                // with a pin already set, so `onChange` never fires.
+                guard let pin = droppedPin?.wrappedValue else { return }
+                mapPosition = .region(MKCoordinateRegion(
+                    center: pin.coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
+                ))
+            }
             .ignoresSafeArea(edges: .bottom)
             .onChange(of: selectedResult) { _, new in
                 if let new {
@@ -231,7 +294,7 @@ struct DiscoverView: View {
                             .autocorrectionDisabled()
                             .submitLabel(.search)
                             .onSubmit {
-                                Task { await performSearch() }
+                                Task { await performSearch(submitted: true) }
                                 searchFocused = false
                             }
                         if !searchText.isEmpty {
@@ -262,7 +325,7 @@ struct DiscoverView: View {
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                     } else if !searchText.isEmpty && !isSearching {
                         Button("Search") {
-                            Task { await performSearch() }
+                            Task { await performSearch(submitted: true) }
                             searchFocused = false
                         }
                         .font(.subheadline.weight(.medium))
@@ -671,7 +734,12 @@ struct DiscoverView: View {
         }
     }
 
-    private func performSearch() async {
+    /// `submitted` is true for return and the Search button, false for the
+    /// as-you-type debounce (D393 follow-up). The sentence is read for a
+    /// town and a radius only on submit: while typing, "pizza within 5 mil"
+    /// is not yet a sentence, and geocoding half a town name on every
+    /// keystroke gave David a red "Search failed" between letters.
+    private func performSearch(submitted: Bool = false) async {
         guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         isSearching = true
         hasSearched = true
@@ -681,33 +749,41 @@ struct DiscoverView: View {
         do {
             // **A sentence, not just a term** (D393). "pizza within 10 miles of
             // Traverse City" is read for its anchor and radius; the anchor is
-            // geocoded and the search restricted to that circle. A sentence
-            // with no anchor searches around the phone as it always did. An
-            // anchor that does not resolve says so rather than silently
-            // searching somewhere else.
-            let parsed = DiscoverQuery.parse(searchText)
+            // geocoded and the search restricted to that circle. "pizza within
+            // 5 miles" is a circle around the phone. A sentence with neither
+            // searches around the phone as it always did. An anchor that does
+            // not resolve says so rather than silently searching elsewhere.
+            let parsed = submitted ? DiscoverQuery.parse(searchText)
+                                   : DiscoverQuery(terms: searchText, anchorName: nil, radiusMeters: nil)
+            let terms = parsed.terms.isEmpty ? searchText : parsed.terms
             var results: [GooglePlace]
-            if let anchorName = parsed.anchorName {
-                if let center = await DiscoverQuery.geocode(anchorName) {
+            if parsed.hasScope {
+                var center: CLLocationCoordinate2D? = nil
+                if let anchorName = parsed.anchorName {
+                    center = await DiscoverQuery.geocode(anchorName)
+                    if center == nil {
+                        searchNotice = "Couldn't place \"\(anchorName)\" on the map, so this is near you."
+                    }
+                } else {
+                    center = locationManager.location?.coordinate
+                }
+                if let center {
                     let radius = parsed.radiusMeters ?? DiscoverQuery.defaultRadiusMeters
                     activeAnchor = parsed
                     results = try await GooglePlacesService.shared.textSearch(
-                        query: parsed.terms.isEmpty ? searchText : parsed.terms,
-                        center: center, radiusMeters: radius)
-                    // Already sorted by distance from the anchor.
+                        query: terms, center: center, radiusMeters: radius)
+                    // Already sorted by distance from the centre.
                     searchResults = results
                 } else {
                     activeAnchor = nil
-                    searchNotice = "Couldn't place \"\(anchorName)\" on the map, so this is near you."
                     results = try await GooglePlacesService.shared.textSearch(
-                        query: parsed.terms.isEmpty ? searchText : parsed.terms,
-                        coordinate: locationManager.location?.coordinate)
+                        query: terms, coordinate: locationManager.location?.coordinate)
                     searchResults = Self.sortedByDistance(results, from: locationManager.location)
                 }
             } else {
                 activeAnchor = nil
                 results = try await GooglePlacesService.shared.textSearch(
-                    query: searchText,
+                    query: terms,
                     coordinate: locationManager.location?.coordinate
                 )
                 searchResults = Self.sortedByDistance(results, from: locationManager.location)
@@ -725,6 +801,14 @@ struct DiscoverView: View {
                 // Keep the "couldn't place X" notice (D393); clear anything else.
                 if activeAnchor != nil || parsed.anchorName == nil { searchNotice = nil }
             }
+        } catch is CancellationError {
+            // The debounce cancelled this search because another keystroke
+            // arrived. Not a failure; the next search is already queued.
+            isSearching = false
+            return
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            isSearching = false
+            return
         } catch {
             // **Was `catch { searchResults = [] }`.** That line is the reason
             // this bug survived a whole trip: it turned every failure into the

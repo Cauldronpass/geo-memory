@@ -29,6 +29,8 @@ struct SatchelLibraryView: View {
     @State private var endeavorStore = SatchelEndeavorStore()
 
     @Environment(\.scenePhase) private var scenePhase
+    /// For the Save to Satchel toast's return action (D390).
+    @Environment(\.openURL) private var openURL
 
     @State private var query: String = ""
     /// Which Browse chip is showing its full name. One at a time.
@@ -36,6 +38,18 @@ struct SatchelLibraryView: View {
     /// The Paste action found an empty clipboard (D386). An alert rather than
     /// silence: a long press that does nothing reads as a broken button.
     @State private var showPasteEmpty = false
+
+    /// The result of a `satchel://savelink` hand-off (D390), shown as a toast.
+    /// Nil while nothing has been filed.
+    @State private var saveLinkResult: SatchelSaveLinkOutcome?
+    /// Where the sender asked to be sent back to, held alongside the result so
+    /// the toast can offer it. Satchel opens it only on a deliberate tap.
+    @State private var saveLinkReturn: URL?
+    /// A save in flight. The toast shows a spinner rather than appearing from
+    /// nowhere a second after the app opens: the page fetch can take a moment,
+    /// and an app that came forward and then did nothing visible reads as a
+    /// hand-off that failed.
+    @State private var saveLinkWorking = false
 
     /// Reads the clipboard and starts a capture with what it holds (D386).
     ///
@@ -340,6 +354,12 @@ struct SatchelLibraryView: View {
             .onChange(of: router.pendingCapture) { _, _ in drainRouter() }
             .onChange(of: router.pendingSearch) { _, _ in drainRouter() }
             .onChange(of: router.pendingDestination) { _, _ in drainRouter() }
+            .onChange(of: router.pendingSaveLink) { _, _ in drainRouter() }
+            // Above the Library rather than inside it: the hand-off can land on
+            // any screen this stack is showing, and the confirmation belongs to
+            // the app, not to whichever list happens to be up.
+            .overlay(alignment: .bottom) { saveLinkToast }
+            .animation(.easeInOut(duration: 0.2), value: saveLinkWorking)
         }
     }
 
@@ -393,6 +413,87 @@ struct SatchelLibraryView: View {
         if includingDestination, let destination = router.pendingDestination {
             path.append(destination)
             router.pendingDestination = nil
+        }
+        // **Cleared before the work starts, not after.** The same cold-launch
+        // shape as the capture routes above, plus one of its own: the save is
+        // asynchronous, so a request left on the router while the page is being
+        // fetched would be drained a second time by the next `onChange` and
+        // file the address twice.
+        if let request = router.pendingSaveLink {
+            router.pendingSaveLink = nil
+            saveLinkReturn = request.returnURL
+            saveLinkWorking = true
+            saveLinkResult = nil
+            Task {
+                let outcome = await SatchelSaveLink.perform(request, store: store)
+                saveLinkWorking = false
+                saveLinkResult = outcome
+            }
+        }
+    }
+
+    /// The Save to Satchel confirmation (D390).
+    ///
+    /// A toast, not a sheet: D385's rule is that filing is one motion, and a
+    /// screen that asks a question after the fact is the same interruption
+    /// arriving late. It carries one action — back to wherever the link came
+    /// from — because the hand-off moved him out of the app he was reading.
+    @ViewBuilder
+    private var saveLinkToast: some View {
+        if saveLinkWorking || saveLinkResult != nil {
+            HStack(spacing: 11) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(0.14))
+                    if saveLinkWorking {
+                        ProgressView().controlSize(.small).tint(.white)
+                    } else {
+                        Image(systemName: (saveLinkResult?.isFailure ?? false)
+                              ? "exclamationmark.circle" : "checkmark")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle((saveLinkResult?.isFailure ?? false)
+                                             ? Color.orange : Color.green)
+                    }
+                }
+                .frame(width: 26, height: 26)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(saveLinkWorking ? "Saving to Satchel" : (saveLinkResult?.headline ?? ""))
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                    if let detail = saveLinkWorking ? nil : saveLinkResult?.detail {
+                        Text(detail)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.65))
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 0)
+
+                if !saveLinkWorking, let back = saveLinkReturn {
+                    Button("Back") {
+                        saveLinkResult = nil
+                        openURL(back)
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.37, green: 0.66, blue: 1.0))
+                }
+            }
+            .padding(.horizontal, 15)
+            .padding(.vertical, 13)
+            .background(Color.black.opacity(0.92), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 34)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .onTapGesture { saveLinkResult = nil }
+            .task(id: saveLinkResult.map(\.headline)) {
+                // Clears itself, except on a failure, which stays until tapped:
+                // a message explaining why nothing was saved is the one worth
+                // reading twice.
+                guard let result = saveLinkResult, !result.isFailure else { return }
+                try? await Task.sleep(for: .seconds(4))
+                withAnimation { saveLinkResult = nil }
+            }
         }
     }
 

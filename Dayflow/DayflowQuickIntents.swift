@@ -1,9 +1,12 @@
 //  DayflowQuickIntents.swift
 //  Dayflow
 //
-//  Three actions Shortcuts can call, so the Action Button can add a task, put
-//  an event in an open slot, or write a line into today's note without Dayflow
-//  ever coming to the front.
+//  Actions Shortcuts can call, so the Action Button can add a task, put an
+//  event in an open slot, write a line into today's note, or drop a pin where
+//  you are — without Dayflow ever coming to the front.
+//
+//  (The comment said "three" until Session 103 and had been wrong since the
+//  fourth arrived. Pin makes five.)
 //
 //  **Why these are in the app target and CheckInIntent is not.** That one lives
 //  in DayflowWidget because its work is done entirely in the widget process
@@ -236,6 +239,59 @@ struct AddDayflowNoteIntent: AppIntent {
     }
 }
 
+// MARK: - Pin where I am
+
+/// Drop a pin without opening anything (D401).
+///
+/// **This is the action the Action Button wanted all along.** It began as
+/// `trace://pinhere`, and a URL has no way to avoid launching its app: David
+/// pressed the button, Trace came forward for no visible reason, and he then
+/// had to open Dayflow to see the line it had written. An `AppIntent` with
+/// `openAppWhenRun = false` runs in the background and says what it did, which
+/// is the whole of what a pin should cost.
+///
+/// **It lives in Dayflow, not Trace.** The daily note it writes has been
+/// Dayflow's file since D392, this target already has four intents and a
+/// shortcuts provider, and it already compiles everything `QuickPin` needs.
+/// Trace would have needed its first `AppIntent`, its first
+/// `AppShortcutsProvider`, and a project-file edit. The work itself is in
+/// `QuickPin` (PlaceHelpers.swift), which both apps compile, so Trace's own FAB
+/// button and this action can never drift into meaning different things.
+struct DayflowPinHereIntent: AppIntent {
+    static var title: LocalizedStringResource = "Pin Where I Am"
+    static var description = IntentDescription(
+        "Writes your location and the time into today's note in Dayflow, without opening anything."
+    )
+    static var openAppWhenRun: Bool = false
+
+    /// Optional, so the four named variants are one shortcut each: Parked,
+    /// Scenic, Notable. Empty is the plain pin.
+    @Parameter(title: "Label")
+    var label: String?
+
+    @Parameter(title: "Emoji")
+    var emoji: String?
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Pin where I am") {
+            \.$label
+            \.$emoji
+        }
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let result = try await QuickPin.drop(label: label, emoji: emoji)
+        // **Says what it wrote, and says when it is only half written.** A
+        // fire-and-forget button that reports nothing is indistinguishable from
+        // one that did nothing, which is the state the URL version left him in.
+        if result.linked {
+            return .result(dialog: "Pinned. \(result.line)")
+        }
+        return .result(dialog: "Pinned to today's note, but Notion was unreachable so it isn't linked. \(result.line)")
+    }
+}
+
 /// The insertion rule, on its own so it can be reasoned about without a note
 /// store, a calendar or an intent in the way.
 enum DayflowDailyNoteAppend {
@@ -303,6 +359,12 @@ struct DayflowAppShortcuts: AppShortcutsProvider {
             phrases: ["Add a note to \(.applicationName)"],
             shortTitle: "Add to Today's Note",
             systemImageName: "square.and.pencil"
+        )
+        AppShortcut(
+            intent: DayflowPinHereIntent(),
+            phrases: ["Pin where I am in \(.applicationName)"],
+            shortTitle: "Pin Where I Am",
+            systemImageName: "mappin.and.ellipse"
         )
     }
 }

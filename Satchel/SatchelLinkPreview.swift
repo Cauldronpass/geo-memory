@@ -88,13 +88,12 @@ enum SatchelLinkPreview {
         return dir.appendingPathComponent("\(name).jpg")
     }
 
+    /// The shared rule, not a second copy of it (Session 103, D390). The
+    /// dedupe check that decides whether a saved link is already a document
+    /// has to agree with this cache key, and two identical functions in two
+    /// files is the arrangement that stops agreeing.
     static func normalised(_ urlString: String) -> String {
-        var s = urlString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if s.hasPrefix("http://") { s.removeFirst(7) }
-        if s.hasPrefix("https://") { s.removeFirst(8) }
-        if s.hasPrefix("www.") { s.removeFirst(4) }
-        while s.hasSuffix("/") { s.removeLast() }
-        return s
+        TraceMacDocument.normalisedURL(urlString)
     }
 
     /// The cached picture, or nil when there is none. Cheap enough for a grid

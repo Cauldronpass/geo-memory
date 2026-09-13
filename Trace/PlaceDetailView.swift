@@ -25,6 +25,11 @@ struct PlaceDetailView: View {
     /// (String isn't Identifiable, so not .sheet(item:)).
     @State private var tappedCaptureID: String? = nil
     @State private var showingCheckIn = false
+    /// Satchel is not installed, so the Save to Satchel hand-off had nowhere to
+    /// land (D390). An alert rather than silence: a menu item that does nothing
+    /// reads as a broken build, which is the reasoning
+    /// `SatchelAddDocumentButton` already applies to its own hand-off.
+    @State private var satchelMissing = false
     /// The detail row's category picker (Session 102). `pickedCategory` is a
     /// scratch binding for the presented list; the write happens on change.
     @State private var showingCategoryPicker = false
@@ -420,6 +425,27 @@ struct PlaceDetailView: View {
                         }
                     }
                     .tint(.primary)
+                    // **Save to Satchel is first** (D390). Open and Copy are
+                    // both one tap away already — the plain tap on this row
+                    // opens the site, and it is unchanged — so the item that
+                    // earns the top of the menu is the one with no other door.
+                    .contextMenu {
+                        Button {
+                            saveWebsiteToSatchel(website)
+                        } label: {
+                            Label("Save to Satchel", systemImage: "tray.and.arrow.down")
+                        }
+                        Button {
+                            if let url = URL(string: website) { UIApplication.shared.open(url) }
+                        } label: {
+                            Label("Open in Safari", systemImage: "safari")
+                        }
+                        Button {
+                            UIPasteboard.general.string = website
+                        } label: {
+                            Label("Copy Link", systemImage: "doc.on.doc")
+                        }
+                    }
                 }
                 if let hours = place.hours, !hours.isEmpty {
                     DetailRow(label: "Hours") {
@@ -473,6 +499,11 @@ struct PlaceDetailView: View {
             }
             .padding()
         }
+        .alert("Satchel isn't installed", isPresented: $satchelMissing) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Save to Satchel hands this address over to Satchel, the documents app, which files it against this place.")
+        }
         .alert("Update from Google Places?", isPresented: $showingEnrichConfirm, presenting: enrichCandidate) { candidate in
             Button("Update") {
                 Task { try? await notionService.enrichPlace(livePlace, from: candidate) }
@@ -501,6 +532,24 @@ struct PlaceDetailView: View {
         isEnriching = false
     }
 
+    /// Hands the address to Satchel, which files it (D390).
+    ///
+    /// **Trace does not write the document.** See `SatchelSaveLinkHandoff` and
+    /// the header of `TraceSatchelHandoff.swift`: this app sends an address and
+    /// where it came from, and Satchel decides whether it is already filed,
+    /// names it from the page and writes the sidecar. The `return` parameter is
+    /// what brings him back to this place afterwards.
+    private func saveWebsiteToSatchel(_ website: String) {
+        guard let url = SatchelSaveLinkHandoff.url(
+            address: website,
+            place: livePlace.name,
+            returnTo: SatchelSaveLinkHandoff.placeReturn(placeName: livePlace.name)
+        ) else { return }
+        UIApplication.shared.open(url) { opened in
+            if !opened { satchelMissing = true }
+        }
+    }
+
     // MARK: - Notes
 
     private var notesTab: some View {
@@ -509,7 +558,10 @@ struct PlaceDetailView: View {
             SatchelAddDocumentButton(notePath: placeNotePath, style: .bar)
             // Scope §7a — the documents already filed to it. Render-time query
             // over sidecars; nothing about them is stored in this note.
-            SatchelDocumentChips(notePath: placeNotePath)
+            // `placeName` added D390: documents carrying this place in their
+            // sidecar `places:` show here beside the ones linked by note path.
+            // Until now nothing anywhere read that key.
+            SatchelDocumentChips(notePath: placeNotePath, placeName: livePlace.name)
             placeNoteEditor
         }
     }

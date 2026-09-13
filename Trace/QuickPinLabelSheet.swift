@@ -119,29 +119,32 @@ struct QuickPinLabelSheet: View {
             let formatter = DateFormatter()
             formatter.dateFormat = "h:mm a"
             let timeStr = formatter.string(from: Date())
-            let captureName: String
-            if let label {
-                let prefix = emoji.map { "\($0) " } ?? ""
-                captureName = "\(prefix)\(label) · \(timeStr)"
-            } else {
-                captureName = timeStr
-            }
-
             // Use fresh location if available, fall back to coord passed at open time
             let saveCoord = LocationManager.shared.location?.coordinate ?? coord
 
-            // Auto-link to nearest Trace place within 500 m
-            let pinLoc = CLLocation(latitude: saveCoord.latitude, longitude: saveCoord.longitude)
-            let nearbyPlace = notion.places.filter { p in
-                CLLocation(latitude: p.latitude, longitude: p.longitude).distance(from: pinLoc) <= 500
-            }.min { a, b in
-                CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: pinLoc)
-                    < CLLocation(latitude: b.latitude, longitude: b.longitude).distance(from: pinLoc)
+            let captureName: String
+            if label == "Address" {
+                // **It used to write the word "Address"** and geocode nothing
+                // (D398). Same lie the FAB's version told, fixed the same way
+                // and through the same helper, so the two pin surfaces cannot
+                // drift into meaning different things.
+                let where_ = await PinAddress.describe(saveCoord)
+                captureName = "📍 \(where_ ?? "Dropped Pin") · \(timeStr)"
+            } else if let label {
+                let prefix = emoji.map { "\($0) " } ?? ""
+                captureName = "\(prefix)\(label) · \(timeStr)"
+            } else {
+                // Time only, deliberately: it is one of this grid's six
+                // choices, not an accident of having nothing better.
+                captureName = timeStr
             }
 
+            // **No nearest-place match** (D398). A pin marks where you are and
+            // makes no claim about having been anywhere; the 500 m match is
+            // check-in's, and check-in still has it.
             try? await notion.saveCapture(
                 notes: captureName,
-                placeID: nearbyPlace?.id,
+                placeID: nil,
                 placeName: captureName,
                 lat: saveCoord.latitude,
                 lon: saveCoord.longitude,

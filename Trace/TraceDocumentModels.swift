@@ -519,6 +519,30 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// What gets SAVED is still exactly what he typed: rewriting the field
     /// under the cursor is how a value stops matching the thing that produced
     /// it.
+    /// One spelling of an address, for every purpose that has to decide whether
+    /// two addresses are the same one.
+    ///
+    /// **It had two copies before this** (Session 103): `SatchelLinkPreview`
+    /// and `MacLinkPreview` each carried an identical `normalised`, written for
+    /// the D387 preview-cache key. D390's Save to Satchel needs the SAME answer
+    /// for a different question — is this link already a document — and two
+    /// copies of a rule that decides identity is how one app starts believing
+    /// a link is new while another has its picture already cached. Both
+    /// previews now call this; nobody re-derives it.
+    ///
+    /// `https://www.Example.com/` and `example.com` are one address. The query
+    /// string is deliberately KEPT: a tracking parameter is noise, but so is a
+    /// page id, and dropping the second to spite the first would merge two real
+    /// pages into one record.
+    static func normalisedURL(_ urlString: String) -> String {
+        var s = urlString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if s.hasPrefix("http://") { s.removeFirst(7) }
+        if s.hasPrefix("https://") { s.removeFirst(8) }
+        if s.hasPrefix("www.") { s.removeFirst(4) }
+        while s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
+
     static func openableURL(_ text: String) -> URL? {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return nil }

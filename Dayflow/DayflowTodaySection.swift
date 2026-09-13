@@ -32,6 +32,17 @@ import UIKit
 
 struct DayflowTodaySection: View {
     let date: Date
+    /// Render only the TO DO half, leaving THE DAY out (Session 103).
+    ///
+    /// **A flag rather than an extraction.** `DayflowDayBlocksView` draws the
+    /// day itself, as blocks against a clock, so hosting this whole section
+    /// inside it would put two pictures of the same meetings on one screen.
+    /// What it needs is the task list, and specifically THESE task rows: the
+    /// staged completion, the two-second undo, the swipes, the wiki chips and
+    /// the edit sheet are all here and all behave the way David settled them
+    /// in Session 77. A second copy of a task row is exactly the drift this
+    /// codebase keeps paying for, so the band hosts the real one.
+    var todoOnly: Bool = false
 
     @State private var dayEvents: [NextCalendarEvent] = []
     @State private var completedToday: [ThingsTask] = []
@@ -78,8 +89,16 @@ struct DayflowTodaySection: View {
 
     private var isToday: Bool { Calendar.current.isDateInToday(date) }
 
-    private var tasksForDay: [ThingsTask] {
-        if isToday { return ReminderTaskStore.shared.tasks }
+    private var tasksForDay: [ThingsTask] { Self.tasks(for: date) }
+
+    /// The same rule, reachable from outside (Session 103).
+    ///
+    /// `DayflowDayBlocksView`'s collapsed task band shows a count and the next
+    /// title, and it has to be counting the SAME tasks this section lists when
+    /// the band is pulled open. Two spellings of "the tasks for this day" is
+    /// how a band comes to say four while the list under it shows three.
+    static func tasks(for date: Date) -> [ThingsTask] {
+        if Calendar.current.isDateInToday(date) { return ReminderTaskStore.shared.tasks }
         let cal = Calendar.current
         return ReminderTaskStore.shared.upcomingTasks.filter { task in
             guard let d = task.date else { return false }
@@ -92,9 +111,15 @@ struct DayflowTodaySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             todoSection
-            if !timedEvents.isEmpty { daySection }
+            if !todoOnly, !timedEvents.isEmpty { daySection }
         }
         .task(id: dayKey) { await load() }
+        // A calendar ticked or unticked in Settings (D399). Without this the
+        // choice only took effect on the next relaunch, which read as the
+        // setting doing nothing at all.
+        .onReceive(NotificationCenter.default.publisher(for: .dayflowIncludedCalendarsDidChange)) { _ in
+            Task { await load() }
+        }
         .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
         .onChange(of: dayKey) { _, _ in selection.exit() }
         .sheet(item: $whenRequest) { request in
