@@ -25,6 +25,10 @@ struct PlaceDetailView: View {
     /// (String isn't Identifiable, so not .sheet(item:)).
     @State private var tappedCaptureID: String? = nil
     @State private var showingCheckIn = false
+    /// The detail row's category picker (Session 102). `pickedCategory` is a
+    /// scratch binding for the presented list; the write happens on change.
+    @State private var showingCategoryPicker = false
+    @State private var pickedCategory: String = ""
     @State private var editingVisit: Visit? = nil
     @State private var showingEditPlace = false
     @State private var showingSpots = false
@@ -221,14 +225,14 @@ struct PlaceDetailView: View {
                     .tint(.primary)
                 }
                 DetailRow(label: "Category") {
-                    Menu {
-                        ForEach(PlaceCategory.all, id: \.self) { cat in
-                            Button(cat) {
-                                Task {
-                                    try? await notionService.updatePlace(livePlace, name: livePlace.name, category: cat, status: livePlace.status)
-                                }
-                            }
-                        }
+                    // A presented list, not a Menu (Session 102). This was the
+                    // one David hit: the detail screen redraws while a
+                    // fourteen-row menu is open and the menu snaps back to the
+                    // top. `AddPlaceView` was fixed the same way earlier; this
+                    // row and the edit sheet below were not.
+                    Button {
+                        pickedCategory = livePlace.category
+                        showingCategoryPicker = true
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: placeIcon(for: livePlace.category))
@@ -241,6 +245,15 @@ struct PlaceDetailView: View {
                         }
                     }
                     .tint(.primary)
+                    .sheet(isPresented: $showingCategoryPicker) {
+                        PlaceCategoryPicker(selection: $pickedCategory)
+                    }
+                    .onChange(of: pickedCategory) { _, cat in
+                        guard !cat.isEmpty, cat != livePlace.category else { return }
+                        Task {
+                            try? await notionService.updatePlace(livePlace, name: livePlace.name, category: cat, status: livePlace.status)
+                        }
+                    }
                 }
                 // Always present, even when empty — a description you have not
                 // written yet is exactly the one you want to write, and there
@@ -912,6 +925,7 @@ struct VisitEditSheet: View {
 private let placeEditCategories = PlaceCategory.all
 
 struct PlaceEditSheet: View {
+    @State private var showingCategoryPicker = false
     let place: Place
     @Environment(NotionService.self) private var notion
     @Environment(\.dismiss) private var dismiss
@@ -950,13 +964,23 @@ struct PlaceEditSheet: View {
                 }
 
                 Section {
-                    HStack {
-                        Text("Category")
-                        Spacer()
-                        Picker("Category", selection: $category) {
-                            ForEach(placeEditCategories, id: \.self) { Text($0).tag($0) }
+                    // Presented list rather than a menu (Session 102): the
+                    // menu scrolled back to the top on every redraw. See
+                    // `PlaceCategoryPicker`.
+                    Button {
+                        showingCategoryPicker = true
+                    } label: {
+                        HStack {
+                            Text("Category").foregroundStyle(Color.primary)
+                            Spacer()
+                            Text(category.isEmpty ? "None" : category).foregroundStyle(.secondary)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
-                        .pickerStyle(.menu)
+                    }
+                    .sheet(isPresented: $showingCategoryPicker) {
+                        PlaceCategoryPicker(selection: $category)
                     }
                     Picker("Status", selection: $status) {
                         Text("Visited").tag("Visited")

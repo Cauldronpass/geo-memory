@@ -179,10 +179,26 @@ struct HomeView: View {
         TraceSatchelChipStore.shared.dated
     }
 
+    /// **One row for all of Satchel, not one per document** (Session 102,
+    /// 2026-09-13). The per-document rows were David's own ask on 2026-08-01
+    /// ("one place to look"); a month later, with Satchel's Due card showing
+    /// the same rows, he read Coming Up as a copy of Satchel: *"The Recent and
+    /// Coming Up section seems to be duplicating Satchel."* Both asks were
+    /// his; the later one wins because it was made looking at both screens.
+    /// Birthdays and agenda items stay, since nothing but Trace knows them.
+    /// The documents fold into one line, the soonest named, that opens
+    /// Satchel. Still no far horizon on the count: a passport eleven months
+    /// out is in the number.
+    private var satchelSummary: (count: Int, next: TraceMacDocument?)? {
+        let dated = documentEntries.filter { $0.remindOn != nil }
+        guard !dated.isEmpty else { return nil }
+        let next = dated.min { ($0.remindOn ?? .distantFuture) < ($1.remindOn ?? .distantFuture) }
+        return (dated.count, next)
+    }
+
     private var allEntries: [ComingUpEntry] {
         (upcomingBirthdays.map { ComingUpEntry.birthday($0) }
-         + agendaEntries.map { ComingUpEntry.agenda(person: $0.person, item: $0.item) }
-         + documentEntries.map { ComingUpEntry.document($0) })
+         + agendaEntries.map { ComingUpEntry.agenda(person: $0.person, item: $0.item) })
             .sorted { $0.date < $1.date }
     }
 
@@ -511,10 +527,16 @@ struct HomeView: View {
 
     @ViewBuilder
     private var comingUpCard: some View {
-        if comingUpEntries.isEmpty {
+        if comingUpEntries.isEmpty && satchelSummary == nil {
             emptyRow("Nothing queued in the next 30 days")
         } else {
             VStack(spacing: 0) {
+                if let summary = satchelSummary {
+                    satchelSummaryRow(summary)
+                    if !comingUpEntries.isEmpty {
+                        Divider().padding(.leading, 54)
+                    }
+                }
                 if !pastDueEntries.isEmpty {
                     groupHeader("Past due", count: pastDueEntries.count, tint: .orange)
                     ForEach(Array(pastDueEntries.enumerated()), id: \.element.id) { idx, entry in
@@ -555,6 +577,28 @@ struct HomeView: View {
         .padding(.horizontal, 14)
         .padding(.top, 12)
         .padding(.bottom, 6)
+    }
+
+    /// "4 due in Satchel · next: Cleaners receipt, in 1 day". Opens Satchel's
+    /// library, where the Due card has every row.
+    private func satchelSummaryRow(_ summary: (count: Int, next: TraceMacDocument?)) -> some View {
+        let overdue = summary.next?.remindOn.map { cal.startOfDay(for: $0) < cal.startOfDay(for: Date()) } ?? false
+        let nextLine: String = {
+            guard let next = summary.next, let due = next.remindOn else { return "" }
+            let days = cal.dateComponents([.day], from: cal.startOfDay(for: Date()), to: cal.startOfDay(for: due)).day ?? 0
+            return "Next: \(next.title) · \(whenLabel(days, on: due))"
+        }()
+        return Button {
+            if let url = URL(string: "satchel://") { openURL(url) }
+        } label: {
+            activityRow(
+                icon: "doc.text.fill",
+                iconColor: overdue ? .orange : .indigo,
+                title: summary.count == 1 ? "1 document due in Satchel" : "\(summary.count) documents due in Satchel",
+                subtitle: nextLine,
+                trailing: nil)
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

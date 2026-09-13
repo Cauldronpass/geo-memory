@@ -33,6 +33,71 @@ struct SatchelLibraryView: View {
     @State private var query: String = ""
     /// Which Browse chip is showing its full name. One at a time.
     @State private var revealedChip: String? = nil
+    /// The Paste action found an empty clipboard (D386). An alert rather than
+    /// silence: a long press that does nothing reads as a broken button.
+    @State private var showPasteEmpty = false
+
+    /// Reads the clipboard and starts a capture with what it holds (D386).
+    ///
+    /// Order matters and mirrors the share extension's: a copied link is on
+    /// the pasteboard as a URL AND as its own text, so the URL is asked for
+    /// first or every link would arrive as a `.txt`. A bare `kearney.com`
+    /// copied as text still counts as a link, by the same `openableURL` test
+    /// the URL row uses, but only when it is one word: a sentence with a dot
+    /// in it is a sentence.
+    private func pasteFromClipboard() {
+        let board = UIPasteboard.general
+        let stamp: String = {
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "en_US_POSIX")
+            fmt.dateFormat = "yyyy-MM-dd-HHmmss"
+            return fmt.string(from: Date())
+        }()
+
+        var webURL: URL? = nil
+        if let url = board.url, !url.isFileURL { webURL = url }
+        if webURL == nil, let text = board.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty, text.rangeOfCharacter(from: .whitespacesAndNewlines) == nil {
+            webURL = TraceMacDocument.openableURL(text)
+        }
+        if let webURL, ["http", "https"].contains(webURL.scheme?.lowercased() ?? ""),
+           let data = TraceMacDocument.weblocData(for: webURL.absoluteString) {
+            var host = webURL.host ?? "link"
+            if host.lowercased().hasPrefix("www.") { host = String(host.dropFirst(4)) }
+            captureRequest = SatchelCaptureRequest(
+                source: .paste,
+                incoming: IncomingDocument(data: data,
+                                           filename: "\(stamp)-\(host).webloc",
+                                           originalName: "\(host).webloc",
+                                           contentType: "link"))
+            return
+        }
+        if let text = board.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
+           let data = text.data(using: .utf8) {
+            // The first line names the file, so the sheet opens with something
+            // readable rather than "pasted text"; the scan may rename it.
+            let firstLine = text.components(separatedBy: .newlines).first ?? "text"
+            let base = String(firstLine.prefix(48)).trimmingCharacters(in: .whitespacesAndNewlines)
+            captureRequest = SatchelCaptureRequest(
+                source: .paste,
+                incoming: IncomingDocument(data: data,
+                                           filename: "\(stamp)-pasted.txt",
+                                           originalName: "\(base.isEmpty ? "text" : base).txt",
+                                           contentType: "txt"))
+            return
+        }
+        if let image = board.image, let data = image.pngData() {
+            captureRequest = SatchelCaptureRequest(
+                source: .paste,
+                incoming: IncomingDocument(data: data,
+                                           filename: "\(stamp)-pasted.png",
+                                           originalName: "pasted image.png",
+                                           contentType: "image"))
+            return
+        }
+        showPasteEmpty = true
+    }
+
     /// Where a tapped Browse chip goes.
     ///
     /// The chips were `NavigationLink`s until 2026-08-01. They had to stop being
@@ -54,6 +119,8 @@ struct SatchelLibraryView: View {
         case tint(DocumentTint)
         case allTrips
         case allTypes
+        /// Show all with Format set to Links (D386). A door, not a room.
+        case links
         var id: Self { self }
     }
     /// THE WHOLE CAPTURE REQUEST, IN ONE VALUE.
@@ -95,6 +162,9 @@ struct SatchelLibraryView: View {
     // one app's view state and nothing else reads it.
     @AppStorage("satchel.browse.expanded") private var browseExpanded = true
     @AppStorage("satchel.kinds.expanded") private var kindsExpanded = true
+    /// Persisted for the same reason the two above are: a fold that springs open
+    /// every launch is a control you stop using.
+    @AppStorage("satchel.due.laterExpanded") private var laterExpanded = false
 
     private var kit: KitMembership.Layout {
         KitMembership.assemble(
@@ -227,6 +297,9 @@ struct SatchelLibraryView: View {
                                              store: store, endeavorStore: endeavorStore)
                 case .allTypes:
                     SatchelTypeIndexView(documents: store.documents, store: store)
+                case .links:
+                    SatchelAllDocumentsView(documents: store.documents,
+                                            store: store, kind: .link)
                 }
             }
             .navigationDestination(for: SatchelDeepLink.self) { link in
@@ -616,9 +689,12 @@ struct SatchelLibraryView: View {
     /// Trips shown as chips before the rest go behind `All trips`.
     private static let endeavorChipLimit = 2
 
+    /// Saved links in the library (D386), for the one Browse chip they get.
+    private var linkCount: Int { store.documents.filter { $0.isLink }.count }
+
     @ViewBuilder
     private var browseSection: some View {
-        if !typeCounts.isEmpty || !endeavorCounts.isEmpty {
+        if !typeCounts.isEmpty || !endeavorCounts.isEmpty || linkCount > 0 {
             VStack(alignment: .leading, spacing: 0) {
                 SatchelCollapsibleSectionTitle(title: "Browse",
                                                isExpanded: $browseExpanded,
@@ -688,6 +764,20 @@ struct SatchelLibraryView: View {
                                               count: typeCounts.count,
                                               revealed: $revealedChip) {
                                     chipRoute = .allTypes
+                                }
+                        }
+                        // **One chip for links, and only when there are any**
+                        // (D386). Not a room: it opens Show all with Format
+                        // set to Links, so the grid, the sort and the other
+                        // filters are the same ones every other chip lands on.
+                        if linkCount > 0 {
+                            SatchelBrowseChip(label: "Links",
+                                              count: linkCount,
+                                              showsChevron: true)
+                                .chipGestures(id: "links", name: "Links",
+                                              count: linkCount,
+                                              revealed: $revealedChip) {
+                                    chipRoute = .links
                                 }
                         }
                     }
@@ -767,6 +857,7 @@ struct SatchelLibraryView: View {
             + (endeavorCounts.count > Self.endeavorChipLimit ? 1 : 0)
             + shownTypes.count
             + (typeCounts.count > shownTypes.count ? 1 : 0)
+            + (linkCount > 0 ? 1 : 0)
     }
 
     /// The most-used types, capped, then sorted alphabetically so their positions
@@ -861,48 +952,80 @@ struct SatchelLibraryView: View {
     //
     // Hidden entirely when nothing has a date, rather than sitting there empty.
 
-    private var dueDocuments: [TraceMacDocument] {
-        store.documents
-            .filter { $0.remindOn != nil }
-            .sorted { ($0.remindOn ?? .distantFuture) < ($1.remindOn ?? .distantFuture) }
+    // MARK: Due
+    //
+    // **Two sources, one band** (D381). A document earns a place here when it
+    // carries a reminder date, and ALSO when the date printed on it is still in
+    // the future. The second case exists because of one document: David's
+    // Round-Trip Flight Itinerary was dated 21 November with no reminder set, so
+    // the moment Recent started sorting by arrival it belonged to no band at all
+    // and was reachable only by search. A booking that says when it is does not
+    // need a second date typed on top of it to be worth surfacing.
+    //
+    // **Strictly future, and that is the whole guard.** `created` is the date the
+    // scan read off the page, which for an ordinary receipt is the day it was
+    // scanned. `>=` today would drop every receipt he files into a band about
+    // what is coming.
+
+    /// How far ahead Due shows as rows before parking the rest behind Later.
+    ///
+    /// **Fixed, not a setting.** A number he would set once and never revisit is
+    /// the same trap as the per-document defer field this replaced. And the
+    /// collapse below is what makes the exact value cheap: nothing is hidden by
+    /// getting it wrong, only folded.
+    private static let dueHorizonDays = 30
+
+    /// The date a document is asking to be looked at, or nil if it is not asking.
+    private func dueDate(for doc: TraceMacDocument) -> Date? {
+        if let remind = doc.remindOn { return remind }
+        let cal = Calendar.current
+        if let created = doc.created,
+           cal.startOfDay(for: created) > cal.startOfDay(for: Date()) {
+            return created
+        }
+        return nil
     }
+
+    private struct DueEntry: Identifiable {
+        let document: TraceMacDocument
+        let date: Date
+        var id: UUID { document.id }
+    }
+
+    private var dueEntries: [DueEntry] {
+        store.documents
+            .compactMap { doc in dueDate(for: doc).map { DueEntry(document: doc, date: $0) } }
+            .sorted { $0.date < $1.date }
+    }
+
+    private var dueHorizon: Date {
+        let cal = Calendar.current
+        return cal.date(byAdding: .day, value: Self.dueHorizonDays,
+                        to: cal.startOfDay(for: Date())) ?? Date()
+    }
+
+    private var dueNear: [DueEntry] { dueEntries.filter { $0.date <= dueHorizon } }
+    private var dueLater: [DueEntry] { dueEntries.filter { $0.date > dueHorizon } }
 
     @ViewBuilder
     private var dueSection: some View {
-        if !dueDocuments.isEmpty {
+        if !dueEntries.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 SatchelSectionTitle("Due")
                 VStack(spacing: 0) {
-                    ForEach(Array(dueDocuments.enumerated()), id: \.element.id) { idx, doc in
-                        Button {
-                            path.append(SatchelDeepLink.document(doc.relativePath))
-                        } label: {
-                            HStack(spacing: 11) {
-                                SatchelDocumentMark(icon: doc.resolvedIcon,
-                                                    tint: doc.resolvedTint,
-                                                    size: 34, cornerRadius: 10, glyphSize: 16)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(doc.title)
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundStyle(Color.satchelInk)
-                                        .lineLimit(1)
-                                    Text(dueCaption(doc.remindOn))
-                                        .font(.system(size: 11.5))
-                                        .foregroundStyle(isOverdue(doc.remindOn)
-                                                         ? Color.satchelPin : Color.satchelSecondary)
-                                }
-                                Spacer(minLength: 8)
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(Color.satchelTertiary)
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        if idx < dueDocuments.count - 1 {
+                    ForEach(Array(dueNear.enumerated()), id: \.element.id) { idx, entry in
+                        dueRow(entry)
+                        if idx < dueNear.count - 1 || !dueLater.isEmpty {
                             Divider().overlay(Color.satchelHairline).padding(.leading, 59)
+                        }
+                    }
+                    if !dueLater.isEmpty {
+                        laterRow
+                        if laterExpanded {
+                            ForEach(dueLater) { entry in
+                                Divider().overlay(Color.satchelHairline).padding(.leading, 59)
+                                dueRow(entry)
+                            }
                         }
                     }
                 }
@@ -913,13 +1036,73 @@ struct SatchelLibraryView: View {
         }
     }
 
-    private func isOverdue(_ date: Date?) -> Bool {
-        guard let date else { return false }
-        return Calendar.current.startOfDay(for: date) < Calendar.current.startOfDay(for: Date())
+    private func dueRow(_ entry: DueEntry) -> some View {
+        Button {
+            path.append(SatchelDeepLink.document(entry.document.relativePath))
+        } label: {
+            HStack(spacing: 11) {
+                SatchelDocumentMark(icon: entry.document.resolvedIcon,
+                                    tint: entry.document.resolvedTint,
+                                    size: 34, cornerRadius: 10, glyphSize: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.document.title)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.satchelInk)
+                        .lineLimit(1)
+                    Text(dueCaption(entry.date))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(isOverdue(entry.date)
+                                         ? Color.satchelPin : Color.satchelSecondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.satchelTertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
-    private func dueCaption(_ date: Date?) -> String {
-        guard let date else { return "" }
+    /// The parked tail of Due.
+    ///
+    /// **Folded, not hidden.** A hard cutoff would have emptied this band
+    /// outright on the library that prompted the change - the three dated
+    /// documents were 70, 77 and 240 days out, so any horizon under ten weeks
+    /// showed nothing at all and there was no way to tell that from a band that
+    /// had broken. A row carrying its own count can always be counted.
+    private var laterRow: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) { laterExpanded.toggle() }
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.satchelTertiary)
+                    .rotationEffect(.degrees(laterExpanded ? 90 : 0))
+                    .frame(width: 34)
+                Text("Later")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.satchelSecondary)
+                Text("\(dueLater.count)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.satchelTertiary)
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func isOverdue(_ date: Date) -> Bool {
+        Calendar.current.startOfDay(for: date) < Calendar.current.startOfDay(for: Date())
+    }
+
+    private func dueCaption(_ date: Date) -> String {
         let cal = Calendar.current
         let days = cal.dateComponents([.day],
                                       from: cal.startOfDay(for: Date()),
@@ -1042,6 +1225,19 @@ struct SatchelLibraryView: View {
                 } label: {
                     Label("Import File", systemImage: "folder")
                 }
+                // Session 102 (D386): the Stash idea. One motion from the
+                // clipboard, no questions; the capture sheet opens on the
+                // result the way it does for a share.
+                Button {
+                    pasteFromClipboard()
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                }
+            }
+            .alert("Nothing to paste", isPresented: $showPasteEmpty) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Copy a link, some text or a picture first.")
             }
 
             Text("SCAN")
@@ -1085,6 +1281,11 @@ struct DocumentCard: View {
     @State private var pendingDelete: TraceMacDocument?
     /// Session 78 — live leftward slide per row, the pin-to-Kit reveal.
     @State private var rowDragOffsets: [UUID: CGFloat] = [:]
+    /// The document a task is being written for, or nil. Session 100, D382 —
+    /// the rightward half of the same slide.
+    @State private var taskFor: TraceMacDocument?
+    /// The document whose Edit screen the long press asked for (D389).
+    @State private var editing: TraceMacDocument?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1116,22 +1317,42 @@ struct DocumentCard: View {
                             .padding(.trailing, 14)
                     }
                 }
+                // **The other direction, and it had to be the other direction**
+                // (D382). Left is already pin-to-Kit and has been since Session
+                // 78; a second meaning on one gesture would be a coin toss at the
+                // moment of release. Right reveals at the leading edge, so which
+                // glyph appears says which way he is going before he lets go.
+                .background(alignment: .leading) {
+                    let progress = min(max((rowDragOffsets[documents[index].id] ?? 0) / 60, 0), 1)
+                    if progress > 0 {
+                        Image(systemName: "checklist")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.satchelBlue)
+                            .opacity(Double(progress))
+                            .scaleEffect(0.7 + 0.3 * progress)
+                            .padding(.leading, 14)
+                    }
+                }
                 .gesture(
                     DragGesture(minimumDistance: 28)
                         .onChanged { value in
                             let h = value.translation.width
                             guard abs(h) > abs(value.translation.height) else { return }
-                            rowDragOffsets[documents[index].id] = h < 0 ? max(h, -80) : 0
+                            rowDragOffsets[documents[index].id] = h < 0 ? max(h, -80) : min(h, 80)
                         }
                         .onEnded { value in
                             let h = value.translation.width
                             withAnimation(.spring(duration: 0.3)) {
                                 rowDragOffsets[documents[index].id] = 0
                             }
-                            guard abs(h) > abs(value.translation.height) * 1.5,
-                                  h < -40 else { return }
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            togglePin(documents[index])
+                            guard abs(h) > abs(value.translation.height) * 1.5 else { return }
+                            if h < -40 {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                togglePin(documents[index])
+                            } else if h > 40 {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                taskFor = documents[index]
+                            }
                         }
                 )
                 // Long press, not swipe. These rows sit inside a plain VStack
@@ -1139,13 +1360,16 @@ struct DocumentCard: View {
                 // context menu is the honest alternative — it also puts the
                 // confirmation one step further from a stray thumb than a swipe
                 // would, which suits an action that destroys a file.
-                .contextMenu {
-                    Button(role: .destructive) {
-                        pendingDelete = documents[index]
-                    } label: {
-                        Label("Delete document", systemImage: "trash")
-                    }
-                }
+                // The swipe is the fast path; this is the discoverable one.
+                // A gesture with no visible counterpart is a feature only the
+                // person who built it knows about. Grown into the document's
+                // card (D389): preview, then Open (links), task, Edit, pin,
+                // delete. Shared with the grid tile.
+                .satchelDocumentMenu(documents[index],
+                                     onTask: { taskFor = documents[index] },
+                                     onEdit: { editing = documents[index] },
+                                     onPin: { togglePin(documents[index]) },
+                                     onDelete: { pendingDelete = documents[index] })
 
                 if index < documents.count - 1 {
                     Divider()
@@ -1155,6 +1379,14 @@ struct DocumentCard: View {
             }
         }
         .satchelCard()
+        .sheet(item: $taskFor) { doc in
+            SatchelTaskCard(document: doc)
+        }
+        .sheet(item: $editing) { doc in
+            NavigationStack {
+                SatchelDocumentDetailView(document: doc, store: store)
+            }
+        }
         .confirmationDialog(
             "Delete \(pendingDelete?.title ?? "this document")?",
             isPresented: Binding(get: { pendingDelete != nil },
@@ -1263,7 +1495,11 @@ struct DocumentRow: View {
             }
             Spacer(minLength: 6)
             VStack(alignment: .trailing, spacing: 4) {
-                Text(relativeDateLabel(document.created))
+                // **Arrival, not the printed date** (D381). The list is ordered by
+                // when things landed, so the label has to say the same thing or
+                // the order reads as random. What the document itself says is
+                // shown by the Due caption and by the viewer.
+                Text(relativeDateLabel(document.listDate))
                     .font(.system(size: 11.5))
                     .foregroundStyle(Color.satchelTertiary)
                 // Session 78: a Kit member says so on the row, matching the
@@ -1288,6 +1524,12 @@ struct DocumentRow: View {
 func kindLabel(for document: TraceMacDocument) -> String {
     if document.isPDF { return "PDF" }
     if document.isImage { return "Image" }
+    // A link says where it goes rather than "WEBLOC" (D384).
+    if document.isLink {
+        if let web = TraceMacDocument.openableURL(document.url) { return TraceMacDocument.webLabel(web) }
+        return "Link"
+    }
+    if document.isText { return "Text" }
     return document.fileExtension.uppercased()
 }
 
@@ -3132,7 +3374,9 @@ struct SatchelDocumentDetailView: View {
             VStack(spacing: 0) {
                 factRow("Kind", kindLabel(for: current))
                 factRow("Size", fileSize)
-                factRow("Added", relativeDateLabel(current.created))
+                // The row is labelled "Added" and was reading the date printed on
+                // the document, which is the one thing it is not (D381).
+                factRow("Added", relativeDateLabel(current.listDate))
                 factRow("Year", current.category)
                 factRow("Name", current.filename, isLast: true)
             }
@@ -3566,19 +3810,39 @@ struct SatchelAllDocumentsView: View {
     }
 
     enum Kind: String, CaseIterable, Identifiable {
-        case all, pdf, image
+        case all, pdf, image, link, text
         var id: String { rawValue }
         var label: String {
             switch self {
             case .all:   return "Any format"
             case .pdf:   return "PDFs"
             case .image: return "Images"
+            case .link:  return "Links"
+            case .text:  return "Text"
             }
         }
     }
 
+    /// Grid or list (D386). The one preference this screen DOES remember,
+    /// against the rule at the top of the file: sort and filter are a way of
+    /// looking at the list right now, but grid-or-list is how the screen is
+    /// read at all, and re-choosing it on every visit would be a tax on
+    /// opening the library. Grid by default, per the approved mockup.
+    enum Layout: String {
+        case grid, list
+    }
+    @AppStorage("satchel.allDocuments.layout") private var layoutRaw: String = Layout.grid.rawValue
+    private var layout: Layout {
+        get { Layout(rawValue: layoutRaw) ?? .grid }
+        nonmutating set { layoutRaw = newValue.rawValue }
+    }
+
     @State private var sort: Sort = .newest
-    @State private var kind: Kind = .all
+    /// The chosen formats (D388). Empty means any. A set rather than one
+    /// choice so PDFs and Images together, or everything with Links left
+    /// out, are each a couple of taps. `.all` never sits in the set; it is
+    /// the entry that clears it.
+    @State private var formats: Set<Kind> = []
     @State private var type: DocumentIcon? = nil
     @State private var tint: DocumentTint? = nil
     @State private var endeavorID: String? = nil
@@ -3594,12 +3858,36 @@ struct SatchelAllDocumentsView: View {
          store: iOSDocumentStore,
          type: DocumentIcon? = nil,
          tint: DocumentTint? = nil,
-         endeavorID: String? = nil) {
+         endeavorID: String? = nil,
+         kind: Kind = .all) {
         self.documents = documents
         self.store = store
         _type = State(initialValue: type)
         _tint = State(initialValue: tint)
         _endeavorID = State(initialValue: endeavorID)
+        _formats = State(initialValue: kind == .all ? [] : [kind])
+    }
+
+    private func matchesFormat(_ doc: TraceMacDocument) -> Bool {
+        if formats.isEmpty { return true }
+        return formats.contains { entry in
+            switch entry {
+            case .all:   return true
+            case .pdf:   return doc.isPDF
+            case .image: return doc.isImage
+            case .link:  return doc.isLink
+            case .text:  return doc.isText
+            }
+        }
+    }
+
+    /// "PDFs + Images", or "All but Links" when that is the shorter truth.
+    private var formatLabel: String? {
+        if formats.isEmpty { return nil }
+        let chosen = Kind.allCases.filter { $0 != .all && formats.contains($0) }
+        let others = Kind.allCases.filter { $0 != .all && !formats.contains($0) }
+        if others.count == 1, chosen.count >= 2, let left = others.first { return "All but \(left.label)" }
+        return chosen.map(\.label).joined(separator: " + ")
     }
 
     /// Only types present in the library. Offering all 23 as filters when six are
@@ -3628,11 +3916,7 @@ struct SatchelAllDocumentsView: View {
         if let endeavorID { out = out.filter { $0.endeavor == endeavorID } }
         if let tag { out = out.filter { $0.tags.contains(tag) } }
         if kitOnly { out = out.filter { $0.pinned } }
-        switch kind {
-        case .all:   break
-        case .pdf:   out = out.filter { $0.isPDF }
-        case .image: out = out.filter { $0.isImage }
-        }
+        if !formats.isEmpty { out = out.filter { matchesFormat($0) } }
 
         let tokens = DocumentSearch.tokens(from: query)
         if !tokens.isEmpty {
@@ -3646,9 +3930,9 @@ struct SatchelAllDocumentsView: View {
 
         switch sort {
         case .newest:
-            out.sort { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+            out.sort { ($0.listDate ?? .distantPast) > ($1.listDate ?? .distantPast) }
         case .oldest:
-            out.sort { ($0.created ?? .distantPast) < ($1.created ?? .distantPast) }
+            out.sort { ($0.listDate ?? .distantPast) < ($1.listDate ?? .distantPast) }
         case .title:
             out.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         }
@@ -3682,13 +3966,16 @@ struct SatchelAllDocumentsView: View {
         func flush() {
             guard let currentKey, !bucket.isEmpty else { return }
             groups.append(MonthGroup(key: currentKey,
-                                     label: Self.monthLabel(for: bucket.first?.created),
+                                     label: Self.monthLabel(for: bucket.first?.listDate),
                                      documents: bucket))
             bucket = []
         }
 
         for doc in filtered {
-            let key = Self.monthKey(for: doc.created)
+            // Grouped by the same date the rows print and the sort uses (D381).
+            // Grouping on `created` while the row says something else would put
+            // a row labelled Sep 6 under a heading reading November 2026.
+            let key = Self.monthKey(for: doc.listDate)
             if key != currentKey {
                 flush()
                 currentKey = key
@@ -3730,7 +4017,7 @@ struct SatchelAllDocumentsView: View {
     }
 
     private var isFiltered: Bool {
-        type != nil || tint != nil || endeavorID != nil || tag != nil || kitOnly || kind != .all
+        type != nil || tint != nil || endeavorID != nil || tag != nil || kitOnly || !formats.isEmpty
     }
 
     private var endeavorLabel: String? {
@@ -3741,6 +4028,9 @@ struct SatchelAllDocumentsView: View {
     /// Named after what you asked for, not "17 of 42". Arriving from a Receipts
     /// chip should say Receipts.
     private var screenTitle: String {
+        // Arriving from the Links chip should say Links (D386), same rule as
+        // a subject chip below.
+        if let formatLabel, type == nil, tint == nil, endeavorID == nil { return "\(formatLabel) · \(filtered.count)" }
         if let type { return "\(type.label) · \(filtered.count)" }
         // The long name, not the chip's short one. A screen has room for
         // "Receipt, bill, proof of payment" and arriving from a chip labelled
@@ -3764,8 +4054,13 @@ struct SatchelAllDocumentsView: View {
                 } else if sort == .title {
                     // A–Z is an alphabetical question, so month headers would be
                     // noise: consecutive rows would each get their own header.
-                    DocumentCard(documents: filtered, store: store)
-                        .padding(.horizontal, 15)
+                    if layout == .grid {
+                        SatchelDocumentGrid(documents: filtered, ordered: filtered, store: store)
+                            .padding(.horizontal, 15)
+                    } else {
+                        DocumentCard(documents: filtered, store: store)
+                            .padding(.horizontal, 15)
+                    }
                 } else {
                     // Grouped by month. A flat list of two hundred rows cannot be
                     // scanned however good the filters are, and because the Browse
@@ -3780,8 +4075,17 @@ struct SatchelAllDocumentsView: View {
                         SatchelSectionTitle(group.label)
                             .padding(.horizontal, 15)
                             .padding(.top, group.key == monthGroups.first?.key ? 0 : 16)
-                        DocumentCard(documents: group.documents, store: store)
-                            .padding(.horizontal, 15)
+                        // The grid (D386) or the rows, same groups, same order.
+                        // The viewer is handed the whole filtered set, not the
+                        // month, so a swipe crosses a month boundary the way
+                        // scrolling does.
+                        if layout == .grid {
+                            SatchelDocumentGrid(documents: group.documents, ordered: filtered, store: store)
+                                .padding(.horizontal, 15)
+                        } else {
+                            DocumentCard(documents: group.documents, store: store)
+                                .padding(.horizontal, 15)
+                        }
                     }
                 }
             }
@@ -3793,6 +4097,19 @@ struct SatchelAllDocumentsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Search documents")
         .toolbar {
+            // Grid or list (D386). A toggle, not a menu entry: it is the one
+            // control on this screen that changes what the screen IS, and it
+            // should be where a thumb finds it without opening anything.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        layout = (layout == .grid) ? .list : .grid
+                    }
+                } label: {
+                    Image(systemName: layout == .grid ? "list.bullet" : "square.grid.2x2")
+                }
+                .accessibilityLabel(layout == .grid ? "Show as list" : "Show as grid")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Picker("Sort", selection: $sort) {
@@ -3805,9 +4122,28 @@ struct SatchelAllDocumentsView: View {
                     // Renaming the enum is churn with no user visible in it, and
                     // it would land in the same commit as a shipping batch. The
                     // three words that matter are the ones he reads.
-                    Picker("Format", selection: $kind) {
-                        ForEach(Kind.allCases) { option in
-                            Text(option.label).tag(option)
+                    // A set, not a picker (D388): each entry toggles, "Any
+                    // format" clears, and the title says what is chosen.
+                    Menu("Format") {
+                        Button {
+                            formats = []
+                        } label: {
+                            if formats.isEmpty {
+                                Label("Any format", systemImage: "checkmark")
+                            } else {
+                                Text("Any format")
+                            }
+                        }
+                        ForEach(Kind.allCases.filter { $0 != .all }) { option in
+                            Button {
+                                if formats.contains(option) { formats.remove(option) } else { formats.insert(option) }
+                            } label: {
+                                if formats.contains(option) {
+                                    Label(option.label, systemImage: "checkmark")
+                                } else {
+                                    Text(option.label)
+                                }
+                            }
                         }
                     }
 
@@ -3886,7 +4222,7 @@ struct SatchelAllDocumentsView: View {
                 if let endeavorLabel { filterChip(endeavorLabel, systemImage: "briefcase") { self.endeavorID = nil } }
                 if let tag { filterChip(tag, systemImage: "tag") { self.tag = nil } }
                 if kitOnly { filterChip("In Kit", systemImage: "pin.fill") { kitOnly = false } }
-                if kind != .all { filterChip(kind.label, systemImage: "doc") { kind = .all } }
+                if let formatLabel { filterChip(formatLabel, systemImage: "doc") { formats = [] } }
                 Button("Clear") { clearFilters() }
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(Color.satchelBlue)
@@ -3912,7 +4248,7 @@ struct SatchelAllDocumentsView: View {
     }
 
     private func clearFilters() {
-        type = nil; tint = nil; endeavorID = nil; tag = nil; kitOnly = false; kind = .all
+        type = nil; tint = nil; endeavorID = nil; tag = nil; kitOnly = false; formats = []
     }
 }
 
@@ -3944,6 +4280,12 @@ struct SatchelCaptureRequest: Identifiable {
 
 enum SatchelCaptureSource: String, Identifiable {
     case scan, photo, library, file
+    /// Session 102 (D386). Whatever is on the clipboard, saved in one motion:
+    /// a link becomes a `.webloc`, text a `.txt`, a picture a `.png`. The
+    /// library reads the pasteboard and hands the bytes across as an
+    /// `IncomingDocument`, the same shape the share extension uses, so the
+    /// capture sheet treats a paste exactly like a share.
+    case paste
 
     var id: String { rawValue }
 
@@ -3953,6 +4295,7 @@ enum SatchelCaptureSource: String, Identifiable {
         case .photo:   return "Take Photo"
         case .library: return "Choose from Library"
         case .file:    return "Import File"
+        case .paste:   return "Paste"
         }
     }
 
@@ -3962,6 +4305,7 @@ enum SatchelCaptureSource: String, Identifiable {
         case .photo:   return "camera"
         case .library: return "photo.on.rectangle"
         case .file:    return "folder"
+        case .paste:   return "doc.on.clipboard"
         }
     }
 

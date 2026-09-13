@@ -7,6 +7,7 @@ import SwiftUI
 import PDFKit
 import AppKit
 import UniformTypeIdentifiers
+import LinkPresentation
 
 // MARK: - Main view
 
@@ -498,6 +499,17 @@ struct TraceMacDocumentsView: View {
                 }
                 .help((showFacets ? "Hide filters (" : "Show filters (")
                       + filterShortcut.combo.label + ")")
+            }
+            // Session 102 (D386): the clipboard door, on the Mac as on the
+            // phone. A copied address becomes a `.webloc`, copied text a
+            // `.txt`. Shift-Command-V because plain Command-V belongs to
+            // whichever text field has focus.
+            ToolbarItem {
+                Button { pasteAsDocument() } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+                .help("Save the clipboard as a document (⇧⌘V)")
             }
             if let doc = selectedDoc, let url = noteStore.resolvedURL(for: doc.relativePath) {
                 ToolbarItem {
@@ -1059,6 +1071,46 @@ struct TraceMacDocumentsView: View {
     /// Multi-select, matching the Endeavor rail's `+`. Two doors to the same
     /// verb disagreeing about whether you may pick two files is the kind of
     /// difference nobody decides and everybody trips over.
+    /// The clipboard as a document (D386). Same order as the phone's
+    /// `pasteFromClipboard`: a URL first, because a copied link is on the
+    /// pasteboard as both a URL and its own text; then a one-word address
+    /// typed as text; then any text at all. Pictures are left to the drop
+    /// zone, which already handles them.
+    private func pasteAsDocument() {
+        let board = NSPasteboard.general
+        var webURL: URL? = nil
+        if let urls = board.readObjects(forClasses: [NSURL.self]) as? [URL],
+           let first = urls.first, !first.isFileURL { webURL = first }
+        let text = board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if webURL == nil, !text.isEmpty, text.rangeOfCharacter(from: .whitespacesAndNewlines) == nil {
+            webURL = TraceMacDocument.openableURL(text)
+        }
+        do {
+            if let webURL, ["http", "https"].contains(webURL.scheme?.lowercased() ?? "") {
+                let path = try store?.createLinkDocument(url: webURL.absoluteString)
+                // Name it after the page once it is on disk and in the list;
+                // the row shows the host until then, and keeps it if the page
+                // refuses.
+                Task {
+                    await store?.reload()
+                    if let path { await store?.fetchLinkTitle(for: path) }
+                }
+                return
+            } else if !text.isEmpty {
+                let firstLine = text.components(separatedBy: .newlines).first ?? "Pasted text"
+                let title = String(firstLine.prefix(60)).trimmingCharacters(in: .whitespacesAndNewlines)
+                _ = try store?.createTextDocument(title: title.isEmpty ? "Pasted text" : title,
+                                              text: text, filedTo: nil)
+            } else {
+                NSSound.beep()
+                return
+            }
+            Task { await store?.reload() }
+        } catch {
+            NSSound.beep()
+        }
+    }
+
     private func importDocument() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -1100,6 +1152,10 @@ struct MacDocumentViewer: View {
     let find: MacPDFFind
 
     @Environment(NoteStore.self) private var noteStore
+
+    /// The page behind a saved link, for the card (D387's Mac half). Nil
+    /// until fetched, and nil for good when the page refuses.
+    @State private var linkMetadata: LPLinkMetadata? = nil
 
     /// The match counter over the top-right of the page.
     ///
@@ -1217,6 +1273,44 @@ struct MacDocumentViewer: View {
             // Nothing zoomable, so the bar hides rather than offering controls
             // that would do nothing. Same call the branch below makes.
             .onAppear { zoom.detach() }
+        } else if doc.isLink, let web = TraceMacDocument.openableURL(doc.url) {
+            // A saved link (D384). The file is a plist holding an address, so
+            // there is nothing to render; the pane says where the link goes
+            // and offers the one thing a link can do. The `url` on the
+            // document is filled from the plist at load when the sidecar has
+            // none, so a `.webloc` dragged in from Finder lands here too.
+            VStack(spacing: 14) {
+                if let linkMetadata {
+                    // The page's own card: image, title, a player for a video.
+                    // The title under it is the DOCUMENT's title, which may
+                    // have been renamed; the card shows what the page says.
+                    MacLinkCard(metadata: linkMetadata)
+                        .frame(maxWidth: 520)
+                        .padding(.bottom, 6)
+                } else {
+                    Image(systemName: "link")
+                        .font(.system(size: 44, weight: .thin))
+                        .foregroundStyle(.tertiary)
+                }
+                Text(doc.title)
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                Text(TraceMacDocument.webLabel(web))
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .textSelection(.enabled)
+                Button("Open in Browser") {
+                    NSWorkspace.shared.open(web)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(24)
+            .onAppear { zoom.detach() }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: doc.url) {
+                linkMetadata = nil
+                linkMetadata = await MacLinkPreview.metadata(for: doc.url)
+            }
         } else if let url = noteStore.resolvedURL(for: doc.relativePath) {
             VStack(spacing: 16) {
                 Image(systemName: "doc")
@@ -3243,7 +3337,7 @@ struct MacProjectHubSidebar: View {
             )
         } label: {
             HStack(spacing: 9) {
-                Image(systemName: doc.isPDF ? "doc.fill" : doc.isImage ? "photo" : "doc.text")
+                Image(systemName: doc.isPDF ? "doc.fill" : doc.isImage ? "photo" : doc.isLink ? "link" : "doc.text")
                     .foregroundStyle(doc.isPDF ? .red : doc.isImage ? .blue : .secondary)
                     .font(.callout).frame(width: 18)
                 Text(doc.title).font(MacEditorialType.fieldValue).lineLimit(1).foregroundStyle(MacEditorialColor.ink)

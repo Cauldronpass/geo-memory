@@ -20,9 +20,16 @@
 			<!-- Copied verbatim from the Trace extension, NOT rewritten from
 			     memory. Xcode's generated default was TRUEPREDICATE, which
 			     offers Satchel for every share including plain text selections.
-			     This one offers it only when something file-like is attached. -->
+			     Until Session 102 this offered Satchel only when something
+			     file-like (public.data) was attached.
+
+			     Widened 2026-09-13 (D385): a web address (public.url) and a
+			     selected sentence (public.plain-text) are now things Satchel
+			     keeps, so the sheet has to offer it for them. Still not
+			     TRUEPREDICATE: each kind is named, and anything outside the
+			     three is still declined. -->
 			<key>NSExtensionActivationRule</key>
-			<string>SUBQUERY(extensionItems, $item, SUBQUERY($item.attachments, $attach, ANY $attach.registeredTypeIdentifiers UTI-CONFORMS-TO &quot;public.data&quot;).@count &gt; 0).@count &gt; 0</string>
+			<string>SUBQUERY(extensionItems, $item, SUBQUERY($item.attachments, $attach, ANY $attach.registeredTypeIdentifiers UTI-CONFORMS-TO &quot;public.data&quot; OR ANY $attach.registeredTypeIdentifiers UTI-CONFORMS-TO &quot;public.url&quot; OR ANY $attach.registeredTypeIdentifiers UTI-CONFORMS-TO &quot;public.plain-text&quot;).@count &gt; 0).@count &gt; 0</string>
 		</dict>
 		<!-- NO NSExtensionMainStoryboard. Xcode's template had one and it was
 		     deleted along with the storyboard: this extension builds its UI in

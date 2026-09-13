@@ -24,6 +24,10 @@ struct DiscoverView: View {
     @Environment(LocationManager.self) private var locationManager
 
     @State private var searchText = ""
+    /// The town and radius the last search was centred on (D393), shown as
+    /// a chip under the field so it can be seen and cleared. Nil when the
+    /// search was around the phone.
+    @State private var activeAnchor: DiscoverQuery? = nil
     @State private var searchResults: [GooglePlace] = []
     @State private var isSearching = false
     @State private var hasSearched = false
@@ -375,6 +379,34 @@ struct DiscoverView: View {
                             // are still perfectly good results — swapping them
                             // out for an error would be a second empty state
                             // standing in for something that is not empty.
+                            // The anchor the results are centred on (D393):
+                            // visible so a search "in Evanston" is never
+                            // mistaken for one near the phone, and clearable
+                            // so the next search is near the phone again.
+                            if let activeAnchor, let label = activeAnchor.anchorLabel {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "scope")
+                                        .font(.footnote)
+                                        .foregroundStyle(.blue)
+                                    Text("Around \(label)")
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.primary)
+                                    Spacer(minLength: 0)
+                                    Button {
+                                        self.activeAnchor = nil
+                                        searchText = activeAnchor.terms
+                                        Task { await performSearch() }
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Search near me instead")
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                Divider()
+                            }
                             if let searchNotice {
                                 // Amber, not red, and it sits above real
                                 // results. See `searchNotice` for why the
@@ -630,6 +662,15 @@ struct DiscoverView: View {
         }
     }
 
+    private static func sortedByDistance(_ results: [GooglePlace], from userLoc: CLLocation?) -> [GooglePlace] {
+        guard let userLoc else { return results }
+        return results.sorted {
+            let d1 = CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: userLoc)
+            let d2 = CLLocation(latitude: $1.latitude, longitude: $1.longitude).distance(from: userLoc)
+            return d1 < d2
+        }
+    }
+
     private func performSearch() async {
         guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         isSearching = true
@@ -638,18 +679,38 @@ struct DiscoverView: View {
         selectedResult = nil
 
         do {
-            let results = try await GooglePlacesService.shared.textSearch(
-                query: searchText,
-                coordinate: locationManager.location?.coordinate
-            )
-            if let userLoc = locationManager.location {
-                searchResults = results.sorted {
-                    let d1 = CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: userLoc)
-                    let d2 = CLLocation(latitude: $1.latitude, longitude: $1.longitude).distance(from: userLoc)
-                    return d1 < d2
+            // **A sentence, not just a term** (D393). "pizza within 10 miles of
+            // Traverse City" is read for its anchor and radius; the anchor is
+            // geocoded and the search restricted to that circle. A sentence
+            // with no anchor searches around the phone as it always did. An
+            // anchor that does not resolve says so rather than silently
+            // searching somewhere else.
+            let parsed = DiscoverQuery.parse(searchText)
+            var results: [GooglePlace]
+            if let anchorName = parsed.anchorName {
+                if let center = await DiscoverQuery.geocode(anchorName) {
+                    let radius = parsed.radiusMeters ?? DiscoverQuery.defaultRadiusMeters
+                    activeAnchor = parsed
+                    results = try await GooglePlacesService.shared.textSearch(
+                        query: parsed.terms.isEmpty ? searchText : parsed.terms,
+                        center: center, radiusMeters: radius)
+                    // Already sorted by distance from the anchor.
+                    searchResults = results
+                } else {
+                    activeAnchor = nil
+                    searchNotice = "Couldn't place \"\(anchorName)\" on the map, so this is near you."
+                    results = try await GooglePlacesService.shared.textSearch(
+                        query: parsed.terms.isEmpty ? searchText : parsed.terms,
+                        coordinate: locationManager.location?.coordinate)
+                    searchResults = Self.sortedByDistance(results, from: locationManager.location)
                 }
             } else {
-                searchResults = results
+                activeAnchor = nil
+                results = try await GooglePlacesService.shared.textSearch(
+                    query: searchText,
+                    coordinate: locationManager.location?.coordinate
+                )
+                searchResults = Self.sortedByDistance(results, from: locationManager.location)
             }
             if results.isEmpty {
                 // Google ran and matched nothing. Ask MapKit before concluding
@@ -661,7 +722,8 @@ struct DiscoverView: View {
                 zoomToFit(searchResults)
                 resultsExpanded = true
                 searchError = nil
-                searchNotice = nil
+                // Keep the "couldn't place X" notice (D393); clear anything else.
+                if activeAnchor != nil || parsed.anchorName == nil { searchNotice = nil }
             }
         } catch {
             // **Was `catch { searchResults = [] }`.** That line is the reason

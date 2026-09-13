@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 import Observation
 
 /// How a Notion collection's first fetch ended.
@@ -389,6 +390,23 @@ class NotionService {
                   expires: Date? = nil, notes: String? = nil, flagged: Bool = false,
                   temporary: Bool = false)
         async throws -> String {
+        // **The duplicate guard, in the one place seven callers share**
+        // (Session 102). On 2026-09-13 the database held six exact duplicates:
+        // Lou Malnati's twice, First Watch three times, and four city rows
+        // each written twice within minutes on 2026-09-06 by an app path. No
+        // caller checked, so the check lives here and cannot be forgotten by
+        // the next one. A throwaway temporary pin is exempt: two pins at the
+        // same spot are two events, not one place.
+        //
+        // Same Google Place ID is the same place. Failing that, the same name
+        // within thirty metres is the same place; two Jewel-Oscos a mile apart
+        // are not, and neither are two ferry terminals with one name. The
+        // existing row's ID is returned so the caller proceeds exactly as if
+        // it had just created it, which is what it wanted.
+        if !temporary, let existing = existingPlace(name: name, googlePlaceID: googlePlaceID,
+                                                    latitude: latitude, longitude: longitude) {
+            return existing.id
+        }
         var props: [String: Any] = [
             "Name": ["title": [["text": ["content": name]]]],
             "Address": ["rich_text": [["text": ["content": address]]]],
@@ -433,6 +451,26 @@ class NotionService {
             _ = try? NoteStore.shared.createPlaceNoteIfNeeded(for: name)
         }
         return result["id"] as? String ?? ""
+    }
+
+    /// A live place already in the cache that this one would duplicate, or nil.
+    /// Archived rows never match: David archives a place to be rid of it, and
+    /// a guard that resurrected it would be the opposite of a guard.
+    func existingPlace(name: String, googlePlaceID: String?,
+                       latitude: Double, longitude: Double) -> Place? {
+        let live = places.filter { $0.status != "Archived" }
+        if let pid = googlePlaceID?.trimmingCharacters(in: .whitespacesAndNewlines), !pid.isEmpty,
+           let hit = live.first(where: { $0.googlePlaceID == pid }) {
+            return hit
+        }
+        let wanted = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !wanted.isEmpty else { return nil }
+        let here = CLLocation(latitude: latitude, longitude: longitude)
+        return live.first { candidate in
+            guard candidate.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == wanted else { return false }
+            let there = CLLocation(latitude: candidate.latitude, longitude: candidate.longitude)
+            return here.distance(from: there) <= 30
+        }
     }
 
     /// Appends a photo URL to the "Photo URLs" rich_text field on any page (visit or place).

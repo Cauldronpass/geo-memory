@@ -57,7 +57,17 @@ struct PlaceCategoryPicker: View {
                     selection = category
                     dismiss()
                 } label: {
-                    HStack {
+                    HStack(spacing: 12) {
+                        // The category's own glyph and colour, the same pair
+                        // every place row and pin draws (Session 102). David:
+                        // *"can the category choices include the icon as
+                        // well? That would help with easy visualization."*
+                        ZStack {
+                            Circle().fill(placeColor(for: category).opacity(0.15)).frame(width: 30, height: 30)
+                            Image(systemName: placeIcon(for: category))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(placeColor(for: category))
+                        }
                         Text(category).foregroundStyle(Color.primary)
                         Spacer()
                         if selection == category {

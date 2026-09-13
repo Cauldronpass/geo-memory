@@ -310,6 +310,13 @@ struct SatchelDocTasksPanel: View {
                 list: ReminderTaskStore.inboxListName,
                 notes: ThingsTask.documentMarkerPrefix + document.relativePath)
             if ok {
+                // **Refetched, or the row he just made does not appear.**
+                // `open` reads `store.allTasks`, a cached array that only
+                // `fetch()` repopulates, so the add succeeded and the list under
+                // the field stayed exactly as it was. Found in Session 100 while
+                // building the card; same shape as the D374 tick-key mismatch,
+                // a write that works and a screen that cannot show it.
+                await store.refreshAll()
                 composeTitle = ""
                 composeFocused = true
             } else {

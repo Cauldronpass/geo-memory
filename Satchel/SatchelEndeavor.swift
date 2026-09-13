@@ -570,7 +570,7 @@ enum KitMembership {
                 case (nil, _?):    return false
                 case (_?, nil):    return true
                 case (nil, nil):
-                    return (lhs.created ?? .distantPast) < (rhs.created ?? .distantPast)
+                    return (lhs.listDate ?? .distantPast) < (rhs.listDate ?? .distantPast)
                 }
             }
 
@@ -585,11 +585,17 @@ enum KitMembership {
         if let trip {
             // Your order first, then the fallback. §5 asks for **imminence**
             // (nearest date first) and that is still not expressible: no
-            // sidecar key carries a per-document event date, and `created` is a
-            // capture timestamp that always points backwards. So an explicit
+            // sidecar key carries a per-document event date. So an explicit
             // `kit_order` wins where you have set one, and everything else
-            // falls back to most-recently-added — which is a decent proxy for a
-            // trip you are actively assembling, and a poor one on flight day.
+            // falls back to most-recently-added — a decent proxy for a trip you
+            // are actively assembling, and a poor one on flight day.
+            //
+            // **That fallback was reading the wrong date until D381.** The line
+            // above used to call `created` "a capture timestamp that always
+            // points backwards"; it is the date printed on the document, which
+            // for a trip kit points FORWARD — a rental confirmation for next May
+            // sorted as the most recently added thing in the bag. `listDate` is
+            // the arrival stamp this always meant.
             tripDocs = documents
                 .filter { $0.endeavor == trip.id && !$0.pinned }
                 .sorted { lhs, rhs in
@@ -598,7 +604,7 @@ enum KitMembership {
                     case (nil, _?):    return false
                     case (_?, nil):    return true
                     case (nil, nil):
-                        return (lhs.created ?? .distantPast) > (rhs.created ?? .distantPast)
+                        return (lhs.listDate ?? .distantPast) > (rhs.listDate ?? .distantPast)
                     }
                 }
         }

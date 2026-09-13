@@ -231,6 +231,31 @@ class GooglePlacesService {
         return try await search(body: body)
     }
 
+    /// Text search RESTRICTED to a circle (D393): results outside it are not
+    /// returned, where `locationBias` only prefers. The Places API takes a
+    /// rectangle for a restriction, so the circle becomes its bounding box
+    /// and the corners are trimmed here by distance, then sorted by it.
+    func textSearch(query: String, center: CLLocationCoordinate2D, radiusMeters: Double) async throws -> [GooglePlace] {
+        let latDelta = radiusMeters / 111_320.0
+        let lonDelta = radiusMeters / (111_320.0 * max(0.1, cos(center.latitude * .pi / 180)))
+        let body: [String: Any] = [
+            "textQuery": query,
+            "locationRestriction": [
+                "rectangle": [
+                    "low":  ["latitude": center.latitude - latDelta, "longitude": center.longitude - lonDelta],
+                    "high": ["latitude": center.latitude + latDelta, "longitude": center.longitude + lonDelta]
+                ]
+            ]
+        ]
+        let here = CLLocation(latitude: center.latitude, longitude: center.longitude)
+        return try await search(body: body)
+            .filter { CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: here) <= radiusMeters }
+            .sorted {
+                CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: here)
+                    < CLLocation(latitude: $1.latitude, longitude: $1.longitude).distance(from: here)
+            }
+    }
+
     // Nearby search — used when tapping a map POI
     func nearbySearch(coordinate: CLLocationCoordinate2D, query: String) async throws -> [GooglePlace] {
         let body: [String: Any] = [

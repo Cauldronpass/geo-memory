@@ -19,6 +19,7 @@ struct SaveCaptureAsPlaceSheet: View {
     @State private var saveMode: SaveMode = .personal
     @State private var name = ""
     @State private var category = "Attraction"
+    @State private var showingCategoryPicker = false
     @State private var address = ""
     @State private var city = ""
     @State private var tempLabel = ""
@@ -50,10 +51,22 @@ struct SaveCaptureAsPlaceSheet: View {
                 if saveMode == .personal {
                     Section("Place Details") {
                         TextField("Name", text: $name)
-                        Picker("Category", selection: $category) {
-                            ForEach(placeCategories, id: \.self) { cat in
-                                Text(cat).tag(cat)
+                        // Presented list, not a menu (Session 102): the
+                        // fourteen-row menu snapped to the top on redraw.
+                        Button {
+                            showingCategoryPicker = true
+                        } label: {
+                            HStack {
+                                Text("Category").foregroundStyle(Color.primary)
+                                Spacer()
+                                Text(category).foregroundStyle(.secondary)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
+                        }
+                        .sheet(isPresented: $showingCategoryPicker) {
+                            PlaceCategoryPicker(selection: $category)
                         }
                     }
 

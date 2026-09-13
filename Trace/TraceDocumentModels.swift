@@ -55,6 +55,11 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
     /// as a document which is true but the more important aspect to get right is
     /// that it is a receipt for my dogs health."*
     case pet
+    /// Session 102 (D384). A saved web address: the document IS the link, so
+    /// the glyph says so rather than borrowing `document`. The `.webloc`
+    /// extension resolves here by default; the scanner may still choose a
+    /// subject (a hotel page is `lodging`) and that choice wins.
+    case link
 
     /// SF Symbol name. Kept to long-established symbols (all iOS 16 or earlier,
     /// well under the 26.5 deployment target) because a wrong symbol name fails
@@ -85,6 +90,7 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
         case .menu:      return "fork.knife"
         case .reading:   return "newspaper"
         case .pet:       return "pawprint"
+        case .link:      return "link"
         }
     }
 
@@ -118,6 +124,7 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
         case .menu:      return "Dining"
         case .reading:   return "Reading"
         case .pet:       return "Pet"
+        case .link:      return "Link"
         }
     }
 
@@ -148,6 +155,7 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
         case .menu:      return "DINING in the broad sense: restaurants and food. Menus, reservations and confirmations, a restaurant's contact details, a food order or pickup receipt. If the document is about a place you eat, this is the type"
         case .reading:   return "articles and PDFs you mean to read, whether temporary or kept"
         case .pet:       return "anything about an animal: vet visits and bills, vaccination records, medication, grooming, boarding, licence tags"
+        case .link:      return "a saved web address with no better subject: a portal, a tool, a folder on SharePoint, a reference page. If the page is clearly about a hotel, a flight, a restaurant or a purchase, prefer that subject instead"
         }
     }
 
@@ -198,6 +206,10 @@ enum DocumentIcon: String, CaseIterable, Hashable, Codable, Sendable {
         case .menu:      return .green
         case .reading:   return .teal
         case .pet:       return .green
+        // Teal, not blue: the Kind row spells a tint out, and blue reads
+        // "Confirmation, reservation, ticket". A saved link is closest to
+        // Reference, which is teal. Seen on the first pasted link, 2026-09-13.
+        case .link:      return .teal
         }
     }
 
@@ -421,6 +433,39 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// moves.
     var arrived: Date? = nil
 
+    /// The date every LIST in either app sorts by and labels rows with: when it
+    /// landed, falling back to the document's own date when nothing recorded an
+    /// arrival.
+    ///
+    /// **One property so the order and the label cannot disagree.** A list that
+    /// sorts on arrival while its rows print `created` reads as shuffled, and
+    /// nothing on screen explains why - the two dates differ on exactly the
+    /// documents where the order matters, which is bookings and confirmations.
+    /// Every list in Satchel reads this; none reads `arrived` directly.
+    ///
+    /// `created` keeps its own job untouched: it is what the document SAYS, and
+    /// it is what the Due band and the viewer show.
+    var listDate: Date? { arrived ?? created }
+
+    /// The `yyyy-MM-dd-HHmmss-` stamp every import writes at the front of a
+    /// filename, or nil for a file that arrived some other way.
+    ///
+    /// **On the model because both stores need it**, the Mac since D347 and the
+    /// phone since D381. It lived private inside `TraceMacDocumentStore`, and
+    /// porting it would have meant a second copy of one fact - the mistake the
+    /// week calculation made, where two definitions agreed all year and
+    /// disagreed in a January nobody was watching. Same reasoning as
+    /// `openableURL` below: one function, not two kept aligned.
+    static func arrivalDate(fromFilename filename: String) -> Date? {
+        guard filename.count > 18 else { return nil }
+        let stamp = String(filename.prefix(17))
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = .current
+        fmt.dateFormat = "yyyy-MM-dd-HHmmss"
+        return fmt.date(from: stamp)
+    }
+
     /// A website this document is ABOUT, typed by hand. Sidecar key `url`.
     ///
     /// David: *"I could use a URL field here that I could add when documents
@@ -441,6 +486,20 @@ struct TraceMacDocument: Identifiable, Hashable {
     ///
     /// Declared last so no existing call site's argument order moves.
     var url: String = ""
+
+    /// Places this document is about, sidecar key `places` (D385, Session 101).
+    ///
+    /// **The one association the sidecar could not carry.** `endeavor`,
+    /// `people` and `linked_note` were all in use; no sidecar anywhere held a
+    /// place, and David asked for places by name when the scrapbook was
+    /// designed: a link to a hotel's site is about the hotel. Same shape as
+    /// `people`, a list of names, resolved the same way.
+    ///
+    /// Added to BOTH stores in one pass, key order fixed directly after
+    /// `people`, for the reason D350 records: a store that rebuilds
+    /// frontmatter without a key is a store that DELETES it. Declared last so
+    /// no existing call site's argument order moves.
+    var places: [String] = []
 
     /// What a typed address opens to, or nil when it does not open to anything.
     ///
@@ -503,6 +562,33 @@ struct TraceMacDocument: Identifiable, Hashable {
 
     var isPDF: Bool   { fileExtension == "pdf" }
     var isImage: Bool { ["jpg","jpeg","png","heic","gif","webp"].contains(fileExtension) }
+    /// A saved web link (D384): the file is a `.webloc`, the plist macOS writes
+    /// when a link is dragged to Finder, and `url` carries the address it
+    /// holds. A link keeps the two-file shape every other document has rather
+    /// than becoming a sidecar with no file, which no store or viewer expects.
+    var isLink: Bool { fileExtension == "webloc" }
+
+    /// The address inside a `.webloc`, or nil when the bytes are not one.
+    ///
+    /// **On the model because three writers and two readers need it**: the
+    /// share extension and Paste write the file, both stores read it back into
+    /// `url` at load when the sidecar has none. One parser, not three kept
+    /// aligned, per `arrivalDate(fromFilename:)` above.
+    static func url(inWebloc data: Data) -> String? {
+        guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let dict = plist as? [String: Any],
+              let url = dict["URL"] as? String else { return nil }
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// The bytes of a `.webloc` holding `url`. XML plist, the form Finder
+    /// itself writes, so the file opens in Safari from Finder and Quick Look
+    /// reads it without help.
+    static func weblocData(for url: String) -> Data? {
+        let dict: [String: String] = ["URL": url.trimmingCharacters(in: .whitespacesAndNewlines)]
+        return try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+    }
     /// Plain text this app can read on screen rather than hand to another app
     /// (Session 95). Added for research documents, which are written as `.txt`
     /// — but a `.csv` or a `.log` dropped into Satchel is equally readable and
@@ -617,6 +703,7 @@ struct TraceMacDocument: Identifiable, Hashable {
         }
 
         if ["jpg","jpeg","png","heic","gif","webp"].contains(fileExtension) { return .photo }
+        if fileExtension == "webloc" { return .link }
         return .document
     }
 }
@@ -767,7 +854,7 @@ enum DocumentBucket: String, CaseIterable, Hashable, Sendable {
         case .receipt, .card, .finance:                  return .receipts
         case .passport, .id, .contract, .legal,
              .medical, .work, .education, .pet:          return .papers
-        case .document, .note, .photo, .reading, .manual: return .other
+        case .document, .note, .photo, .reading, .manual, .link: return .other
         }
     }
 

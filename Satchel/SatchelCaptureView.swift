@@ -94,6 +94,11 @@ struct SatchelCaptureView: View {
     /// Sidecar `remind:`. Set by the scan when the document states a date
     /// (2026-08-27, marked AI-filled like the title), or by hand below.
     @State private var remindOn: Date? = nil
+    /// The address inside a shared or pasted `.webloc` (D384), read at write
+    /// time and saved into the sidecar's `url` key with everything else.
+    /// Empty for every other kind of capture, in which case `url` is passed
+    /// as nil and whatever is on disk is preserved.
+    @State private var linkURL: String = ""
     /// Sidecar `people:`, list-only (see `SatchelPeoplePickerView`).
     @State private var people: [String] = []
     @State private var showPeoplePicker = false
@@ -376,6 +381,9 @@ struct SatchelCaptureView: View {
             Button {
                 guard let draft else { return }
                 if isPrivateNow { showPrivatePrompt = true }
+                // A link has no page to scan; asking again re-reads the page
+                // (D387). The AI scan on a `.webloc` would be handed a plist.
+                else if !linkURL.isEmpty { Task { await fillFromLink(for: draft) } }
                 else { Task { await runScan(on: draft, overwrite: true) } }
             } label: {
                 HStack(spacing: 7) {
@@ -803,6 +811,11 @@ struct SatchelCaptureView: View {
             showPhotos = true
         case .file:
             showFiles = true
+        case .paste:
+            // Never reached with a payload: a paste always carries `incoming`,
+            // which the launch task writes before asking for a source. Here
+            // only when the clipboard emptied between the tap and the sheet.
+            errorText = "Nothing to paste."
         }
     }
 
@@ -946,13 +959,25 @@ struct SatchelCaptureView: View {
             icon = document.resolvedIcon
             tint = document.resolvedTint
             isWriting = false
+            // **A link is read, not scanned** (D384, D387). The file holds an
+            // address and nothing else, so the AI scan has no page to look
+            // at; the page itself is what has the title. Its address is kept
+            // here so the save writes `url:`.
+            if ext == "webloc" {
+                linkURL = TraceMacDocument.url(inWebloc: data) ?? ""
+            }
             // **The one branch that matters.** No network call is made for a
             // private capture, ever — not gated, not deferred, not asked about.
             // The document is already tagged by the time this runs, so nothing
-            // downstream has to be trusted to check.
+            // downstream has to be trusted to check. A private link keeps its
+            // host as its name: fetching the page is a network call too.
             guard !isPrivate else {
                 scanNote = "Kept on this device. Nothing was sent."
                 Task { await fillLocally(for: document) }
+                return
+            }
+            if ext == "webloc" {
+                Task { await fillFromLink(for: document) }
                 return
             }
             Task { await runScan(on: document) }
@@ -1019,6 +1044,34 @@ struct SatchelCaptureView: View {
            title.trimmingCharacters(in: .whitespacesAndNewlines) == document.title {
             title = headline.title
             if descriptionText.isEmpty { descriptionText = headline.description }
+        }
+    }
+
+    /// Title and preview for a saved link, from the page itself (D387).
+    ///
+    /// The system's own link reader, the one Messages uses. The title lands
+    /// in the form only while the form still shows the host, same rule as
+    /// the AI scan: a name already typed is never replaced by a fetch that
+    /// finished late. The preview image goes to `SatchelLinkPreview`'s cache
+    /// for the grid; nothing about it is written to the container.
+    ///
+    /// A page that refuses (a login wall, SharePoint) leaves the host as the
+    /// title and says so, which is the honest picture of a link the phone
+    /// cannot see. Not an error.
+    private func fillFromLink(for document: TraceMacDocument) async {
+        guard !linkURL.isEmpty else { return }
+        isScanning = true
+        defer { isScanning = false }
+        let meta = await SatchelLinkPreview.fetch(for: linkURL)
+        if let fetched = meta.title,
+           title.trimmingCharacters(in: .whitespacesAndNewlines) == document.title {
+            title = fetched
+            aiFilled.insert("title")
+        }
+        if meta.title == nil, meta.image == nil {
+            scanNote = "The page did not offer a title. It may need a login."
+        } else {
+            scanNote = "Named from the page itself. Nothing else was sent."
         }
     }
 
@@ -1165,7 +1218,10 @@ struct SatchelCaptureView: View {
                 icon: icon,
                 tint: tint,
                 kitOrder: pinned ? nextKitOrder() : nil,
-                remindOn: .some(remindOn)
+                remindOn: .some(remindOn),
+                // Set only for a link (D384). Nil for everything else, which
+                // preserves whatever is on disk, per the store's own rule.
+                url: linkURL.isEmpty ? nil : .some(linkURL)
             )
         } catch {
             errorText = error.localizedDescription

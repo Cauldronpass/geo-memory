@@ -59,7 +59,19 @@ class iOSDocumentStore {
 
                 let relativePath = "\(folder)/\(filename)"
                 let ext = (filename as NSString).pathExtension.lowercased()
-                guard !["txt", "md", "markdown", "text"].contains(ext) else { continue }
+                // `.md` is never a document: a document's sidecar is its own
+                // path with the extension swapped for `.md`.
+                guard !["md", "markdown"].contains(ext) else { continue }
+                // **`.txt` is a document only when a sidecar sits beside it**,
+                // the Mac's D337 rule, ported here in Session 102 (D385). Until
+                // now this store skipped `.txt` unconditionally, so a research
+                // reading the Mac wrote into Satchel (D313) and a text snippet
+                // shared from the phone were both on disk and invisible here.
+                // A loose `.txt` with no sidecar is still skipped, as before.
+                if ["txt", "text"].contains(ext) {
+                    let companion = String(relativePath.dropLast(ext.count + 1)) + ".md"
+                    guard noteStore.fileExists(companion) else { continue }
+                }
 
                 let sidecarRelative = relativePath.hasSuffix(".\(ext)")
                     ? String(relativePath.dropLast(ext.count + 1)) + ".md"
@@ -83,6 +95,15 @@ class iOSDocumentStore {
                     fsDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.creationDate] as? Date
                 }
 
+                // **When it landed, from the filename** (D381, porting the Mac's
+                // D347). Every import writes `yyyy-MM-dd-HHmmss-` at the front
+                // and nothing edits it afterwards, which makes it a better
+                // record of arrival than the filesystem: iCloud rewrites
+                // creation dates when it materialises a file, so `fsDate` can be
+                // the day this phone downloaded it rather than the day it was
+                // filed.
+                let arrivedAt = TraceMacDocument.arrivalDate(fromFilename: filename) ?? fsDate
+
                 let doc = TraceMacDocument(
                     relativePath: relativePath,
                     filename: filename,
@@ -105,14 +126,30 @@ class iOSDocumentStore {
                     summary: body.summary,
                     extractedText: body.text,
                     textExtracted: body.hasTextSection,
-                    arrived: nil,
-                    url: sidecar?.url ?? ""
+                    arrived: arrivedAt,
+                    // A saved link carries its address in the file (D384); the
+                    // sidecar copy wins when it exists, the file fills in when
+                    // it does not, so a `.webloc` filed by hand still opens.
+                    url: sidecar?.url ?? urlFromWebloc(ext: ext, relativePath: relativePath) ?? "",
+                    places: sidecar?.places ?? []
                 )
                 result.append(doc)
             }
         }
 
-        result.sort { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+        // **Newest ARRIVAL first** (D381), not newest printed date, matching the
+        // Mac's D347. `created` is what the document SAYS, and the scan reads it
+        // off the page - a rental confirmation for next May carries next May, so
+        // sorting on it parked four travel bookings at the top of Recent for six
+        // days with no way for anything newer to displace them. `created` falls
+        // back behind arrival so a document with no parseable stamp and no
+        // filesystem date still sorts somewhere sensible instead of to the
+        // bottom.
+        result.sort {
+            let l = $0.listDate ?? .distantPast
+            let r = $1.listDate ?? .distantPast
+            return l > r
+        }
 
         await MainActor.run {
             documents = result
@@ -162,7 +199,10 @@ class iOSDocumentStore {
         /// Session 96 with Satchel's URL row - until then this method could
         /// only preserve `url`, which was right while nothing on the phone
         /// could type one and wrong the moment something could.
-        url: String?? = nil
+        url: String?? = nil,
+        /// Preserve-by-default like every Satchel key: `nil` keeps what is on
+        /// disk, a list (empty included) replaces it. D385, Session 102.
+        places: [String]? = nil
     ) throws {
         let existing = parseSidecar(at: doc.sidecarPath)
         // Read the body back BEFORE rewriting. Every caller that does not know
@@ -190,6 +230,8 @@ class iOSDocumentStore {
             let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             data.url = trimmed.isEmpty ? nil : trimmed
         }
+
+        data.places       = places ?? existing?.places ?? doc.places
 
         data.endeavor     = resolvedString(new: endeavor,     existing: existing?.endeavor)
         data.endeavorName = resolvedString(new: endeavorName, existing: existing?.endeavorName)
@@ -225,7 +267,8 @@ class iOSDocumentStore {
         /// solves with an empty string.
         remindOn: Date?? = nil,
         note: String? = nil,
-        summary: String? = nil
+        summary: String? = nil,
+        places: [String]? = nil
     ) throws -> TraceMacDocument {
         // Seed from disk when a sidecar exists, otherwise from the in-memory doc
         // so a never-scanned document still ends up with a complete sidecar.
@@ -243,7 +286,8 @@ class iOSDocumentStore {
             icon: doc.icon,
             tint: doc.tint,
             kitOrder: doc.kitOrder,
-            remindOn: doc.remindOn
+            remindOn: doc.remindOn,
+            places: doc.places
         )
 
         if data.title == nil   { data.title = doc.title }
@@ -256,6 +300,7 @@ class iOSDocumentStore {
         if let tint     { data.tint     = tint }
         if let kitOrder { data.kitOrder = kitOrder }
         if let remindOn { data.remindOn = remindOn }
+        if let places   { data.places   = places }
 
         var body = readBody(at: doc.sidecarPath)
         if body.isEmpty { body.note = doc.note; body.summary = doc.summary }
@@ -272,6 +317,7 @@ class iOSDocumentStore {
         updated.tint         = data.tint
         updated.kitOrder     = data.kitOrder
         updated.remindOn     = data.remindOn
+        updated.places       = data.places
         updated.note         = body.note
         updated.summary      = body.summary
 
@@ -471,6 +517,9 @@ class iOSDocumentStore {
         var tint: DocumentTint?
         var kitOrder: Int?
         var remindOn: Date?
+        /// Sidecar key `places` (D385). Same rule as `url` and `remind`: a
+        /// key this struct does not carry is a key the next save deletes.
+        var places: [String]
 
         init(
             title: String? = nil,
@@ -486,7 +535,8 @@ class iOSDocumentStore {
             icon: DocumentIcon? = nil,
             tint: DocumentTint? = nil,
             kitOrder: Int? = nil,
-            remindOn: Date? = nil
+            remindOn: Date? = nil,
+            places: [String] = []
         ) {
             self.title = title
             self.tags = tags
@@ -502,6 +552,7 @@ class iOSDocumentStore {
             self.tint = tint
             self.kitOrder = kitOrder
             self.remindOn = remindOn
+            self.places = places
         }
     }
 
@@ -669,6 +720,11 @@ class iOSDocumentStore {
         content += "created: \(dateStr)\n"
         if let note = data.linkedNote, !note.isEmpty { content += "linked_note: \(note)\n" }
         if !data.people.isEmpty { content += "people: \(peopleLine)\n" }
+        // Directly after `people`, byte-identical to the Mac store (D385).
+        if !data.places.isEmpty {
+            let placesLine = "[" + data.places.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: ", ") + "]"
+            content += "places: \(placesLine)\n"
+        }
         let trimmedDesc = (data.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedDesc.isEmpty {
             let escaped = trimmedDesc.replacingOccurrences(of: "\"", with: "'")
@@ -700,6 +756,16 @@ class iOSDocumentStore {
     }
 
     // MARK: - Sidecar parser
+
+    /// The address inside a `.webloc` document's own file, for a link whose
+    /// sidecar carries no `url` yet (D384). Nil for every other extension, so
+    /// the load loop pays nothing for PDFs and images.
+    private func urlFromWebloc(ext: String, relativePath: String) -> String? {
+        guard ext == "webloc",
+              let fileURL = noteStore.resolvedURL(for: relativePath),
+              let data = try? Data(contentsOf: fileURL) else { return nil }
+        return TraceMacDocument.url(inWebloc: data)
+    }
 
     private func parseSidecar(at relativePath: String) -> SidecarData? {
         guard let raw = try? noteStore.readFile(relativePath), !raw.isEmpty else { return nil }
@@ -733,6 +799,9 @@ class iOSDocumentStore {
             case "people":
                 let stripped = value.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
                 data.people = stripped.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            case "places":
+                let stripped = value.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                data.places = stripped.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             case "description": data.description = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
             case "url":
                 let v = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))

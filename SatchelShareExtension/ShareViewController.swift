@@ -194,11 +194,40 @@ class ShareViewController: UIViewController {
                 return (data, Self.makeFilename(ext: "pdf", suggested: provider.suggestedName), "pdf")
             }
         }
-        // Markdown / plain text
+        // Web link (D384, D385). **Before plain text, and the order is the
+        // whole fix.** A Safari share offers the page as `public.url` AND as
+        // plain text (the address as a string); with text tested first every
+        // link arrived as a `.txt` holding an address. `loadWebURL` refuses a
+        // file URL, so a `.docx` handed over as `public.file-url` (which also
+        // conforms to `public.url`) still falls through to the catch-all below.
+        if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+            if let result = await loadWebURL(from: provider) {
+                return result
+            }
+        }
+        // Plain text. **Always `.txt`, never `.md`** (D385): a document's
+        // sidecar is its own path with the extension swapped for `.md`, so a
+        // `.md` document would be its own metadata file. The old branch wrote
+        // `.md` when the suggested name said so, and the phone's store then
+        // skipped the file on load - written, on disk, invisible.
         if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
             if let data = await loadData(provider: provider, type: UTType.plainText.identifier) {
-                let ext = (provider.suggestedName as NSString?)?.pathExtension.lowercased() == "md" ? "md" : "txt"
-                return (data, Self.makeFilename(ext: ext, suggested: provider.suggestedName), ext)
+                // **Text that is only an address is a link.** Some apps share a
+                // video or a post as plain text holding the URL and nothing
+                // else, never as `public.url`. That is a link by any reading,
+                // and a `.txt` whose whole content is `https://youtu.be/...`
+                // would be the wrong kind wearing the right words. One token,
+                // http or https, no spaces: anything more is a sentence.
+                if let text = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                   text.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+                   let url = URL(string: text), let scheme = url.scheme?.lowercased(),
+                   scheme == "http" || scheme == "https", let host = url.host, host.contains("."),
+                   let webloc = Self.webloc(for: url) {
+                    return webloc
+                }
+                let suggested = (provider.suggestedName as NSString?)?.deletingPathExtension
+                return (data, Self.makeFilename(ext: "txt", suggested: suggested), "txt")
             }
         }
         // JPEG
@@ -292,6 +321,51 @@ class ShareViewController: UIViewController {
                 once.resume(nil)
             }
         }
+    }
+
+    /// A shared web address as a `.webloc` (D384): the plist Finder writes when
+    /// a link is dragged out of Safari, so the file opens in a browser from the
+    /// Mac and Quick Look reads it. The App Group hands the bytes to Satchel,
+    /// which files them like any other document and fills `url:` from them.
+    ///
+    /// **The plist is written here as well as in `TraceMacDocument.weblocData`,
+    /// and that is a target-membership fact, not a choice.** This extension
+    /// compiles `AppGroup.swift` and nothing else from `Trace/`; folding the
+    /// model file in is a `project.pbxproj` edit, which waits for a window with
+    /// Xcode closed. Three lines, one key, and the reader on the model is the
+    /// only parser. If the membership is ever widened, delete this and call the
+    /// model's.
+    private func loadWebURL(from provider: NSItemProvider) async -> (data: Data, filename: String, contentType: String)? {
+        await withCheckedContinuation { continuation in
+            let once = OneShot<(data: Data, filename: String, contentType: String)>(continuation)
+            provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { item, _ in
+                var url: URL? = item as? URL
+                if url == nil, let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
+                guard let url, !url.isFileURL, let scheme = url.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https" else {
+                    once.resume(nil)
+                    return
+                }
+                once.resume(Self.webloc(for: url))
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.representationTimeoutSeconds) {
+                once.resume(nil)
+            }
+        }
+    }
+
+    /// The `.webloc` bytes and a filename for a web address, shared by the
+    /// URL branch and the text-that-is-only-a-URL branch above. The host is
+    /// the only name a bare address offers; Satchel replaces it with the page
+    /// title once it has fetched one.
+    private static func webloc(for url: URL) -> (data: Data, filename: String, contentType: String)? {
+        let dict: [String: String] = ["URL": url.absoluteString]
+        guard let data = try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0) else {
+            return nil
+        }
+        var host = url.host ?? "link"
+        if host.lowercased().hasPrefix("www.") { host = String(host.dropFirst(4)) }
+        return (data, makeFilename(ext: "webloc", suggested: host), "link")
     }
 
     private static func makeFilename(ext: String, suggested: String?) -> String {

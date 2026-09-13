@@ -40,6 +40,7 @@
 
 import Foundation
 import Observation
+import LinkPresentation
 
 // TraceMacDocument, DocumentScanResult, DocumentIcon and DocumentTint are
 // defined in TraceDocumentModels.swift (shared).
@@ -179,7 +180,7 @@ class TraceMacDocumentStore {
                 // the filesystem — iCloud rewrites creation dates when it
                 // materialises a file, so `fsDate` can be the day the Mac
                 // downloaded it rather than the day it was filed.
-                let arrivedAt = Self.arrivalDate(fromFilename: filename) ?? fsDate
+                let arrivedAt = TraceMacDocument.arrivalDate(fromFilename: filename) ?? fsDate
 
                 let doc = TraceMacDocument(
                     relativePath: relativePath,
@@ -204,7 +205,11 @@ class TraceMacDocumentStore {
                     extractedText: body.text,
                     textExtracted: body.hasTextSection,
                     arrived: arrivedAt,
-                    url: sidecar?.url ?? ""
+                    // A saved link carries its address in the file (D384); the
+                    // sidecar copy wins when it exists, the file fills in when
+                    // it does not, so a `.webloc` dragged in from Finder opens.
+                    url: sidecar?.url ?? urlFromWebloc(ext: ext, relativePath: relativePath) ?? "",
+                    places: sidecar?.places ?? []
                 )
                 result.append(doc)
             }
@@ -226,17 +231,8 @@ class TraceMacDocumentStore {
         }
     }
 
-    /// The `yyyy-MM-dd-HHmmss-` stamp every import writes at the front of a
-    /// filename, or nil for a file that arrived some other way.
-    private static func arrivalDate(fromFilename filename: String) -> Date? {
-        guard filename.count > 18 else { return nil }
-        let stamp = String(filename.prefix(17))
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.timeZone = .current
-        fmt.dateFormat = "yyyy-MM-dd-HHmmss"
-        return fmt.date(from: stamp)
-    }
+    /// Moved to `TraceMacDocument.arrivalDate(fromFilename:)` in Session 100, so
+    /// the phone's port reads the same function rather than a copy of it.
 
     // MARK: - Sidecar write
 
@@ -289,7 +285,10 @@ class TraceMacDocumentStore {
         /// Same three-state shape as `icon` and `remindOn`: `nil` preserves
         /// what is on disk, `.some("")` clears it, `.some(text)` sets it.
         /// Added last so every existing labelled call site reads unchanged.
-        url: String?? = nil
+        url: String?? = nil,
+        /// Preserve-by-default like every Satchel key: `nil` keeps what is on
+        /// disk, a list (empty included) replaces it. D385, Session 102.
+        places: [String]? = nil
     ) throws {
         // Preserve whatever Satchel wrote. Disk wins over the in-memory doc,
         // which may be a synthetic value built by a move (see
@@ -343,6 +342,7 @@ class TraceMacDocumentStore {
             let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             data.url = trimmed.isEmpty ? nil : trimmed
         }
+        data.places = places ?? existing?.places ?? doc.places
 
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
     }
@@ -445,6 +445,84 @@ class TraceMacDocumentStore {
         }
         try noteStore.writeFile(sidecarPath, content: renderSidecar(data2))
         return relativePath
+    }
+
+    /// Writes a web address into Satchel as a `.webloc` document (D384),
+    /// the Mac half of the phone's share-sheet and Paste doors (D385, D386).
+    ///
+    /// Same split as `createTextDocument`: the title is the real name, the
+    /// file carries a timestamp. The address is written twice on purpose,
+    /// once inside the plist (so Finder and Quick Look open it) and once as
+    /// the sidecar's `url` (so the Open button and the web chip read it
+    /// without touching the file). Both stores fill `url` from the plist at
+    /// load when the sidecar has none, so a `.webloc` dragged in by hand is
+    /// still whole.
+    @discardableResult
+    func createLinkDocument(url: String,
+                            title: String? = nil,
+                            filedTo endeavor: Endeavor? = nil) throws -> String {
+        guard let web = TraceMacDocument.openableURL(url),
+              let data = TraceMacDocument.weblocData(for: web.absoluteString) else {
+            throw NoteStoreError.iCloudUnavailable
+        }
+        var host = web.host ?? "link"
+        if host.lowercased().hasPrefix("www.") { host = String(host.dropFirst(4)) }
+        let name = (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayTitle = name.isEmpty ? host : name
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd-HHmmss"
+        let safe = host.replacingOccurrences(of: "/", with: "-")
+        let filename = "\(fmt.string(from: Date()))-\(safe).webloc"
+        let relativePath = try noteStore.writeDocument(data,
+                                                       category: NoteStore.documentFolder(),
+                                                       filename: filename)
+        let sidecarPath = String(relativePath.dropLast(7)) + ".md"
+        var sidecar = SidecarData()
+        sidecar.title   = displayTitle
+        sidecar.created = Date()
+        sidecar.url     = web.absoluteString
+        sidecar.icon    = .link
+        if let endeavor {
+            sidecar.endeavor     = endeavor.id
+            sidecar.endeavorName = endeavor.name
+            sidecar.linkedNote   = endeavor.relativePath
+        }
+        try noteStore.writeFile(sidecarPath, content: renderSidecar(sidecar))
+        return relativePath
+    }
+
+    /// Names a freshly pasted link after its page (Session 102), the Mac half
+    /// of the phone's `fillFromLink`. The title is replaced only while it is
+    /// still the host the paste gave it: a name David has since typed is never
+    /// overwritten by a fetch that finished late. A page that refuses (a login
+    /// wall, SharePoint) leaves the host in place, which is the honest name
+    /// for a page the Mac cannot read. Never throws; a refusal is normal.
+    func fetchLinkTitle(for relativePath: String) async {
+        guard let doc = documents.first(where: { $0.relativePath == relativePath }),
+              doc.isLink,
+              let web = TraceMacDocument.openableURL(doc.url) else { return }
+        let hostName: String = {
+            var h = web.host ?? ""
+            if h.lowercased().hasPrefix("www.") { h = String(h.dropFirst(4)) }
+            return h
+        }()
+        guard doc.title == hostName else { return }
+        let provider = LPMetadataProvider()
+        provider.timeout = 12
+        provider.shouldFetchSubresources = false
+        guard let metadata = try? await provider.startFetchingMetadata(for: web),
+              let fetched = metadata.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !fetched.isEmpty else { return }
+        // Re-read: the row may have been edited while the fetch was out.
+        guard let fresh = documents.first(where: { $0.relativePath == relativePath }),
+              fresh.title == hostName else { return }
+        try? saveSidecar(for: fresh,
+                         title: fetched,
+                         tags: fresh.tags,
+                         linkedNote: fresh.linkedNote,
+                         people: fresh.people,
+                         description: fresh.description)
+        await reload()
     }
 
     /// Writes text into Satchel as a document, filed to an endeavor.
@@ -799,6 +877,10 @@ class TraceMacDocumentStore {
         /// The guard was a hand-kept list of the things it guarded, which is a
         /// guard that goes wrong the first time the set grows. It grew.
         var remindOn: Date?
+        /// Sidecar key `places` (D385). Same rule as `url` and `remind`: a
+        /// key this struct does not carry is a key the next save deletes.
+        /// Added to `IOSDocumentStore` in the same pass.
+        var places: [String] = []
     }
 
 
@@ -971,6 +1053,11 @@ class TraceMacDocumentStore {
         content += "created: \(dateStr)\n"
         if let note = data.linkedNote, !note.isEmpty { content += "linked_note: \(note)\n" }
         if !data.people.isEmpty { content += "people: \(peopleLine)\n" }
+        // Directly after `people`, byte-identical to `IOSDocumentStore` (D385).
+        if !data.places.isEmpty {
+            let placesLine = "[" + data.places.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: ", ") + "]"
+            content += "places: \(placesLine)\n"
+        }
         let trimmedDesc = (data.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedDesc.isEmpty {
             // Escape internal double quotes and store as a single quoted line
@@ -1010,6 +1097,16 @@ class TraceMacDocumentStore {
     }
 
     // MARK: - Sidecar parser
+
+    /// The address inside a `.webloc` document's own file, for a link whose
+    /// sidecar carries no `url` yet (D384). Nil for every other extension, so
+    /// the load loop pays nothing for PDFs and images.
+    private func urlFromWebloc(ext: String, relativePath: String) -> String? {
+        guard ext == "webloc",
+              let fileURL = noteStore.resolvedURL(for: relativePath),
+              let data = try? Data(contentsOf: fileURL) else { return nil }
+        return TraceMacDocument.url(inWebloc: data)
+    }
 
     private func parseSidecar(at relativePath: String) -> SidecarData? {
         guard let raw = try? noteStore.readFile(relativePath), !raw.isEmpty else { return nil }
@@ -1055,6 +1152,13 @@ class TraceMacDocumentStore {
                     .trimmingCharacters(in: .whitespaces)
                     .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
                 data.people = stripped.components(separatedBy: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            case "places":
+                let stripped = value
+                    .trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                data.places = stripped.components(separatedBy: ",")
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
             case "description":

@@ -49,6 +49,8 @@ struct ContentView: View {
                      documents: TraceSatchelChipStore.shared.all.count)
     }
     @State private var showingActionSheet = false
+    /// The second step of the Home FAB's Pin Here (Session 102).
+    @State private var showingPinChoices = false
     @State private var selectedTab = 0
     @State private var showingCheckIn = false
     @State private var showingAddPlace = false
@@ -175,12 +177,11 @@ struct ContentView: View {
     // something about a person, or drop a pin without leaving the screen.
     // Discover (tab 2) has no dedicated case and still falls through to
     // `.global`.
-    private enum FABContext { case home, places, people, notes, global }
+    private enum FABContext { case home, places, people, global }
     private var fabContext: FABContext {
         if selectedTab == 0  { return .home }
         if selectedTab == 1  { return .places }
         if selectedTab == 3  { return .people }
-        if selectedTab == 4  { return .notes }
         return .global
     }
     private var fabDialogTitle: String {
@@ -188,7 +189,6 @@ struct ContentView: View {
         case .home:     return "Home"
         case .places:   return "Places"
         case .people:   return "People"
-        case .notes:    return "Notes"
         case .global:   return "What would you like to do?"
         }
     }
@@ -207,15 +207,28 @@ struct ContentView: View {
     // variants (David's picks). Photo Spot from QuickPinLabelSheet's grid
     // is deliberately left off — it's just a label with no camera action
     // attached, and David found that ambiguous/not worth a FAB slot.
+    // **Three entries, not eight** (Session 102, 2026-09-13). David: *"looking
+    // at the plus sign in the app, Id like to simplify this... they feel
+    // overwhelming."* Check In and Log Interaction are the two things Home is
+    // for. Pin Here is the third, and the four named pins (David's picks from
+    // Session 48) sit one step inside it rather than as four peers of Check
+    // In. Add Agenda Item leaves this menu: it is on the People tab's own
+    // button, and a person's agenda is a People thing.
     @ViewBuilder private var fabHomeButtons: some View {
         Button("Check In")             { checkInPreselectedPlace = nil; checkInPrefillNotes = nil; showingCheckIn = true }
         Button("Log Interaction")      { showingFABLogInteraction = true }
-        Button("Add Agenda Item")      { showingFABAddAgenda = true }
-        Button("Quick Pin")            { quickPinToNote(label: nil, emoji: nil) }
-        Button("Pin: 🚗")               { quickPinToNote(label: "Parked", emoji: "🚗") }
-        Button("Pin: 🌄")               { quickPinToNote(label: "Scenic", emoji: "🌄") }
-        Button("Pin: ⭐")               { quickPinToNote(label: "Notable", emoji: "⭐") }
-        Button("Pin: 📍")               { quickPinToNote(label: "Address", emoji: "📍") }
+        Button("Pin Here")             { showingPinChoices = true }
+        Button("Cancel", role: .cancel) { }
+    }
+    /// The second step of Pin Here: plain, or one of the four named pins.
+    /// Plain first because it is the common case; the named ones are the
+    /// ones David asked for by name (car, scenic, notable, address).
+    @ViewBuilder private var fabPinButtons: some View {
+        Button("Pin here")              { quickPinToNote(label: nil, emoji: nil) }
+        Button("🚗 Parked here")         { quickPinToNote(label: "Parked", emoji: "🚗") }
+        Button("🌄 Scenic spot")         { quickPinToNote(label: "Scenic", emoji: "🌄") }
+        Button("⭐ Notable")             { quickPinToNote(label: "Notable", emoji: "⭐") }
+        Button("📍 Address")             { quickPinToNote(label: "Address", emoji: "📍") }
         Button("Cancel", role: .cancel) { }
     }
     @ViewBuilder private var fabPlacesButtons: some View {
@@ -236,11 +249,6 @@ struct ContentView: View {
     // NotesView.swift's new header comment), and "Week" is now an
     // auto-populated visits rollup, not a freeform note, so there's no
     // "Horizon Note" to create either.
-    @ViewBuilder private var fabNotesButtons: some View {
-        Button("Daily Note")   { NotificationCenter.default.post(name: .traceNotesNewNote, object: nil, userInfo: ["type": "daily"]) }
-        Button("Add to Inbox") { showingAddCapture = true }
-        Button("Cancel", role: .cancel) { }
-    }
     @ViewBuilder private var fabGlobalButtons: some View {
         Button("Check In")     { checkInPreselectedPlace = nil; checkInPrefillNotes = nil; showingCheckIn = true }
         Button("Quick Pin")    { quickPin() }
@@ -259,7 +267,6 @@ struct ContentView: View {
         case .home:     fabHomeButtons
         case .places:   fabPlacesButtons
         case .people:   fabPeopleButtons
-        case .notes:    fabNotesButtons
         case .global:   fabGlobalButtons
         }
     }
@@ -294,9 +301,16 @@ struct ContentView: View {
                 }
                 .tabItem { Label("People", systemImage: "person.2.fill") }
                 .tag(3)
-                NotesView()
-                    .tabItem { Label("Notes", systemImage: "note.text") }
-                    .tag(4)
+                // **The Notes tab is gone** (D392, Session 102, 2026-09-13).
+                // Its Day view was a second editor of the same file Dayflow
+                // edits (`Calendar/YYYY-MM-DD.md` in the shared container),
+                // with its own calendar and its own look that nobody kept in
+                // step once Dayflow took over notes. David, seeing the two
+                // side by side: *"Dayflow calendar for example is much more
+                // pleasing than this view."* One editor per file. The day note
+                // now opens in Dayflow, by URL, from search below; Quick Pin
+                // still writes into the same file. `NotesView.swift` stays in
+                // the target for the pieces other screens borrow from it.
             }
 
             // Session 48 — FAB now shows on every tab including Home (mockup's
@@ -320,6 +334,8 @@ struct ContentView: View {
                 .padding(.bottom, 80)
                 .confirmationDialog(fabDialogTitle, isPresented: $showingActionSheet,
                                     titleVisibility: .visible, actions: { fabDialogButtons })
+                .confirmationDialog("Pin this spot", isPresented: $showingPinChoices,
+                                    titleVisibility: .visible, actions: { fabPinButtons })
             }
         }
     }
@@ -1064,18 +1080,11 @@ struct ContentView: View {
     private func openSearchDestination(_ destination: MacSearchDestination) {
         switch destination {
         case .dailyOrProjectNote(let path):
-            if path.hasPrefix("Calendar/"), let date = Self.dayNoteDate(from: path) {
-                // The Notes tab's Day view, via the same notification the FAB's
-                // date picker uses. Tab first, then the post a beat later: the
-                // receiver lives on NotesView, and a tab that has never been
-                // shown may not have a listener yet.
-                selectedTab = 4
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    NotificationCenter.default.post(name: .traceNotesOpenDay,
-                                                    object: nil,
-                                                    userInfo: ["date": date])
-                }
-            } else if path.hasPrefix("Notes/Projects/") {
+            // A day note or a project note both open in Dayflow now (D392):
+            // `dayflow://note?path=Calendar/2026-07-29.md` has been a route
+            // there since Session 24. The Notes tab this used to jump to is
+            // gone.
+            if path.hasPrefix("Calendar/") || path.hasPrefix("Notes/Projects/") {
                 openDayflow(host: "note", item: "path", value: path)
             }
         case .endeavor(let id):

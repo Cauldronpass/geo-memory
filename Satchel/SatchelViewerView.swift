@@ -25,8 +25,31 @@ import UniformTypeIdentifiers
 
 struct SatchelViewerView: View {
 
-    let document: TraceMacDocument
+    /// The document this viewer was opened on.
+    let opened: TraceMacDocument
     let store: iOSDocumentStore
+    /// The ordered set the caller was showing, or empty (D386, Session 102).
+    /// A horizontal swipe on the stage moves to the neighbour in THIS list,
+    /// never the whole library: arriving through the Links chip means you
+    /// swipe through links. Every existing call site passes nothing and gets
+    /// a viewer that does not swipe, exactly as before.
+    let siblings: [TraceMacDocument]
+    @State private var position: Int
+
+    init(document: TraceMacDocument, store: iOSDocumentStore, siblings: [TraceMacDocument] = []) {
+        self.opened = document
+        self.store = store
+        self.siblings = siblings
+        _position = State(initialValue: siblings.firstIndex { $0.relativePath == document.relativePath } ?? 0)
+    }
+
+    /// What is on screen now: the neighbour swiped to, or the one opened.
+    var document: TraceMacDocument {
+        (siblings.indices.contains(position) ? siblings[position] : nil) ?? opened
+    }
+
+    private var canSwipeBack: Bool { !siblings.isEmpty && position > 0 }
+    private var canSwipeForward: Bool { !siblings.isEmpty && position < siblings.count - 1 }
 
     @Environment(\.openURL) private var openURL
     @State private var noteStore = NoteStore.shared
@@ -92,18 +115,33 @@ struct SatchelViewerView: View {
             case .tasks:  tasksSheet
             }
         }
-        .task {
+        // Keyed on the path so a swipe to the next document re-runs it: the
+        // page count belongs to the document on screen, not the one opened.
+        .task(id: document.relativePath) {
             await endeavorStore.reload()
+            pageCount = 0
             guard document.isPDF, let fileURL else { return }
             pageCount = PDFDocument(url: fileURL)?.pageCount ?? 0
         }
     }
 
     private var navTitle: String {
+        var base: String
         if document.isPDF && pageCount > 0 {
-            return pageCount == 1 ? "1 page" : "\(pageCount) pages"
+            base = pageCount == 1 ? "1 page" : "\(pageCount) pages"
+        } else if document.isImage {
+            base = "Photo"
+        } else if document.isLink {
+            base = "Link"
+        } else if document.isText {
+            base = "Text"
+        } else {
+            base = "Document"
         }
-        return document.isImage ? "Photo" : "Document"
+        // "3 of 19" when there is somewhere to swipe to, so the gesture has a
+        // visible reason to exist.
+        if siblings.count > 1 { base += " · \(position + 1) of \(siblings.count)" }
+        return base
     }
 
     // MARK: Stage
@@ -129,14 +167,83 @@ struct SatchelViewerView: View {
                         .padding(.vertical, 18)
                 } else if document.isImage {
                     SatchelImagePreview(url: fileURL)
+                } else if document.isLink {
+                    linkStage
+                } else if document.isText {
+                    SatchelTextPreview(url: fileURL)
                 } else {
                     unsupported
                 }
+            } else if document.isLink {
+                linkStage
             } else {
                 unsupported
             }
         }
         .frame(height: 460)
+        .id(document.relativePath)
+        // **Swipe between neighbours** (D386). Horizontal only, and only when
+        // there is a neighbour: a vertical drag is the PDF scrolling and must
+        // stay with it. The threshold is a real swipe, not a nudge, so a
+        // pinch or a scroll that drifts sideways does not change the page.
+        .gesture(
+            DragGesture(minimumDistance: 40)
+                .onEnded { value in
+                    let h = value.translation.width
+                    guard abs(h) > abs(value.translation.height) * 1.5, abs(h) > 60 else { return }
+                    if h < 0, canSwipeForward {
+                        withAnimation(.easeInOut(duration: 0.22)) { position += 1 }
+                    } else if h > 0, canSwipeBack {
+                        withAnimation(.easeInOut(duration: 0.22)) { position -= 1 }
+                    }
+                },
+            including: siblings.count > 1 ? .all : .subviews
+        )
+    }
+
+    /// A saved link on the stage (D384, D386): its cached preview when the
+    /// page offered one, else its host large on the document's own tint, the
+    /// same tile the grid draws. The address is one tap away, here on the
+    /// stage as well as in the chip below, because this is the screen where
+    /// the only thing a link can do should be the biggest thing on it.
+    @ViewBuilder
+    private var linkStage: some View {
+        let web = TraceMacDocument.openableURL(current.url)
+        VStack(spacing: 14) {
+            if let image = SatchelLinkPreview.image(for: current.url) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .padding(.horizontal, 34)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "link")
+                        .font(.system(size: 34, weight: .medium))
+                    Text(web.map { TraceMacDocument.webLabel($0) } ?? current.url)
+                        .font(.system(size: 13, weight: .semibold))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                }
+                .foregroundStyle(current.resolvedTint.foreground)
+                .frame(width: 200, height: 200)
+                .background(current.resolvedTint.background, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            }
+            if let web {
+                Button {
+                    openURL(web)
+                } label: {
+                    Label("Open \(TraceMacDocument.webLabel(web))", systemImage: "safari")
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Color.white.opacity(0.12), in: Capsule())
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     private var unsupported: some View {
@@ -788,6 +895,32 @@ struct SatchelPDFView: UIViewRepresentable {
 /// `AsyncImagePreview` already got right: a document can exist in the container
 /// as a stub before its bytes arrive, so the download is kicked off explicitly
 /// and the not-yet-available case says so instead of showing a broken frame.
+/// Plain text on the stage (D337's phone half, Session 102): a research
+/// reading the Mac wrote, or a paragraph shared from Mail. Selectable so a
+/// line can be copied out; not editable, for the reason the Mac gives: these
+/// are records of what something said on a date, and the note is where David
+/// writes.
+struct SatchelTextPreview: View {
+    let url: URL
+    @State private var text: String? = nil
+
+    var body: some View {
+        ScrollView {
+            Text(text ?? "")
+                .font(.system(size: 15))
+                .foregroundStyle(.white.opacity(0.92))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
+        }
+        .task(id: url) {
+            text = (try? String(contentsOf: url, encoding: .utf8))
+                ?? String(data: (try? Data(contentsOf: url)) ?? Data(), encoding: .isoLatin1)
+                ?? ""
+        }
+    }
+}
+
 struct SatchelImagePreview: View {
     let url: URL
 
