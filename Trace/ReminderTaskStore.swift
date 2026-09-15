@@ -392,6 +392,35 @@ final class ReminderTaskStore {
         }
     }
 
+    /// Flag a task, or clear the flag (D413).
+    ///
+    /// **Writes `priority`, because EventKit exposes no flag.** Setting writes
+    /// `EKReminderPriority.high`; clearing writes 0, which does discard a "!" or
+    /// "!!" set in Apple's Reminders. Accepted: David does not use that app —
+    /// *"Im using Trace IOS and TraceMac exclusivly and just relying on
+    /// reminders as the backbone"* — and a flag control that sometimes refuses
+    /// to clear would be worse than a lossy one.
+    ///
+    /// The alternative, our own list of flagged task identifiers, is a second
+    /// store shadowing the first and is refused on E40's grounds.
+    @discardableResult
+    func setFlagged(_ flagged: Bool, taskID: String) async -> Bool {
+        guard await ensureAccess(),
+              let reminder = store.calendarItem(withIdentifier: taskID) as? EKReminder else { return false }
+        // `EKReminderPriority.rawValue` is `UInt`; `EKReminder.priority` is
+        // `Int`. Two Apple types for one number, and the conversion is the
+        // whole of it.
+        reminder.priority = flagged ? Int(EKReminderPriority.high.rawValue) : 0
+        do {
+            try store.save(reminder, commit: true)
+            await fetch()
+            return true
+        } catch {
+            lastError = "Could not flag the task. \(error.localizedDescription)"
+            return false
+        }
+    }
+
     /// Reopens a completed reminder — the "n done" list's tap-to-untick.
     @discardableResult
     func uncomplete(taskID: String) async -> Bool {
@@ -1016,7 +1045,10 @@ final class ReminderTaskStore {
                           repeats: r.hasRecurrenceRules,
                           createdDateString: r.creationDate.map { dayFormatter.string(from: $0) },
                           alarmTimeString: alarmString,
-                          completedDateString: r.completionDate.map { dayFormatter.string(from: $0) })
+                          completedDateString: r.completionDate.map { dayFormatter.string(from: $0) },
+                          // Any priority at all, not just `high` — see the note
+                          // on `ThingsTask.flagged`.
+                          flagged: r.priority != 0)
     }
 
     /// Dated before undated, earlier first, then title. Reminders' own order

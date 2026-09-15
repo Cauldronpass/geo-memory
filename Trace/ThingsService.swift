@@ -39,6 +39,25 @@ struct ThingsTask: Identifiable, Codable {
     /// Nil for everything that is not completed, which is nearly every task the
     /// app handles — a Logbook row is the exception, not the rule.
     var completedDateString: String? = nil
+    /// **Flagged**, stored as the reminder's `priority` (D413).
+    ///
+    /// David asked for OmniFocus's flag: *"its a flag icon in the task window
+    /// which is just a white outline of a flag. If i click it it becomes an
+    /// orange flag."* EventKit does not expose Apple's flag — `priority` is the
+    /// only field of that shape it gives out, and `ReminderTaskStore` has said
+    /// so since Session 78 ("tags/flags/sections are private to Apple's app").
+    ///
+    /// **Any priority reads as flagged, and setting one writes `high`.** A task
+    /// he marked "!" in Apple's app should not be invisible here just because it
+    /// is not "!!!", and he does not use that app anyway, so the reverse
+    /// direction costs nothing. The honest caveat is that a flag set here shows
+    /// in Apple's Reminders as "!!!" rather than as a flag.
+    ///
+    /// Defaulted and NOT in CodingKeys, same as `repeats` and the three that
+    /// follow it: the legacy Things-bridge decode paths and the UserDefaults
+    /// response cache are untouched, and only `ReminderTaskStore.task(from:)`
+    /// ever sets it.
+    var flagged: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id = "uuid"

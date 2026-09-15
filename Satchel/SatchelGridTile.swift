@@ -42,7 +42,13 @@ struct SatchelDocumentGrid: View {
                                      onTask: { taskFor = doc },
                                      onEdit: { editing = doc },
                                      onPin: { togglePin(doc) },
-                                     onDelete: { pendingDelete = doc })
+                                     onDelete: { pendingDelete = doc },
+                                     onRetry: {
+                                         Task {
+                                             await SatchelArticleSweep.retry(
+                                                 doc, store: store, noteStore: NoteStore.shared)
+                                         }
+                                     })
             }
         }
         .sheet(item: $taskFor) { doc in
@@ -351,6 +357,10 @@ struct SatchelDocumentMenu: ViewModifier {
     let onEdit: () -> Void
     let onPin: () -> Void
     let onDelete: () -> Void
+    /// Only a blocked article has anything to retry, so this is optional and
+    /// the item is absent for every other document. Defaulted last so no
+    /// existing call site moves.
+    var onRetry: (() -> Void)? = nil
     @Environment(\.openURL) private var openURL
 
     func body(content: Content) -> some View {
@@ -372,6 +382,15 @@ struct SatchelDocumentMenu: ViewModifier {
                 Label(document.pinned ? "Unpin from Kit" : "Pin to Kit",
                       systemImage: document.pinned ? "pin.slash" : "pin")
             }
+            // **Only when the page refused us** (D407 Build 3). A Retry on a
+            // product page would be a button that correctly does nothing, and
+            // on a working article it would invite him to throw away a good
+            // read. `blocked` is the one state a sign-in can change.
+            if document.articleState == .blocked, let onRetry {
+                Button(action: onRetry) {
+                    Label("Read again", systemImage: "arrow.clockwise")
+                }
+            }
             Button(role: .destructive, action: onDelete) {
                 Label("Delete document", systemImage: "trash")
             }
@@ -386,9 +405,10 @@ extension View {
                              onTask: @escaping () -> Void,
                              onEdit: @escaping () -> Void,
                              onPin: @escaping () -> Void,
-                             onDelete: @escaping () -> Void) -> some View {
+                             onDelete: @escaping () -> Void,
+                             onRetry: (() -> Void)? = nil) -> some View {
         modifier(SatchelDocumentMenu(document: document, onTask: onTask, onEdit: onEdit,
-                                     onPin: onPin, onDelete: onDelete))
+                                     onPin: onPin, onDelete: onDelete, onRetry: onRetry))
     }
 }
 

@@ -444,20 +444,35 @@ struct MacTaskRow: View {
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(MacEditorialColor.faint)
         }
-        // **The flag, because the sidebar already calls an endeavor a flag**
-        // (`MacSection.endeavors` -> "flag"). A mark that reuses the room's own
-        // glyph needs no learning. Not the endeavor's TYPE glyph: D268 bounded
-        // those to the endeavors list and the masthead, and an airplane on a
-        // task row would read as "travel task" rather than "on a trip".
+        // **This was a flag until D413, and it had to give the glyph up.**
+        // It borrowed it from the sidebar, where `MacSection.endeavors` is a
+        // flag, and that was good reasoning at the time. Then David asked for
+        // OmniFocus's flag — outline, orange when set — for a different fact
+        // entirely. One glyph, two meanings, on the same row, is warning FIVE
+        // at the level of vocabulary, and of the two meanings his is the one
+        // that arrives with twenty years of muscle memory behind it.
+        //
+        // `bookmark` instead: filed under something larger, which is what this
+        // says. Still NOT the endeavor's TYPE glyph — D268 bounded those to the
+        // endeavors list and the masthead, and an airplane on a task row would
+        // read as "travel task" rather than "on a trip".
         //
         // Faint, not accent. The bolt beside the title is accent because it is
         // a control you fire; this is a fact about the task, and the carried
         // mark's own rule is that a passive mark should not scold.
         if let endeavor = EndeavorFile.linkedName(in: task.notes, among: endeavorNames) {
-            Image(systemName: "flag")
+            Image(systemName: "bookmark")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(MacEditorialColor.faint)
                 .help(endeavor)
+        }
+        // Flagged. Accent and filled, because unlike everything else in this
+        // row it is a thing he did on purpose and wants to find again.
+        if task.flagged {
+            Image(systemName: "flag.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(MacEditorialColor.accent)
+                .help("Flagged")
         }
         if let alarm = task.alarmTimeString {
             Text(alarm)
@@ -561,6 +576,12 @@ struct MacTaskRow: View {
                 completeCircle
                 titleField
                 Spacer(minLength: 0)
+                MacTaskFlagButton(isOn: task.flagged) {
+                    Task {
+                        await store.setFlagged(!task.flagged, taskID: task.id)
+                        onChanged()
+                    }
+                }
                 closeButton
             }
 
@@ -878,7 +899,11 @@ struct MacTaskRow: View {
             help = "Open in Directory"
             open = { openRecord(type: "place", id: id) }
         case .endeavor(let id):
-            glyph = "flag"
+            // `bookmark`, not `flag`, for D413's reason: the flag button now
+            // sits in this card's own header, accent when set, and two accent
+            // flags in one card meaning different things is the collision that
+            // rule exists to prevent.
+            glyph = "bookmark"
             tint = MacEditorialColor.accent
             help = "Open in Endeavors"
             open = { openRecord(type: "endeavor", id: id) }
@@ -1944,5 +1969,40 @@ private struct MacTaskLinkChip: View {
                 .strokeBorder(edge, lineWidth: 1)
         }
         .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Flag (D413)
+
+/// OmniFocus's flag, which is what David asked for by name: *"a flag icon in
+/// the task window which is just a white outline of a flag. If i click it it
+/// becomes an orange flag."*
+///
+/// **Its own type, per `feedback_typecheck_timeout`.** New controls in the big
+/// TraceMac view files go in their own `View` rather than as another computed
+/// property, so nothing they contain counts against the host's type-checking
+/// budget. Session 105 spent three build cycles learning that in
+/// `TraceMacContentView`; this is the lesson applied rather than repeated.
+///
+/// The underlying field is the reminder's `priority` — see
+/// `ThingsTask.flagged`.
+struct MacTaskFlagButton: View {
+
+    let isOn: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        let symbol: String = isOn ? "flag.fill" : "flag"
+        let tint: Color = isOn ? MacEditorialColor.accent : MacEditorialColor.faint
+        let label: String = isOn ? "Remove flag" : "Flag"
+        Button(action: toggle) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label)
     }
 }

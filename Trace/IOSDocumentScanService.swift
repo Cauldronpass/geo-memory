@@ -85,9 +85,35 @@ enum iOSDocumentScanService {
         filenameIsGenerated: Bool = false,
         /// Names the model may return in `people`. Empty means the key is
         /// still requested and always comes back empty. See `PeopleIndex`.
-        knownPeople: [String] = []
+        knownPeople: [String] = [],
+        /// Text the CALLER already has, used instead of reading the file.
+        ///
+        /// D407 Build 2, the article recap. A saved link is a `.webloc`: not a
+        /// PDF, not an image, not `isText`, so every branch below refuses it,
+        /// and the file itself holds an address rather than prose. The article
+        /// body was pulled by `SatchelArticleReader` and is on its way to
+        /// `## Text`; this is the same text, handed straight in.
+        ///
+        /// Declared LAST so no existing call site's argument order moves, and
+        /// checked FIRST below so it cannot be silently outranked by a branch
+        /// that would otherwise read the wrong bytes.
+        articleText: String? = nil
     ) async throws -> DocumentScanResult {
         guard !doc.isPrivate else { throw iOSDocumentScanError.isPrivate }
+
+        // Before the file is resolved: a link's own file is a plist holding an
+        // address, and there is nothing to read off it.
+        if let articleText,
+           !articleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return try await callClaude(textPrompt: buildPrompt(
+                content: String(articleText.prefix(3000)), existingTags: existingTags,
+                isText: true, filename: doc.filename, userContext: userContext,
+                // The page named itself (D384) and that title is kept, so the
+                // model is never asked to invent one from a filename that is
+                // only ever a host and a timestamp.
+                filenameIsGenerated: false, knownPeople: knownPeople))
+        }
+
         guard let fileURL = noteStore.resolvedURL(for: doc.relativePath) else {
             throw iOSDocumentScanError.noContent
         }

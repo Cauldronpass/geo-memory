@@ -160,7 +160,12 @@ struct TraceMacTodayView: View {
         }
         .background(MacEditorialColor.paper)
         .task(id: dayKey) { await load() }
-        .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
+        .task {
+            // `loadAll` rather than `nameIndex`, which calls `loadAll` and then
+            // throws the endeavors away to keep a dictionary this screen only
+            // ever reads the keys of.
+            endeavorNames = Set(EndeavorFile.loadAll(from: NoteStore.shared).map(\.name))
+        }
         .task {
             if docStore == nil { docStore = TraceMacDocumentStore(noteStore: noteStore) }
             await docStore?.reload()

@@ -286,11 +286,21 @@ struct SatchelViewerView: View {
                 .padding(.top, 11)
 
             if !current.tags.isEmpty {
-                HStack(spacing: 6) {
+                // **Wraps, for the same reason the filing strip above it does.**
+                // The comment on that strip already claimed "a second line here
+                // looks like the second line of tags directly below it" — but
+                // this row was still a plain `HStack`, so it never had a second
+                // line. Five AI tags on an article ("medicare", "retirement",
+                // "health insurance", "enrollment", "reading") squeezed every
+                // pill at once and each LABEL wrapped inside its own pill:
+                // "medicar / e". The strip's fix was never applied here.
+                // `Spacer` goes with the HStack — a flow layout is already
+                // leading-aligned and a greedy spacer inside it is a view
+                // claiming the rest of the row.
+                SatchelFlowLayout(spacing: 6) {
                     ForEach(current.tags, id: \.self) { tag in
                         SatchelTagPill(text: tag)
                     }
-                    Spacer(minLength: 0)
                 }
                 .padding(.top, 9)
             }

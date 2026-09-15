@@ -131,7 +131,15 @@ class iOSDocumentStore {
                     // sidecar copy wins when it exists, the file fills in when
                     // it does not, so a `.webloc` filed by hand still opens.
                     url: sidecar?.url ?? urlFromWebloc(ext: ext, relativePath: relativePath) ?? "",
-                    places: sidecar?.places ?? []
+                    places: sidecar?.places ?? [],
+                    // Reading shelf (D407). All five absent on every document
+                    // that is not a fetched link, which is the default state
+                    // the model already describes.
+                    articleState: sidecar?.articleState,
+                    fetchedOn: sidecar?.fetchedOn,
+                    readNext: sidecar?.readNext,
+                    readOn: sidecar?.readOn,
+                    readPosition: sidecar?.readPosition
                 )
                 result.append(doc)
             }
@@ -202,7 +210,21 @@ class iOSDocumentStore {
         url: String?? = nil,
         /// Preserve-by-default like every Satchel key: `nil` keeps what is on
         /// disk, a list (empty included) replaces it. D385, Session 102.
-        places: [String]? = nil
+        places: [String]? = nil,
+        // MARK: Reading shelf keys (D407, Session 105)
+        //
+        // Same preserve-by-default rule as everything above. `article` is a
+        // plain `Bool?` because an optional already carries three states — nil
+        // preserves, true and false both set — and nothing ever needs to erase
+        // it back to "never tried". The other four are double optionals: the
+        // Retry action clears `fetched`, Keep for later clears `read`, and an
+        // article leaving Up Next clears `read_next`, so each needs a way to say
+        // "remove this" that a single optional cannot express.
+        articleState: ArticleState? = nil,
+        fetchedOn: Date?? = nil,
+        readNext: Int?? = nil,
+        readOn: Date?? = nil,
+        readPosition: Double?? = nil
     ) throws {
         let existing = parseSidecar(at: doc.sidecarPath)
         // Read the body back BEFORE rewriting. Every caller that does not know
@@ -232,6 +254,24 @@ class iOSDocumentStore {
         }
 
         data.places       = places ?? existing?.places ?? doc.places
+
+        data.articleState = articleState ?? existing?.articleState ?? doc.articleState
+        switch fetchedOn {
+        case .none:            data.fetchedOn = existing?.fetchedOn ?? doc.fetchedOn
+        case .some(let value): data.fetchedOn = value
+        }
+        switch readNext {
+        case .none:            data.readNext = existing?.readNext ?? doc.readNext
+        case .some(let value): data.readNext = value
+        }
+        switch readOn {
+        case .none:            data.readOn = existing?.readOn ?? doc.readOn
+        case .some(let value): data.readOn = value
+        }
+        switch readPosition {
+        case .none:            data.readPosition = existing?.readPosition ?? doc.readPosition
+        case .some(let value): data.readPosition = value
+        }
 
         data.endeavor     = resolvedString(new: endeavor,     existing: existing?.endeavor)
         data.endeavorName = resolvedString(new: endeavorName, existing: existing?.endeavorName)
@@ -268,7 +308,20 @@ class iOSDocumentStore {
         remindOn: Date?? = nil,
         note: String? = nil,
         summary: String? = nil,
-        places: [String]? = nil
+        places: [String]? = nil,
+        /// Reading shelf keys (D407). All five are three-state here: `nil`
+        /// preserves, `.some(nil)` clears, `.some(value)` sets.
+        ///
+        /// **`articleState` joined them in Build 3.** It was a plain optional
+        /// on the reasoning that nothing ever erases a verdict back to "never
+        /// tried" — and then Retry did exactly that, which is the whole point
+        /// of Retry. `saveSidecar`'s copy stays preserve-only: it has no caller
+        /// that clears, and widening it would be a shape with no user.
+        articleState: ArticleState?? = nil,
+        fetchedOn: Date?? = nil,
+        readNext: Int?? = nil,
+        readOn: Date?? = nil,
+        readPosition: Double?? = nil
     ) throws -> TraceMacDocument {
         // Seed from disk when a sidecar exists, otherwise from the in-memory doc
         // so a never-scanned document still ends up with a complete sidecar.
@@ -287,7 +340,12 @@ class iOSDocumentStore {
             tint: doc.tint,
             kitOrder: doc.kitOrder,
             remindOn: doc.remindOn,
-            places: doc.places
+            places: doc.places,
+            articleState: doc.articleState,
+            fetchedOn: doc.fetchedOn,
+            readNext: doc.readNext,
+            readOn: doc.readOn,
+            readPosition: doc.readPosition
         )
 
         if data.title == nil   { data.title = doc.title }
@@ -301,6 +359,11 @@ class iOSDocumentStore {
         if let kitOrder { data.kitOrder = kitOrder }
         if let remindOn { data.remindOn = remindOn }
         if let places   { data.places   = places }
+        if let articleState { data.articleState = articleState }   // .some(nil) clears
+        if let fetchedOn    { data.fetchedOn    = fetchedOn }
+        if let readNext     { data.readNext     = readNext }
+        if let readOn       { data.readOn       = readOn }
+        if let readPosition { data.readPosition = readPosition }
 
         var body = readBody(at: doc.sidecarPath)
         if body.isEmpty { body.note = doc.note; body.summary = doc.summary }
@@ -318,6 +381,11 @@ class iOSDocumentStore {
         updated.kitOrder     = data.kitOrder
         updated.remindOn     = data.remindOn
         updated.places       = data.places
+        updated.articleState = data.articleState
+        updated.fetchedOn    = data.fetchedOn
+        updated.readNext     = data.readNext
+        updated.readOn       = data.readOn
+        updated.readPosition = data.readPosition
         updated.note         = body.note
         updated.summary      = body.summary
 
@@ -366,6 +434,48 @@ class iOSDocumentStore {
     func reorderKitGroup(_ ordered: [TraceMacDocument]) throws {
         for (index, doc) in ordered.enumerated() {
             try updateSidecar(for: doc, kitOrder: index)
+        }
+    }
+
+    // MARK: - Reading shelf (D407 Build 4)
+
+    /// Put an article in Up Next, or take it out (`nil`).
+    ///
+    /// **Appends to the END of the queue**, the same rule as `setPinned` and
+    /// for the same reason: §5's "order pinned" default exists so a new arrival
+    /// does not displace what you already meant to do first. It also keeps the
+    /// order he promoted things in, where inserting at the front would reverse
+    /// it — promote three articles in a row and you would read them backwards.
+    /// With an empty queue, appending IS first, which is the common case and
+    /// the reason the swipe can honestly say "Read next".
+    @discardableResult
+    func setReadNext(_ inQueue: Bool, for doc: TraceMacDocument) throws -> TraceMacDocument {
+        guard inQueue else { return try updateSidecar(for: doc, readNext: .some(nil)) }
+        let highest = documents.compactMap(\.readNext).max() ?? -1
+        return try updateSidecar(for: doc, readNext: .some(highest + 1))
+    }
+
+    /// Mark an article read, or return it to New (`nil`).
+    ///
+    /// Reading it also takes it out of Up Next: a finished article sitting in
+    /// the queue is the queue lying about what is left. "Keep for later" is the
+    /// other direction and clears the date, which puts it back in New rather
+    /// than at its old place in the queue — D407's wording, and the honest one,
+    /// since the position was spent when it was read.
+    @discardableResult
+    func setRead(_ read: Date?, for doc: TraceMacDocument) throws -> TraceMacDocument {
+        try updateSidecar(for: doc, readNext: .some(nil), readOn: .some(read))
+    }
+
+    /// Persist a drag-to-reorder of Up Next.
+    ///
+    /// Rewrites every position to its new index rather than nudging the moved
+    /// one, exactly as `reorderKitGroup` does: sparse or duplicate indices drift
+    /// into an order that reads as random, and the whole point of the rule is
+    /// that the order never surprises you.
+    func reorderUpNext(_ ordered: [TraceMacDocument]) throws {
+        for (index, doc) in ordered.enumerated() {
+            try updateSidecar(for: doc, readNext: .some(index))
         }
     }
 
@@ -461,7 +571,23 @@ class iOSDocumentStore {
         if wrote { await reload() }
     }
 
-    private func writeExtractedText(_ text: String, for doc: TraceMacDocument) throws {
+    /// Put text under `## Text` without touching anything else.
+    ///
+    /// **Internal rather than private since Session 105 (D407 Build 2).** The
+    /// article fetch lives in `Satchel/` — it needs WebKit, and `Trace/` is
+    /// compiled by Dayflow and Trace, neither of which has any business
+    /// carrying a hidden web view — so it calls in here rather than growing a
+    /// second writer of the same section.
+    ///
+    /// **The titleless-sidecar rule does not bite a link.** This rebuilds from
+    /// `parseSidecar(...) ?? SidecarData()`, and the empty fallback is what
+    /// leaves a never-scanned image's sidecar without a title so the derived
+    /// one still wins and it stays a scan candidate. A saved link always has a
+    /// sidecar already, with the title `LPMetadataProvider` read off the page
+    /// (D384), so `parseSidecar` returns it and the title survives. That is the
+    /// behaviour wanted here: the page named itself, and nothing downstream
+    /// should rename it.
+    func writeExtractedText(_ text: String, for doc: TraceMacDocument) throws {
         var body = readBody(at: doc.sidecarPath)
         body.text = text
         body.hasTextSection = true
@@ -470,6 +596,39 @@ class iOSDocumentStore {
         if data.created == nil { data.created = doc.created ?? Date() }
 
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
+    }
+
+    // MARK: - Privacy
+
+    /// What the DISK says about this document's privacy, including "I cannot
+    /// tell yet".
+    ///
+    /// **A port of `TraceMacDocumentStore.privacyOnDisk`, and of the incident
+    /// that produced it.** The two-valued version of that function shipped a
+    /// private document to Anthropic: a sidecar that exists but has not
+    /// finished downloading cannot be read, and `guard let data = parseSidecar
+    /// (…) else { return false }` answered "not private". Absence of an answer
+    /// is not an answer.
+    ///
+    /// The phone never needed this while every send was a button: `doc`
+    /// belonged to a row he was looking at, so its sidecar had plainly
+    /// arrived. **The article sweep is the phone's first autonomous send**, and
+    /// it runs over whatever the store happens to hold seconds after launch,
+    /// which is exactly the window in which a sidecar is still a placeholder.
+    enum DiskPrivacy {
+        case notPrivate
+        case isPrivate
+        /// No sidecar, or one that could not be read. **Never send on this.**
+        case unknown
+    }
+
+    func privacyOnDisk(_ doc: TraceMacDocument) -> DiskPrivacy {
+        guard let url = noteStore.resolvedURL(for: doc.sidecarPath),
+              FileManager.default.fileExists(atPath: url.path)
+        else { return .unknown }
+        guard let data = parseSidecar(at: doc.sidecarPath) else { return .unknown }
+        return data.tags.contains { $0.caseInsensitiveCompare("private") == .orderedSame }
+            ? .isPrivate : .notPrivate
     }
 
     // MARK: - Helpers
@@ -520,6 +679,15 @@ class iOSDocumentStore {
         /// Sidecar key `places` (D385). Same rule as `url` and `remind`: a
         /// key this struct does not carry is a key the next save deletes.
         var places: [String]
+        /// Reading shelf keys (D407, Session 105): `article`, `fetched`,
+        /// `read_next`, `read`, `read_position`. Same rule again, and this time
+        /// the rule was applied to both stores in the same build BEFORE any UI
+        /// could write one of them.
+        var articleState: ArticleState?
+        var fetchedOn: Date?
+        var readNext: Int?
+        var readOn: Date?
+        var readPosition: Double?
 
         init(
             title: String? = nil,
@@ -536,7 +704,12 @@ class iOSDocumentStore {
             tint: DocumentTint? = nil,
             kitOrder: Int? = nil,
             remindOn: Date? = nil,
-            places: [String] = []
+            places: [String] = [],
+            articleState: ArticleState? = nil,
+            fetchedOn: Date? = nil,
+            readNext: Int? = nil,
+            readOn: Date? = nil,
+            readPosition: Double? = nil
         ) {
             self.title = title
             self.tags = tags
@@ -553,6 +726,11 @@ class iOSDocumentStore {
             self.kitOrder = kitOrder
             self.remindOn = remindOn
             self.places = places
+            self.articleState = articleState
+            self.fetchedOn = fetchedOn
+            self.readNext = readNext
+            self.readOn = readOn
+            self.readPosition = readPosition
         }
     }
 
@@ -750,6 +928,23 @@ class iOSDocumentStore {
         // reorder: the index was computed, assigned, and then dropped by this
         // renderer, so the drag animated and the order reverted on reload.
         if let order = data.kitOrder { content += "kit_order: \(order)\n" }
+        // Reading shelf (D407), after `kit_order` and in this order in BOTH
+        // stores. Key ORDER is part of this format's contract: the same keys
+        // emitted in a different order rewrite the file on every save and churn
+        // iCloud for nothing.
+        //
+        // `article: false` is written, not skipped. It is the record that the
+        // fetch ran and this page is not prose, which is a different fact from
+        // "never tried" and is what keeps the sweep off it.
+        if let article = data.articleState { content += "article: \(article.rawValue)\n" }
+        if let fetched = data.fetchedOn { content += "fetched: \(fmt.string(from: fetched))\n" }
+        if let next = data.readNext { content += "read_next: \(next)\n" }
+        if let read = data.readOn { content += "read: \(fmt.string(from: read))\n" }
+        // Three decimals, fixed: `\(0.1 + 0.2)` is how a position key rewrites
+        // itself with a longer number on every save.
+        if let pos = data.readPosition {
+            content += "read_position: \(String(format: "%.3f", pos))\n"
+        }
         content += "---\n"
         content += renderBody(body)
         return content
@@ -826,6 +1021,18 @@ class iOSDocumentStore {
                 data.remindOn = dateFmt.date(from: value)
             case "kit_order", "pin_order":
                 data.kitOrder = Int(value.trimmingCharacters(in: .whitespaces))
+
+            // MARK: Reading shelf keys (D407)
+            case "article":
+                data.articleState = ArticleState.parse(value)
+            case "fetched":
+                data.fetchedOn = dateFmt.date(from: value)
+            case "read_next":
+                data.readNext = Int(value.trimmingCharacters(in: .whitespaces))
+            case "read":
+                data.readOn = dateFmt.date(from: value)
+            case "read_position":
+                data.readPosition = Double(value.trimmingCharacters(in: .whitespaces))
 
             default: break
             }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - SatchelSkin
 //
@@ -154,41 +155,68 @@ extension SatchelSectionTitle where Trailing == EmptyView {
 // that responds to some taps and not others — which reads as broken rather than
 // as precise. Same reasoning as `chipGestures` being applied to every chip and
 // not only the long ones.
-struct SatchelCollapsibleSectionTitle: View {
+struct SatchelCollapsibleSectionTitle<Trailing: View>: View {
     let title: String
     @Binding var isExpanded: Bool
     /// Drawn when collapsed. See the note above: a folded section has to say
     /// how much it is holding.
     var collapsedCount: Int? = nil
+    /// Words instead of a bare number, for a section whose count is not one
+    /// number. Up Next folds to "3 queued · 1 new", which a single integer
+    /// cannot say and which is exactly what he needs to know before deciding
+    /// whether to unfold it. Takes precedence over `collapsedCount`.
+    var collapsedNote: String? = nil
+    /// A door on the right — Kit's is the only one left after D418, and it has
+    /// to stay because the Kit screen holds the trip-slots stepper.
+    ///
+    /// **Outside the Button, not inside its label.** A `NavigationLink` nested
+    /// in a `Button`'s label is two tap targets claiming the same pixels, and
+    /// which one wins is a coin toss the user experiences as a broken header.
+    @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        Button {
-            withAnimation(.snappy(duration: 0.22)) { isExpanded.toggle() }
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(title.uppercased())
-                    .font(.system(size: 12.5, weight: .bold))
-                    .kerning(0.6)
-                    .foregroundStyle(Color.satchelSecondary)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Color.satchelTertiary)
-                    // Rotated rather than swapped for `chevron.right`: the
-                    // rotation animates and shows which way it is going, and a
-                    // glyph swap at 9pt just blinks.
-                    .rotationEffect(.degrees(isExpanded ? 0 : -90))
-                if !isExpanded, let collapsedCount {
-                    Text("\(collapsedCount)")
-                        .font(.system(size: 11, weight: .semibold))
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Button {
+                withAnimation(.snappy(duration: 0.22)) { isExpanded.toggle() }
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(title.uppercased())
+                        .font(.system(size: 12.5, weight: .bold))
+                        .kerning(0.6)
+                        .foregroundStyle(Color.satchelSecondary)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Color.satchelTertiary)
+                        // Rotated rather than swapped for `chevron.right`: the
+                        // rotation animates and shows which way it is going, and
+                        // a glyph swap at 9pt just blinks.
+                        .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                    if !isExpanded, let note = collapsedNote ?? collapsedCount.map({ "\($0)" }) {
+                        Text(note)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.satchelTertiary)
+                    }
                 }
-                Spacer(minLength: 8)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 6)
-            .padding(.bottom, 8)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            Spacer(minLength: 8)
+            trailing
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .padding(.bottom, 8)
+    }
+}
+
+extension SatchelCollapsibleSectionTitle where Trailing == EmptyView {
+    init(title: String,
+         isExpanded: Binding<Bool>,
+         collapsedCount: Int? = nil,
+         collapsedNote: String? = nil) {
+        self.init(title: title,
+                  isExpanded: isExpanded,
+                  collapsedCount: collapsedCount,
+                  collapsedNote: collapsedNote) { EmptyView() }
     }
 }
 
@@ -356,6 +384,14 @@ struct SatchelTagPill: View {
     var body: some View {
         Text(text)
             .font(.system(size: 11, weight: .semibold))
+            // One line, always. A pill is a word; a word broken across two
+            // lines inside its own rounded rectangle reads as a rendering
+            // fault, which is exactly how it read on the Medicare article.
+            // The flow layout gives each pill its ideal width, so this only
+            // ever bites in a container too narrow for one tag, and there a
+            // tail ellipsis is the honest answer.
+            .lineLimit(1)
+            .truncationMode(.tail)
             .foregroundStyle(Color(red: 0.420, green: 0.420, blue: 0.439)) // #6b6b70
             .padding(.horizontal, 9)
             .padding(.vertical, 3)
@@ -410,5 +446,188 @@ enum SatchelPrivateTag {
     /// The colour a tag chip should use.
     static func tint(_ tag: String, base: Color) -> Color {
         matches(tag) ? .orange : base
+    }
+}
+
+// MARK: - Cover thumbnail
+//
+// D418. The 52pt square on the right of every reading row.
+//
+// **Right, not left, and that is the whole reason it works.** With the cover on
+// the left every title starts at a different place depending on whether the
+// page yielded a picture; on the right the text column is one edge and the
+// covers form their own. Instapaper does the same thing for the same reason.
+//
+// The picture is already on the phone: `SatchelLinkPreview` cached it when the
+// link was saved (D387). Nothing is fetched here. When the cache has nothing —
+// a page behind a login, or a cache iOS purged — the square draws the site's
+// initial on a tint rather than disappearing, so rows keep one height and the
+// list does not go ragged. That was the open question on mockup v2 and David
+// took the tinted initial.
+struct SatchelCoverThumb: View {
+
+    let document: TraceMacDocument
+    var side: CGFloat = 52
+
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                ZStack {
+                    Color.satchelFill
+                    Text(initial)
+                        .font(.system(size: side * 0.36, weight: .bold))
+                        .foregroundStyle(Color.satchelSecondary)
+                }
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: side * 0.17, style: .continuous))
+        // Cheap — a small JPEG off disk — but still off the render pass, and
+        // keyed on the address so a row reused by the lazy stack reloads.
+        .task(id: document.url) {
+            image = SatchelLinkPreview.image(for: document.url)
+        }
+    }
+
+    /// The site's first letter, which is what he recognises. Falls back to the
+    /// title's, and then to a dash rather than an empty square.
+    private var initial: String {
+        let site = SatchelShelf.site(document)
+        let source = site.isEmpty ? document.title : site
+        guard let first = source.first(where: { $0.isLetter || $0.isNumber }) else { return "–" }
+        return String(first).uppercased()
+    }
+}
+
+// MARK: - Swipe row
+//
+// D418. Two actions, hand-rolled, because `.swipeActions` is a `List` modifier
+// and every list in Satchel that is not the Shelf is a `VStack` of rows inside
+// one `.satchelCard()`, inside the page's own `ScrollView`.
+//
+// **This is a deliberate second implementation, not a careless copy.** Trace
+// has `TraceSwipeRow` in PeopleView.swift with a note saying to move it to
+// TraceSkin.swift if a second list wants it. Satchel cannot have it: it
+// compiles twelve named files out of Trace/ and TraceSkin.swift is not one of
+// them, so sharing would mean pulling Trace's whole design system into this
+// target for one gesture. This one also does something the Trace one does not —
+// an action on each side. If a THIRD caller appears, the answer is a small
+// shared file added to every target's membership, not a fourth copy.
+//
+// The gesture is the same fussy shape as Trace's, and for the same reasons:
+// `minimumDistance: 20` so a plain tap still reaches the row; horizontal-only
+// so a diagonal scroll keeps scrolling; `openID` owned by the caller so opening
+// one row closes every other; and an action button hit-testable only while it
+// is visible, because an invisible button under a row's tap target is how you
+// mark something read by accident.
+/// One revealed action. **Top level, not nested in the generic row**: nested in
+/// `SatchelSwipeRow<Content>` it could only be named with its generic parameter
+/// spelled out, which every call site would have to invent.
+struct SatchelSwipeAction {
+    let label: String
+    let icon: String
+    let tint: Color
+    let run: () -> Void
+}
+
+struct SatchelSwipeRow<Content: View>: View {
+
+    let id: String
+    @Binding var openID: String?
+    /// Revealed by dragging right. The everyday one: Read.
+    var leading: SatchelSwipeAction? = nil
+    /// Revealed by dragging left.
+    var trailing: SatchelSwipeAction? = nil
+    @ViewBuilder var content: () -> Content
+
+    private let revealWidth: CGFloat = 80
+    @State private var drag: CGFloat = 0
+    /// Which side is showing, so the closed state is one value and not two.
+    @State private var settled: CGFloat = 0
+
+    private var isOpen: Bool { openID == id }
+
+    private var offset: CGFloat {
+        let raw = (isOpen ? settled : 0) + drag
+        let low = trailing == nil ? 0 : -revealWidth
+        let high = leading == nil ? 0 : revealWidth
+        return max(low, min(high, raw))
+    }
+
+    var body: some View {
+        ZStack {
+            if let leading {
+                button(leading, alignment: .leading)
+                    .opacity(offset > 1 ? 1 : 0)
+                    .allowsHitTesting(isOpen && settled > 0)
+            }
+            if let trailing {
+                button(trailing, alignment: .trailing)
+                    .opacity(offset < -1 ? 1 : 0)
+                    .allowsHitTesting(isOpen && settled < 0)
+            }
+            content()
+                .background(Color.satchelCard)
+                .offset(x: offset)
+                .gesture(
+                    DragGesture(minimumDistance: 20)
+                        .onChanged { value in
+                            guard abs(value.translation.width) > abs(value.translation.height)
+                            else { return }
+                            if openID != nil && !isOpen { openID = nil; settled = 0 }
+                            drag = value.translation.width
+                        }
+                        .onEnded { value in
+                            let end = (isOpen ? settled : 0) + value.translation.width
+                            withAnimation(.snappy(duration: 0.22)) {
+                                drag = 0
+                                if end > revealWidth / 2, leading != nil {
+                                    settled = revealWidth
+                                    openID = id
+                                } else if end < -revealWidth / 2, trailing != nil {
+                                    settled = -revealWidth
+                                    openID = id
+                                } else {
+                                    settled = 0
+                                    openID = nil
+                                }
+                            }
+                        }
+                )
+        }
+        .onChange(of: isOpen) { _, open in
+            drag = 0
+            if !open { settled = 0 }
+        }
+        .clipped()
+    }
+
+    private func button(_ action: SatchelSwipeAction, alignment: Alignment) -> some View {
+        HStack(spacing: 0) {
+            if alignment == .trailing { Spacer(minLength: 0) }
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { openID = nil; settled = 0 }
+                action.run()
+            } label: {
+                VStack(spacing: 3) {
+                    Image(systemName: action.icon)
+                        .font(.system(size: 16, weight: .semibold))
+                    Text(action.label)
+                        .font(.system(size: 10.5, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(width: revealWidth)
+                .frame(maxHeight: .infinity)
+                .background(action.tint)
+            }
+            .buttonStyle(.plain)
+            if alignment == .leading { Spacer(minLength: 0) }
+        }
     }
 }

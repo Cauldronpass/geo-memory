@@ -508,6 +508,21 @@ enum KitMembership {
         /// no trip; carried so the Kit screen can show and change it.
         var tripSlots: Int = SatchelKitPreferences.defaultTripSlots
 
+        /// What Home's sideways strip draws (D418).
+        ///
+        /// **The cap existed to stop Kit growing DOWN the screen**, which a
+        /// strip cannot do: nine documents and two cost the same one row. So
+        /// the strip shows everything. What it does not throw away is the
+        /// reserved-slot allocation — `grid` leads, because that is the rule
+        /// that keeps a boarding pass from being crowded out by four pins on
+        /// the day it matters — and the rest follow in membership order. The
+        /// four-tile `grid` itself stays, exactly as it is, for the Kit screen
+        /// and for anything that still needs "the important four".
+        var strip: [KitEntry] {
+            let shown = Set(grid.map(\.id))
+            return grid + all.filter { !shown.contains($0.id) }
+        }
+
         /// Scope §5: hidden entirely when Kit has 4 or fewer items, rather than
         /// sitting there dead — the grid is already showing everything.
         var showsSeeAll: Bool { all.count > 4 }

@@ -19,6 +19,10 @@
 import SwiftUI
 import CoreSpotlight
 import AppKit
+// For `.receive(on:)` on the notification publishers in `body`. SwiftUI hands
+// you `onReceive` without it, which is why its absence only shows up the moment
+// something operates on the publisher rather than just subscribing to it.
+import Combine
 import UniformTypeIdentifiers
 
 // MARK: - Sidebar sections
@@ -145,6 +149,29 @@ struct TraceMacContentView: View {
     /// `TraceMacTodayView` so the arrow-key monitor installed by this view can
     /// move it, and so the day survives a trip to Satchel and back.
     @State private var dayInView: Date = Calendar.current.startOfDay(for: Date())
+    /// Which day was "today" the last time this view looked.
+    ///
+    /// **`dayInView` is captured once, at launch, and nothing re-read the
+    /// clock.** Leave TraceMac open overnight and the Today screen is still
+    /// showing yesterday in the morning, and clicking Today in the rail does
+    /// nothing about it — the section has not CHANGED, so no watcher fires, and
+    /// the view faithfully renders the date it was handed in a different day.
+    /// David, Session 105: *"when i hit the today item on the left rail it
+    /// brings me to yesterday."*
+    ///
+    /// This is what makes the rollover detectable without guessing. On a day
+    /// change the question is not "is `dayInView` old" — he may have stepped
+    /// deliberately back to last Tuesday, and yanking him to today would be its
+    /// own bug — it is **"was he looking at the day that just ended".** Only
+    /// then does the view follow the clock.
+    @State private var todayAnchor: Date = Calendar.current.startOfDay(for: Date())
+    /// What is live right now, for the IN PLAY group in the rail (D411).
+    ///
+    /// **Held here rather than fetched by a subview because the rail is drawn
+    /// on every screen.** A list that belongs to no destination cannot be owned
+    /// by one.
+    @State private var liveEndeavors: [Endeavor] = []
+    @State private var kitDocuments: [TraceMacDocument] = []
     /// A task chosen in search. `TraceMacTasksView` works out which pool holds
     /// it, switches there and opens the card — see its deep link.
     @State private var pendingTaskID: String? = nil
@@ -793,7 +820,79 @@ struct TraceMacContentView: View {
     /// works, the hot key still works, and the Go menu still works — but if
     /// keyboard traversal of the sidebar turns out to matter, the answer is to
     /// add a focusable/`onMoveCommand` layer here, not to go back to `List`.
+    /// **Six children, not seventeen.** Adding IN PLAY to the flat list here is
+    /// what produced "the compiler is unable to type-check this expression in
+    /// reasonable time" — the failure this file's own header warns about, on the
+    /// one view big enough to be sitting on the edge of it already. The groups
+    /// are named sub-views now, which is both the fix and the better reading:
+    /// the rail IS three groups and a foot.
     private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sidebarMasthead
+            theDayGroup
+            recordsGroup
+            MacInPlayGroup(endeavors: liveEndeavors,
+                           tasks: flaggedTasks,
+                           documents: kitDocuments,
+                           onOpenTask: openTask)
+            Spacer(minLength: 0)
+            bottomRail
+        }
+        .frame(width: MacEditorialLayout.sidebarWidth, alignment: .leading)
+        .frame(maxHeight: .infinity)
+        .background(MacEditorialColor.panel)
+        // **These watchers hang HERE, and that is the fix, not a tidy-up.**
+        // They were six more links on `body`'s modifier chain, which was
+        // already twenty-three long, and the compiler gave up type-checking it.
+        // SwiftUI does not care which part of the hierarchy an `onReceive` is
+        // attached to — the state it writes belongs to this view either way —
+        // so the rail, which is what IN PLAY is drawn in, is both the cheaper
+        // and the more honest place for them.
+        //
+        // Two merged publishers rather than five modifiers, for the same
+        // reason.
+        .task { await loadInPlay() }
+        .onReceive(Self.dayRollover) { _ in
+            refreshTodayIfDayRolled()
+            // Also on activation: he may have pinned something on the phone
+            // while this window sat there.
+            Task { await loadInPlay() }
+        }
+        .onReceive(Self.inPlayChanged) { _ in
+            Task { await loadInPlay() }
+        }
+    }
+
+    /// The day turning over, however it reaches us.
+    ///
+    /// **Both notifications, because neither alone covers it:** the app may be
+    /// frontmost all night and never become active, and a Mac that slept through
+    /// midnight may not deliver the day change until it wakes.
+    /// `refreshTodayIfDayRolled` is idempotent, so two arrivals cost nothing.
+    ///
+    /// Hopped to the main run loop because `NSCalendarDayChanged` promises
+    /// nothing about which thread posts it and the handler writes view state.
+    /// Typed as `AnyPublisher` so the modifier has no generic chain to infer.
+    private static let dayRollover: AnyPublisher<Notification, Never> =
+        Publishers.Merge(
+            NotificationCenter.default.publisher(for: .NSCalendarDayChanged),
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        )
+        .receive(on: RunLoop.main)
+        .eraseToAnyPublisher()
+
+    /// Anything that can change what is live: a document filed or pinned, a
+    /// document store reload, an endeavor edited.
+    private static let inPlayChanged: AnyPublisher<Notification, Never> =
+        Publishers.MergeMany(
+            NotificationCenter.default.publisher(for: .noteStoreDocumentsDidChange),
+            NotificationCenter.default.publisher(for: .reloadDocuments),
+            NotificationCenter.default.publisher(for: .noteStoreEndeavorsDidChange)
+        )
+        .receive(on: RunLoop.main)
+        .eraseToAnyPublisher()
+
+    private var sidebarMasthead: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Trace")
                 .font(.system(size: 21, weight: .heavy, design: .serif))
@@ -803,12 +902,20 @@ struct TraceMacContentView: View {
                 .padding(.bottom, 11)
             MacEditorialRule.ink
                 .padding(.horizontal, 20)
+        }
+    }
 
+    private var theDayGroup: some View {
+        VStack(alignment: .leading, spacing: 0) {
             groupLabel("The day")
             navRow(.today)
             navRow(.upcoming)
             navRow(.tasks)
+        }
+    }
 
+    private var recordsGroup: some View {
+        VStack(alignment: .leading, spacing: 0) {
             groupLabel("Records")
             navRow(.notes)
             navRow(.endeavors)
@@ -817,13 +924,69 @@ struct TraceMacContentView: View {
             navRow(.documents)
             navRow(.inbox)
             navRow(.archive)
-
-            Spacer(minLength: 0)
-            bottomRail
         }
-        .frame(width: MacEditorialLayout.sidebarWidth, alignment: .leading)
-        .frame(maxHeight: .infinity)
-        .background(MacEditorialColor.panel)
+    }
+
+    /// Flagged tasks, read straight off the shared store rather than copied
+    /// into state.
+    ///
+    /// `ReminderTaskStore` is `@Observable` and this view already tracks its
+    /// `inboxCount`, so the rail follows a flag set anywhere in the app with no
+    /// snapshot to keep in step — which a `@State` copy would need, and would
+    /// get wrong the first time a flag was set from a screen that forgot to
+    /// tell it.
+    private var flaggedTasks: [ThingsTask] {
+        ReminderTaskStore.shared.allTasks.filter(\.flagged)
+    }
+
+    /// Open a task from the rail: the Tasks screen works out which pool holds
+    /// it and opens the card, the same route a search result takes.
+    private func openTask(_ id: String) {
+        pendingTaskID = id
+        selectedSection = .tasks
+    }
+
+    /// Read what is live. Cheap enough to run on the events that can change it.
+    ///
+    /// The document store is built and dropped rather than held: this needs one
+    /// filtered list of it, the Spotlight pass below already uses it the same
+    /// way, and a second long-lived store scanning the same folder is a second
+    /// thing to keep in step.
+    private func loadInPlay() async {
+        // Flagged tasks are read from the store, not copied — but the store has
+        // to have been filled. This is the same call Today's meta strip makes
+        // when a document is opened.
+        await ReminderTaskStore.shared.refreshAll()
+        let today = Date()
+        let endeavors = EndeavorFile.loadAll(from: noteStore)
+            .filter { $0.status(on: today) == .active }
+            .sorted { ($0.ends ?? .distantFuture) < ($1.ends ?? .distantFuture) }
+
+        let store = TraceMacDocumentStore(noteStore: noteStore)
+        await store.reload()
+        // **Manual pins only, for now.** Kit is pins PLUS the documents of an
+        // imminent trip, and that half is decided by `isKitRelevant(on:)`, which
+        // lives in Satchel's target on Satchel's own four-field `Endeavor` — a
+        // different type from this one, and invisible from here. A copy of that
+        // rule on the Mac would be two definitions of what is in his bag. It
+        // moves to shared code in its own build.
+        //
+        // `kit_order` ascending, exactly as Satchel sorts it, so the same pins
+        // read in the same order on both machines.
+        let docs = store.documents
+            .filter(\.pinned)
+            .sorted { lhs, rhs in
+                switch (lhs.kitOrder, rhs.kitOrder) {
+                case let (l?, r?): return l < r
+                case (nil, _?):    return false
+                case (_?, nil):    return true
+                case (nil, nil):
+                    return (lhs.listDate ?? .distantPast) < (rhs.listDate ?? .distantPast)
+                }
+            }
+
+        liveEndeavors = endeavors
+        kitDocuments = docs
     }
 
     /// **Settings, search, add** — the three things that belong to the app
@@ -1021,6 +1184,24 @@ struct TraceMacContentView: View {
         selectedSection = all[next]
     }
 
+    /// Follow the clock across midnight, and only for someone who was on today.
+    ///
+    /// **Deliberately NOT hooked to selecting Today in the rail.** `dayInView`
+    /// is documented to survive a trip to Satchel and back, which is a real
+    /// decision and not an oversight: step to last Tuesday, go read a note,
+    /// come back, and last Tuesday is still there. Snapping to today on every
+    /// section change would undo that to fix a different problem. The problem
+    /// reported was the day rolling over under a window that never re-read the
+    /// clock, so that is what this repairs and nothing else.
+    private func refreshTodayIfDayRolled() {
+        let now = Calendar.current.startOfDay(for: Date())
+        guard now != todayAnchor else { return }
+        // Was he looking at the day that just ended? Then he was looking at
+        // today, and today is now a different date.
+        if dayInView == todayAnchor { dayInView = now }
+        todayAnchor = now
+    }
+
     /// Left/right step the day, but only while Today is the section showing —
     /// on Satchel or Directory an arrow should do nothing rather than silently
     /// move a day you cannot see.
@@ -1069,7 +1250,37 @@ struct TraceMacContentView: View {
         .padding(.trailing, 20)
         .frame(height: 30)
         .contentShape(Rectangle())
-        .onTapGesture { selectedSection = section }
+        .onTapGesture {
+            // **Today means today, every time the row is pressed**, including
+            // when Today is already the section showing. David, after the
+            // rollover fix: *"clicking today doesnt move to today within the
+            // today tab still."* Right, and the rollover fix was never going to
+            // do it — that one repairs a window that stopped reading the clock,
+            // and this is a person pressing a button labelled Today and
+            // expecting today.
+            //
+            // It has to live on the TAP rather than on a change of
+            // `selectedSection`, because pressing the row you are already on
+            // changes nothing to watch. That is why the first attempt missed it.
+            //
+            // **What this costs, stated.** `dayInView`'s comment says the day
+            // survives a trip to Satchel and back, and it still does: switching
+            // apps taps no row. What changes is stepping back to last Tuesday,
+            // going to Notes, and returning VIA THIS ROW — that now lands on
+            // today rather than last Tuesday. Pressing a button named Today is
+            // an instruction, not a navigation, and treating it as one was the
+            // wrong reading.
+            if section == .today { goToToday() }
+            selectedSection = section
+        }
+    }
+
+    /// Put the Today screen on today, and re-anchor the rollover watcher with
+    /// it so the two cannot disagree about which day is current.
+    private func goToToday() {
+        let now = Calendar.current.startOfDay(for: Date())
+        dayInView = now
+        todayAnchor = now
     }
 
     // MARK: - Detail
@@ -2087,5 +2298,116 @@ struct BilliardsRackIcon: View {
             }
         }
         .frame(width: 18, height: 18)
+    }
+}
+
+// MARK: - IN PLAY (D411)
+
+/// What is live right now, as the rail's third group.
+///
+/// **Its own type, and that is the fix for a build error rather than a
+/// preference.** Written as two computed properties inside
+/// `TraceMacContentView`, it was more work for a `ViewBuilder` in the one file
+/// in this project that has no room left: "the compiler is unable to type-check
+/// this expression in reasonable time", twice, surviving a split of `sidebar`
+/// and a move of six modifiers off `body`. A separate `View` is type-checked on
+/// its own, so nothing it contains can add to that file's budget again.
+///
+/// **A group of THINGS, not of destinations.** THE DAY and RECORDS are doors
+/// you press to go somewhere. This lists the items themselves — the endeavor
+/// that is running, the documents in the bag — and pressing one opens that
+/// record. Four more doors to filtered lists would put what he wants to see two
+/// clicks away instead of in front of him.
+///
+/// Draws nothing at all when empty, group label included: a heading with
+/// nothing under it would be dead space on every screen in the app.
+struct MacInPlayGroup: View {
+
+    let endeavors: [Endeavor]
+    let tasks: [ThingsTask]
+    let documents: [TraceMacDocument]
+    let onOpenTask: (String) -> Void
+
+    private var isEmpty: Bool {
+        endeavors.isEmpty && tasks.isEmpty && documents.isEmpty
+    }
+
+    /// Endeavors, then flagged tasks, then the bag. Roughly most fixed to least:
+    /// an endeavor's dates are not up for debate today, a flag is something he
+    /// chose this week, a pinned document is something he chose once.
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !isEmpty {
+                label
+                ForEach(endeavors) { endeavor in
+                    let symbol: String = endeavor.isTravel ? "suitcase" : "bookmark"
+                    MacInPlayRow(symbol: symbol, title: endeavor.name) {
+                        MacInPlayRow.openRecord(type: "endeavor", id: endeavor.id)
+                    }
+                }
+                ForEach(tasks) { task in
+                    MacInPlayRow(symbol: "flag.fill", title: task.title) {
+                        onOpenTask(task.id)
+                    }
+                }
+                ForEach(documents) { document in
+                    let symbol: String = document.resolvedIcon.sfSymbol
+                    MacInPlayRow(symbol: symbol, title: document.title) {
+                        MacInPlayRow.openRecord(type: "document", id: document.relativePath)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The same shape as `TraceMacContentView.groupLabel`, spelled here so this
+    /// view needs nothing from its host.
+    private var label: some View {
+        Text("In play")
+            .editorialGroupLabel()
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 7)
+    }
+}
+
+/// One live thing. Quieter and shorter than a `navRow`, because it is not a
+/// section of the app and should not compete with the eleven rows that are.
+private struct MacInPlayRow: View {
+
+    let symbol: String
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 11))
+                .foregroundStyle(MacEditorialColor.faint)
+                .frame(width: 16)
+            Text(title)
+                .font(MacEditorialType.meta)
+                .foregroundStyle(MacEditorialColor.muted)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 20)
+        .padding(.trailing, 14)
+        .frame(height: 26)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+    }
+
+    /// `.navigateToRecord` rather than a binding threaded up through the rail:
+    /// it is the door every other cross-screen jump already uses, and it lands
+    /// in the navigator's history for free.
+    ///
+    /// A task does not go through it — there is no `task` case in that router,
+    /// and adding one would be a second way to reach the Tasks screen beside
+    /// the deep-link id it already takes. Hence the closure for that one.
+    static func openRecord(type: String, id: String) {
+        let info: [AnyHashable: Any] = ["type": type, "id": id]
+        NotificationCenter.default.post(name: .navigateToRecord, object: nil, userInfo: info)
     }
 }

@@ -39,7 +39,7 @@ struct SatchelApp: App {
 
     var body: some Scene {
         WindowGroup {
-            SatchelLibraryView(router: router)
+            SatchelRootView(router: router)
                 .onOpenURL { router.handle($0) }
                 // SATCHEL IS A LIGHT-ONLY APP AND MUST SAY SO.
                 //

@@ -541,6 +541,12 @@ struct TraceMacDocumentsView: View {
     /// `pinned`, none of which move the file anywhere.
     @ViewBuilder
     private func rowMenu(for doc: TraceMacDocument) -> some View {
+        // Kit first: it is the only item here that changes the document rather
+        // than opening or sharing it, and it is the one D412 was asked for.
+        Button(doc.pinned ? "Remove from Kit" : "Add to Kit") {
+            setPinned(!doc.pinned, for: doc)
+        }
+        Divider()
         if let url = noteStore.resolvedURL(for: doc.relativePath) {
             Button("Open in Default App") { NSWorkspace.shared.open(url) }
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
@@ -549,6 +555,26 @@ struct TraceMacDocumentsView: View {
             Divider()
         }
         Button("Delete…", role: .destructive) { deleteCandidate = doc }
+    }
+
+    /// Put a document in Kit or take it out, from the Mac (D412).
+    ///
+    /// **`try?` and then a reload, rather than an alert.** The same shape
+    /// `deleteDocument` below uses. The write is a local file write on a
+    /// document that is already loaded, so a failure is close to impossible —
+    /// and if it happens anyway, the reload puts the true state back on screen
+    /// and the menu item still reads "Add to Kit". A self-correcting screen
+    /// beats a dialog for something with no decision in it.
+    private func setPinned(_ pinned: Bool, for doc: TraceMacDocument) {
+        guard let store else { return }
+        _ = try? store.setPinned(pinned, for: doc)
+        if selectedDoc?.relativePath == doc.relativePath {
+            selectedDoc = store.documents.first { $0.relativePath == doc.relativePath }
+        }
+        // The rail's IN PLAY group is the other reader of this key, and it is
+        // drawn by a different view in a different file. One post rather than a
+        // binding threaded up through three screens.
+        NotificationCenter.default.post(name: .reloadDocuments, object: nil)
     }
 
     private func deleteDocument(_ doc: TraceMacDocument) {
@@ -1368,6 +1394,14 @@ struct DocListRow: View {
                         .foregroundStyle(MacEditorialColor.ink)
                         .lineLimit(1)
                     Spacer(minLength: 8)
+                    // In Kit. Marked on the row because otherwise the only way
+                    // to know is to right-click and read which way the menu
+                    // item is phrased.
+                    if doc.pinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(MacEditorialColor.accent)
+                    }
                     // **The date it is SORTED by, not the one printed on it**
                     // (D347). A list ordered by one date and labelled with
                     // another reads as unsorted; the document's own date is in

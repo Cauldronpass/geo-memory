@@ -374,6 +374,12 @@ struct MarkdownEditorView: UIViewRepresentable {
     /// spawned, resolved by title. Unchecking fires nothing (un-completing a
     /// task from prose would be spooky action at a distance).
     var onCompletePromoted: ((String) -> Void)? = nil
+    /// Save to Satchel from a link inside this note (D390's second origin,
+    /// Session 104). The endeavor screen passes `.endeavor`, the place's
+    /// Notes tab passes `.place`; everyone else leaves it nil and the saved
+    /// document is still linked to `relativePath`. Declared last, for the
+    /// same append-only reason `attachTrigger` documents.
+    var satchelOrigin: SatchelLinkOrigin? = nil
 
     // MARK: Make
 
@@ -1363,14 +1369,121 @@ struct MarkdownEditorView: UIViewRepresentable {
         // opens the in-app sheet, everything else hands off externally. The
         // old `interaction == .invokeDefaultAction` guard is implicit here:
         // primaryActionFor IS the tap; menus/previews go through
-        // menuConfigurationFor, which we don't implement, so they keep
-        // system behavior.
+        // menuConfigurationFor, implemented below since Session 104 to put
+        // Save to Satchel and Edit Label into the system's link menu.
         func textView(_ tv: UITextView,
                       primaryActionFor textItem: UITextItem,
                       defaultAction: UIAction) -> UIAction? {
             guard case .link(let url) = textItem.content else { return defaultAction }
             return UIAction { [weak self] _ in
                 self?.handleLinkTap(url)
+            }
+        }
+
+        // The long-press menu on a link (Session 104, D406). UITextView builds
+        // Open Link / Copy Link / Share itself; this puts Save to Satchel above
+        // them, because it is the one item with no other door (D390), and adds
+        // Edit Label on `[label](url)` links, which is where the old silent
+        // select-the-label long press went. Non-web schemes (capture://,
+        // things://) keep the plain system menu: Satchel files web addresses.
+        func textView(_ tv: UITextView,
+                      menuConfigurationFor textItem: UITextItem,
+                      defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
+            guard case .link(let url) = textItem.content else {
+                return UITextItem.MenuConfiguration(menu: defaultMenu)
+            }
+            var children: [UIMenuElement] = []
+            let scheme = url.scheme?.lowercased() ?? ""
+            if scheme == "http" || scheme == "https" {
+                children.append(UIAction(title: "Save to Satchel",
+                                         image: UIImage(systemName: "tray.and.arrow.down")) { [weak self] _ in
+                    self?.saveLinkToSatchel(url)
+                })
+            }
+            children.append(contentsOf: defaultMenu.children)
+            if let labelRange = markdownLabelRange(at: textItem.range.location, in: tv) {
+                children.append(UIAction(title: "Edit Label",
+                                         image: UIImage(systemName: "pencil")) { [weak self, weak tv] _ in
+                    guard let self, let tv else { return }
+                    self.selectLabel(labelRange, in: tv)
+                })
+            }
+            return UITextItem.MenuConfiguration(preview: .default,
+                                                menu: UIMenu(children: children))
+        }
+
+        /// The visible label of a `[label](url)` link at `charIndex`, or nil for
+        /// a bare URL. Keyed on `.mdLinkLabel`, not `.link`: `NSDataDetector`
+        /// sets `.link` on bare URLs as well, and renaming a plain address would
+        /// select something that has no name.
+        private func markdownLabelRange(at charIndex: Int, in tv: UITextView) -> NSRange? {
+            guard charIndex >= 0, charIndex < tv.textStorage.length else { return nil }
+            let attrs = tv.textStorage.attributes(at: charIndex, effectiveRange: nil)
+            guard attrs[.mdLinkLabel] != nil else { return nil }
+            var labelRange = NSRange(location: 0, length: 0)
+            _ = tv.textStorage.attribute(.mdLinkLabel, at: charIndex, effectiveRange: &labelRange)
+            return labelRange.length > 0 ? labelRange : nil
+        }
+
+        /// Edit Label: select the visible name so it can be retyped. Deferred a
+        /// cycle so the menu's dismissal, which runs after the action, cannot
+        /// undo the selection; and the view is made first responder first, or
+        /// a selection with the keyboard down shows nothing to type into.
+        ///
+        /// David, before this existed as a gesture: *"there is no way to change
+        /// the description currently."* Correct then — a tap opens the link,
+        /// and dragging a selection across three visible characters between two
+        /// invisible ones is not a way.
+        private func selectLabel(_ range: NSRange, in tv: UITextView) {
+            DispatchQueue.main.async {
+                guard range.location + range.length <= tv.textStorage.length else { return }
+                if !tv.isFirstResponder { tv.becomeFirstResponder() }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                tv.selectedRange = range
+            }
+        }
+
+        /// Hands the address to Satchel, which files it (D390). **This editor
+        /// does not write the document** — see `SatchelSaveLinkHandoff` and the
+        /// header of `TraceSatchelHandoff.swift`. What rides along: the host's
+        /// `satchelOrigin` (an endeavor or a place), the note's own path so the
+        /// document is linked to the note it came from, and a return route so
+        /// Satchel's toast can bring him back here.
+        private func saveLinkToSatchel(_ url: URL) {
+            var place: String?
+            var endeavorID: String?
+            var endeavorName: String?
+            switch parentView?.satchelOrigin {
+            case .endeavor(let id, let name):
+                endeavorID = id
+                endeavorName = name
+            case .place(let name):
+                place = name
+            case nil:
+                break
+            }
+            let returnTo: String?
+            if let place {
+                returnTo = SatchelSaveLinkHandoff.placeReturn(placeName: place)
+            } else {
+                returnTo = SatchelSaveLinkHandoff.noteReturn(relativePath: relativePath)
+            }
+            guard let handoff = SatchelSaveLinkHandoff.url(
+                address: url.absoluteString,
+                place: place,
+                endeavorID: endeavorID,
+                endeavorName: endeavorName,
+                note: relativePath,
+                returnTo: returnTo
+            ) else { return }
+            UIApplication.shared.open(handoff) { [weak self] opened in
+                guard !opened, let self, let vc = self.presentingViewController() else { return }
+                let alert = UIAlertController(
+                    title: "Satchel isn't installed",
+                    message: "Save to Satchel hands this address over to Satchel, the documents app, which files it against this note.",
+                    preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+                vc.present(alert, animated: true)
             }
         }
 
@@ -1477,29 +1590,18 @@ struct MarkdownEditorView: UIViewRepresentable {
                     }
                     return
                 }
-                // Markdown link long-press — select the visible name so it can be
-                // retyped. **Exactly the wikilink behaviour above**, which has
-                // worked since it was written, rather than a new menu: the two
-                // are the same problem (a span whose delimiters are hidden, so
-                // tapping at either edge lands in a marker you cannot see) and
-                // one gesture for both is one thing to learn.
-                //
-                // David: *"there is no way to change the description currently."*
-                // Correct — a tap opens the link, and dragging a selection across
-                // three visible characters between two invisible ones is not a
-                // way.
-                //
-                // Keyed on `.mdLinkLabel`, not `.link`: `NSDataDetector` sets
-                // `.link` on bare URLs as well, and long-pressing a plain address
-                // to "rename" it would select something that has no name.
-                if attrs[.mdLinkLabel] != nil {
-                    var labelRange = NSRange(location: 0, length: 0)
-                    _ = tv.textStorage.attribute(.mdLinkLabel, at: charIndex,
-                                                 effectiveRange: &labelRange)
-                    if labelRange.length > 0 {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        tv.selectedRange = labelRange
-                    }
+                // A link span belongs to the link menu (Session 104, D406).
+                // UITextView shows its own Open / Copy / Share menu on a long
+                // press over any `.link` range — David confirmed it on the
+                // device — and `textView(_:menuConfigurationFor:defaultMenu:)`
+                // below is where that menu is extended. This handler must not
+                // ALSO act: until now it selected a markdown link's label here
+                // (the "no way to change the description" fix), so one press
+                // produced a menu and a selection at once. Renaming moved into
+                // the same menu as "Edit Label". Bare URLs used to fall through
+                // to block detection, which was the same two-things-at-once
+                // fault with a different second thing.
+                if attrs[.link] != nil {
                     return
                 }
             }

@@ -324,6 +324,51 @@ enum DocumentTint: String, CaseIterable, Hashable, Codable, Sendable {
     }
 }
 
+// MARK: - Article state
+
+/// What the fetch behind a saved link concluded, sidecar key `article`
+/// (D407 Build 2.1).
+///
+/// **It was a boolean for one build, and one build was enough to show why it
+/// could not be.** The first rule was three hundred words of anything: a
+/// chatty product description cleared it and became an article, and so did a
+/// paywalled news page whose "article" was two paragraphs and an invitation to
+/// log in. The second is worse than the first — a TRUNCATED article filed as a
+/// complete one is a screen that looks finished and is not, and nothing
+/// anywhere says so.
+///
+/// Blocked is therefore its own answer rather than a shade of `false`. It is
+/// what the sign-in sheet exists to repair, so it has to be findable; and it is
+/// the difference between "this was never going to be reading" and "this is
+/// reading you cannot see yet", which is the difference between a card that
+/// says nothing and a card that says what to do.
+///
+/// Raw values are the on-disk spellings and the first two are deliberately
+/// `true` and `false`, so every sidecar written before this change still reads
+/// correctly and nothing has to be migrated.
+enum ArticleState: String {
+    /// Real prose. The text is in `## Text` and the document is on the Shelf.
+    case article = "true"
+    /// A product page, a store, a map, a tool. A plain link in the library,
+    /// D384's behaviour unchanged.
+    case link = "false"
+    /// The page said, in one way or another, that this is for subscribers. The
+    /// stub it did show is in `## Text`; a sign-in and a Retry is what fixes it.
+    case blocked = "blocked"
+
+    /// Lenient, like every other sidecar parse in this file. Anything
+    /// unrecognised is `nil`, which reads as "never tried" and lets the fetch
+    /// have another go rather than freezing a value nobody can explain.
+    static func parse(_ raw: String) -> ArticleState? {
+        switch raw.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "true", "yes", "1": return .article
+        case "false", "no", "0": return .link
+        case "blocked":          return .blocked
+        default:                 return nil
+        }
+    }
+}
+
 // MARK: - Document model
 
 struct TraceMacDocument: Identifiable, Hashable {
@@ -500,6 +545,55 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// frontmatter without a key is a store that DELETES it. Declared last so
     /// no existing call site's argument order moves.
     var places: [String] = []
+
+    // MARK: Reading shelf (D407, Session 105)
+    //
+    // Five optional keys, link documents only, all declared LAST so no existing
+    // call site's argument order moves. Every one of them must exist in
+    // `SidecarData`, `parseSidecar` and `renderSidecar` in BOTH stores — the Mac
+    // gets no UI for any of this and must simply not destroy it. A key one store
+    // does not know is a key that store DELETES on its next save; that is the
+    // `remind` bug (Session 63) and the reason for the comment at the top of
+    // `TraceMacDocumentStore`.
+
+    /// What the page behind this link turned out to be, sidecar key `article`.
+    ///
+    /// `nil` means the fetch has never run. Otherwise see `ArticleState`.
+    /// Written by the fetch; the manual flip edits it.
+    var articleState: ArticleState? = nil
+
+    /// Convenience for the one question most screens ask.
+    var isArticle: Bool { articleState == .article }
+
+    /// The day the article fetch ran for this link, sidecar key `fetched`,
+    /// success or not.
+    ///
+    /// Its job is to stop the sweep retrying forever. Absent means never tried,
+    /// which is the only state the sweep picks up. Retry clears it.
+    var fetchedOn: Date? = nil
+
+    /// Position in Up Next, ascending, sidecar key `read_next`.
+    ///
+    /// Exactly the `kitOrder` pattern: the order is saved and IS the order, so
+    /// moving item 1 to fourth drops it off Home and keeps it on the Shelf.
+    /// `nil` means the article is in New, which is where everything lands and
+    /// where an article nobody touches sits forever at no cost.
+    var readNext: Int? = nil
+
+    /// The day this article was marked read, sidecar key `read`.
+    ///
+    /// Written by the deliberate Done tap at the end of the article or by the
+    /// Read swipe on a New card, never automatically on scroll. Absent means
+    /// unread; Keep for later clears it and the article returns to New.
+    var readOn: Date? = nil
+
+    /// How far through the text he got, 0.0–1.0, sidecar key `read_position`.
+    ///
+    /// A FRACTION rather than an offset so a change of text size does not lose
+    /// the place. Written when the reader is left, not on every scroll: a key
+    /// rewritten sixty times a minute is an iCloud sync storm and a sidecar
+    /// whose modification date stops meaning anything.
+    var readPosition: Double? = nil
 
     /// What a typed address opens to, or nil when it does not open to anything.
     ///

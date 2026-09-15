@@ -74,6 +74,18 @@ final class SatchelRouter {
     /// breath as `pendingCapture`, so it can never leak into a later capture the
     /// user started themselves from the scan button.
     var pendingNoteLink: String?
+    /// Set alongside `pendingCapture` when the capture must be private
+    /// (D417). Read and cleared with it, in the same breath, for the reason
+    /// `pendingNoteLink` gives: a flag left behind would make the NEXT capture
+    /// private, and of all the things to leak into a later action this is the
+    /// worst one — it is the difference between a document being sent to
+    /// Anthropic and not.
+    ///
+    /// **No URL sets it.** `satchel://scan` is a public surface and a Shortcut
+    /// must never be able to make a capture private by accident, nor to make a
+    /// private one ordinary. It exists for the + menu in the tab bar, which is
+    /// in-app and deliberate.
+    var pendingCaptureIsPrivate = false
     /// Set when a URL asks for a search. The Library fills its field.
     var pendingSearch: String?
     /// Set when a URL asks to push a screen. The Library appends it to its path.

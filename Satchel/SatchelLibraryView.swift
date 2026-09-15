@@ -25,8 +25,14 @@ struct SatchelLibraryView: View {
 
     @State private var path = NavigationPath()
     @State private var noteStore = NoteStore.shared
-    @State private var store = iOSDocumentStore()
-    @State private var endeavorStore = SatchelEndeavorStore()
+    /// **Owned by `SatchelRootView` since D417, not by this screen.** Three tabs
+    /// read the same library; three stores scanning the same folder would be
+    /// three answers to one question, and the first thing they would do after a
+    /// swipe on the Shelf is disagree.
+    let store: iOSDocumentStore
+    let endeavorStore: SatchelEndeavorStore
+    /// D407 Build 3. Satchel's only setting so far.
+    @State private var showingSignedInSites = false
 
     @Environment(\.scenePhase) private var scenePhase
     /// For the Save to Satchel toast's return action (D390).
@@ -174,6 +180,11 @@ struct SatchelLibraryView: View {
     //
     // Plain `UserDefaults` via `@AppStorage`, not the App Group suite: this is
     // one app's view state and nothing else reads it.
+    /// Home's two drawers and its tail, folded independently and remembered
+    /// (D418). Same mechanism as Browse and Kind below, and the same reason: a
+    /// fold you redo on every launch is worse than no fold.
+    @AppStorage("satchel.kit.expanded") private var kitExpanded = true
+    @AppStorage("satchel.recent.expanded") private var recentExpanded = true
     @AppStorage("satchel.browse.expanded") private var browseExpanded = true
     @AppStorage("satchel.kinds.expanded") private var kindsExpanded = true
     /// Persisted for the same reason the two above are: a fold that springs open
@@ -213,11 +224,11 @@ struct SatchelLibraryView: View {
                 .refreshable {
                 await store.reload()
                 await store.extractTextForNewArrivals()
+                await SatchelArticleSweep.run(store: store, noteStore: noteStore)
             }
                 // Third way out: drag the list. The one people try first.
                 .scrollDismissesKeyboard(.interactively)
 
-                captureButtons
             }
             .satchelBackground()
             .toolbar(.hidden, for: .navigationBar)
@@ -239,6 +250,13 @@ struct SatchelLibraryView: View {
                 // go through, which makes it the right and only place for this;
                 // Dayflow running Vision would be the wrong app doing it.
                 await store.extractTextForNewArrivals()
+                // **And the same pass for saved links** (D407 Build 2). Its own
+                // sweep rather than a case inside the one above: that one runs
+                // Vision on the device and never touches the network, this one
+                // loads someone else's page in a web view, and folding them
+                // together would put a hidden web view in Dayflow and Trace,
+                // which compile the file it lives in.
+                await SatchelArticleSweep.run(store: store, noteStore: noteStore)
                 // Deep-link destinations drain HERE, after the store is loaded,
                 // not on appear: `satchel://document?path=…` resolves against
                 // `store.documents`, and on a cold launch that is still empty
@@ -263,10 +281,17 @@ struct SatchelLibraryView: View {
             // the next cold launch. Invisible for an ordinary capture, which
             // gets an AI title and tags to search on. **Fatal for a private
             // one**, whose only searchable content is the words on the page.
-            .sheet(item: $captureRequest, onDismiss: {
+            .sheet(isPresented: $showingSignedInSites) {
+            SatchelSignedInSitesView()
+        }
+        .sheet(item: $captureRequest, onDismiss: {
                 Task {
                     await store.reload()
                     await store.extractTextForNewArrivals()
+                    // A link saved through the capture sheet is read on the way
+                    // out of it, not at the next cold launch. Same reason the
+                    // line above it exists.
+                    await SatchelArticleSweep.run(store: store, noteStore: noteStore)
                 }
             }) { request in
                 SatchelCaptureView(source: request.source, store: store,
@@ -400,10 +425,21 @@ struct SatchelLibraryView: View {
     /// `satchel://document?path=…`. That last one matters most: the §7 chip is
     /// a hand-off from another app, so it is a cold launch nearly every time.
     private func drainRouter(includingDestination: Bool = true) {
+        // **Paste is drained differently, because it is not a sheet.** It reads
+        // the pasteboard, builds an `IncomingDocument` and then opens the sheet
+        // on the result (D386). Handing `.paste` to the branch below would
+        // present a capture sheet with nothing in it.
+        if router.pendingCapture == .paste {
+            router.pendingCapture = nil
+            router.pendingCaptureIsPrivate = false
+            pasteFromClipboard()
+        }
         if let source = router.pendingCapture {
             captureRequest = SatchelCaptureRequest(source: source,
-                                                   noteLink: router.pendingNoteLink)
+                                                   noteLink: router.pendingNoteLink,
+                                                   isPrivate: router.pendingCaptureIsPrivate)
             router.pendingNoteLink = nil
+            router.pendingCaptureIsPrivate = false
             router.pendingCapture = nil
         }
         if let text = router.pendingSearch {
@@ -523,14 +559,32 @@ struct SatchelLibraryView: View {
     // MARK: Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(eyebrow)
-                .font(.system(size: 12.5, weight: .medium))
-                .kerning(0.5)
-                .foregroundStyle(Color.satchelSecondary)
-            Text("Satchel")
-                .font(.system(size: 27, weight: .bold))
-                .foregroundStyle(Color.satchelInk)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(eyebrow)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .kerning(0.5)
+                    .foregroundStyle(Color.satchelSecondary)
+                Text("Satchel")
+                    .font(.system(size: 27, weight: .bold))
+                    .foregroundStyle(Color.satchelInk)
+            }
+            Spacer(minLength: 0)
+            // **Satchel's first setting, and therefore its first settings
+            // door** (D407 Build 3). The build starter said "a Settings row";
+            // there is no Settings screen in this app and one row does not earn
+            // a whole one, so the gear opens the sheet directly. When a second
+            // setting arrives, this becomes the list and the sites become a row
+            // in it.
+            Button { showingSignedInSites = true } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color.satchelSecondary)
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Settings")
         }
         .padding(.horizontal, 18)
         .padding(.top, 4)
@@ -607,8 +661,12 @@ struct SatchelLibraryView: View {
             emptyState
         } else {
             VStack(alignment: .leading, spacing: 0) {
+                // **Up Next first, then what he is carrying, then what landed**
+                // (D416). Browse and Kind have gone to the All tab: they were
+                // never things to look at, they were ways of narrowing a list,
+                // and this screen does not have the list.
+                SatchelUpNextSection(store: store)
                 kitSection
-                browseSection
                 dueSection
                 recentSection
             }
@@ -662,7 +720,13 @@ struct SatchelLibraryView: View {
     private var kitSection: some View {
         if !kit.all.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
-                SatchelSectionTitle(title: "Kit") {
+                // Folded, like Up Next (D418). Either drawer can be the one on
+                // top of the screen depending on the week: on the road he folds
+                // Up Next and Kit is under the search field; at home he folds
+                // Kit. Neither had to be moved for that to work.
+                SatchelCollapsibleSectionTitle(title: "Kit",
+                                               isExpanded: $kitExpanded,
+                                               collapsedCount: kit.all.count) {
                     // `showsKitDoor`, not `showsSeeAll` — with four or fewer
                     // items there was no way onto the Kit screen, and that screen
                     // holds the trip-slots stepper, so the setting was
@@ -683,11 +747,23 @@ struct SatchelLibraryView: View {
                     }
                 }
 
-                LazyVGrid(
-                    columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
-                    spacing: 10
-                ) {
-                    ForEach(kit.grid) { entry in
+                // ── Sideways, not two-across (D418) ──────────────────────
+                //
+                // David: *"Kit takes up a lot more room on the home screen with
+                // the square cards than Up Next."* True, and the tiles were
+                // right when Kit was the whole of Home. Home now has three jobs
+                // and two documents were spending four rows of height.
+                //
+                // The strip keeps everything the tiles were FOR — you recognise
+                // a boarding pass by its picture and you want it in one tap —
+                // and spends one row instead of four. The extra ones live to
+                // the right rather than pushing Recent off the screen. 150pt is
+                // two and a bit on a 6.1" phone, so the cut-off third card is
+                // what says it scrolls.
+                if kitExpanded {
+                  ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 10) {
+                      ForEach(kit.strip) { entry in
                         NavigationLink {
                             SatchelViewerView(document: entry.document, store: store)
                         } label: {
@@ -717,10 +793,18 @@ struct SatchelLibraryView: View {
                                 Text("Otherwise leaves Kit when \(kit.activeTrip?.name ?? "the trip") ends")
                             }
                         }
+                        .frame(width: 150)
+                      }
                     }
-                }
+                    // The strip bleeds to both screen edges — the section's own
+                    // 15pt gutter is cancelled outside and reapplied inside, so
+                    // a card can sit half off the edge and SAY it scrolls.
+                    .padding(.horizontal, 15)
+                  }
+                  .padding(.horizontal, -15)
 
-                kitFootnote
+                  kitFootnote
+                }
             }
             .padding(.horizontal, 15)
             .padding(.bottom, 14)
@@ -1223,13 +1307,20 @@ struct SatchelLibraryView: View {
     /// Kit, it was not in the newest five, and it vanished from the app.
     private var recentSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SatchelSectionTitle(title: "Recent") {
-                if store.documents.count > 5 {
+            // **Articles leave Recent** (D407), so the count beside it counts
+            // what Recent actually holds. A "Show all 31" over a list that has
+            // silently dropped nine articles is the header disagreeing with the
+            // list under it. `Show all` itself still shows everything — that is
+            // what it is for — and gains an Articles entry in its Format menu.
+            SatchelCollapsibleSectionTitle(title: "Recent",
+                                           isExpanded: $recentExpanded,
+                                           collapsedCount: SatchelShelf.notOnShelf(store.documents).count) {
+                if SatchelShelf.notOnShelf(store.documents).count > 5 {
                     NavigationLink {
                         SatchelAllDocumentsView(documents: store.documents, store: store)
                     } label: {
                         HStack(spacing: 2) {
-                            Text("Show all \(store.documents.count)")
+                            Text("Show all \(SatchelShelf.notOnShelf(store.documents).count)")
                             Image(systemName: "chevron.right")
                                 .font(.system(size: 10, weight: .semibold))
                         }
@@ -1238,7 +1329,9 @@ struct SatchelLibraryView: View {
                     }
                 }
             }
-            DocumentCard(documents: Array(store.documents.prefix(5)), store: store)
+            if recentExpanded {
+                DocumentCard(documents: Array(SatchelShelf.notOnShelf(store.documents).prefix(5)), store: store)
+            }
         }
         .padding(.horizontal, 15)
         .padding(.bottom, 14)
@@ -1470,7 +1563,14 @@ struct DocumentCard: View {
                                      onTask: { taskFor = documents[index] },
                                      onEdit: { editing = documents[index] },
                                      onPin: { togglePin(documents[index]) },
-                                     onDelete: { pendingDelete = documents[index] })
+                                     onDelete: { pendingDelete = documents[index] },
+                                     onRetry: {
+                                         let doc = documents[index]
+                                         Task {
+                                             await SatchelArticleSweep.retry(
+                                                 doc, store: store, noteStore: NoteStore.shared)
+                                         }
+                                     })
 
                 if index < documents.count - 1 {
                     Divider()
@@ -1592,6 +1692,17 @@ struct DocumentRow: View {
                     Text(kindLabel(for: document))
                         .font(.system(size: 12))
                         .foregroundStyle(Color.satchelSecondary)
+                }
+                // **"read Sep 13", under the title** (D407). An article he has
+                // finished leaves the Shelf entirely, so without this the only
+                // difference between "read it" and "never saved it" is that one
+                // of them is still in the library. Drawn as its own faint line
+                // rather than another chip: it is not something the document is
+                // filed under, it is something he did.
+                if let read = SatchelShelf.readLine(document) {
+                    Text(read)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color.satchelTertiary)
                 }
             }
             Spacer(minLength: 6)
@@ -3911,15 +4022,16 @@ struct SatchelAllDocumentsView: View {
     }
 
     enum Kind: String, CaseIterable, Identifiable {
-        case all, pdf, image, link, text
+        case all, pdf, image, link, article, text
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .all:   return "Any format"
-            case .pdf:   return "PDFs"
-            case .image: return "Images"
-            case .link:  return "Links"
-            case .text:  return "Text"
+            case .all:     return "Any format"
+            case .pdf:     return "PDFs"
+            case .image:   return "Images"
+            case .link:    return "Links"
+            case .article: return "Articles"
+            case .text:    return "Text"
             }
         }
     }
@@ -3976,8 +4088,14 @@ struct SatchelAllDocumentsView: View {
             case .all:   return true
             case .pdf:   return doc.isPDF
             case .image: return doc.isImage
-            case .link:  return doc.isLink
-            case .text:  return doc.isText
+            // **Articles beside Links, not inside them** (D407). Both are
+            // `.webloc` files, so `Links` alone would return the shelf as well
+            // and "everything but links" would quietly drop his reading. Links
+            // now means the ones that are NOT articles, which is what the word
+            // means to him: a link is somewhere to get back to.
+            case .link:    return doc.isLink && doc.articleState != .article
+            case .article: return doc.articleState == .article
+            case .text:    return doc.isText
             }
         }
     }
@@ -4145,7 +4263,6 @@ struct SatchelAllDocumentsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if isFiltered { activeFilters }
                 if filtered.isEmpty {
                     Text(query.isEmpty ? "Nothing matches those filters." : "No matches.")
                         .font(.system(size: 13))
@@ -4197,6 +4314,7 @@ struct SatchelAllDocumentsView: View {
         .navigationTitle(screenTitle)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Search documents")
+        .safeAreaInset(edge: .top, spacing: 0) { filterBar }
         .toolbar {
             // Grid or list (D386). A toggle, not a menu entry: it is the one
             // control on this screen that changes what the screen IS, and it
@@ -4216,35 +4334,6 @@ struct SatchelAllDocumentsView: View {
                     Picker("Sort", selection: $sort) {
                         ForEach(Sort.allCases) { option in
                             Label(option.label, systemImage: option.symbol).tag(option)
-                        }
-                    }
-
-                    // `Kind` the Swift type, `Format` the word on screen.
-                    // Renaming the enum is churn with no user visible in it, and
-                    // it would land in the same commit as a shipping batch. The
-                    // three words that matter are the ones he reads.
-                    // A set, not a picker (D388): each entry toggles, "Any
-                    // format" clears, and the title says what is chosen.
-                    Menu("Format") {
-                        Button {
-                            formats = []
-                        } label: {
-                            if formats.isEmpty {
-                                Label("Any format", systemImage: "checkmark")
-                            } else {
-                                Text("Any format")
-                            }
-                        }
-                        ForEach(Kind.allCases.filter { $0 != .all }) { option in
-                            Button {
-                                if formats.contains(option) { formats.remove(option) } else { formats.insert(option) }
-                            } label: {
-                                if formats.contains(option) {
-                                    Label(option.label, systemImage: "checkmark")
-                                } else {
-                                    Text(option.label)
-                                }
-                            }
                         }
                     }
 
@@ -4295,7 +4384,9 @@ struct SatchelAllDocumentsView: View {
                         }
                     }
 
-                    Toggle("In Kit only", isOn: $kitOnly)
+                    // "In Kit only" left the menu with Format (D418): it is a
+                    // chip on the bar now, and two doors to one switch is how a
+                    // control ends up disagreeing with itself.
 
                     if isFiltered {
                         Divider()
@@ -4312,25 +4403,129 @@ struct SatchelAllDocumentsView: View {
         }
     }
 
-    /// Active filters are shown as removable chips, not just as a filled toolbar
-    /// icon. A filter you cannot see is a filter you forget you set, and then the
-    /// library looks like it has lost documents.
-    private var activeFilters: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
-                if let type { filterChip(type.label, systemImage: type.sfSymbol) { self.type = nil } }
-                if let tint { filterChip(tint.satchelShortLabel, systemImage: "circle.fill") { self.tint = nil } }
-                if let endeavorLabel { filterChip(endeavorLabel, systemImage: "briefcase") { self.endeavorID = nil } }
-                if let tag { filterChip(tag, systemImage: "tag") { self.tag = nil } }
-                if kitOnly { filterChip("In Kit", systemImage: "pin.fill") { kitOnly = false } }
-                if let formatLabel { filterChip(formatLabel, systemImage: "doc") { formats = [] } }
-                Button("Clear") { clearFilters() }
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(Color.satchelBlue)
+    // MARK: - The filter bar (D418)
+    //
+    // David: *"If i want to see PDFs and Images together i have to tap the
+    // filter button, then tap format, then tap pdf then it brings me back to the
+    // screen and i have to tap filter, then format then image. There has to be a
+    // better way."*
+    //
+    // **The logic was never the problem.** `formats` has been a `Set` since
+    // D388 and the menu entries already toggle. What costs the taps is that a
+    // UIKit `Menu` dismisses on every selection, so a multi-select control was
+    // put somewhere that cannot express multi-select. Two of everything he
+    // wanted, and no way to see what was on without opening it again.
+    //
+    // So the formats come out onto the screen: chips that toggle in place, stay
+    // put, and say what is chosen by looking at them. PDFs + Images is two taps.
+    //
+    // Second line is what he actually reaches for beside format — Kit, and the
+    // endeavours that have documents in them. That is also where the Browse
+    // chips D417 left as dead code finally get spent rather than deleted: the
+    // Home section was the wrong home for them, not the idea.
+    //
+    // Everything rarer — subject, colour, tag, sort — stays in the toolbar
+    // menu, where a dismiss-on-tap menu is the right shape because those are
+    // one-at-a-time choices. A filter set there still appears here as a
+    // removable chip, because a filter you cannot see is a filter you forget you
+    // set, and then the library looks like it has lost documents.
+    private var filterBar: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    ForEach(Kind.allCases.filter { $0 != .all }) { option in
+                        toggleChip(option.label, on: formats.contains(option)) {
+                            if formats.contains(option) { formats.remove(option) }
+                            else { formats.insert(option) }
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
             }
-            .padding(.horizontal, 21)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    toggleChip("In Kit", on: kitOnly) { kitOnly.toggle() }
+                    ForEach(availableEndeavors) { entry in
+                        toggleChip(entry.name, on: endeavorID == entry.id) {
+                            endeavorID = (endeavorID == entry.id) ? nil : entry.id
+                        }
+                    }
+                    // Set from the toolbar menu, removed from here.
+                    if let type { filterChip(type.label, systemImage: type.sfSymbol) { self.type = nil } }
+                    if let tint { filterChip(tint.satchelShortLabel, systemImage: "circle.fill") { self.tint = nil } }
+                    if let tag { filterChip(tag, systemImage: "tag") { self.tag = nil } }
+                    if isFiltered {
+                        Button("Clear") { clearFilters() }
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.satchelBlue)
+                            .padding(.leading, 2)
+                    }
+                }
+                .padding(.horizontal, 18)
+            }
         }
-        .padding(.bottom, 12)
+        .padding(.top, 2)
+        .padding(.bottom, 10)
+        .background(Color.satchelCanvas)
+    }
+
+    /// The endeavours with documents in this library, by name, most-used first.
+    /// Only the ones something is actually filed under — offering the whole list
+    /// would make the row a wall of dead ends, the same rule `availableTypes`
+    /// follows.
+    struct EndeavorFacet: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let count: Int
+    }
+
+    private var availableEndeavors: [EndeavorFacet] {
+        var names: [String: String] = [:]
+        var counts: [String: Int] = [:]
+        for doc in documents {
+            guard let id = doc.endeavor, !id.isEmpty else { continue }
+            names[id] = doc.endeavorName ?? "Endeavor"
+            counts[id, default: 0] += 1
+        }
+        // **Written out, not chained.** map → sorted → prefix → map, with a
+        // ternary inside the sort closure and a `??` inside the map, is four
+        // generic inferences over a Dictionary in one expression, and it timed
+        // out the type-checker on the first build of D418. Every type here is
+        // spelled, and none of it is clever. `feedback_typecheck_timeout`: when
+        // this happens, the fix is always to write the loop.
+        var facets: [EndeavorFacet] = []
+        for (id, count) in counts {
+            let name: String = names[id] ?? "Endeavor"
+            facets.append(EndeavorFacet(id: id, name: name, count: count))
+        }
+        facets.sort { (lhs: EndeavorFacet, rhs: EndeavorFacet) -> Bool in
+            if lhs.count != rhs.count { return lhs.count > rhs.count }
+            return lhs.name < rhs.name
+        }
+        return Array(facets.prefix(6))
+    }
+
+    /// On or off, and it says which by looking at it. Blue filled when on, so
+    /// the only blue on the row is a thing that is doing something.
+    private func toggleChip(_ text: String, on: Bool, toggle: @escaping () -> Void) -> some View {
+        Button(action: toggle) {
+            HStack(spacing: 4) {
+                Text(text).font(.system(size: 12.5, weight: .semibold))
+                if on {
+                    Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
+                }
+            }
+            .foregroundStyle(on ? Color.white : Color.satchelSecondary)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(on ? Color.satchelBlue : Color.satchelCard,
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(on ? Color.clear : Color.satchelHairline, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private func filterChip(_ text: String, systemImage: String, clear: @escaping () -> Void) -> some View {

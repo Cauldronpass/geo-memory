@@ -613,6 +613,46 @@ enum SatchelSaveLinkHandoff {
         comps.queryItems = [URLQueryItem(name: "path", value: "Notes/Places/\(file).md")]
         return comps.url?.absoluteString ?? ""
     }
+
+    /// Where Satchel should offer to send him back to, for a link saved from
+    /// inside a note (D390's second origin, Session 104).
+    ///
+    /// Which app owns the note decides the scheme, and the split is the one
+    /// the two `note` routes already enforce: Trace's `trace://note?path=`
+    /// opens People and Places only; Dayflow's `dayflow://note?path=` opens
+    /// day, project, endeavor and week notes. A path neither claims returns
+    /// nil, and Satchel then offers no Back — better than a Back that lands
+    /// on the wrong app's empty tab.
+    static func noteReturn(relativePath: String?) -> String? {
+        guard let relativePath, !relativePath.isEmpty else { return nil }
+        let scheme: String
+        if relativePath.hasPrefix("Notes/People/") || relativePath.hasPrefix("Notes/Places/") {
+            scheme = "trace"
+        } else if relativePath.hasPrefix("Calendar/")
+                    || relativePath.hasPrefix("Notes/Endeavors/")
+                    || relativePath.hasPrefix("Notes/Projects/")
+                    || relativePath.hasPrefix("Notes/Horizons/") {
+            scheme = "dayflow"
+        } else {
+            return nil
+        }
+        var comps = URLComponents()
+        comps.scheme = scheme
+        comps.host = "note"
+        comps.queryItems = [URLQueryItem(name: "path", value: relativePath)]
+        return comps.url?.absoluteString
+    }
+}
+
+/// What a note editor knows about where it is, so a link saved from inside it
+/// files with its origin (D390: "the origin rides along, no picker at save
+/// time"). The endeavor screen passes `.endeavor`, the place's Notes tab
+/// passes `.place`; every other host passes nothing, and the document is
+/// still linked to the note it came from through the hand-off's `note`
+/// parameter, which every note's Documents band already reads.
+enum SatchelLinkOrigin: Equatable {
+    case endeavor(id: String, name: String)
+    case place(name: String)
 }
 
 struct SatchelAddDocumentButton: View {

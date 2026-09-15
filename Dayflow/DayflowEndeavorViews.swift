@@ -810,7 +810,10 @@ struct DayflowEndeavorView: View {
                 // it lands in OPEN TASKS above. Checking the dimmed ↗ line
                 // completes it.
                 onPromoteTask: { line, done in promoteEndeavorTask(line, e, done) },
-                onCompletePromoted: { line in completeEndeavorTask(titled: line, e) }
+                onCompletePromoted: { line in completeEndeavorTask(titled: line, e) },
+                // Save to Satchel from a link in this note files it to this
+                // endeavor (D390's second origin, Session 104).
+                satchelOrigin: .endeavor(id: e.id, name: e.name)
             )
             // **A definite height, not `maxHeight: .infinity`** (D303, Session
             // 90). This was `minHeight: 180, maxHeight: .infinity` from Session

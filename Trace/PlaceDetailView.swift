@@ -578,6 +578,10 @@ struct PlaceDetailView: View {
                 }
             },
             placeholder: "Notes about \(place.name)…",
+            // Never passed until Session 104. The editor uses it for the note's
+            // date when pinning and, now, to link a saved document back to
+            // this note. Same value the Documents band above reads.
+            relativePath: placeNotePath,
             onWikiTap: { name in
                 if let p = notionService.places.first(where: { $0.name == name }) {
                     wikiLinkTarget = .place(p)
@@ -592,7 +596,11 @@ struct PlaceDetailView: View {
             wikiSuggestions: { query in
                 WikiSuggestions.matches(for: query)
             },
-            onCaptureTap: { id in tappedCaptureID = id }
+            onCaptureTap: { id in tappedCaptureID = id },
+            // Save to Satchel from a link in this note files it to this place
+            // (D390's second origin, Session 104). Same name the Website row's
+            // own Save to Satchel sends.
+            satchelOrigin: .place(name: livePlace.name)
         )
         .sheet(isPresented: Binding(
             get: { tappedCaptureID != nil },

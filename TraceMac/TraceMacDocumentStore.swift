@@ -32,7 +32,19 @@
 //      semantics as the iOS store, so all three TraceMacDocumentsView call sites
 //      stay correct with no edits.
 //
-// The Mac deliberately gets no *writers* for these keys. v1 of Satchel is
+// Session 105 (2026-09-14) added five more — `article`, `fetched`, `read_next`,
+// `read`, `read_position`, the reading shelf (D407) — in the same build as the
+// iOS side, which is what the rule above asks for and what `remind` did not get.
+//
+// **One of those keys got a writer on 2026-09-14 (D412): `pinned`.** The
+// sentence below was true while Satchel was iOS-only and the Mac was a
+// bystander. The Mac now has a Satchel screen and a rail that SHOWS what is in
+// Kit, and a screen that shows a thing you cannot change is a screen that sends
+// you to your phone to change it. `setPinned` is the one writer; everything
+// else here still only reads and re-emits, and the paragraph above — add a key
+// in both stores in the same change — is unaffected.
+//
+// The Mac deliberately gets no *other* writers for these keys. v1 of Satchel is
 // iOS-only (build starter, "Deliberately NOT in v1"), so the Mac's job here is
 // to not destroy what it does not manage. Key order in `renderSidecar` is kept
 // byte-identical to the iOS store's so the two apps do not churn the same file
@@ -209,7 +221,14 @@ class TraceMacDocumentStore {
                     // sidecar copy wins when it exists, the file fills in when
                     // it does not, so a `.webloc` dragged in from Finder opens.
                     url: sidecar?.url ?? urlFromWebloc(ext: ext, relativePath: relativePath) ?? "",
-                    places: sidecar?.places ?? []
+                    places: sidecar?.places ?? [],
+                    // Reading shelf (D407). Read so the Mac carries them and
+                    // re-emits them; no Mac screen shows any of this.
+                    articleState: sidecar?.articleState,
+                    fetchedOn: sidecar?.fetchedOn,
+                    readNext: sidecar?.readNext,
+                    readOn: sidecar?.readOn,
+                    readPosition: sidecar?.readPosition
                 )
                 result.append(doc)
             }
@@ -343,8 +362,69 @@ class TraceMacDocumentStore {
             data.url = trimmed.isEmpty ? nil : trimmed
         }
         data.places = places ?? existing?.places ?? doc.places
+        // Reading shelf (D407). Not parameters: the Mac has no screen that sets
+        // any of them, and its whole job here is to hand back what Satchel
+        // wrote. Disk wins over the in-memory doc, as everywhere else above.
+        data.articleState = existing?.articleState ?? doc.articleState
+        data.fetchedOn    = existing?.fetchedOn    ?? doc.fetchedOn
+        data.readNext     = existing?.readNext     ?? doc.readNext
+        data.readOn       = existing?.readOn       ?? doc.readOn
+        data.readPosition = existing?.readPosition ?? doc.readPosition
 
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
+    }
+
+    // MARK: - Kit
+
+    /// Put a document in Kit, or take it out. The Mac's first writer of a
+    /// Satchel key (D412).
+    ///
+    /// **Pinning appends to the END of the order**, the same rule as
+    /// `iOSDocumentStore.setPinned` and for the same reason: scope §5's default
+    /// is "order pinned", and a new pin jumping ahead of the passport is exactly
+    /// the muscle-memory break that rule exists to prevent. Two machines that
+    /// appended at different ends would make the Kit order depend on which one
+    /// you happened to be sitting at.
+    ///
+    /// **Unpinning leaves `kit_order` alone.** It means nothing while the
+    /// document is out of a Kit group, re-pinning overwrites it, and clearing it
+    /// would throw away a position for no gain. Again, iOS's rule, copied
+    /// deliberately rather than re-derived.
+    ///
+    /// Everything else in the sidecar is read back and re-emitted by the same
+    /// parse/render pair every other write here uses, so this cannot become the
+    /// next key-drop.
+    @discardableResult
+    func setPinned(_ pinned: Bool, for doc: TraceMacDocument) throws -> TraceMacDocument {
+        // Seed from disk, falling back to the in-memory document so a
+        // never-scanned file still ends up with a complete sidecar rather than
+        // a titleless one.
+        var data = parseSidecar(at: doc.sidecarPath) ?? SidecarData()
+        if data.title == nil { data.title = doc.title }
+        if data.tags.isEmpty { data.tags = doc.tags }
+        if data.created == nil { data.created = doc.created ?? Date() }
+        if data.people.isEmpty { data.people = doc.people }
+        if data.places.isEmpty { data.places = doc.places }
+        if data.linkedNote == nil { data.linkedNote = doc.linkedNote }
+        if data.description == nil { data.description = doc.description }
+        if data.url == nil { data.url = doc.url.isEmpty ? nil : doc.url }
+
+        data.pinned = pinned
+        if pinned {
+            let highest = documents.filter(\.pinned).compactMap(\.kitOrder).max() ?? -1
+            data.kitOrder = highest + 1
+        }
+
+        let body = readBody(at: doc.sidecarPath)
+        try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
+
+        var updated = doc
+        updated.pinned = pinned
+        updated.kitOrder = data.kitOrder
+        if let idx = documents.firstIndex(where: { $0.relativePath == doc.relativePath }) {
+            documents[idx] = updated
+        }
+        return updated
     }
 
     // `moveDocument` removed Session 69. It wrote `Documents/<Category>/`,
@@ -881,6 +961,16 @@ class TraceMacDocumentStore {
         /// key this struct does not carry is a key the next save deletes.
         /// Added to `IOSDocumentStore` in the same pass.
         var places: [String] = []
+        /// Reading shelf keys (D407, Session 105): `article`, `fetched`,
+        /// `read_next`, `read`, `read_position`. The rule at the top of this
+        /// file, applied on time for once: these went into both stores in the
+        /// same build, BEFORE anything on the phone could write one, so there
+        /// was never a window in which a Mac save could delete them.
+        var articleState: ArticleState?
+        var fetchedOn: Date?
+        var readNext: Int?
+        var readOn: Date?
+        var readPosition: Double?
     }
 
 
@@ -1091,6 +1181,21 @@ class TraceMacDocumentStore {
         // reorder: the index was computed, assigned, and then dropped by this
         // renderer, so the drag animated and the order reverted on reload.
         if let order = data.kitOrder { content += "kit_order: \(order)\n" }
+        // Reading shelf (D407), after `kit_order` and in this order in BOTH
+        // stores. Key ORDER is part of this format's contract, for the reason
+        // written above `url`.
+        //
+        // `article: false` is written, not skipped: it records that the fetch
+        // ran and this page is not prose, which is a different fact from
+        // "never tried".
+        if let article = data.articleState { content += "article: \(article.rawValue)\n" }
+        if let fetched = data.fetchedOn { content += "fetched: \(fmt.string(from: fetched))\n" }
+        if let next = data.readNext { content += "read_next: \(next)\n" }
+        if let read = data.readOn { content += "read: \(fmt.string(from: read))\n" }
+        // Three decimals, fixed, matching iOS exactly.
+        if let pos = data.readPosition {
+            content += "read_position: \(String(format: "%.3f", pos))\n"
+        }
         content += "---\n"
         content += renderBody(body)
         return content
@@ -1189,6 +1294,18 @@ class TraceMacDocumentStore {
                 data.remindOn = dateFmt.date(from: value)
             case "kit_order", "pin_order":
                 data.kitOrder = Int(value.trimmingCharacters(in: .whitespaces))
+
+            // MARK: Reading shelf keys (D407) — read and preserved, no Mac UI
+            case "article":
+                data.articleState = ArticleState.parse(value)
+            case "fetched":
+                data.fetchedOn = dateFmt.date(from: value)
+            case "read_next":
+                data.readNext = Int(value.trimmingCharacters(in: .whitespaces))
+            case "read":
+                data.readOn = dateFmt.date(from: value)
+            case "read_position":
+                data.readPosition = Double(value.trimmingCharacters(in: .whitespaces))
 
             default:
                 break
