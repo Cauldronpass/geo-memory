@@ -136,7 +136,7 @@ struct SatchelShelfView: View {
     private func row(_ doc: TraceMacDocument, index: Int?) -> some View {
         let queued: Bool = index != nil
         return NavigationLink {
-            SatchelViewerView(document: doc, store: store, siblings: queue + fresh)
+            SatchelOpenView(document: doc, store: store, siblings: queue + fresh)
         } label: {
             SatchelShelfRow(document: doc, index: index)
         }
@@ -171,7 +171,7 @@ struct SatchelShelfView: View {
     /// whatever has been promoted since.
     private func readRow(_ doc: TraceMacDocument) -> some View {
         NavigationLink {
-            SatchelViewerView(document: doc, store: store, siblings: done)
+            SatchelOpenView(document: doc, store: store, siblings: done)
         } label: {
             SatchelShelfRow(document: doc, index: nil, read: true)
         }

@@ -351,7 +351,7 @@ struct SatchelLibraryView: View {
                     // Resolved at push time rather than carried in the link — a
                     // URL can arrive before the store has finished loading.
                     if let doc = store.documents.first(where: { $0.relativePath == relativePath }) {
-                        SatchelViewerView(document: doc, store: store)
+                        SatchelOpenView(document: doc, store: store)
                     } else {
                         missingDocument(relativePath)
                     }
@@ -765,7 +765,7 @@ struct SatchelLibraryView: View {
                     HStack(alignment: .top, spacing: 10) {
                       ForEach(kit.strip) { entry in
                         NavigationLink {
-                            SatchelViewerView(document: entry.document, store: store)
+                            SatchelOpenView(document: entry.document, store: store)
                         } label: {
                             KitTile(entry: entry)
                         }
@@ -1487,7 +1487,7 @@ struct DocumentCard: View {
                 // Scope §5: "Viewer — full screen, direct tap from any row."
                 // A row tap opens the document itself, never its metadata.
                 NavigationLink {
-                    SatchelViewerView(document: documents[index], store: store)
+                    SatchelOpenView(document: documents[index], store: store)
                 } label: {
                     DocumentRow(document: documents[index])
                 }
@@ -2653,7 +2653,7 @@ struct SatchelKitView: View {
 
     private func row(_ entry: KitEntry) -> some View {
         NavigationLink {
-            SatchelViewerView(document: entry.document, store: store)
+            SatchelOpenView(document: entry.document, store: store)
         } label: {
             KitRow(entry: entry)
         }
@@ -2865,7 +2865,7 @@ struct SatchelDocumentDetailView: View {
         // Without this the Links row would be right only for documents whose
         // text was already on disk when the screen opened.
         .onChange(of: current.extractedText) { _, new in
-            links = MacTextExtraction.links(in: new)
+            links = MacTextExtraction.links(in: SatchelArticleText.withoutImages(new))
         }
         .task {
             await endeavorStore.reload()
@@ -3901,7 +3901,9 @@ struct SatchelDocumentDetailView: View {
         remindOn = doc.remindOn
         people = doc.people
         docDate = doc.created ?? Date()
-        links = MacTextExtraction.links(in: doc.extractedText)
+        // Photo lines out first (D419): an article's photo addresses are not
+        // links he saved.
+        links = MacTextExtraction.links(in: SatchelArticleText.withoutImages(doc.extractedText))
         docURL = doc.url
     }
 

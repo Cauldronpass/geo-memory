@@ -59,6 +59,13 @@ final class SatchelArticleReader: NSObject, WKNavigationDelegate {
         /// over whole. It is therefore the LAST thing `decide` consults, not
         /// the first.
         var accessibleForFree: String
+        /// D419. The same article with its headings, quotes, lists and photo
+        /// lines kept, meta lines on top — what the reader draws. Empty when
+        /// the page gave nothing structured, and then `text` is written
+        /// instead. **Never used to decide anything**: `text`, `wordCount` and
+        /// `substantialParagraphs` stay exactly what they were, because a photo
+        /// line two hundred characters long is not a paragraph.
+        var rich: String = ""
 
         /// **What the page says it is, which beats what it is long enough to
         /// look like.** A product page is a product page at two hundred words
@@ -168,7 +175,8 @@ final class SatchelArticleReader: NSObject, WKNavigationDelegate {
       }
       var out = {
         ok: "0", title: "", byline: "", text: "",
-        ogType: meta("og:type"), ldTypes: ldTypes.join(","), free: free
+        ogType: meta("og:type"), ldTypes: ldTypes.join(","), free: free,
+        rich: "", published: ""
       };
       try {
         var clone = document.cloneNode(true);
@@ -194,6 +202,133 @@ final class SatchelArticleReader: NSObject, WKNavigationDelegate {
             if (t) { parts.push(t); }
           }
           out.text = parts.length > 0 ? parts.join("\\n\\n") : (article.textContent || "");
+
+          // **D419 — the same article, with its structure kept.** `text` above
+          // is untouched and still decides what the page is; this is only what
+          // the reader draws. See SatchelArticleText.swift for the format.
+          out.published = article.publishedTime || meta("article:published_time") || "";
+          var lead = meta("og:image");
+          var rich = [];
+          var textBlocks = 0;
+          var lastImage = false;
+          var seen = {};
+          var buf = "";
+          function squash(v) { return String(v || "").replace(/\\s+/g, " ").trim(); }
+          function lastSegment(u) {
+            try { var segs = new URL(u, document.baseURI).pathname.split("/"); return (segs.pop() || segs.pop() || "").toLowerCase(); }
+            catch (e) { return String(u || "").toLowerCase(); }
+          }
+          var bylineKey = squash(article.byline).toLowerCase();
+          function pushText(line) {
+            if (!line) { return; }
+            // "By Jane Doe" as the first paragraph repeats the byline the
+            // reader already draws under the headline.
+            if (textBlocks === 0 && bylineKey && line.length < 90 && line.toLowerCase().indexOf(bylineKey) >= 0) { return; }
+            rich.push(line); textBlocks++; lastImage = false;
+          }
+          function flush() {
+            var t = squash(buf); buf = "";
+            if (t.length > 1) { pushText(t); }
+          }
+          function bestSource(img) {
+            var best = "", bestW = 0;
+            var set = img.getAttribute("srcset") || img.getAttribute("data-srcset") || "";
+            if (set) {
+              var pieces = set.split(/,\\s+/);
+              for (var s = 0; s < pieces.length; s++) {
+                var bits = pieces[s].trim().split(/\\s+/);
+                var w = parseInt((bits[1] || "").replace("w", ""), 10) || 0;
+                if (bits[0] && w >= bestW) { best = bits[0]; bestW = w; }
+              }
+            }
+            if (!best) { best = img.getAttribute("src") || img.getAttribute("data-src") || ""; }
+            var declared = parseInt(img.getAttribute("width") || "", 10) || 0;
+            return { src: best, width: declared || bestW };
+          }
+          // The photo rule. Body photos only, 300px or wider when the page
+          // says, never a logo or a headshot, never the lead photo again, and
+          // only the first of a run of photos with no text between them.
+          function pushImage(img, caption) {
+            if (!img || lastImage) { return; }
+            if (lead && textBlocks === 0) { return; }
+            var picked = bestSource(img);
+            var src = picked.src;
+            if (!src || src.indexOf("data:") === 0) { return; }
+            try { src = new URL(src, document.baseURI).href; } catch (e) { return; }
+            if (!/^https?:/i.test(src)) { return; }
+            if (/\\.svg(\\?|$)/i.test(src)) { return; }
+            if (picked.width > 0 && picked.width < 300) { return; }
+            var hint = ((img.getAttribute("class") || "") + " " + (img.getAttribute("alt") || "") + " " + src).toLowerCase();
+            if (/(^|[^a-z])(avatar|headshot|logo|icon|sprite|emoji|badge)s?([^a-z]|$)/.test(hint)) { return; }
+            var key = lastSegment(src);
+            if (seen[key]) { return; }
+            if (lead && key === lastSegment(lead)) { return; }
+            seen[key] = true;
+            var cap = squash(caption).replace(/[\\[\\]]/g, "");
+            src = src.replace(/\\)/g, "%29").replace(/ /g, "%20");
+            rich.push("![" + cap + "](" + src + ")");
+            lastImage = true;
+          }
+          var titleKey = squash(article.title).toLowerCase();
+          var inline = /^(a|span|em|strong|b|i|u|small|sup|sub|mark|time|abbr|code|cite|q|s|del|ins|font|label)$/;
+          function walk(node) {
+            var kids = node.childNodes;
+            for (var i = 0; i < kids.length; i++) {
+              var n = kids[i];
+              if (n.nodeType === 3) { buf += n.textContent; continue; }
+              if (n.nodeType !== 1) { continue; }
+              var tag = n.tagName.toLowerCase();
+              if (inline.test(tag)) {
+                var inner = n.querySelectorAll("img");
+                if (inner.length === 0) { buf += n.textContent; continue; }
+                flush();
+                for (var a = 0; a < inner.length; a++) { pushImage(inner[a], ""); }
+                continue;
+              }
+              if (tag === "br") { buf += " "; continue; }
+              flush();
+              if (/^h[1-6]$/.test(tag)) {
+                var h = squash(n.textContent);
+                if (h && h.toLowerCase() !== titleKey) { pushText("### " + h); }
+              } else if (tag === "p") {
+                var pimgs = n.querySelectorAll("img");
+                var pt = squash(n.textContent);
+                for (var b = 0; b < pimgs.length; b++) { pushImage(pimgs[b], pimgs.length === 1 && pt.length < 120 ? pt : ""); }
+                if (pt && !(pimgs.length > 0 && pt.length < 120)) { pushText(pt); }
+              } else if (tag === "blockquote") {
+                var cls = (n.getAttribute("class") || "").toLowerCase();
+                var qt = squash(n.textContent);
+                if (qt && !/(tweet|instagram|tiktok)/.test(cls)) { pushText("> " + qt); }
+              } else if (tag === "ul" || tag === "ol") {
+                var num = 0;
+                for (var c = 0; c < n.children.length; c++) {
+                  var li = n.children[c];
+                  if (li.tagName.toLowerCase() !== "li") { continue; }
+                  var lt = squash(li.textContent);
+                  if (!lt) { continue; }
+                  num++;
+                  pushText((tag === "ol" ? (num + ". ") : "- ") + lt);
+                }
+              } else if (tag === "figure" || tag === "picture") {
+                var fc = n.querySelector("figcaption");
+                pushImage(n.querySelector("img"), fc ? fc.textContent : "");
+              } else if (tag === "img") {
+                pushImage(n, "");
+              } else if (tag === "pre") {
+                pushText(squash(n.textContent));
+              } else if (tag === "table") {
+                var rows = n.querySelectorAll("tr");
+                for (var r = 0; r < rows.length; r++) { pushText(squash(rows[r].textContent)); }
+              } else if (/^(figcaption|script|style|noscript|button|svg|form|input|hr|iframe)$/.test(tag)) {
+                // nothing a reader reads
+              } else {
+                walk(n);
+              }
+            }
+            flush();
+          }
+          walk(holder);
+          out.rich = textBlocks > 0 ? rich.join("\\n\\n") : "";
         }
       } catch (e) { }
       return out;
@@ -289,7 +424,8 @@ final class SatchelArticleReader: NSObject, WKNavigationDelegate {
             wordCount: text.split(whereSeparator: { $0.isWhitespace }).count,
             ogType: fields["ogType"] ?? "",
             ldTypes: fields["ldTypes"] ?? "",
-            accessibleForFree: fields["free"] ?? ""
+            accessibleForFree: fields["free"] ?? "",
+            rich: Self.richText(fields)
         ))
     }
 
@@ -329,7 +465,9 @@ final class SatchelArticleReader: NSObject, WKNavigationDelegate {
                     "text": dict["text"] as? String ?? "",
                     "ogType": dict["ogType"] as? String ?? "",
                     "ldTypes": dict["ldTypes"] as? String ?? "",
-                    "free": dict["free"] as? String ?? ""
+                    "free": dict["free"] as? String ?? "",
+                    "rich": dict["rich"] as? String ?? "",
+                    "published": dict["published"] as? String ?? ""
                 ])
             }
         }
@@ -387,6 +525,29 @@ final class SatchelArticleReader: NSObject, WKNavigationDelegate {
             }
         }
         return out.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The structured body with its two meta lines on top (D419).
+    ///
+    /// `-->` is stripped from the byline because it would close the comment
+    /// early and put the rest of the byline on the page in Obsidian.
+    private static func richText(_ fields: [String: String]) -> String {
+        let body: String = tidy(fields["rich"] ?? "")
+        guard !body.isEmpty else { return "" }
+        var head: [String] = []
+        if let byline = trimmedOrNil(fields["byline"]) {
+            let safe: String = byline.replacingOccurrences(of: "--", with: "-")
+            head.append("\(SatchelArticleText.bylinePrefix) \(safe) -->")
+        }
+        let published: String = (fields["published"] ?? "").trimmingCharacters(in: .whitespaces)
+        if published.count >= 10 {
+            let day: String = String(published.prefix(10))
+            if day.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil {
+                head.append("\(SatchelArticleText.publishedPrefix) \(day) -->")
+            }
+        }
+        if head.isEmpty { return body }
+        return head.joined(separator: "\n") + "\n\n" + body
     }
 
     private static func trimmedOrNil(_ raw: String?) -> String? {
@@ -550,8 +711,13 @@ enum SatchelArticleSweep {
                 // a product page. All three are searchable, which is what
                 // `## Text` is for, and the state beside it is now explicit
                 // rather than something a screen has to infer from length.
-                if !article.text.isEmpty {
-                    try? store.writeExtractedText(article.text, for: doc)
+                //
+                // D419: an ARTICLE keeps its structure, because the reader draws
+                // it. A blocked stub or a product page stays flat — nobody reads
+                // those, and they are in `## Text` only to be searched.
+                let stored: String = (state == .article && !article.rich.isEmpty) ? article.rich : article.text
+                if !stored.isEmpty {
+                    try? store.writeExtractedText(stored, for: doc)
                 }
                 _ = try? store.updateSidecar(for: doc, articleState: state, fetchedOn: .some(today))
                 wrote = true

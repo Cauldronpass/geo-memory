@@ -32,6 +32,13 @@ struct SatchelRootView: View {
     /// disagreeing the moment a swipe writes a sidecar.
     @State private var store = iOSDocumentStore()
     @State private var endeavorStore = SatchelEndeavorStore()
+    /// Whether a full-screen surface has asked for the bar to go (D419).
+    @State private var chrome = SatchelChrome()
+
+    /// The band's height, as padding under the Shelf and All lists. Zero while
+    /// the reader is open, or the reader's own bottom bar would float 72 points
+    /// above the bottom of the screen over an empty strip.
+    private var barInset: CGFloat { chrome.hidesTabBar ? 0 : 72 }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -48,23 +55,28 @@ struct SatchelRootView: View {
                     SatchelShelfView(store: store)
                 }
                 .toolbar(.hidden, for: .tabBar)
-                .safeAreaPadding(.bottom, 72)
+                .safeAreaPadding(.bottom, barInset)
                 .tag(SatchelTab.shelf)
 
                 NavigationStack {
                     SatchelAllDocumentsView(documents: store.documents, store: store)
                 }
                 .toolbar(.hidden, for: .tabBar)
-                .safeAreaPadding(.bottom, 72)
+                .safeAreaPadding(.bottom, barInset)
                 .tag(SatchelTab.all)
             }
             // The system bar is hidden and replaced, the same shape Dayflow uses
             // (`DayflowRootView`), because the + needs a weight no `tabItem`
             // can give it and the unread dot needs to sit where it is drawn.
-            SatchelTabBar(tab: $tab,
-                          unreadOnShelf: hasUnread,
-                          onCapture: capture)
+            if !chrome.hidesTabBar {
+                SatchelTabBar(tab: $tab,
+                              unreadOnShelf: hasUnread,
+                              onCapture: capture)
+                    .transition(.move(edge: .bottom))
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: chrome.hidesTabBar)
+        .environment(chrome)
         .ignoresSafeArea(.keyboard, edges: .bottom)
     }
 
@@ -88,6 +100,21 @@ struct SatchelRootView: View {
         router.pendingCaptureIsPrivate = isPrivate
         router.pendingCapture = source
     }
+}
+
+// MARK: - Chrome
+
+/// **The tab bar is drawn by the root, over everything, so a pushed screen
+/// cannot hide it the system way.** `.toolbar(.hidden, for: .tabBar)` only
+/// reaches the system bar, which is already hidden (D417). The reader is the
+/// first screen that must have the whole height, so it says so here and the
+/// root listens. An environment object rather than a preference: preferences
+/// from a `NavigationStack` destination do not reliably reach the stack's
+/// ancestors, and a bar that sometimes stays over the article is worse than
+/// none.
+@Observable
+final class SatchelChrome {
+    var hidesTabBar = false
 }
 
 // MARK: - The bar

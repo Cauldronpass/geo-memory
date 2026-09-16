@@ -427,6 +427,78 @@ class TraceMacDocumentStore {
         return updated
     }
 
+    // MARK: - Reading shelf (D422)
+
+    /// The Mac's writers for the three reading keys, so the Mac reader and
+    /// Shelf move the same queue the phone does.
+    ///
+    /// **The phone's rules, copied deliberately rather than re-derived**, for
+    /// the reason `setPinned` gives: two machines that disagreed about where a
+    /// promoted article lands would make Up Next depend on which one he was
+    /// sitting at. Queue appends to the end; reading clears the queue place;
+    /// unreading returns to New, not to the old place.
+    @discardableResult
+    func setReadNext(_ inQueue: Bool, for doc: TraceMacDocument) throws -> TraceMacDocument {
+        let value: Int? = inQueue ? (documents.compactMap(\.readNext).max() ?? -1) + 1 : nil
+        return try writeReading(for: doc) { data in
+            data.readNext = value
+        }
+    }
+
+    @discardableResult
+    func setRead(_ read: Date?, for doc: TraceMacDocument) throws -> TraceMacDocument {
+        try writeReading(for: doc) { data in
+            data.readNext = nil
+            data.readOn = read
+        }
+    }
+
+    /// Nil clears it (back at the top).
+    @discardableResult
+    func setReadPosition(_ position: Double?, for doc: TraceMacDocument) throws -> TraceMacDocument {
+        try writeReading(for: doc) { data in
+            data.readPosition = position
+        }
+    }
+
+    /// Rewrite every Up Next position to its index, as the phone does.
+    func reorderUpNext(_ ordered: [TraceMacDocument]) throws {
+        for (index, doc) in ordered.enumerated() {
+            try writeReading(for: doc) { data in
+                data.readNext = index
+            }
+        }
+    }
+
+    /// One write path for the three keys, seeded exactly as `setPinned` seeds,
+    /// so none of them can become the next key-drop.
+    private func writeReading(for doc: TraceMacDocument,
+                              change: (inout SidecarData) -> Void) throws -> TraceMacDocument {
+        var data = parseSidecar(at: doc.sidecarPath) ?? SidecarData()
+        if data.title == nil { data.title = doc.title }
+        if data.tags.isEmpty { data.tags = doc.tags }
+        if data.created == nil { data.created = doc.created ?? Date() }
+        if data.people.isEmpty { data.people = doc.people }
+        if data.places.isEmpty { data.places = doc.places }
+        if data.linkedNote == nil { data.linkedNote = doc.linkedNote }
+        if data.description == nil { data.description = doc.description }
+        if data.url == nil { data.url = doc.url.isEmpty ? nil : doc.url }
+
+        change(&data)
+
+        let body = readBody(at: doc.sidecarPath)
+        try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
+
+        var updated = doc
+        updated.readNext = data.readNext
+        updated.readOn = data.readOn
+        updated.readPosition = data.readPosition
+        if let idx = documents.firstIndex(where: { $0.relativePath == doc.relativePath }) {
+            documents[idx] = updated
+        }
+        return updated
+    }
+
     // `moveDocument` removed Session 69. It wrote `Documents/<Category>/`,
     // the axis `Documents-App-Scope.md` retired on 2026-07-28 — that doc
     // states the move command "was never built, deliberately", and this was

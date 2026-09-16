@@ -61,6 +61,19 @@ final class DayflowFlagStore {
 
     private init() {
         load()
+        // **Follow the other device, not just the launch** (D424). `reload()`
+        // was only ever called when a list appeared, so a pin set on the phone
+        // while the Mac sat on any screen stayed invisible until something was
+        // reopened. The store is `@Observable`, so re-reading here is all it
+        // takes for Notes, IN PLAY and Dayflow's lists to redraw. Never
+        // removed: this is a process-lifetime singleton.
+        NotificationCenter.default.addObserver(
+            forName: .noteStoreFlagsDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.load()
+            }
+        }
     }
 
     func isFlagged(_ path: String) -> Bool {

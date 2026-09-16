@@ -396,7 +396,8 @@ struct ContentView: View {
                 // placement rule of straight UNDER the masthead. The Mac's
                 // days column carries no presence lines either.
                 if !daysMode {
-                    DayflowEndeavorPresence { id in openEndeavorInstant(id) }
+                    // IN PLAY on today, the plain presence lines on other days (D427).
+                    DayflowInPlay(date: selectedDate) { id in openEndeavorInstant(id) }
                 }
 
                 // Session 77, step (b): task card first, events strip, then
@@ -1364,12 +1365,16 @@ struct ContentView: View {
 /// store reload (the same self-sufficiency DayflowEndeavorListSection has),
 /// so a cold launch onto Today does not wait for the Notes tab to be
 /// visited first.
-private struct DayflowEndeavorPresence: View {
+struct DayflowEndeavorPresence: View {
     var onOpen: (String) -> Void
     @State private var store = EndeavorStore.shared
 
-    private var qualifying: [Endeavor] {
-        store.endeavors.filter { e in
+    private var qualifying: [Endeavor] { Self.qualifying(store.endeavors) }
+
+    /// The rule, static so IN PLAY's folded line counts exactly the endeavors
+    /// these rows draw (D427). One definition, not a copy in the new file.
+    static func qualifying(_ endeavors: [Endeavor]) -> [Endeavor] {
+        endeavors.filter { e in
             switch e.status() {
             case .active:   return true
             case .upcoming: return (e.daysUntilStart() ?? Int.max) <= 14

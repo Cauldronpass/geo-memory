@@ -682,6 +682,10 @@ struct TraceMacProjectsView: View {
     /// People / Places / Notes from the new body, and this list re-reads the
     /// row's first line and date.
     @State private var hubReload = 0
+    /// The list's width, dragged and remembered (D423). David: *"make the notes
+    /// rail be able to expand the width if i drag."* Satchel's list got the same
+    /// in D346; same resizer, same floor logic, its own key.
+    @AppStorage("tracemac.column.notes") private var listWidth: Double = 400
 
     @Environment(NoteStore.self)     private var noteStore
     @Environment(NotionService.self) private var notionService
@@ -769,8 +773,12 @@ struct TraceMacProjectsView: View {
     var body: some View {
         HStack(spacing: 0) {
             listColumn
-                .frame(width: MacEditorialLayout.listColumnWidth)
-            Rectangle().fill(MacEditorialColor.hairline).frame(width: 1)
+                .frame(width: listWidth)
+            // Replaces the 1pt hairline, and draws its own so the seam stays.
+            MacColumnResizer(width: $listWidth,
+                             minWidth: 320,
+                             maxWidth: 720,
+                             showsLine: true)
             Group {
                 if let file = selectedFile, let store = docStore {
                     let notePath = "\(subfolder)/\(file)"
@@ -864,12 +872,18 @@ struct TraceMacProjectsView: View {
                     if !pinned.isEmpty {
                         MacEditorialSectionLabel(text: "Pinned").padding(.top, 22)
                         MacEditorialRule.ink
-                        ForEach(pinned, id: \.self) { f in row(f) }
+                        ForEach(pinned, id: \.self) { f in row(f).id("pinned/" + f) }
                     }
                     if !recent.isEmpty {
                         MacEditorialSectionLabel(text: pinned.isEmpty ? "Notes" : "Recent").padding(.top, 22)
                         MacEditorialRule.ink
-                        ForEach(recent, id: \.self) { f in row(f) }
+                        // **Section-qualified identity** (D425). With the bare
+                        // filename as the id in both sections, a row unpinned
+                        // from the context menu moved to Recent still drawn
+                        // as pinned: the lazy stack kept the view it had built
+                        // under Pinned, glyph and all. A different id per
+                        // section makes the move a fresh row.
+                        ForEach(recent, id: \.self) { f in row(f).id("recent/" + f) }
                     }
                     if pinned.isEmpty && recent.isEmpty && !searchText.isEmpty {
                         Text("Nothing matches.")

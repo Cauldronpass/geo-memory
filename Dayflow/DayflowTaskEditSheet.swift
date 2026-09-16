@@ -138,6 +138,22 @@ struct DayflowTaskEditSheet: View {
     /// `ThingsService.lastWriteMismatch`.
     @State private var writeMismatch: String? = nil
 
+    /// Nil until read off the store, so the toggle never shows a guess.
+    @State private var flagged: Bool? = nil
+
+    private var flagBinding: Binding<Bool> {
+        Binding(
+            get: {
+                flagged ?? (ReminderTaskStore.shared.allTasks.first { $0.id == taskID }?.flagged ?? false)
+            },
+            set: { value in
+                flagged = value
+                let id: String = taskID
+                Task { await ReminderTaskStore.shared.setFlagged(value, taskID: id) }
+            }
+        )
+    }
+
     init(taskID: String, initialTitle: String, initialDate: Date?, initialList: String?,
          initialNotes: String? = nil, onSaved: @escaping () -> Void = {}) {
         self.taskID = taskID
@@ -187,6 +203,16 @@ struct DayflowTaskEditSheet: View {
                         }
                     }
                     .pickerStyle(.navigationLink)
+                }
+
+                // Flag (D427). Written the moment it is toggled, not on Save,
+                // exactly as the Mac's card does: it is one bit on the reminder
+                // and IN PLAY should move while this sheet is still open.
+                Section {
+                    Toggle(isOn: flagBinding) {
+                        Label("Flag", systemImage: "flag.fill")
+                    }
+                    .tint(Color.dayflowAccent)
                 }
 
                 Section("Reminder") {
@@ -594,7 +620,7 @@ struct DayflowTaskEditSheet: View {
                 if notion.people.contains(where: { $0.name == name }) {
                     return (name, "person")
                 }
-                if endeavorNames.contains(name) { return (name, "flag") }
+                if endeavorNames.contains(name) { return (name, "bookmark") }  // `flag` means flagged (D427)
                 return (name, settled ? "questionmark.circle" : "link")
             }
     }

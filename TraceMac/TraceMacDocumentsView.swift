@@ -59,6 +59,11 @@ struct TraceMacDocumentsView: View {
     @State private var filterYear: Int? = nil
     @State private var filterMonth: Int? = nil
     @State private var listCollapsed = false
+    /// Documents or Shelf over the list (D422). Remembered: a Mac he reads on
+    /// every evening should open on the Shelf.
+    @AppStorage("tracemac.satchel.shelf") private var showShelf = false
+    /// The reader's focus mode folds this screen's list and filter pane too.
+    @State private var readerFocus = MacReaderFocus.shared
     @State private var isDropTargeted = false
 
     // Filter popover visibility
@@ -310,7 +315,7 @@ struct TraceMacDocumentsView: View {
     /// without re-indenting five hundred lines; nothing here changed.
     private var columns: some View {
         HStack(spacing: 0) {
-            if !listCollapsed {
+            if !listCollapsed && !readerFocus.isOn {
                 // **Draggable again, with a floor** (D346). D260 fixed this
                 // column at 400 because the old draggable version defaulted to
                 // 240 and hid the filter row's fourth word off the right edge —
@@ -329,9 +334,11 @@ struct TraceMacDocumentsView: View {
                                  minWidth: 360,
                                  maxWidth: 720)
             }
-            CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
+            if !readerFocus.isOn {
+                CollapseHandle(isCollapsed: $listCollapsed, collapsesRight: false, showLine: true, panelColor: .clear)
+            }
             rightColumn.frame(maxWidth: .infinity)
-            if showFacets {
+            if showFacets && !readerFocus.isOn {
                 // `.trailing`, and this is the only site that needs it: the
                 // pane is to the RIGHT of the strip, so it grows as you drag
                 // left. `showsLine` because there is no column beyond it to
@@ -455,6 +462,9 @@ struct TraceMacDocumentsView: View {
         // may be on the document list rather than inside the `PDFView`, and both
         // are below this.
         .onExitCommand(perform: find.isShowing ? { find.clear() } : nil)
+        // Leaving Satchel leaves focus: the rail must not stay hidden on a
+        // screen that has no reader to bring it back.
+        .onDisappear { readerFocus.isOn = false }
         .onReceive(NotificationCenter.default.publisher(for: .reloadDocuments)) { _ in
             Task { await store?.reload() }
         }
@@ -607,9 +617,28 @@ struct TraceMacDocumentsView: View {
                 .overlay(alignment: .bottom) { MacEditorialRule.hair }
                 .padding(.horizontal, MacEditorialLayout.margin)
 
-            // Filter words — Tag, Project, Date, and FILTERS for the pane.
-            filterBar
+            MacSatchelModeTabs(showShelf: $showShelf)
 
+            if showShelf, let store {
+                MacShelfList(store: store, searchText: searchText, selected: $selectedDoc)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                // Filter words — Tag, Project, Date, and FILTERS for the pane.
+                filterBar
+                documentList
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background(MacEditorialColor.paper)
+        .overlay(alignment: .bottomTrailing) {
+            MacEditorialPlus { importDocument() }
+        }
+    }
+
+    /// The document list and its drop zone. Split out of `leftColumn` in D422
+    /// so the Shelf could take its place without the column's body growing.
+    private var documentList: some View {
+        Group {
             // Document list + drop zone
             ZStack {
                 if let store, store.isLoading {
@@ -670,11 +699,6 @@ struct TraceMacDocumentsView: View {
             .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
                 handleDrop(providers: providers)
             }
-        }
-        .frame(maxWidth: .infinity)
-        .background(MacEditorialColor.paper)
-        .overlay(alignment: .bottomTrailing) {
-            MacEditorialPlus { importDocument() }
         }
     }
 
@@ -911,12 +935,12 @@ struct TraceMacDocumentsView: View {
                 // D260: the two tabs as quiet caps words over an ink rule, the
                 // day-nav grammar, accent on the one you are in.
                 HStack(spacing: 18) {
-                    ForEach(DocDetailTab.allCases, id: \.self) { tab in
+                    ForEach(DocDetailTab.tabs(for: doc), id: \.self) { tab in
                         let on: Bool = docDetailTab == tab
                         Button {
                             docDetailTab = tab
                         } label: {
-                            Text(tab.label)
+                            Text(tab.label(for: doc))
                                 .editorialQuietLabel()
                                 .foregroundStyle(on ? MacEditorialColor.accent : MacEditorialColor.faint)
                                 .padding(.vertical, 8)
@@ -925,6 +949,9 @@ struct TraceMacDocumentsView: View {
                         .buttonStyle(.plain)
                     }
                     Spacer()
+                    if docDetailTab == .read {
+                        MacReaderTools(doc: doc)
+                    }
                 }
                 .padding(.horizontal, MacEditorialLayout.margin)
                 .padding(.top, MacEditorialLayout.topMargin - 8)
@@ -933,6 +960,11 @@ struct TraceMacDocumentsView: View {
 
                 // Tab content
                 switch docDetailTab {
+                case .read:
+                    // D422. One view per article (`.id`), so leaving one saves
+                    // its place and the next starts fresh at its own.
+                    MacReaderView(opened: doc, store: store!, onOpen: { selectedDoc = $0 })
+                        .id(doc.relativePath)
                 case .preview:
                     // Both panes get an EXPLICIT height. That is the whole fix.
                     //
@@ -1066,7 +1098,19 @@ struct TraceMacDocumentsView: View {
                         .id(doc.id)
                 }
             }
-            .onChange(of: selectedDoc) { _, _ in docDetailTab = .preview }
+            // An article opens on Read; everything else on Preview, as before.
+            .onChange(of: selectedDoc) { old, new in
+                guard old?.relativePath != new?.relativePath else { return }
+                let readable: Bool = new.map { MacReaderView.canRead($0) } ?? false
+                docDetailTab = readable ? .read : .preview
+                if !readable { readerFocus.isOn = false }
+            }
+            .onChange(of: docDetailTab) { _, tab in
+                if tab != .read { readerFocus.isOn = false }
+            }
+            .onAppear {
+                if MacReaderView.canRead(doc) { docDetailTab = .read }
+            }
         } else {
             MacEmptyState.placeholder("doc.richtext", "Select a document")
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1074,9 +1118,23 @@ struct TraceMacDocumentsView: View {
     }
 
     enum DocDetailTab: CaseIterable {
-        case preview, note
-        var label: String { switch self { case .preview: "Preview"; case .note: "Note" } }
-        var icon: String  { switch self { case .preview: "doc.fill"; case .note: "note.text" } }
+        case read, preview, note
+        var icon: String  { switch self { case .read: "book"; case .preview: "doc.fill"; case .note: "note.text" } }
+
+        /// Read only for an article (D422), and then Preview is called Details:
+        /// for an article the reader IS the preview, and what is left under
+        /// that tab is the card and the metadata.
+        static func tabs(for doc: TraceMacDocument) -> [DocDetailTab] {
+            MacReaderView.canRead(doc) ? [.read, .preview, .note] : [.preview, .note]
+        }
+
+        func label(for doc: TraceMacDocument) -> String {
+            switch self {
+            case .read: return "Read"
+            case .preview: return MacReaderView.canRead(doc) ? "Details" : "Preview"
+            case .note: return "Note"
+            }
+        }
     }
 
 
@@ -4469,5 +4527,39 @@ struct PreviewZoomBar: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+}
+
+// MARK: - Documents · Shelf (D422)
+
+/// The two ways to look at Satchel's list. The day-nav grammar the right
+/// column's tabs already use: quiet caps words, accent on the one you are in,
+/// over an ink rule.
+struct MacSatchelModeTabs: View {
+    @Binding var showShelf: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 18) {
+                tab("Documents", on: !showShelf) { showShelf = false }
+                tab("Shelf", on: showShelf) { showShelf = true }
+                Spacer()
+            }
+            .padding(.horizontal, MacEditorialLayout.margin)
+            .padding(.top, 6)
+            MacEditorialRule.hair
+        }
+    }
+
+    private func tab(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
+        let color: Color = on ? MacEditorialColor.accent : MacEditorialColor.faint
+        return Button(action: action) {
+            Text(title)
+                .editorialQuietLabel()
+                .foregroundStyle(color)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

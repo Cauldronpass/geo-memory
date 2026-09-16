@@ -20,7 +20,7 @@ import Observation
 //
 // Do not change these four without checking what breaks in Satchel.
 
-struct Endeavor: Identifiable, Hashable, Sendable {
+struct Endeavor: Identifiable, Hashable, Sendable, KitTrip {
     let id: String
     let name: String
     let type: String
@@ -59,12 +59,15 @@ struct Endeavor: Identifiable, Hashable, Sendable {
     /// appeared at midnight on the day of the flight and not a minute sooner —
     /// which is not when it matters. It matters the evening before, checking in
     /// and packing. David's number, 2026-07-29.
-    static let kitLeadInDays = 3
+    ///
+    /// **Now `KitWindow.leadInDays`, shared with the Mac (D420).** Kept as a
+    /// name here so nothing that reads it had to change.
+    static let kitLeadInDays = KitWindow.leadInDays
 
     /// Days after `end` that they stay. The return leg is flown on the last day
     /// and receipts are collected on it, so Kit going dark at midnight on the
     /// final date drops the documents on the day they are still in use.
-    static let kitTailDays = 1
+    static let kitTailDays = KitWindow.tailDays
 
     /// Days after `end` that a trip is still offered in the FILING pickers'
     /// main list, before it drops into their "Past" submenu.
@@ -101,27 +104,16 @@ struct Endeavor: Identifiable, Hashable, Sendable {
     ///
     /// Depends on nothing but the contract fields plus the two windows above, so
     /// there is no state to clean up when a trip ends.
+    ///
+    /// **The rule itself moved to `KitWindow.isRelevant` (D420)** so the Mac's
+    /// IN PLAY decides what is in the bag with the same code.
     func isKitRelevant(on date: Date) -> Bool {
-        guard isTravel, !isCancelled else { return false }
-        // A Travel Endeavor with no dates at all is never relevant — otherwise
-        // every undated trip would permanently occupy half the Kit grid.
-        guard start != nil || end != nil else { return false }
-
-        let cal = Calendar.current
-        let day = cal.startOfDay(for: date)
-
-        if let start {
-            let opens = cal.date(byAdding: .day, value: -Self.kitLeadInDays,
-                                 to: cal.startOfDay(for: start))
-            if let opens, day < opens { return false }
-        }
-        if let end {
-            let closes = cal.date(byAdding: .day, value: Self.kitTailDays,
-                                  to: cal.startOfDay(for: end))
-            if let closes, day > closes { return false }
-        }
-        return true
+        KitWindow.isRelevant(self, on: date)
     }
+
+    var kitIsCancelled: Bool { isCancelled }
+    var kitStart: Date? { start }
+    var kitEnd: Date? { end }
 
     /// A clause that reads grammatically after the trip's name: *"starts in 3
     /// days"*, *"runs through Jul 31"*, *"ended yesterday"*.
@@ -283,10 +275,7 @@ final class SatchelEndeavorStore {
     /// windows — see `Endeavor.isKitRelevant(on:)`. It is not the same as the
     /// trip having started.
     func activeTrip(on date: Date = Date()) -> Endeavor? {
-        endeavors
-            .filter { $0.isKitRelevant(on: date) }
-            .sorted { ($0.end ?? .distantFuture) < ($1.end ?? .distantFuture) }
-            .first
+        KitWindow.activeTrip(in: endeavors, on: date)
     }
 
     /// What the filing pickers should offer, in the order worth offering it.
@@ -577,23 +566,10 @@ enum KitMembership {
         // Documents pinned before the key existed have none, and sort AFTER the
         // ordered ones by capture date, so they land at the end instead of
         // shuffling to the front on first launch.
-        let pinned = documents
-            .filter(\.pinned)
-            .sorted { lhs, rhs in
-                switch (lhs.kitOrder, rhs.kitOrder) {
-                case let (l?, r?): return l < r
-                case (nil, _?):    return false
-                case (_?, nil):    return true
-                case (nil, nil):
-                    return (lhs.listDate ?? .distantPast) < (rhs.listDate ?? .distantPast)
-                }
-            }
+        let pinned = KitWindow.pinned(documents)
 
         // --- Active-trip documents ---
-        let trip = endeavors
-            .filter { $0.isKitRelevant(on: today) }
-            .sorted { ($0.end ?? .distantFuture) < ($1.end ?? .distantFuture) }
-            .first
+        let trip = KitWindow.activeTrip(in: endeavors, on: today)
         result.activeTrip = trip
 
         var tripDocs: [TraceMacDocument] = []
@@ -611,17 +587,7 @@ enum KitMembership {
             // for a trip kit points FORWARD — a rental confirmation for next May
             // sorted as the most recently added thing in the bag. `listDate` is
             // the arrival stamp this always meant.
-            tripDocs = documents
-                .filter { $0.endeavor == trip.id && !$0.pinned }
-                .sorted { lhs, rhs in
-                    switch (lhs.kitOrder, rhs.kitOrder) {
-                    case let (l?, r?): return l < r
-                    case (nil, _?):    return false
-                    case (_?, nil):    return true
-                    case (nil, nil):
-                        return (lhs.listDate ?? .distantPast) > (rhs.listDate ?? .distantPast)
-                    }
-                }
+            tripDocs = KitWindow.tripDocuments(documents, tripID: trip.id)
         }
 
         result.pinnedCount = pinned.count

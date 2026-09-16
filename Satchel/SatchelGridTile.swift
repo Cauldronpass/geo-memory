@@ -33,7 +33,7 @@ struct SatchelDocumentGrid: View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
             ForEach(documents, id: \.relativePath) { doc in
                 NavigationLink {
-                    SatchelViewerView(document: doc, store: store, siblings: ordered)
+                    SatchelOpenView(document: doc, store: store, siblings: ordered)
                 } label: {
                     SatchelGridTile(document: doc)
                 }

@@ -680,7 +680,13 @@ class NoteStore {
         let notes = NSPredicate(format: "%K LIKE '*.md'", NSMetadataItemFSNameKey)
         let documents = NSPredicate(format: "%K CONTAINS[c] %@",
                                     NSMetadataItemPathKey, "/Documents/Documents/")
-        query.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [notes, documents])
+        // **The pin index, by name** (D424). `Dayflow-Flags.json` is neither a
+        // `.md` nor under `Documents/`, so a pin set on the phone reached this
+        // disk and nothing said so: David pinned Rivian R2 in Dayflow, the file
+        // on the Mac had it two minutes later, and TraceMac went on showing the
+        // pins it read at launch.
+        let flags = NSPredicate(format: "%K == %@", NSMetadataItemFSNameKey, "Dayflow-Flags.json")
+        query.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [notes, documents, flags])
 
         metadataObserver = NotificationCenter.default.addObserver(
             forName: .NSMetadataQueryDidUpdate,
@@ -709,7 +715,9 @@ class NoteStore {
             // Checked first: a sidecar in `Documents/` is also a `.md`, and
             // falling through to the note cases would announce it as something
             // it is not.
-            if path.contains("/Documents/Documents/") {
+            if filename == "Dayflow-Flags.json" {
+                NotificationCenter.default.post(name: .noteStoreFlagsDidChange, object: path)
+            } else if path.contains("/Documents/Documents/") {
                 NotificationCenter.default.post(
                     name: .noteStoreDocumentsDidChange,
                     object: path
@@ -1810,6 +1818,11 @@ extension Notification.Name {
     /// A file appeared or changed under `Documents/`, from another device or
     /// another app on this one. Session 69, for the Dropzone hand-off.
     static let noteStoreDocumentsDidChange = Notification.Name("com.david.trace.noteStoreDocumentsDidChange")
+
+    /// The pin index (`Dayflow-Flags.json`) changed on another device (D424).
+    /// `DayflowFlagStore` listens for this itself, so every screen that reads a
+    /// pin follows without knowing the signal exists.
+    static let noteStoreFlagsDidChange = Notification.Name("com.david.trace.noteStoreFlagsDidChange")
 }
 
 // MARK: - Error

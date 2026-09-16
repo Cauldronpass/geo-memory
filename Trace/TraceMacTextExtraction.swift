@@ -176,7 +176,15 @@ enum MacTextExtraction {
         return url
     }
 
-    nonisolated static func links(in text: String) -> [URL] {
+    nonisolated static func links(in raw: String) -> [URL] {
+        // **Photo lines out first** (D427). An article saved in Satchel's D419
+        // format carries `![caption](address)` lines, and every photo address
+        // would otherwise be listed as a link he saved, on both machines.
+        let text: String = raw.contains("![")
+            ? raw.components(separatedBy: "\n")
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("![") }
+                .joined(separator: "\n")
+            : raw
         guard !text.isEmpty,
               let detector = try? NSDataDetector(
                   types: NSTextCheckingResult.CheckingType.link.rawValue)

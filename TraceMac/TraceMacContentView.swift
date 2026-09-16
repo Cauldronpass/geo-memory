@@ -251,10 +251,17 @@ struct TraceMacContentView: View {
         // arrows entirely. Sidebar is fixed at 200px; detail fills the rest.
         ZStack {
             HStack(spacing: 0) {
-                sidebar
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor))
-                    .frame(width: 1)
+                // Folded away while the reader is in focus (D422). A wrapper
+                // view, not an `if` here: this body is the one at the
+                // type-checker's limit.
+                MacReaderFocusHider {
+                    HStack(spacing: 0) {
+                        sidebar
+                        Rectangle()
+                            .fill(Color(nsColor: .separatorColor))
+                            .frame(width: 1)
+                    }
+                }
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -833,6 +840,7 @@ struct TraceMacContentView: View {
             recordsGroup
             MacInPlayGroup(endeavors: liveEndeavors,
                            tasks: flaggedTasks,
+                           notes: pinnedNotes,
                            documents: kitDocuments,
                            onOpenTask: openTask)
             Spacer(minLength: 0)
@@ -935,6 +943,21 @@ struct TraceMacContentView: View {
     /// snapshot to keep in step — which a `@State` copy would need, and would
     /// get wrong the first time a flag was set from a screen that forgot to
     /// tell it.
+    /// Pinned notes, oldest pin first (D423), read straight off the shared
+    /// pin index the Notes list and Dayflow already use.
+    ///
+    /// **Not a new frontmatter key**, which is what the register said this
+    /// step would need. The pin already exists: `DayflowFlagStore`, one JSON
+    /// file in the vault root keyed on the note's path, written by the Notes
+    /// list's pin and by Dayflow on the phone since Session 69. Notes carry no
+    /// frontmatter, which is exactly why it was built that way. Oldest first,
+    /// the Kit rule: a new pin lands at the end rather than moving the rest.
+    private var pinnedNotes: [String] {
+        DayflowFlagStore.shared.flaggedAt
+            .sorted { $0.value < $1.value }
+            .map(\.key)
+    }
+
     private var flaggedTasks: [ThingsTask] {
         ReminderTaskStore.shared.allTasks.filter(\.flagged)
     }
@@ -957,33 +980,35 @@ struct TraceMacContentView: View {
         // to have been filled. This is the same call Today's meta strip makes
         // when a document is opened.
         await ReminderTaskStore.shared.refreshAll()
+        // A pin set on the phone while this window sat there (D423).
+        DayflowFlagStore.shared.reload()
         let today = Date()
-        let endeavors = EndeavorFile.loadAll(from: noteStore)
+        let everything: [Endeavor] = EndeavorFile.loadAll(from: noteStore)
+        let endeavors: [Endeavor] = everything
             .filter { $0.status(on: today) == .active }
             .sorted { ($0.ends ?? .distantFuture) < ($1.ends ?? .distantFuture) }
 
         let store = TraceMacDocumentStore(noteStore: noteStore)
         await store.reload()
-        // **Manual pins only, for now.** Kit is pins PLUS the documents of an
-        // imminent trip, and that half is decided by `isKitRelevant(on:)`, which
-        // lives in Satchel's target on Satchel's own four-field `Endeavor` — a
-        // different type from this one, and invisible from here. A copy of that
-        // rule on the Mac would be two definitions of what is in his bag. It
-        // moves to shared code in its own build.
+        // **Kit, whole: pins, then the documents of a trip close enough to need
+        // in hand** (D420). Both halves come from `KitWindow`, the same code
+        // Satchel's Kit runs, so the rail and the phone cannot disagree about
+        // what is in the bag. Until D420 this was pins only, because the trip
+        // rule lived in Satchel's target on Satchel's own `Endeavor`.
         //
-        // `kit_order` ascending, exactly as Satchel sorts it, so the same pins
-        // read in the same order on both machines.
-        let docs = store.documents
-            .filter(\.pinned)
-            .sorted { lhs, rhs in
-                switch (lhs.kitOrder, rhs.kitOrder) {
-                case let (l?, r?): return l < r
-                case (nil, _?):    return false
-                case (_?, nil):    return true
-                case (nil, nil):
-                    return (lhs.listDate ?? .distantPast) < (rhs.listDate ?? .distantPast)
-                }
-            }
+        // The trip is chosen from ALL endeavors, not the `active` ones above:
+        // Kit opens three days before a trip starts and closes a day after it
+        // ends, and `status` is strict about both. A boarding pass for Friday's
+        // flight is in the bag on Tuesday while the trip still reads upcoming.
+        //
+        // No four-tile cap and no reserved slots. Those exist so Satchel's grid
+        // cannot grow down the screen; the rail is a list and draws everything,
+        // exactly as Home's strip does (D418).
+        let pinned: [TraceMacDocument] = KitWindow.pinned(store.documents)
+        var docs: [TraceMacDocument] = pinned
+        if let trip = KitWindow.activeTrip(in: everything, on: today) {
+            docs += KitWindow.tripDocuments(store.documents, tripID: trip.id)
+        }
 
         liveEndeavors = endeavors
         kitDocuments = docs
@@ -2325,14 +2350,16 @@ struct MacInPlayGroup: View {
 
     let endeavors: [Endeavor]
     let tasks: [ThingsTask]
+    /// Vault-relative paths of pinned notes (D423).
+    let notes: [String]
     let documents: [TraceMacDocument]
     let onOpenTask: (String) -> Void
 
     private var isEmpty: Bool {
-        endeavors.isEmpty && tasks.isEmpty && documents.isEmpty
+        endeavors.isEmpty && tasks.isEmpty && notes.isEmpty && documents.isEmpty
     }
 
-    /// Endeavors, then flagged tasks, then the bag. Roughly most fixed to least:
+    /// Endeavors, then flagged tasks, then pinned notes (D423), then the bag. Roughly most fixed to least:
     /// an endeavor's dates are not up for debate today, a flag is something he
     /// chose this week, a pinned document is something he chose once.
     var body: some View {
@@ -2350,6 +2377,14 @@ struct MacInPlayGroup: View {
                         onOpenTask(task.id)
                     }
                 }
+                ForEach(notes, id: \.self) { path in
+                    MacInPlayRow(symbol: "pin", title: Self.noteTitle(path)) {
+                        MacInPlayRow.openRecord(type: "note", id: path)
+                    }
+                    .contextMenu {
+                        Button("Unpin") { DayflowFlagStore.shared.clearFlag(path) }
+                    }
+                }
                 ForEach(documents) { document in
                     let symbol: String = document.resolvedIcon.sfSymbol
                     MacInPlayRow(symbol: symbol, title: document.title) {
@@ -2358,6 +2393,12 @@ struct MacInPlayGroup: View {
                 }
             }
         }
+    }
+
+    /// "Notes/Projects/Trace improvements.md" → "Trace improvements".
+    private static func noteTitle(_ path: String) -> String {
+        let name: String = (path as NSString).lastPathComponent
+        return (name as NSString).deletingPathExtension
     }
 
     /// The same shape as `TraceMacContentView.groupLabel`, spelled here so this

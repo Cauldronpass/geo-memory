@@ -1311,3 +1311,22 @@ enum WikiSuggestions {
         return out
     }
 }
+
+// MARK: - Kit (D420)
+
+/// The shared model's half of `KitTrip`, so the Mac asks Satchel's question
+/// with Satchel's rule (`KitWindow.swift`) rather than a copy of it.
+///
+/// **Cancelled only, not on hold.** Satchel's parser has always read
+/// `status: cancelled` and nothing else as "not going", so a paused trip still
+/// fills Kit on both machines. Changing that is a decision about the rule, and
+/// it belongs in `KitWindow`, once, not in one conformance.
+extension Endeavor: KitTrip {
+    var kitIsCancelled: Bool { statusOverride == .cancelled }
+    var kitStart: Date? { starts }
+    var kitEnd: Date? { ends }
+
+    func isKitRelevant(on date: Date) -> Bool {
+        KitWindow.isRelevant(self, on: date)
+    }
+}

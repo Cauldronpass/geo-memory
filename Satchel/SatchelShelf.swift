@@ -15,80 +15,10 @@
 import SwiftUI
 
 // MARK: - Membership
-
-/// Who is on the shelf, and in what order.
-///
-/// A plain namespace over `[TraceMacDocument]` rather than a store: every
-/// question here is a filter and a sort over documents the store already holds,
-/// so a second thing to keep in step would be E40's mistake in miniature.
-enum SatchelShelf {
-
-    /// Words a minute. The number every reading-time estimate uses, and it only
-    /// has to be roughly right — the figure exists to separate "a coffee" from
-    /// "an evening", not to be accurate to the minute.
-    static let wordsPerMinute = 230
-
-    static func isArticle(_ doc: TraceMacDocument) -> Bool {
-        doc.articleState == .article
-    }
-
-    /// Ordered, and the order IS `read_next` (D407): moving item 1 to fourth
-    /// drops it off Home and keeps it on the Shelf.
-    static func upNext(_ documents: [TraceMacDocument]) -> [TraceMacDocument] {
-        documents
-            .filter { isArticle($0) && $0.readOn == nil && $0.readNext != nil }
-            .sorted { ($0.readNext ?? 0) < ($1.readNext ?? 0) }
-    }
-
-    /// Everything else that is readable and unread, newest arrival first.
-    static func newArrivals(_ documents: [TraceMacDocument]) -> [TraceMacDocument] {
-        documents
-            .filter { isArticle($0) && $0.readOn == nil && $0.readNext == nil }
-            .sorted { ($0.listDate ?? .distantPast) > ($1.listDate ?? .distantPast) }
-    }
-
-    /// Articles leave Recent (D407). Read ones leave too: a piece he has
-    /// finished is not what "recent" is asking about.
-    static func notOnShelf(_ documents: [TraceMacDocument]) -> [TraceMacDocument] {
-        documents.filter { !isArticle($0) }
-    }
-
-    /// Minutes to read, from the pulled text. Never zero — an article with a
-    /// word count under a minute still took a decision to save.
-    static func minutes(_ doc: TraceMacDocument) -> Int {
-        let words = doc.extractedText.split(whereSeparator: { $0.isWhitespace }).count
-        return max(1, Int((Double(words) / Double(wordsPerMinute)).rounded()))
-    }
-
-    static func totalMinutes(_ documents: [TraceMacDocument]) -> Int {
-        documents.reduce(0) { $0 + minutes($1) }
-    }
-
-    /// The site, for the kicker under a title. The host without `www.`, which
-    /// is what a reader recognises.
-    static func site(_ doc: TraceMacDocument) -> String {
-        guard let url = TraceMacDocument.openableURL(doc.url), let host = url.host else { return "" }
-        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-    }
-
-    /// Finished, most recently read first. **The shelf keeps them** (D418): a
-    /// read article that vanishes from every screen is what happened to the
-    /// Emmys piece, and the only way back was to know it had gone. Folded by
-    /// default, because it is a record and not a queue.
-    static func read(_ documents: [TraceMacDocument]) -> [TraceMacDocument] {
-        documents
-            .filter { isArticle($0) && $0.readOn != nil }
-            .sorted { ($0.readOn ?? .distantPast) > ($1.readOn ?? .distantPast) }
-    }
-
-    /// "read Sep 13", for a card in the library.
-    static func readLine(_ doc: TraceMacDocument) -> String? {
-        guard let read = doc.readOn else { return nil }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "MMM d"
-        return "read \(fmt.string(from: read))"
-    }
-}
+//
+// `SatchelShelf` — who is on the shelf and in what order — moved to
+// `Trace/SatchelArticleText.swift` in D422 so TraceMac's Shelf reads the same
+// rule. Nothing about it changed.
 
 // MARK: - Home
 
@@ -181,7 +111,7 @@ struct SatchelUpNextSection: View {
             }
         ) {
             NavigationLink {
-                SatchelViewerView(document: doc, store: store, siblings: queue)
+                SatchelOpenView(document: doc, store: store, siblings: queue)
             } label: {
                 SatchelUpNextRow(index: index, document: doc)
             }

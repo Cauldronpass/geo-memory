@@ -105,6 +105,13 @@ struct DayflowTaskPoolRow: View {
             // rail, and a row that says nothing about its note or its link is
             // the failure D229 was written against. Same glyphs, same accent
             // as Today's rows.
+            // Flagged (D413/D427): the reminder's priority, in accent, first in
+            // the cluster, because it is the one mark he set on purpose.
+            if task.flagged {
+                Image(systemName: "flag.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.dayflowAccent)
+            }
             if task.hasNoteProse {
                 Image(systemName: "text.alignleft")
                     .font(.system(size: 10.5, weight: .semibold))
@@ -147,8 +154,11 @@ struct DayflowTaskPoolRow: View {
             // phone is a worse door than the one that already exists: the row
             // opens the task, and its Linked section names the endeavor and
             // opens it (D285, and the resolver in D282).
+            // **`bookmark`, not `flag`, since D427.** On a task, `flag` now
+            // means flagged (D413), drawn in accent just above; an endeavor
+            // link keeps its faint mark under the Mac's new glyph.
             if EndeavorFile.linkedName(in: task.notes, among: endeavorNames) != nil {
-                Image(systemName: "flag")
+                Image(systemName: "bookmark")
                     .font(.system(size: 10))
                     .foregroundStyle(Color.dayflowFaint)
             }
@@ -156,6 +166,14 @@ struct DayflowTaskPoolRow: View {
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        // Long press: the task menu (D428 Flag, D429 the rest; DayflowTaskMenu).
+        // Long press to flag (D428). David: *"Isnt there an easier way to flag
+        // it"* — the switch was three screens deep. A menu, not a third swipe:
+        // right is When and left is select, and a long press is the gesture a
+        // phone already offers on every row for "more to do with this".
+        .contextMenu {
+            DayflowTaskMenu(task: task) { onWhen(task) }
+        }
         .onTapGesture {
             if selection.isActive {
                 if selected { selection.ids.remove(task.id) }
