@@ -139,7 +139,9 @@ class iOSDocumentStore {
                     fetchedOn: sidecar?.fetchedOn,
                     readNext: sidecar?.readNext,
                     readOn: sidecar?.readOn,
-                    readPosition: sidecar?.readPosition
+                    readPosition: sidecar?.readPosition,
+                    highlightsRaw: body.highlights,
+                    noteFile: sidecar?.noteFile
                 )
                 result.append(doc)
             }
@@ -254,6 +256,10 @@ class iOSDocumentStore {
         }
 
         data.places       = places ?? existing?.places ?? doc.places
+        // Preserved, never taken as an argument: nothing sets a document's own
+        // note except the reader's Send to note, and every other save has to
+        // leave it exactly as it found it (D433).
+        data.noteFile     = existing?.noteFile ?? doc.noteFile
 
         data.articleState = articleState ?? existing?.articleState ?? doc.articleState
         switch fetchedOn {
@@ -347,6 +353,7 @@ class iOSDocumentStore {
             readOn: doc.readOn,
             readPosition: doc.readPosition
         )
+        data.noteFile = data.noteFile ?? doc.noteFile
 
         if data.title == nil   { data.title = doc.title }
         if data.created == nil { data.created = doc.created ?? Date() }
@@ -598,6 +605,48 @@ class iOSDocumentStore {
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
     }
 
+    // MARK: - Highlights (D431, Session 107)
+
+    /// Rewrites `## Highlights` and nothing else.
+    ///
+    /// Same shape as `writeExtractedText` directly above, and for the same
+    /// reason: the body is read back before the file is rebuilt, so the note,
+    /// the summary, the article text and every frontmatter key survive a write
+    /// that only means to change one section. The in-memory document is patched
+    /// rather than the whole store reloaded — the reader calls this on every
+    /// highlight made or removed, and a full reload per highlight would stutter
+    /// the article he is reading.
+    /// **Takes the rendered section, not `[SatchelHighlight]`.** Dayflow
+    /// compiles this file but not `SatchelArticleText.swift`, where the
+    /// highlight type lives, so naming that type here would break Dayflow's
+    /// build for a store it never calls. Satchel renders, this writes.
+    ///
+    /// `noteFile` is written in the same pass when Send to note has just made or
+    /// found the document's own note, so one write records both the highlights
+    /// now marked sent and where they went.
+    @discardableResult
+    func writeHighlights(_ rendered: String,
+                         for doc: TraceMacDocument,
+                         noteFile: String? = nil) throws -> TraceMacDocument {
+        var body = readBody(at: doc.sidecarPath)
+        body.highlights = rendered.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var data = parseSidecar(at: doc.sidecarPath) ?? SidecarData()
+        if data.created == nil { data.created = doc.created ?? Date() }
+        if data.noteFile == nil { data.noteFile = doc.noteFile }
+        if let noteFile, !noteFile.isEmpty { data.noteFile = noteFile }
+
+        try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))
+
+        var updated = doc
+        updated.highlightsRaw = body.highlights
+        updated.noteFile = data.noteFile
+        if let index = documents.firstIndex(where: { $0.relativePath == doc.relativePath }) {
+            documents[index] = updated
+        }
+        return updated
+    }
+
     // MARK: - Privacy
 
     /// What the DISK says about this document's privacy, including "I cannot
@@ -679,6 +728,15 @@ class iOSDocumentStore {
         /// Sidecar key `places` (D385). Same rule as `url` and `remind`: a
         /// key this struct does not carry is a key the next save deletes.
         var places: [String]
+        /// The document's OWN note, sidecar key `note_file` (D433, Session 107).
+        ///
+        /// **Not `linked_note`.** That one links the document to a PROJECT note
+        /// shared by every document in the project, and the Mac's project
+        /// filtering reads it; pointing it at a per-document note would pull the
+        /// document out of its project. This is a second, separate link, and the
+        /// endeavor is a third. Both stores gained it in the same build, before
+        /// anything could write one, which is the rule `remind` did not get.
+        var noteFile: String?
         /// Reading shelf keys (D407, Session 105): `article`, `fetched`,
         /// `read_next`, `read`, `read_position`. Same rule again, and this time
         /// the rule was applied to both stores in the same build BEFORE any UI
@@ -770,11 +828,18 @@ class iOSDocumentStore {
         /// exactly what "no text" looks like, and without the marker a
         /// photograph of a sunset is re-OCR'd forever. Same trap D90 named.
         var hasTextSection: Bool = false
+    /// Highlights he made while reading, under `## Highlights` (D431).
+    ///
+    /// **A body section, not a frontmatter key**, for the same reason `## Text`
+    /// is one: a key the other store does not know is a key that store's next
+    /// save deletes. Both stores parse and re-emit this section as of the same
+    /// build, which is the D407 Build 1 rule.
+    var highlights: String = ""
         var extra: String = ""
 
         var isEmpty: Bool {
             note.isEmpty && summary.isEmpty && extra.isEmpty
-                && text.isEmpty && !hasTextSection
+                && text.isEmpty && !hasTextSection && highlights.isEmpty
         }
     }
 
@@ -783,6 +848,10 @@ class iOSDocumentStore {
     /// Must stay byte-identical to `TraceMacDocumentStore.textHeading`. Two
     /// spellings of one heading is two parsers that disagree about the same file.
     static let textHeading = "## Text"
+    /// Byte-identical in both stores, like `textHeading`, and spelt out here
+    /// rather than borrowed from `SatchelHighlightText` so neither store gains
+    /// a compile-time dependency on a file its target may not carry.
+    static let highlightsHeading = "## Highlights"
 
     func parseBody(_ raw: String) -> SidecarBody {
         var body = SidecarBody()
@@ -799,10 +868,11 @@ class iOSDocumentStore {
             index += 1
         }
 
-        enum Section { case none, note, summary, text }
+        enum Section { case none, note, summary, text, highlights }
         var section: Section = .none
         var note: [String] = [], summary: [String] = [], extra: [String] = []
         var text: [String] = []
+        var highlights: [String] = []
 
         while index < lines.count {
             let line = lines[index]
@@ -814,6 +884,8 @@ class iOSDocumentStore {
             } else if trimmed == Self.textHeading {
                 section = .text
                 body.hasTextSection = true
+            } else if trimmed == Self.highlightsHeading {
+                section = .highlights
             } else if trimmed.hasPrefix("## ") {
                 // An unrecognised heading — hand it and everything under it to
                 // `extra` rather than swallowing it into the previous section.
@@ -824,6 +896,7 @@ class iOSDocumentStore {
                 case .note:    note.append(line)
                 case .summary: summary.append(line)
                 case .text:    text.append(line)
+                case .highlights: highlights.append(line)
                 case .none:    extra.append(line)
                 }
             }
@@ -836,6 +909,7 @@ class iOSDocumentStore {
         body.note = tidy(note)
         body.summary = tidy(summary)
         body.text = tidy(text)
+        body.highlights = tidy(highlights)
         body.extra = tidy(extra)
         return body
     }
@@ -859,6 +933,12 @@ class iOSDocumentStore {
             out += body.text.isEmpty
                 ? "\n\(Self.textHeading)\n"
                 : "\n\(Self.textHeading)\n\n\(body.text)\n"
+        }
+        // After the article and before `extra`, in both stores. Only a
+        // document with highlights gains the section at all, so nothing that
+        // has none is rewritten by this build.
+        if !body.highlights.isEmpty {
+            out += "\n\(Self.highlightsHeading)\n\n\(body.highlights)\n"
         }
         if !body.extra.isEmpty {
             out += "\n\(body.extra)\n"
@@ -945,6 +1025,9 @@ class iOSDocumentStore {
         if let pos = data.readPosition {
             content += "read_position: \(String(format: "%.3f", pos))\n"
         }
+        if let noteFile = data.noteFile, !noteFile.isEmpty {
+            content += "note_file: \(noteFile)\n"
+        }
         content += "---\n"
         content += renderBody(body)
         return content
@@ -990,6 +1073,9 @@ class iOSDocumentStore {
                 let stripped = value.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
                 data.tags = stripped.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             case "created":     data.created = dateFmt.date(from: value)
+            case "note_file":
+                let v = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                data.noteFile = v.isEmpty ? nil : v
             case "linked_note": data.linkedNote = value
             case "people":
                 let stripped = value.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))

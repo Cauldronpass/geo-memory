@@ -1015,13 +1015,45 @@ struct SatchelCaptureView: View {
     /// unavailable on this device, and a private capture with a plain title is
     /// a mild disappointment rather than a problem.
     private func fillLocally(for document: TraceMacDocument) async {
+        // **Shown as reading, like the cloud scan.** The picture pass takes ten
+        // to thirty seconds on the phone, and with no spinner the button read
+        // "Private. Nothing has been sent" the whole time, so David saved
+        // before it finished and the fill was lost. Same flag the cloud path
+        // uses; the button says "Reading the document…" until it lands.
+        isScanning = true
+        defer { isScanning = false }
         // The extraction pass runs on the library's side after this sheet
         // closes, so read the file directly rather than waiting for it.
         guard let url = noteStore.resolvedURL(for: document.relativePath) else { return }
         let text = await Task.detached { MacTextExtraction.extract(from: url) }.value ?? ""
-        guard !text.isEmpty else { return }
+        // **The picture goes too** (D453). The on-device model reads images
+        // now, so a private capture gets the same eight fields the cloud scan
+        // fills, from the words and the picture, and nothing leaves the phone.
+        // A photo whose OCR came back empty is still worth a look.
+        let picture: CGImage? = await Task.detached { MacLocalIntelligence.pictureForScan(at: url) }.value
+        guard !text.isEmpty || picture != nil else {
+            scanNote = "Nothing to read on this device: no text and no picture. Nothing was sent."
+            return
+        }
 
         let hint = userContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let result = await MacLocalIntelligence.scanPrivately(
+            text: text, hint: hint, image: picture, knownPeople: PeopleIndex.read().map(\.name)
+        ) {
+            let filled: Bool = apply(result, for: document, overwrite: false)
+            scanNote = filled
+                ? "Read on this device by the on-device model. Nothing was sent."
+                : "The on-device model read this but had nothing to suggest. Nothing was sent."
+            if filled { return }
+        } else {
+            // Say why, so a silent nil is never mistaken for "nothing here".
+            let why: String = MacLocalIntelligence.lastFailure ?? "It gave no answer."
+            scanNote = "The on-device model could not read this. \(why) Nothing was sent."
+        }
+
+        // The older path, for a phone without the on-device model: tags and a
+        // summary from the words, the title from the document's own first line.
+        guard !text.isEmpty else { return }
         for marked in MacTextExtraction.hashTags(in: hint)
         where !tags.contains(where: { $0.caseInsensitiveCompare(marked) == .orderedSame }) {
             tags.append(marked)
@@ -1116,10 +1148,33 @@ struct SatchelCaptureView: View {
             return
         }
 
-        var filledAnything = false
+        let filledAnything: Bool = apply(result, for: document, overwrite: overwrite)
 
-        // The automatic pass never clobbers something already typed — it can take
-        // several seconds and the form is live throughout. An explicit re-run does.
+        // The other half of the silence: the call succeeded and the model simply
+        // had nothing useful, which on handwriting is a perfectly ordinary
+        // outcome and should say so rather than look like a failure.
+        if !filledAnything {
+            scanNote = "AI read this but had nothing to suggest. Handwriting and photos of objects often come back empty — fill the title in by hand."
+        } else if result.title == nil || result.description.isEmpty {
+            // A PARTIAL answer is its own outcome and used to look like a total
+            // failure: the icon and tags would fill in, the title and
+            // description would sit there blank, and nothing said which of those
+            // was the AI's doing. Naming the gap is also what identified the
+            // prompt's contradictory title instruction (see `buildPrompt`).
+            var missing: [String] = []
+            if result.title == nil { missing.append("title") }
+            if result.description.isEmpty { missing.append("description") }
+            scanNote = "AI filled what it could but returned no \(missing.joined(separator: " or ")). Try Ask AI again, or type it in."
+        }
+    }
+
+    /// Puts a scan's answers onto the form (D453 lifted this out of `runScan`
+    /// so the private on-device scan and the cloud scan land the same way).
+    /// The automatic pass never clobbers something already typed; an explicit
+    /// re-run does. Answers with whether anything was filled.
+    @discardableResult
+    private func apply(_ result: DocumentScanResult, for document: TraceMacDocument, overwrite: Bool) -> Bool {
+        var filledAnything = false
         if let suggested = result.title,
            overwrite || title.trimmingCharacters(in: .whitespacesAndNewlines) == document.title {
             title = suggested
@@ -1175,22 +1230,7 @@ struct SatchelCaptureView: View {
             filledAnything = true
         }
 
-        // The other half of the silence: the call succeeded and the model simply
-        // had nothing useful, which on handwriting is a perfectly ordinary
-        // outcome and should say so rather than look like a failure.
-        if !filledAnything {
-            scanNote = "AI read this but had nothing to suggest. Handwriting and photos of objects often come back empty — fill the title in by hand."
-        } else if result.title == nil || result.description.isEmpty {
-            // A PARTIAL answer is its own outcome and used to look like a total
-            // failure: the icon and tags would fill in, the title and
-            // description would sit there blank, and nothing said which of those
-            // was the AI's doing. Naming the gap is also what identified the
-            // prompt's contradictory title instruction (see `buildPrompt`).
-            var missing: [String] = []
-            if result.title == nil { missing.append("title") }
-            if result.description.isEmpty { missing.append("description") }
-            scanNote = "AI filled what it could but returned no \(missing.joined(separator: " or ")). Try Ask AI again, or type it in."
-        }
+        return filledAnything
     }
 
     // MARK: Save / cancel

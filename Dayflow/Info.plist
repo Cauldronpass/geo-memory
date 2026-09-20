@@ -15,53 +15,37 @@
 			</array>
 		</dict>
 	</array>
-	<!-- Camera + photo library usage strings, added 2026-07-30.
-	     Dayflow declared NEITHER, in this file or in its build settings, while
-	     Trace and Satchel declare both. iOS terminates an app the moment it
-	     asks for camera access without NSCameraUsageDescription, which is why
-	     "Take Photo" crashed on first use and "Photo Library" did not: PHPicker
-	     runs out of process and needs no permission at all. Camera Scan would
-	     have crashed identically. Nothing had reached the camera from Dayflow
-	     before, because the only door to it was the keyboard toolbar. -->
-	<key>NSCameraUsageDescription</key>
-	<string>Dayflow uses the camera to take photos and scan documents into your notes.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Dayflow attaches photos you choose from your library to your notes.</string>
-	<!-- Home Screen quick action, added 2026-08-28 (Session 77). Handled by
-	     DayflowQuickActions.swift. -->
-	<key>UIApplicationShortcutItems</key>
-	<array>
-		<dict>
-			<key>UIApplicationShortcutItemType</key>
-			<string>AddTask</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>Add Task</string>
-			<key>UIApplicationShortcutItemIconSymbolName</key>
-			<string>plus.circle</string>
-		</dict>
-		<dict>
-			<key>UIApplicationShortcutItemType</key>
-			<string>AddEvent</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>Add Event</string>
-			<key>UIApplicationShortcutItemIconSymbolName</key>
-			<string>calendar.badge.plus</string>
-		</dict>
-		<dict>
-			<key>UIApplicationShortcutItemType</key>
-			<string>NewNote</string>
-			<key>UIApplicationShortcutItemTitle</key>
-			<string>New Note</string>
-			<key>UIApplicationShortcutItemIconSymbolName</key>
-			<string>square.and.pencil</string>
-		</dict>
-	</array>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Dayflow uses your location only to ring place reminders when you arrive somewhere you have flagged.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>plus.circle</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Add Task</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>AddTask</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>calendar.badge.plus</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Add Event</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>AddEvent</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>square.and.pencil</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>New Note</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>NewNote</string>
+		</dict>
+	</array>
 </dict>
 </plist>

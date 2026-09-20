@@ -9,14 +9,14 @@ struct PlaceDetailView: View {
     /// keeps working unchanged — every existing call site uses exactly that.
     init(place: Place, openToNotes: Bool = false) {
         self.place = place
-        _selectedTab = State(initialValue: openToNotes ? 3 : 0)
+        self.selectedTab = openToNotes ? 3 : 0
     }
 
     @Environment(NotionService.self) private var notionService
     @Environment(LocationManager.self) private var locationManager
     @Environment(\.dismiss) private var dismiss
 
-    @State private var selectedTab = 0
+    @State private var selectedTab: Int
     @State private var placeNoteContent: String = ""
     @State private var placeNoteLoaded = false
     @State private var wikiLinkTarget: WikiLinkTarget? = nil

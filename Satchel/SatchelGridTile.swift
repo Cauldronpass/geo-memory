@@ -28,6 +28,7 @@ struct SatchelDocumentGrid: View {
     @State private var taskFor: TraceMacDocument? = nil
     @State private var editing: TraceMacDocument? = nil
     @State private var pendingDelete: TraceMacDocument? = nil
+    @State private var noting: TraceMacDocument? = nil
 
     var body: some View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
@@ -41,6 +42,7 @@ struct SatchelDocumentGrid: View {
                 .satchelDocumentMenu(doc,
                                      onTask: { taskFor = doc },
                                      onEdit: { editing = doc },
+                                     onNote: { noting = doc },
                                      onPin: { togglePin(doc) },
                                      onDelete: { pendingDelete = doc },
                                      onRetry: {
@@ -53,6 +55,9 @@ struct SatchelDocumentGrid: View {
         }
         .sheet(item: $taskFor) { doc in
             SatchelTaskCard(document: doc)
+        }
+        .sheet(item: $noting) { doc in
+            SatchelNoteView(document: doc, store: store)
         }
         .sheet(item: $editing) { doc in
             NavigationStack {
@@ -355,6 +360,7 @@ struct SatchelDocumentMenu: ViewModifier {
     let document: TraceMacDocument
     let onTask: () -> Void
     let onEdit: () -> Void
+    let onNote: () -> Void
     let onPin: () -> Void
     let onDelete: () -> Void
     /// Only a blocked article has anything to retry, so this is optional and
@@ -377,6 +383,12 @@ struct SatchelDocumentMenu: ViewModifier {
             }
             Button(action: onEdit) {
                 Label("Edit", systemImage: "square.and.pencil")
+            }
+            // The document's own note, from the long press David asked for
+            // (D444). Reads "Add note" when there is none.
+            Button(action: onNote) {
+                Label((document.noteFile ?? "").isEmpty ? "Add note" : "Note",
+                      systemImage: "note.text")
             }
             Button(action: onPin) {
                 Label(document.pinned ? "Unpin from Kit" : "Pin to Kit",
@@ -404,10 +416,12 @@ extension View {
     func satchelDocumentMenu(_ document: TraceMacDocument,
                              onTask: @escaping () -> Void,
                              onEdit: @escaping () -> Void,
+                             onNote: @escaping () -> Void,
                              onPin: @escaping () -> Void,
                              onDelete: @escaping () -> Void,
                              onRetry: (() -> Void)? = nil) -> some View {
         modifier(SatchelDocumentMenu(document: document, onTask: onTask, onEdit: onEdit,
+                                     onNote: onNote,
                                      onPin: onPin, onDelete: onDelete, onRetry: onRetry))
     }
 }

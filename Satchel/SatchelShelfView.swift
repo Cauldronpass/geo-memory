@@ -240,6 +240,20 @@ struct SatchelShelfRow: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(Color.satchelTertiary)
                     if !recap.isEmpty { SatchelAIBadge() }
+                    // **How many passages he marked** (D435). A piece he worked
+                    // through is worth finding again without opening three
+                    // articles to remember which one it was. Counted off the
+                    // raw section rather than parsed: this draws per row.
+                    let marked: Int = SatchelHighlightText.count(document.highlightsRaw)
+                    if marked > 0 {
+                        HStack(spacing: 2) {
+                            Image(systemName: "highlighter")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("\(marked)")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.satchelPin)
+                    }
                 }
                 if !read, let progress = document.readPosition, progress > 0.02, progress < 0.98 {
                     SatchelReadBar(progress: progress)

@@ -90,6 +90,19 @@ struct SatchelViewerView: View {
         store.documents.first { $0.relativePath == document.relativePath } ?? document
     }
 
+    @Environment(SatchelChrome.self) private var chrome: SatchelChrome?
+    @State private var showNote = false
+
+    // MARK: Highlights in a PDF (D450)
+
+    @State private var pdfStage = SatchelPDFStage()
+    @State private var highlights: [SatchelHighlight] = []
+    @State private var showHighlights = false
+    @State private var openHighlight: SatchelHighlight? = nil
+    @State private var writingLine = false
+    @State private var lineDraft: String = ""
+    @State private var sentNoteName: String? = nil
+
     var body: some View {
         VStack(spacing: 0) {
             stage
@@ -98,6 +111,13 @@ struct SatchelViewerView: View {
             Spacer(minLength: 0)
         }
         .satchelBackground()
+        // **Clear of the tab bar** (D444). The root draws its own bar over
+        // everything (D417) and only the Shelf and All tabs were padded for it,
+        // so a document opened from Home had Share, Edit info and Add to Kit
+        // sitting underneath it. David: *"the bottom row ... is covered up by the
+        // home, shelf, all and plus icons."* The screen now owns its clearance
+        // wherever it is pushed from.
+        .safeAreaPadding(.bottom, chrome?.hidesTabBar == true ? 0 : 72)
         .navigationTitle(navTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -114,6 +134,57 @@ struct SatchelViewerView: View {
             case .remind: remindSheet
             case .tasks:  tasksSheet
             }
+        }
+        .sheet(isPresented: $showNote) {
+            SatchelNoteView(document: current, store: store)
+        }
+        .sheet(isPresented: $showHighlights) {
+            SatchelHighlightsList(
+                highlights: highlights,
+                colors: SatchelArticleInk(ink: Color.satchelInk,
+                                          secondary: Color.satchelSecondary,
+                                          faint: Color.satchelTertiary,
+                                          card: Color.satchelFill,
+                                          accent: Color.satchelBlue),
+                onJump: { highlight in
+                    showHighlights = false
+                    pdfStage.go(toPage: highlight.block)
+                },
+                onAddLine: { highlight in
+                    // Close the list first (D451): an alert asked for from
+                    // behind a sheet has nowhere to appear.
+                    showHighlights = false
+                    openHighlight = highlight
+                    lineDraft = highlight.line
+                    writingLine = true
+                },
+                onRemove: { highlight in removeHighlight(highlight.id) },
+                onSend: { sendHighlightsToNote() },
+                onClose: { showHighlights = false }
+            )
+            .presentationDetents([.medium, .large])
+        }
+        .confirmationDialog(openHighlight?.text ?? "",
+                            isPresented: highlightMenuShown,
+                            titleVisibility: .visible) {
+            Button(openHighlight?.line.isEmpty == false ? "Edit the line" : "Add a line") {
+                lineDraft = openHighlight?.line ?? ""
+                writingLine = true
+            }
+            Button("Remove highlight", role: .destructive) {
+                if let open = openHighlight { removeHighlight(open.id) }
+                openHighlight = nil
+            }
+            Button("Cancel", role: .cancel) { openHighlight = nil }
+        }
+        .alert("Your line", isPresented: $writingLine) {
+            TextField("A line of your own", text: $lineDraft)
+            Button("Save") { saveHighlightLine() }
+            Button("Cancel", role: .cancel) { openHighlight = nil }
+        }
+        .task(id: current.highlightsRaw) {
+            highlights = SatchelHighlightText.parse(current.highlightsRaw)
+            pdfStage.redraw(highlights)
         }
         // Keyed on the path so a swipe to the next document re-runs it: the
         // page count belongs to the document on screen, not the one opened.
@@ -162,7 +233,9 @@ struct SatchelViewerView: View {
                     // it reads as a plain white screen rather than a document
                     // sitting on a surface. The mockup's paper is deliberately
                     // narrower than its stage for exactly this reason.
-                    SatchelPDFView(url: fileURL)
+                    SatchelPDFView(url: fileURL, stage: pdfStage, highlights: highlights,
+                                   highlightsRaw: current.highlightsRaw,
+                                   onOpenHighlight: { found in openHighlight = found })
                         .padding(.horizontal, 34)
                         .padding(.vertical, 18)
                 } else if document.isImage {
@@ -559,6 +632,7 @@ struct SatchelViewerView: View {
 
     private var actions: some View {
         VStack(spacing: 7) {
+            pdfHighlightRow
             HStack(spacing: 10) {
                 if let fileURL {
                     ShareLink(item: fileURL) {
@@ -571,6 +645,16 @@ struct SatchelViewerView: View {
                     SatchelDocumentDetailView(document: current, store: store)
                 } label: {
                     actionLabel("Edit info")
+                }
+                .buttonStyle(.plain)
+
+                // The document's own note (D433). "Add note" when there is none,
+                // so the button says what pressing it will do.
+                Button {
+                    showNote = true
+                } label: {
+                    actionLabel((current.noteFile ?? "").isEmpty ? "Add note" : "Note",
+                                symbol: "note.text")
                 }
                 .buttonStyle(.plain)
 
@@ -795,6 +879,124 @@ struct SatchelViewerView: View {
             + "Keep it to hold its place afterwards."
     }
 
+    /// **Only for a PDF, and only when there is something to do** (D450).
+    /// Highlight appears when words are selected; the other two when there is
+    /// anything marked. An image or a link sees none of this.
+    @ViewBuilder
+    private var pdfHighlightRow: some View {
+        if current.isPDF {
+            let unsent: Int = highlights.filter { $0.sent == nil }.count
+            HStack(spacing: 10) {
+                if pdfStage.hasSelection {
+                    Button { makeHighlight() } label: {
+                        actionLabel("Highlight", symbol: "highlighter", tint: .satchelPin)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if !highlights.isEmpty {
+                    Button { showHighlights = true } label: {
+                        actionLabel("Highlights (\(highlights.count))", symbol: "list.bullet")
+                    }
+                    .buttonStyle(.plain)
+                }
+                if unsent > 0 {
+                    Button { sendHighlightsToNote() } label: {
+                        actionLabel(unsent == 1 ? "Send 1 to note" : "Send \(unsent) to note",
+                                    symbol: "arrow.right.doc.on.clipboard", tint: .satchelPin)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if let sentNoteName, unsent == 0, !highlights.isEmpty {
+                Text("Sent to " + sentNoteName)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.satchelTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+            }
+        }
+    }
+
+    /// Up while a highlight was tapped and the line editor is not (D451).
+    private var highlightMenuShown: Binding<Bool> {
+        Binding(
+            get: { openHighlight != nil && !writingLine && !showHighlights },
+            set: { shown in if !shown && !writingLine { openHighlight = nil } }
+        )
+    }
+
+    // MARK: Highlight actions (D450)
+
+    /// The selection becomes a passage. **The page takes the block's place**
+    /// and nothing else about the entry changes, so a PDF highlight and an
+    /// article highlight are the same thing in the same place.
+    private func makeHighlight() {
+        guard let passage = pdfStage.selectionPassage else { return }
+        if highlights.contains(where: { $0.text == passage.text }) {
+            pdfStage.clearSelection()
+            return
+        }
+        let made = SatchelHighlight(id: SatchelHighlight.newID(),
+                                    block: passage.page,
+                                    text: passage.text,
+                                    line: "",
+                                    made: Date(),
+                                    sent: nil)
+        highlights.append(made)
+        pdfStage.clearSelection()
+        persistHighlights()
+    }
+
+    private func removeHighlight(_ id: String) {
+        guard highlights.contains(where: { $0.id == id }) else { return }
+        highlights.removeAll { $0.id == id }
+        persistHighlights()
+    }
+
+    private func saveHighlightLine() {
+        guard let open = openHighlight,
+              let index = highlights.firstIndex(where: { $0.id == open.id }) else { return }
+        highlights[index].line = lineDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !highlights[index].line.isEmpty { highlights[index].sent = nil }
+        openHighlight = nil
+        lineDraft = ""
+        persistHighlights()
+    }
+
+    private func persistHighlights() {
+        let rendered: String = SatchelHighlightText.render(highlights)
+        try? store.writeHighlights(rendered, for: current)
+        pdfStage.redraw(highlights)
+    }
+
+    /// The article's own send, unchanged (D434): only what has not been sent,
+    /// appended to the document's own note, which is made on the first send.
+    private func sendHighlightsToNote() {
+        let unsent: [SatchelHighlight] = highlights.filter { $0.sent == nil }
+        guard !unsent.isEmpty else { return }
+        let doc: TraceMacDocument = current
+        let existingPath: String? = doc.noteFile
+        let path: String = existingPath ?? SatchelHighlightNote.path(forTitle: doc.title)
+        let now = Date()
+        let block: String = SatchelHighlightNote.block(
+            for: unsent,
+            title: doc.title,
+            site: SatchelShelf.site(doc),
+            address: doc.url,
+            firstSend: existingPath == nil,
+            intoExistingNote: SatchelHighlightNote.exists(at: path),
+            on: now
+        )
+        guard SatchelHighlightNote.append(block, to: path, title: doc.title) else { return }
+        for index in highlights.indices where highlights[index].sent == nil {
+            highlights[index].sent = now
+        }
+        let rendered: String = SatchelHighlightText.render(highlights)
+        try? store.writeHighlights(rendered, for: doc, noteFile: path)
+        sentNoteName = SatchelHighlightNote.name(of: path)
+        pdfStage.redraw(highlights)
+    }
+
     private func actionLabel(_ text: String, symbol: String? = nil, tint: Color = .satchelBlue) -> some View {
         HStack(spacing: 5) {
             if let symbol {
@@ -824,8 +1026,69 @@ struct SatchelViewerView: View {
 /// PDFKit wrapper. Same shape as Trace's `iOSPDFView`, restyled for the dark
 /// stage. `autoScales` plus continuous vertical paging is what makes a
 /// multi-page receipt behave like a document rather than a slideshow.
+/// What the screen around the PDF needs to know about it (D450): the view
+/// itself, so Highlight can act on whatever is selected, and whether anything
+/// IS selected, so the button can say so. An observable rather than a binding
+/// because PDFKit reports selection by notification, not by callback.
+@Observable
+final class SatchelPDFStage {
+    @ObservationIgnored weak var view: PDFView?
+    var hasSelection = false
+    /// What is on the pages right now (D464). A redraw that would draw the same
+    /// set again is skipped: clearing and re-adding marks before PDFKit's first
+    /// render of a page loses them, and SwiftUI updates arrive in a burst right
+    /// after a document is set. `load` records the set it painted before
+    /// handing the document over, so those updates change nothing.
+    @ObservationIgnored var painted: [SatchelHighlight] = []
+
+    @MainActor
+    var selectionPassage: (page: Int, text: String)? {
+        guard let view, let document = view.document else { return nil }
+        return SatchelPDFHighlights.passage(from: view.currentSelection, in: document)
+    }
+
+    @MainActor
+    func clearSelection() { view?.clearSelection() }
+
+    @MainActor
+    func go(toPage page: Int) {
+        guard let document = view?.document, let target = document.page(at: page) else { return }
+        view?.go(to: target)
+    }
+
+    /// The highlight under a tap, in the view's own coordinates (D451).
+    @MainActor
+    func highlight(at point: CGPoint, among highlights: [SatchelHighlight]) -> SatchelHighlight? {
+        guard let view, let page = view.page(for: point, nearest: false) else { return nil }
+        let pagePoint: CGPoint = view.convert(point, to: page)
+        return SatchelPDFHighlights.highlight(at: pagePoint, on: page, among: highlights)
+    }
+
+    @MainActor
+    func redraw(_ highlights: [SatchelHighlight]) {
+        guard let document = view?.document, highlights != painted else { return }
+        SatchelPDFHighlights.apply(highlights, to: document, color: Self.markColor, in: view)
+        painted = highlights
+    }
+
+    static let markColor: UIColor = UIColor.systemYellow.withAlphaComponent(0.42)
+}
+
 struct SatchelPDFView: UIViewRepresentable {
     let url: URL
+    var stage: SatchelPDFStage? = nil
+    var highlights: [SatchelHighlight] = []
+    /// The sidecar's own section, for the moment the screen's `highlights`
+    /// state has not been parsed yet (D464): a rebuilt screen hands an empty
+    /// list to `makeUIView`, and the marks must be on the document BEFORE the
+    /// view first renders it.
+    var highlightsRaw: String = ""
+    var onOpenHighlight: ((SatchelHighlight) -> Void)? = nil
+
+    /// The set to put on a document that is about to be shown.
+    private var initialMarks: [SatchelHighlight] {
+        highlights.isEmpty ? SatchelHighlightText.parse(highlightsRaw) : highlights
+    }
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -838,15 +1101,77 @@ struct SatchelPDFView: UIViewRepresentable {
         // rather than one long scroll.
         view.pageShadowsEnabled = true
         view.pageBreakMargins = UIEdgeInsets(top: 0, left: 0, bottom: 12, right: 0)
-        Self.load(url, into: view)
+        stage?.view = view
+        context.coordinator.stage = stage
+        context.coordinator.watch(view)
+        // **A tap on a highlight opens it** (D451), the same gesture the article
+        // reader has had since D438. It must not fight PDFKit's own taps, so it
+        // cancels nothing and only acts when the tap lands on a highlight.
+        let tap = UITapGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.tapped(_:)))
+        tap.delegate = context.coordinator
+        tap.cancelsTouchesInView = false
+        view.addGestureRecognizer(tap)
+        Self.load(url, into: view, marks: initialMarks, stage: stage)
         return view
     }
 
     func updateUIView(_ uiView: PDFView, context: Context) {
+        // `initialMarks`, not `highlights`: right after a rebuild the screen's
+        // state is still empty while the document already carries its marks,
+        // and an empty set here would clear them (D464).
+        let marks: [SatchelHighlight] = initialMarks
+        context.coordinator.highlights = marks
+        context.coordinator.onOpen = onOpenHighlight
         // Only rebuild when the file actually changed — reassigning `document`
         // on every SwiftUI update resets scroll position mid-read.
         if uiView.document?.documentURL != url {
-            Self.load(url, into: uiView)
+            Self.load(url, into: uiView, marks: initialMarks, stage: stage)
+        } else {
+            // Cheap and idempotent: clears what it drew and draws again, so a
+            // highlight made or removed shows without rebuilding the document.
+            stage?.redraw(marks)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    /// PDFKit announces a change of selection rather than calling anyone, so the
+    /// Highlight button learns about it here.
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var stage: SatchelPDFStage?
+        /// Kept in step by `updateUIView`, so a tap is tested against what is
+        /// on the page right now.
+        var highlights: [SatchelHighlight] = []
+        var onOpen: ((SatchelHighlight) -> Void)?
+        private var token: NSObjectProtocol?
+
+        @objc func tapped(_ gesture: UITapGestureRecognizer) {
+            guard let stage else { return }
+            let point: CGPoint = gesture.location(in: stage.view)
+            guard let found = stage.highlight(at: point, among: highlights) else { return }
+            onOpen?(found)
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
+
+        func watch(_ view: PDFView) {
+            guard token == nil else { return }
+            token = NotificationCenter.default.addObserver(
+                forName: .PDFViewSelectionChanged, object: view, queue: .main
+            ) { [weak self, weak view] _ in
+                MainActor.assumeIsolated {
+                    let selected: String = view?.currentSelection?.string ?? ""
+                    self?.stage?.hasSelection = !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+            }
+        }
+
+        deinit {
+            if let token { NotificationCenter.default.removeObserver(token) }
         }
     }
 
@@ -866,9 +1191,17 @@ struct SatchelPDFView: UIViewRepresentable {
     ///
     /// Off the main thread, because a coordinated read on a file that has not
     /// arrived blocks until it does.
+    ///
+    /// **The marks go on before the document is handed over** (D464). Every
+    /// attempt to paint them after the load, at whatever moment, was lost to
+    /// PDFKit's first render of the page; a document that already carries them
+    /// when it is set renders them the first time and every time.
     @MainActor
-    private static func load(_ url: URL, into view: PDFView) {
+    private static func load(_ url: URL, into view: PDFView,
+                             marks: [SatchelHighlight], stage: SatchelPDFStage?) {
         if let doc = PDFDocument(url: url) {
+            SatchelPDFHighlights.apply(marks, to: doc, color: SatchelPDFStage.markColor)
+            stage?.painted = marks
             view.document = doc
             return
         }
@@ -894,7 +1227,12 @@ struct SatchelPDFView: UIViewRepresentable {
             // The view may have been handed a document while this was in
             // flight — do not stamp a stale one over it.
             guard view.document == nil else { return }
-            view.document = data.flatMap { PDFDocument(data: $0) }
+            let doc: PDFDocument? = data.flatMap { PDFDocument(data: $0) }
+            if let doc {
+                SatchelPDFHighlights.apply(marks, to: doc, color: SatchelPDFStage.markColor)
+                stage?.painted = marks
+            }
+            view.document = doc
         }
     }
 }

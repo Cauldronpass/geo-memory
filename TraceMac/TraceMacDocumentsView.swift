@@ -1010,7 +1010,7 @@ struct TraceMacDocumentsView: View {
                         let ghostY    = max(160, min(previewH + previewDrag, total - 140))
 
                         VStack(spacing: 0) {
-                            MacDocumentViewer(doc: doc, zoom: zoom, find: find)
+                            MacDocumentViewer(doc: doc, zoom: zoom, find: find, store: store)
                                 .frame(height: previewH)
                                 // The viewer draws a document that may be far
                                 // larger than its slot. Without this it paints
@@ -1234,8 +1234,29 @@ struct MacDocumentViewer: View {
     let doc: TraceMacDocument
     let zoom: PreviewZoomController
     let find: MacPDFFind
+    /// Present when this viewer can write: Satchel passes it, the endeavor pane
+    /// does not, and without it a PDF simply has no highlighting (D450).
+    var store: TraceMacDocumentStore? = nil
 
     @Environment(NoteStore.self) private var noteStore
+
+    // MARK: Highlights in a PDF (D450)
+
+    @State private var highlights: [SatchelHighlight] = []
+    @State private var showHighlights = false
+    @State private var openHighlight: SatchelHighlight? = nil
+    @State private var writingLine = false
+    @State private var lineDraft: String = ""
+
+    /// The live copy (D460). `doc` is the selection's snapshot, taken when the
+    /// row was clicked; `setHighlights` patches the store's copy, not that one.
+    /// Leaving the Preview tab and coming back rebuilds this view, and the
+    /// rebuild parsed the snapshot's empty `highlightsRaw`: every highlight made
+    /// since the click vanished until the document was selected again. The
+    /// reader has read the live copy this way since D444 (`MacReaderView.current`).
+    private var current: TraceMacDocument {
+        store?.documents.first { $0.relativePath == doc.relativePath } ?? doc
+    }
 
     /// The page behind a saved link, for the card (D387's Mac half). Nil
     /// until fetched, and nil for good when the page refuses.
@@ -1281,6 +1302,70 @@ struct MacDocumentViewer: View {
         }
     }
 
+    // MARK: Highlight actions (D450)
+    //
+    // The same four actions the reader has, over a PDF: the page stands in for
+    // the block, and the note side is the article's own code.
+
+    private func make(_ text: String, onPage page: Int) {
+        guard let store else { return }
+        let trimmed: String = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard SatchelHighlightText.worthKeeping(trimmed) else { return }
+        if highlights.contains(where: { $0.text == trimmed }) { return }
+        highlights.append(SatchelHighlight(id: SatchelHighlight.newID(),
+                                           block: page,
+                                           text: trimmed,
+                                           line: "",
+                                           made: Date(),
+                                           sent: nil))
+        persist(store)
+    }
+
+    private func remove(_ id: String) {
+        guard let store, highlights.contains(where: { $0.id == id }) else { return }
+        highlights.removeAll { $0.id == id }
+        persist(store)
+    }
+
+    private func saveLine() {
+        guard let store, let open = openHighlight,
+              let index = highlights.firstIndex(where: { $0.id == open.id }) else { return }
+        highlights[index].line = lineDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !highlights[index].line.isEmpty { highlights[index].sent = nil }
+        openHighlight = nil
+        lineDraft = ""
+        persist(store)
+    }
+
+    private func persist(_ store: TraceMacDocumentStore) {
+        let rendered: String = SatchelHighlightText.render(highlights)
+        _ = try? store.setHighlights(rendered, for: doc)
+    }
+
+    private func sendToNote() {
+        guard let store else { return }
+        let unsent: [SatchelHighlight] = highlights.filter { $0.sent == nil }
+        guard !unsent.isEmpty else { return }
+        let existingPath: String? = current.noteFile
+        let path: String = existingPath ?? SatchelHighlightNote.path(forTitle: doc.title)
+        let now = Date()
+        let block: String = SatchelHighlightNote.block(
+            for: unsent,
+            title: doc.title,
+            site: SatchelShelf.site(doc),
+            address: doc.url,
+            firstSend: existingPath == nil,
+            intoExistingNote: SatchelHighlightNote.exists(at: path),
+            on: now
+        )
+        guard SatchelHighlightNote.append(block, to: path, title: doc.title) else { return }
+        for index in highlights.indices where highlights[index].sent == nil {
+            highlights[index].sent = now
+        }
+        let rendered: String = SatchelHighlightText.render(highlights)
+        _ = try? store.setHighlights(rendered, for: doc, noteFile: path)
+    }
+
     /// Plain text with its web addresses turned into links.
     ///
     /// Built by walking the detected ranges in order rather than by mutating an
@@ -1308,10 +1393,54 @@ struct MacDocumentViewer: View {
     @ViewBuilder
     var body: some View {
         if doc.isPDF, let url = noteStore.resolvedURL(for: doc.relativePath) {
-            PDFViewRepresentable(url: url, zoom: zoom, find: find)
+            PDFViewRepresentable(
+                url: url, zoom: zoom, find: find,
+                highlights: highlights,
+                highlightsRaw: current.highlightsRaw,
+                onMake: store == nil ? nil : { page, text in make(text, onPage: page) },
+                onOpenList: store == nil ? nil : { showHighlights = true },
+                onSend: store == nil ? nil : { sendToNote() },
+                onRemove: store == nil ? nil : { id in remove(id) },
+                onAddLine: store == nil ? nil : { id in
+                    openHighlight = highlights.first { $0.id == id }
+                    lineDraft = openHighlight?.line ?? ""
+                    writingLine = true
+                }
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .topTrailing) { findChip }
                 .id(doc.relativePath)
+                .task(id: current.highlightsRaw) {
+                    highlights = SatchelHighlightText.parse(current.highlightsRaw)
+                }
+                .sheet(isPresented: $showHighlights) {
+                    SatchelHighlightsList(
+                        highlights: highlights,
+                        colors: SatchelArticleInk(ink: MacEditorialColor.ink,
+                                                  secondary: MacEditorialColor.muted,
+                                                  faint: MacEditorialColor.hairline,
+                                                  card: MacEditorialColor.canvas,
+                                                  accent: MacEditorialColor.accent),
+                        onJump: { _ in showHighlights = false },
+                        onAddLine: { highlight in
+                            // Close the list first (D451): an alert asked for from
+                            // behind a sheet has nowhere to appear.
+                            showHighlights = false
+                            openHighlight = highlight
+                            lineDraft = highlight.line
+                            writingLine = true
+                        },
+                        onRemove: { highlight in remove(highlight.id) },
+                        onSend: { sendToNote() },
+                        onClose: { showHighlights = false }
+                    )
+                    .frame(width: 460, height: 520)
+                }
+                .alert("Your line", isPresented: $writingLine) {
+                    TextField("A line of your own", text: $lineDraft)
+                    Button("Save") { saveLine() }
+                    Button("Cancel", role: .cancel) { openHighlight = nil }
+                }
         } else if doc.isImage, let url = noteStore.resolvedURL(for: doc.relativePath) {
             // Note the shape of this condition: it branches on `doc.isImage`
             // alone. It used to also bind `NSImage(contentsOf: url)`, which
@@ -1519,6 +1648,12 @@ struct DocNotePanel: View {
     @State private var showingNotePicker = false
     @State private var showingHub = false
 
+    /// The live copy, so the note appears the moment Add note records the link
+    /// rather than on the next selection (D444).
+    private var current: TraceMacDocument {
+        store.documents.first { $0.relativePath == doc.relativePath } ?? doc
+    }
+
     var body: some View {
         Group {
             noteContent
@@ -1529,7 +1664,34 @@ struct DocNotePanel: View {
 
     @ViewBuilder
     private var noteContent: some View {
-        if linkedNote.isEmpty {
+        // **The document's OWN note comes first** (D444). This tab used to be
+        // the project link and nothing else, so after sending highlights David
+        // opened Note and found no note: the file was in `Notes/Reading/` and
+        // this screen had never heard of it. The project link is still here, on
+        // the line above the note, where it also names the endeavor.
+        if let own = ownNote {
+            VStack(spacing: 0) {
+                ownNoteHeader(own)
+                Divider()
+                TraceMacNoteEditor(relativePath: own)
+            }
+            .sheet(isPresented: $showingHub) {
+                MacProjectNoteDetailView(notePath: linkedNote, store: store)
+                    .environment(noteStore)
+                    .environment(notion)
+            }
+            .sheet(isPresented: $showingNotePicker) {
+                LinkedNotePickerSheet(
+                    current: linkedNote,
+                    filterFolders: ["Notes/Projects"],
+                    allowCreate: true
+                ) { picked in
+                    linkedNote = picked
+                    saveLinkedNote(picked)
+                }
+                .environment(noteStore)
+            }
+        } else if linkedNote.isEmpty {
             // Empty state — no project note linked yet
             VStack(spacing: 16) {
                 Image(systemName: "note.text.badge.plus")
@@ -1544,10 +1706,14 @@ struct DocNotePanel: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 280)
                 HStack(spacing: 12) {
-                    Button("Link to note…") {
+                    // Makes the document's own note, the same file Send to note
+                    // would make (D433).
+                    Button("Add note") { addOwnNote() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    Button("Link to project…") {
                         showingNotePicker = true
                     }
-                    .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                 }
             }
@@ -1627,6 +1793,61 @@ struct DocNotePanel: View {
                 .environment(noteStore)
             }
         }
+    }
+
+    /// The document's own note, when it has one that is actually on disk.
+    private var ownNote: String? {
+        let path: String = current.noteFile ?? ""
+        guard !path.isEmpty else { return nil }
+        return path
+    }
+
+    /// Title line over the document's own note: the project it is filed under,
+    /// the endeavor when there is one, and the way to change the project.
+    private func ownNoteHeader(_ path: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "note.text")
+                .font(.caption)
+                .foregroundStyle(Color.accentColor)
+            Text(SatchelHighlightNote.name(of: path))
+                .font(.caption)
+                .fontWeight(.medium)
+            if let endeavor = current.endeavorName, !endeavor.isEmpty {
+                Text("·").font(.caption).foregroundStyle(.tertiary)
+                Text(endeavor).font(.caption).foregroundStyle(.secondary)
+            }
+            if !linkedNote.isEmpty {
+                Text("·").font(.caption).foregroundStyle(.tertiary)
+                Button { showingHub = true } label: {
+                    Text(noteName(from: linkedNote))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+            Button { showingNotePicker = true } label: {
+                Text(linkedNote.isEmpty ? "Link to project" : "Change project")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color.accentColor.opacity(0.06))
+    }
+
+    /// Creates the note and records the link, without waiting for a highlight.
+    private func addOwnNote() {
+        let document: TraceMacDocument = current
+        let path: String = SatchelHighlightNote.path(forTitle: document.title)
+        if !SatchelHighlightNote.exists(at: path) {
+            _ = SatchelHighlightNote.append("", to: path, title: document.title)
+        }
+        let rendered: String = SatchelHighlightText.render(
+            SatchelHighlightText.parse(document.highlightsRaw))
+        _ = try? store.setHighlights(rendered, for: document, noteFile: path)
     }
 
     private func saveLinkedNote(_ path: String) {
@@ -3812,13 +4033,152 @@ struct DocDateFilterPopover: View {
 
 // MARK: - PDF viewer (Mac)
 
+/// A `PDFView` that can make and manage highlights (D450).
+///
+/// The menu is built from what was right-clicked, the lesson D442 paid for: a
+/// click on an existing highlight offers its own actions, a click with a
+/// selection offers Highlight, and either way the list and Send are there when
+/// they have something to act on.
+final class MacHighlightPDFView: PDFView {
+    var highlights: [SatchelHighlight] = []
+    var markColor: NSColor = NSColor.systemYellow.withAlphaComponent(0.40)
+    var onMake: ((Int, String) -> Void)?
+    var onOpenList: (() -> Void)?
+    var onSend: (() -> Void)?
+    var onRemove: ((String) -> Void)?
+    var onAddLine: ((String) -> Void)?
+
+    /// Clears what it drew and draws again, when the set has changed.
+    ///
+    /// **A redraw that would draw the same set again is skipped** (D464).
+    /// Clearing and re-adding marks before PDFKit's first render of a page
+    /// loses them, and SwiftUI updates arrive in a burst right after a
+    /// document is set. `load` records the set it painted before handing the
+    /// document over, so those updates change nothing; a real change (a new
+    /// highlight, a removal) still repaints on the live view, which works.
+    func redrawHighlights() {
+        guard let document, highlights != painted else { return }
+        SatchelPDFHighlights.apply(highlights, to: document, color: markColor, in: self)
+        painted = highlights
+    }
+
+    /// What is on the pages right now. Set by `load` for a fresh document.
+    var painted: [SatchelHighlight] = []
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu: NSMenu = super.menu(for: event) ?? NSMenu()
+        guard onMake != nil else { return menu }
+        var items: [NSMenuItem] = []
+
+        if let clicked = highlightUnderCursor(event) {
+            let line = NSMenuItem(title: clicked.line.isEmpty ? "Add a line…" : "Edit the line…",
+                                  action: #selector(addLineToMark(_:)), keyEquivalent: "")
+            line.target = self
+            line.representedObject = clicked.id
+            let remove = NSMenuItem(title: "Remove highlight",
+                                    action: #selector(removeMark(_:)), keyEquivalent: "")
+            remove.target = self
+            remove.representedObject = clicked.id
+            items.append(contentsOf: [line, remove])
+        } else if let selection = currentSelection, (selection.string ?? "").count > 2 {
+            let make = NSMenuItem(title: "Highlight", action: #selector(makeHighlight(_:)),
+                                  keyEquivalent: "h")
+            make.keyEquivalentModifierMask = [.control, .command]
+            make.target = self
+            items.append(make)
+        }
+
+        if !highlights.isEmpty {
+            let list = NSMenuItem(title: "Highlights (\(highlights.count))…",
+                                  action: #selector(openList(_:)), keyEquivalent: "")
+            list.target = self
+            items.append(list)
+            let unsent: Int = highlights.filter { $0.sent == nil }.count
+            if unsent > 0 {
+                let send = NSMenuItem(title: unsent == 1 ? "Send 1 highlight to note"
+                                                         : "Send \(unsent) highlights to note",
+                                      action: #selector(sendToNote(_:)), keyEquivalent: "n")
+                send.keyEquivalentModifierMask = [.control, .command]
+                send.target = self
+                items.append(send)
+            }
+        }
+
+        guard !items.isEmpty else { return menu }
+        for (offset, item) in items.enumerated() { menu.insertItem(item, at: offset) }
+        menu.insertItem(NSMenuItem.separator(), at: items.count)
+        return menu
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags: NSEvent.ModifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == [.control, .command], let key = event.charactersIgnoringModifiers?.lowercased() {
+            if key == "h", (currentSelection?.string ?? "").count > 2 {
+                makeHighlight(nil)
+                return true
+            }
+            if key == "n", highlights.contains(where: { $0.sent == nil }) {
+                onSend?()
+                return true
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    private func highlightUnderCursor(_ event: NSEvent) -> SatchelHighlight? {
+        let windowPoint: NSPoint = event.locationInWindow
+        let viewPoint: NSPoint = convert(windowPoint, from: nil)
+        guard let page = page(for: viewPoint, nearest: true) else { return nil }
+        let pagePoint: NSPoint = convert(viewPoint, to: page)
+        return SatchelPDFHighlights.highlight(at: pagePoint, on: page, among: highlights)
+    }
+
+    @objc private func makeHighlight(_ sender: Any?) {
+        guard let document, let passage = SatchelPDFHighlights.passage(from: currentSelection,
+                                                                      in: document) else { return }
+        clearSelection()
+        onMake?(passage.page, passage.text)
+    }
+
+    @objc private func openList(_ sender: Any?) { onOpenList?() }
+    @objc private func sendToNote(_ sender: Any?) { onSend?() }
+
+    @objc private func removeMark(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem, let id = item.representedObject as? String else { return }
+        onRemove?(id)
+    }
+
+    @objc private func addLineToMark(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem, let id = item.representedObject as? String else { return }
+        onAddLine?(id)
+    }
+}
+
 struct PDFViewRepresentable: NSViewRepresentable {
     let url: URL
     var zoom: PreviewZoomController? = nil
     var find: MacPDFFind? = nil
+    /// Highlights and what to do about them. All absent on a preview that has
+    /// no store behind it (the endeavor pane), where the menu stays as it was.
+    var highlights: [SatchelHighlight] = []
+    /// The sidecar's own section, for the moment the viewer's `highlights`
+    /// state has not been parsed yet (D464): a rebuilt Preview hands an empty
+    /// list to `makeNSView`, and the marks must be on the document BEFORE the
+    /// view first renders it.
+    var highlightsRaw: String = ""
+    var onMake: ((Int, String) -> Void)? = nil
+    var onOpenList: (() -> Void)? = nil
+    var onSend: (() -> Void)? = nil
+    var onRemove: ((String) -> Void)? = nil
+    var onAddLine: ((String) -> Void)? = nil
 
     func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
+        let view = MacHighlightPDFView()
+        view.onMake = onMake
+        view.onOpenList = onOpenList
+        view.onSend = onSend
+        view.onRemove = onRemove
+        view.onAddLine = onAddLine
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
@@ -3829,7 +4189,7 @@ struct PDFViewRepresentable: NSViewRepresentable {
         // observed property; the search itself is deferred a runloop turn for
         // the same reason the zoom attach is.
         find?.bind(view)
-        Self.load(url, into: view, find: find)
+        Self.load(url, into: view, find: find, marks: initialMarks)
         if let zoom {
             // Registered on the next runloop turn: attaching writes observed
             // properties, and doing that inside `makeNSView` mutates state
@@ -3837,14 +4197,20 @@ struct PDFViewRepresentable: NSViewRepresentable {
             // during view update" runtime warning.
             DispatchQueue.main.async { zoom.attach(pdf: view) }
         }
+        view.highlights = initialMarks
         return view
+    }
+
+    /// The set to put on a document that is about to be shown.
+    private var initialMarks: [SatchelHighlight] {
+        highlights.isEmpty ? SatchelHighlightText.parse(highlightsRaw) : highlights
     }
 
     func updateNSView(_ nsView: PDFView, context: Context) {
         // Only rebuild when the file actually changed — reassigning `document`
         // on every SwiftUI update resets scroll position mid-read.
         if nsView.document?.documentURL != url {
-            Self.load(url, into: nsView, find: find)
+            Self.load(url, into: nsView, find: find, marks: initialMarks)
         }
         // Cheap and idempotent. The appearance can change under us (light to
         // dark) and the dynamic colour handles that on its own, but a rebuilt
@@ -3854,6 +4220,21 @@ struct PDFViewRepresentable: NSViewRepresentable {
         // run. Deferred anyway, because `updateNSView` is an update pass and
         // the search writes observed state.
         DispatchQueue.main.async { find?.applyIfNeeded() }
+        if let marked = nsView as? MacHighlightPDFView {
+            // `initialMarks`, not `highlights`: right after a rebuild the
+            // viewer's state is still empty while the document already carries
+            // its marks, and an empty set here would clear them (D464).
+            marked.highlights = initialMarks
+            marked.onMake = onMake
+            marked.onOpenList = onOpenList
+            marked.onSend = onSend
+            marked.onRemove = onRemove
+            marked.onAddLine = onAddLine
+            // Deferred for the same reason as the two above: drawing the
+            // annotations during an update pass is a layout change inside an
+            // update, which is the family of fault D446 was.
+            DispatchQueue.main.async { marked.redrawHighlights() }
+        }
     }
 
     /// Accept whatever height the split offers.
@@ -3942,9 +4323,20 @@ struct PDFViewRepresentable: NSViewRepresentable {
     /// Ask for the download, then read under a file coordinator, which waits.
     /// Off the main thread, because a coordinated read on a file that has not
     /// arrived blocks until it does.
+    ///
+    /// **The marks go on before the document is handed over** (D464). Every
+    /// attempt to paint them after the load, at whatever moment (D459's
+    /// repaint call, D461's window and layout hooks, D463's visible-pages
+    /// notification), was lost to PDFKit's first render of the page; a document
+    /// that already carries them when it is set renders them the first time.
     @MainActor
-    private static func load(_ url: URL, into view: PDFView, find: MacPDFFind? = nil) {
+    private static func load(_ url: URL, into view: PDFView, find: MacPDFFind? = nil,
+                             marks: [SatchelHighlight] = []) {
         if let doc = PDFDocument(url: url) {
+            if let marked = view as? MacHighlightPDFView {
+                SatchelPDFHighlights.apply(marks, to: doc, color: marked.markColor)
+                marked.painted = marks
+            }
             view.document = doc
             // Assigning a document rebuilds the inner scroll view, which is
             // where the ground actually lives. Re-applied here and below for
@@ -3977,7 +4369,12 @@ struct PDFViewRepresentable: NSViewRepresentable {
             // The view may have been handed a document while this was in
             // flight — do not stamp a stale one over it.
             guard view.document == nil else { return }
-            view.document = data.flatMap { PDFDocument(data: $0) }
+            let doc: PDFDocument? = data.flatMap { PDFDocument(data: $0) }
+            if let doc, let marked = view as? MacHighlightPDFView {
+                SatchelPDFHighlights.apply(marks, to: doc, color: marked.markColor)
+                marked.painted = marks
+            }
+            view.document = doc
             applyGround(to: view)
             // The other moment a document first exists. Without this a PDF that
             // iCloud was still fetching when the search result opened it would

@@ -425,6 +425,9 @@ class NoteStore {
                     self.containerPath = url.path
                     self.startObservingICloudChanges()
                 }
+                // Still on the GCD thread: ask iCloud for every note it has
+                // evicted, before any screen reads one (D465).
+                Self.warmContainer(at: url)
             } else {
                 // iCloud unavailable — fall back to local Documents directory.
                 DispatchQueue.main.async { self.activateLocalMode() }
@@ -651,6 +654,58 @@ class NoteStore {
         try? empty.write(to: dir.appendingPathComponent("Seeded Trip With No Log.md"),
                          atomically: true, encoding: .utf8)
 #endif
+    }
+
+    // MARK: - Warming the container (D465)
+    //
+    // `readFile` is a plain synchronous read, and it is called from screens on
+    // the main thread, sometimes for every file in a folder. That is instant
+    // while the container is fully downloaded. It is not instant after iCloud
+    // has evicted files, which it does after an OS update and whenever the
+    // phone is short of space: each read then blocks until its download lands,
+    // one after another, and the app freezes. The iOS 27 update did exactly
+    // that to Dayflow and Satchel on 2026-09-19: lock-ups in the foreground,
+    // and a watchdog kill (0x8BADF00D) in the background with the main thread
+    // sitting inside `String(contentsOf:)`.
+    //
+    // This does not make the read non-blocking; it removes the reason it
+    // blocks. At launch, on a GCD thread, every note or index file that is
+    // not current is asked for, so the files are back before a screen reaches
+    // for them. Documents under `Documents/` (PDFs, photos) are left alone:
+    // they can be large, and their own loaders already download on open.
+    //
+    // Making `readFile` itself non-blocking is the right end state and is a
+    // merge-pass job: several callers read a note, append a line and write it
+    // back, so a read that answered "" for an evicted file would overwrite the
+    // note. Not something to slip in as a fix.
+
+    /// Asks iCloud to download every evicted `.md` and `.json` under `root`.
+    /// Runs where it is called; call it off the main thread.
+    nonisolated private static func warmContainer(at root: URL) {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isUbiquitousItemKey,
+                                      .ubiquitousItemDownloadingStatusKey]
+        guard let walk = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return }
+        let documents: String = root.appendingPathComponent("Documents").path
+        var requested = 0
+        for case let url as URL in walk {
+            let ext: String = url.pathExtension.lowercased()
+            guard ext == "md" || ext == "json" else { continue }
+            if url.path.hasPrefix(documents), ext != "md" { continue }
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true,
+                  values.isUbiquitousItem == true,
+                  let status = values.ubiquitousItemDownloadingStatus,
+                  status != .current else { continue }
+            if (try? FileManager.default.startDownloadingUbiquitousItem(at: url)) != nil {
+                requested += 1
+            }
+        }
+        if requested > 0 {
+            print("[NoteStore] warmContainer: asked iCloud for \(requested) evicted files")
+        }
     }
 
     // MARK: - iCloud change observation

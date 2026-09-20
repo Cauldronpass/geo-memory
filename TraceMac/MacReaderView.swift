@@ -76,8 +76,17 @@ struct MacReaderPalette {
     let card: Color
     let accent: Color
 
+    /// The highlight wash (D430). The Mac's dark paper is warm, so its wash is
+    /// a translucent amber rather than the solid yellow that works on white.
+    var highlightWash: Color {
+        ink == Self.dark.ink ? Color(red: 0.85, green: 0.68, blue: 0.28).opacity(0.32)
+                             : Color(red: 0.965, green: 0.890, blue: 0.658)
+    }
+
     var articleInk: SatchelArticleInk {
-        SatchelArticleInk(ink: ink, secondary: secondary, faint: faint, card: card, accent: accent)
+        SatchelArticleInk(ink: ink, secondary: secondary, faint: faint, card: card,
+                          accent: accent,
+                          highlight: highlightWash, highlightLine: accent)
     }
 
     private static func hex(_ value: String) -> Color {
@@ -112,11 +121,24 @@ struct MacReaderPalette {
 
 /// Aa, focus, Safari, share. Drawn in `TraceMacDocumentsView`'s tab row beside
 /// Read · Details · Note, so the reader itself has no header of its own.
+/// The tool row and the reader are two different views in two different parts
+/// of the window (the row lives in the tab strip, D422), so the highlighter
+/// button asks for the list by raising a counter the reader watches. Same shape
+/// as `MacReaderFocus`, and the same reason: one shared fact, no plumbing
+/// through four view layers.
+@Observable
+final class MacReaderPanels {
+    static let shared = MacReaderPanels()
+    private init() {}
+    var highlightsRequests: Int = 0
+}
+
 struct MacReaderTools: View {
     let doc: TraceMacDocument
 
     @State private var showSettings = false
     @State private var focus = MacReaderFocus.shared
+    @State private var panels = MacReaderPanels.shared
     @AppStorage(MacReaderPrefs.size) private var textSize: Double = MacReaderPrefs.defaultSize
 
     var body: some View {
@@ -142,6 +164,23 @@ struct MacReaderTools: View {
             .buttonStyle(.plain)
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .help(focus.isOn ? "Leave focus (esc)" : "Focus (⇧⌘R)")
+
+            // The article's Highlights list, with its count (D435).
+            let marked: Int = SatchelHighlightText.count(doc.highlightsRaw)
+            if marked > 0 {
+                Button {
+                    panels.highlightsRequests += 1
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "highlighter")
+                        Text("\(marked)")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+                .help("Highlights (⇧⌘H)")
+            }
 
             if let web = TraceMacDocument.openableURL(doc.url) {
                 Button {
@@ -341,6 +380,18 @@ struct MacReaderView: View {
     @State private var finished = false
     @State private var lead: NSImage?
 
+    // MARK: Highlights (D430–D435)
+
+    @State private var highlights: [SatchelHighlight] = []
+    /// Worked out when the article or the highlights change, never per redraw.
+    @State private var marks: [Int: [SatchelTextMark]] = [:]
+    @State private var openHighlight: SatchelHighlight? = nil
+    @State private var writingLine = false
+    @State private var lineDraft: String = ""
+    @State private var sentNoteName: String? = nil
+    @State private var showHighlights = false
+    @State private var panels = MacReaderPanels.shared
+
     static func canRead(_ doc: TraceMacDocument) -> Bool {
         SatchelShelf.isArticle(doc) && !doc.extractedText.isEmpty
     }
@@ -377,6 +428,50 @@ struct MacReaderView: View {
         .task(id: current.extractedText) {
             parsed = SatchelArticleText.parse(current.extractedText)
             minutes = SatchelShelf.minutes(current)
+            highlights = SatchelHighlightText.parse(current.highlightsRaw)
+            recomputeMarks()
+        }
+        .task(id: current.highlightsRaw) {
+            highlights = SatchelHighlightText.parse(current.highlightsRaw)
+            recomputeMarks()
+        }
+        .confirmationDialog(openHighlight?.text ?? "",
+                            isPresented: highlightMenuShown,
+                            titleVisibility: .visible) {
+            Button(openHighlight?.line.isEmpty == false ? "Edit the line" : "Add a line") {
+                lineDraft = openHighlight?.line ?? ""
+                writingLine = true
+            }
+            Button("Remove highlight", role: .destructive) { removeOpenHighlight() }
+            Button("Cancel", role: .cancel) { openHighlight = nil }
+        }
+        .onChange(of: panels.highlightsRequests) { _, _ in
+            showHighlights = true
+        }
+        .sheet(isPresented: $showHighlights) {
+            SatchelHighlightsList(
+                highlights: highlights,
+                colors: colors.articleInk,
+                onJump: { highlight in jump(to: highlight) },
+                onAddLine: { highlight in
+                    // Close the list first (D451): an alert asked for from
+                    // behind a sheet has nowhere to appear.
+                    showHighlights = false
+                    openHighlight = highlight
+                    lineDraft = highlight.line
+                    writingLine = true
+                },
+                onRemove: { highlight in remove(highlight.id) },
+                onSend: { sendToNote() },
+                onClose: { showHighlights = false }
+            )
+            .frame(width: 460, height: 520)
+            .background(colors.background)
+        }
+        .alert("Your line", isPresented: $writingLine) {
+            TextField("A line of your own", text: $lineDraft)
+            Button("Save") { saveLine() }
+            Button("Cancel", role: .cancel) { openHighlight = nil }
         }
         .task(id: current.url) {
             lead = await MacReaderLead.image(for: current.url)
@@ -407,8 +502,13 @@ struct MacReaderView: View {
         VStack(alignment: .leading, spacing: 0) {
             header(colors)
             SatchelArticleBody(blocks: parsed.blocks, size: textSize, serif: serif,
-                               spacing: spacing, colors: colors.articleInk, photoBleed: 0)
-                .textSelection(.enabled)
+                               spacing: spacing, colors: colors.articleInk, photoBleed: 0,
+                               marks: marks,
+                               onMakeHighlight: { block, _, text in make(text, in: block) },
+                               onOpenMark: { id in
+                                   openHighlight = highlights.first { $0.id == id }
+                               },
+                               onRemoveMark: { id in remove(id) })
             ending(colors)
         }
         // **A reading measure** (D421): about seventy characters at the default
@@ -506,6 +606,7 @@ struct MacReaderView: View {
                 .foregroundStyle(colors.faint)
                 .padding(.top, 10)
                 .padding(.bottom, 22)
+            sendButton(colors)
             finishButtons(colors)
             Text(keysLine)
                 .font(.system(size: 11.5))
@@ -517,6 +618,42 @@ struct MacReaderView: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// Send to note at the foot, as on the phone, plus **⌃⌘N** anywhere in the
+    /// reader (D434). The key is on a zero-size button rather than the visible
+    /// one so it still works when the foot is off screen.
+    @ViewBuilder
+    private func sendButton(_ colors: MacReaderPalette) -> some View {
+        let unsent: Int = highlights.filter { $0.sent == nil }.count
+        VStack(spacing: 0) {
+            if unsent > 0 {
+                Button { sendToNote() } label: {
+                    Label(unsent == 1 ? "Send 1 highlight to note"
+                                      : "Send \(unsent) highlights to note",
+                          systemImage: "highlighter")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(colors.ink)
+                        .frame(maxWidth: 300)
+                        .padding(.vertical, 10)
+                        .background(colors.highlightWash,
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, 10)
+            } else if let sentNoteName {
+                Text("Sent to " + sentNoteName)
+                    .font(.system(size: 12))
+                    .foregroundStyle(colors.secondary)
+                    .padding(.bottom, 10)
+            }
+            Button("Send highlights to note") { sendToNote() }
+                .keyboardShortcut("n", modifiers: [.control, .command])
+                .buttonStyle(.plain)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
     }
 
     private var keysLine: String {
@@ -626,6 +763,114 @@ struct MacReaderView: View {
         savePosition()
         finished = true
         _ = try? store.setRead(nil, for: current)
+    }
+
+    // MARK: Highlights
+
+    /// One source of truth for whether the highlight menu is up, so it cannot
+    /// disagree with the line editor sitting on top of it.
+    private var highlightMenuShown: Binding<Bool> {
+        Binding(
+            get: { openHighlight != nil && !writingLine },
+            set: { shown in if !shown && !writingLine { openHighlight = nil } }
+        )
+    }
+
+    /// Stores the WORDS, not the offsets (D431): Fetch again rewrites the
+    /// article and a character range into the old text means nothing in the new.
+    private func make(_ text: String, in block: Int) {
+        let trimmed: String = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A stray drag catches a single quote mark or a comma; one reached a
+        // note as a highlight of one curly quote (D443).
+        guard SatchelHighlightText.worthKeeping(trimmed) else { return }
+        if highlights.contains(where: { $0.text == trimmed }) { return }
+        let made = SatchelHighlight(id: SatchelHighlight.newID(),
+                                    block: block,
+                                    text: trimmed,
+                                    line: "",
+                                    made: Date(),
+                                    sent: nil)
+        highlights.append(made)
+        persistHighlights()
+    }
+
+    private func removeOpenHighlight() {
+        guard let open = openHighlight else { return }
+        remove(open.id)
+        openHighlight = nil
+    }
+
+    /// Straight from the right-click menu, with no dialog in between (D441).
+    /// **A sent highlight is removed too**: the passage goes out of the article,
+    /// and what already reached the note stays there, because the note is his
+    /// and this reader never edits it (D434).
+    private func remove(_ id: String) {
+        guard highlights.contains(where: { $0.id == id }) else { return }
+        highlights.removeAll { $0.id == id }
+        persistHighlights()
+    }
+
+    private func saveLine() {
+        guard let open = openHighlight,
+              let index = highlights.firstIndex(where: { $0.id == open.id }) else { return }
+        highlights[index].line = lineDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        // **A line written after the passage was sent puts it back in the queue**
+        // (D444). Otherwise the note keeps the passage and never learns what he
+        // thought about it. The next send carries it again under its own dated
+        // line, which reads as a second thought rather than a duplicate.
+        if !highlights[index].line.isEmpty { highlights[index].sent = nil }
+        openHighlight = nil
+        lineDraft = ""
+        persistHighlights()
+    }
+
+    private func persistHighlights() {
+        let rendered: String = SatchelHighlightText.render(highlights)
+        _ = try? store.setHighlights(rendered, for: current)
+        recomputeMarks()
+    }
+
+    private func recomputeMarks() {
+        marks = SatchelHighlightText.marks(highlights, in: parsed.blocks)
+    }
+
+    /// Close the list and scroll to the passage. Where it sits now is worked out
+    /// again rather than trusted from the stored block number (D435).
+    private func jump(to highlight: SatchelHighlight) {
+        showHighlights = false
+        let placed = SatchelHighlightText.placements([highlight], in: parsed.blocks)
+        guard let block = placed.keys.first else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            scroll.scrollTo(id: SatchelArticleBody.blockID(block), anchor: .center)
+        }
+    }
+
+    /// Only the unsent ones, appended to the document's own note, which is made
+    /// on the first send (D433, D434). Nothing already in the note is touched.
+    private func sendToNote() {
+        let unsent: [SatchelHighlight] = highlights.filter { $0.sent == nil }
+        guard !unsent.isEmpty else { return }
+        let doc: TraceMacDocument = current
+        let existingPath: String? = doc.noteFile
+        let path: String = existingPath ?? SatchelHighlightNote.path(forTitle: doc.title)
+        let now = Date()
+        let block: String = SatchelHighlightNote.block(
+            for: unsent,
+            title: doc.title,
+            site: SatchelShelf.site(doc),
+            address: doc.url,
+            firstSend: existingPath == nil,
+            intoExistingNote: SatchelHighlightNote.exists(at: path),
+            on: now
+        )
+        guard SatchelHighlightNote.append(block, to: path, title: doc.title) else { return }
+        for index in highlights.indices where highlights[index].sent == nil {
+            highlights[index].sent = now
+        }
+        let rendered: String = SatchelHighlightText.render(highlights)
+        _ = try? store.setHighlights(rendered, for: doc, noteFile: path)
+        sentNoteName = SatchelHighlightNote.name(of: path)
+        recomputeMarks()
     }
 
     // MARK: Place
@@ -910,10 +1155,23 @@ struct MacShelfRow: View {
                     .font(MacEditorialType.rowTitle)
                     .foregroundStyle(MacEditorialColor.ink)
                     .lineLimit(2)
-                Text(Self.subtitle(doc))
-                    .font(MacEditorialType.meta)
-                    .foregroundStyle(MacEditorialColor.muted)
-                    .lineLimit(1)
+                HStack(spacing: 7) {
+                    Text(Self.subtitle(doc))
+                        .font(MacEditorialType.meta)
+                        .foregroundStyle(MacEditorialColor.muted)
+                        .lineLimit(1)
+                    // The highlight count, beside the minutes (D435).
+                    let marked: Int = SatchelHighlightText.count(doc.highlightsRaw)
+                    if marked > 0 {
+                        HStack(spacing: 2) {
+                            Image(systemName: "highlighter")
+                                .font(.system(size: 9.5, weight: .semibold))
+                            Text("\(marked)")
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
+                        .foregroundStyle(MacEditorialColor.accent)
+                    }
+                }
                 if showRecap, !doc.description.isEmpty {
                     Text(doc.description)
                         .font(MacEditorialType.meta)

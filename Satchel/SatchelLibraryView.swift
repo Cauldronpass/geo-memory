@@ -1480,6 +1480,7 @@ struct DocumentCard: View {
     @State private var taskFor: TraceMacDocument?
     /// The document whose Edit screen the long press asked for (D389).
     @State private var editing: TraceMacDocument?
+    @State private var noting: TraceMacDocument?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1562,6 +1563,7 @@ struct DocumentCard: View {
                 .satchelDocumentMenu(documents[index],
                                      onTask: { taskFor = documents[index] },
                                      onEdit: { editing = documents[index] },
+                                     onNote: { noting = documents[index] },
                                      onPin: { togglePin(documents[index]) },
                                      onDelete: { pendingDelete = documents[index] },
                                      onRetry: {
@@ -1582,6 +1584,9 @@ struct DocumentCard: View {
         .satchelCard()
         .sheet(item: $taskFor) { doc in
             SatchelTaskCard(document: doc)
+        }
+        .sheet(item: $noting) { doc in
+            SatchelNoteView(document: doc, store: store)
         }
         .sheet(item: $editing) { doc in
             NavigationStack {
@@ -3732,7 +3737,11 @@ struct SatchelDocumentDetailView: View {
     /// keeps the tag. The phone's half of the Mac's local fill.
     private func fillLocally() {
         let text = current.extractedText
-        guard !text.isEmpty else {
+        // **The picture goes too** (D453): the on-device model reads images
+        // now, so a private document gets the same eight fields the cloud scan
+        // fills, from the words and the picture, and nothing leaves the phone.
+        let url: URL? = noteStore.resolvedURL(for: current.relativePath)
+        guard !text.isEmpty || url != nil else {
             scanError = current.textExtracted
                 ? "No readable text was found in this document."
                 : "This document has not been read yet. Pull the list down to refresh, then try again."
@@ -3741,6 +3750,30 @@ struct SatchelDocumentDetailView: View {
         scanError = nil
         Task {
             let hint = userContext.trimmingCharacters(in: .whitespacesAndNewlines)
+            let picture: CGImage? = await Task.detached {
+                url.flatMap { MacLocalIntelligence.pictureForScan(at: $0) }
+            }.value
+            if !text.isEmpty || picture != nil {
+                if let result = await MacLocalIntelligence.scanPrivately(
+                    text: text, hint: hint, image: picture, knownPeople: PeopleIndex.read().map(\.name)
+                ) {
+                    await MainActor.run { applyPrivateScan(result) }
+                    return
+                }
+                // Say why before falling back, so a silent nil is never
+                // mistaken for "nothing here".
+                let why: String = await MainActor.run { MacLocalIntelligence.lastFailure } ?? "It gave no answer."
+                await MainActor.run {
+                    scanError = "The on-device model could not read this. \(why)"
+                }
+            }
+            guard !text.isEmpty else {
+                await MainActor.run {
+                    scanError = (scanError.map { $0 + " " } ?? "") + "No readable text was found in this document."
+                }
+                return
+            }
+            // The older path, for a phone without the on-device model.
             let suggestion = await MacLocalIntelligence.suggest(text: text, hint: hint)
             await MainActor.run {
                 for marked in MacTextExtraction.hashTags(in: hint)
@@ -3762,6 +3795,39 @@ struct SatchelDocumentDetailView: View {
                 save()
             }
         }
+    }
+
+    /// The private scan's answers onto the detail form, then saved. Same rules
+    /// as the cloud scan's `rescan`: a found date wins, tags and people merge,
+    /// `#tag` in the hint is honoured, the icon sets the tint (D453).
+    private func applyPrivateScan(_ result: DocumentScanResult) {
+        if let suggested = result.title, !suggested.isEmpty { title = suggested }
+        if !result.description.isEmpty { descriptionText = result.description }
+        var mergedTags = result.tags.isEmpty ? tags : result.tags
+        for marked in MacTextExtraction.hashTags(in: userContext)
+        where !mergedTags.contains(where: { $0.caseInsensitiveCompare(marked) == .orderedSame }) {
+            mergedTags.append(marked)
+        }
+        // Never drop the tag that chose this engine.
+        if isPrivate, !mergedTags.contains(where: { $0.caseInsensitiveCompare("private") == .orderedSame }) {
+            mergedTags.append("private")
+        }
+        tags = mergedTags
+        if let suggestedIcon = result.icon {
+            icon = suggestedIcon
+            tint = result.tint ?? .gray
+        } else if let suggestedTint = result.tint {
+            tint = suggestedTint
+        }
+        if let date = result.remindOn { remindOn = date; remindAIFilled = true }
+        if let date = result.datedOn { docDate = date; dateAIFilled = true }
+        let known = PeopleIndex.known(result.people, in: PeopleIndex.read())
+        for name in known where !people.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+            people.append(name)
+        }
+        peopleAIFilled = !known.isEmpty
+        dirty = true
+        save()
     }
 
     private func promoteFromPrivate(using store: iOSDocumentStore) {
@@ -4057,10 +4123,10 @@ struct SatchelAllDocumentsView: View {
     /// choice so PDFs and Images together, or everything with Links left
     /// out, are each a couple of taps. `.all` never sits in the set; it is
     /// the entry that clears it.
-    @State private var formats: Set<Kind> = []
-    @State private var type: DocumentIcon? = nil
-    @State private var tint: DocumentTint? = nil
-    @State private var endeavorID: String? = nil
+    @State private var formats: Set<Kind>
+    @State private var type: DocumentIcon?
+    @State private var tint: DocumentTint?
+    @State private var endeavorID: String?
     @State private var tag: String? = nil
     @State private var kitOnly = false
     @State private var query = ""
@@ -4077,10 +4143,10 @@ struct SatchelAllDocumentsView: View {
          kind: Kind = .all) {
         self.documents = documents
         self.store = store
-        _type = State(initialValue: type)
-        _tint = State(initialValue: tint)
-        _endeavorID = State(initialValue: endeavorID)
-        _formats = State(initialValue: kind == .all ? [] : [kind])
+        self.type = type
+        self.tint = tint
+        self.endeavorID = endeavorID
+        self.formats = kind == .all ? [] : [kind]
     }
 
     private func matchesFormat(_ doc: TraceMacDocument) -> Bool {

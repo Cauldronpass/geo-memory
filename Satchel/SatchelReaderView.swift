@@ -97,8 +97,25 @@ struct SatchelReaderPalette {
         accent: Color(red: 0.392, green: 0.659, blue: 1.000),     // #64a8ff
         isDark: true)
 
+    /// The highlight wash, per theme (D430). Light gets the yellow of a real
+    /// highlighter; Sepia a softer amber so it does not shout off cream; Dark a
+    /// translucent amber, because a solid yellow behind pale text on near-black
+    /// is a glare with the words lost inside it.
+    var highlightWash: Color {
+        if isDark { return Color(red: 0.85, green: 0.70, blue: 0.25).opacity(0.30) }
+        if accent == Self.sepia.accent { return Color(red: 0.965, green: 0.874, blue: 0.627) }
+        return Color(red: 1.000, green: 0.898, blue: 0.541)
+    }
+
+    /// The rule under a highlight that carries one of his lines.
+    var highlightRule: Color {
+        isDark ? Color(red: 0.95, green: 0.80, blue: 0.35) : accent
+    }
+
     var articleInk: SatchelArticleInk {
-        SatchelArticleInk(ink: ink, secondary: secondary, faint: faint, card: card, accent: accent)
+        SatchelArticleInk(ink: ink, secondary: secondary, faint: faint, card: card,
+                          accent: accent,
+                          highlight: highlightWash, highlightLine: highlightRule)
     }
 
     static func resolve(_ theme: SatchelReaderTheme, phoneIsDark: Bool) -> SatchelReaderPalette {
@@ -210,6 +227,25 @@ struct SatchelReaderView: View {
     @State private var showDetails = false
     @State private var refetching = false
 
+    // MARK: Highlights (D430–D435)
+
+    /// The article's highlights, parsed once when the article is read in.
+    @State private var highlights: [SatchelHighlight] = []
+    /// Where they sit in the text as it reads now, worked out when the article
+    /// or the highlights change and **never during a scroll** — the article
+    /// redraws constantly and a search of every block per redraw is the cost
+    /// D436 had to undo on Upcoming.
+    @State private var marks: [Int: [SatchelTextMark]] = [:]
+    /// The highlight he tapped, if any: Add a line / Remove.
+    @State private var openHighlight: SatchelHighlight? = nil
+    /// Open while he is writing the line for `openHighlight`.
+    @State private var writingLine = false
+    @State private var lineDraft: String = ""
+    /// Set by Send to note, so the button can say where they went.
+    @State private var sentNoteName: String? = nil
+    /// The article's Highlights list (D435).
+    @State private var showHighlights = false
+
     private var current: TraceMacDocument {
         store.documents.first { $0.relativePath == path } ?? opened
     }
@@ -263,6 +299,48 @@ struct SatchelReaderView: View {
             let text: String = current.extractedText
             parsed = SatchelArticleText.parse(text)
             minutes = SatchelShelf.minutes(current)
+            highlights = SatchelHighlightText.parse(current.highlightsRaw)
+            recomputeMarks()
+        }
+        .task(id: current.highlightsRaw) {
+            // The other device, or the Highlights list, changed them.
+            highlights = SatchelHighlightText.parse(current.highlightsRaw)
+            recomputeMarks()
+        }
+        .confirmationDialog(openHighlight?.text ?? "",
+                            isPresented: highlightMenuShown,
+                            titleVisibility: .visible) {
+            Button(openHighlight?.line.isEmpty == false ? "Edit the line" : "Add a line") {
+                lineDraft = openHighlight?.line ?? ""
+                writingLine = true
+            }
+            Button("Remove highlight", role: .destructive) { removeOpenHighlight() }
+            Button("Cancel", role: .cancel) { openHighlight = nil }
+        }
+        .sheet(isPresented: $showHighlights) {
+            SatchelHighlightsList(
+                highlights: highlights,
+                colors: colors.articleInk,
+                onJump: { highlight in jump(to: highlight) },
+                onAddLine: { highlight in
+                    // Close the list first (D451): an alert asked for from
+                    // behind a sheet has nowhere to appear.
+                    showHighlights = false
+                    openHighlight = highlight
+                    lineDraft = highlight.line
+                    writingLine = true
+                },
+                onRemove: { highlight in remove(highlight.id) },
+                onSend: { sendToNote() },
+                onClose: { showHighlights = false }
+            )
+            .background(colors.background)
+            .presentationDetents([.medium, .large])
+        }
+        .alert("Your line", isPresented: $writingLine) {
+            TextField("A line of your own", text: $lineDraft)
+            Button("Save") { saveLine() }
+            Button("Cancel", role: .cancel) { openHighlight = nil }
         }
         .task(id: path) {
             await restore()
@@ -294,7 +372,10 @@ struct SatchelReaderView: View {
                 serif: serif,
                 spacing: spacing,
                 colors: colors,
-                onToggleRecap: { recapShown.toggle() }
+                marks: marks,
+                onToggleRecap: { recapShown.toggle() },
+                onMakeHighlight: { block, _, text in make(text, in: block) },
+                onOpenMark: { id in openHighlight = highlights.first { $0.id == id } }
             )
             ending(colors)
         }
@@ -338,6 +419,7 @@ struct SatchelReaderView: View {
                 .foregroundStyle(colors.faint)
                 .padding(.top, 12)
                 .padding(.bottom, 22)
+            sendButton(colors)
             finishButtons(colors)
             Button {
                 openOriginal()
@@ -376,6 +458,33 @@ struct SatchelReaderView: View {
                 finishButton("Done", primary: true, colors: colors) { markDone() }
                 finishButton("Keep for later", primary: false, colors: colors) { keepForLater() }
             }
+        }
+    }
+
+    /// **Send to note, above Done** (D434). Hidden when there is nothing unsent,
+    /// so the end of an article he did not mark reads exactly as it did before.
+    @ViewBuilder
+    private func sendButton(_ colors: SatchelReaderPalette) -> some View {
+        let unsent: Int = highlights.filter { $0.sent == nil }.count
+        if unsent > 0 {
+            Button { sendToNote() } label: {
+                Label(unsent == 1 ? "Send 1 highlight to note"
+                                  : "Send \(unsent) highlights to note",
+                      systemImage: "highlighter")
+                    .font(.system(size: 15.5, weight: .semibold))
+                    .foregroundStyle(colors.ink)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(colors.highlightWash,
+                                in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 10)
+        } else if let sentNoteName {
+            Text("Sent to " + sentNoteName)
+                .font(.system(size: 13))
+                .foregroundStyle(colors.secondary)
+                .padding(.bottom, 12)
         }
     }
 
@@ -482,6 +591,22 @@ struct SatchelReaderView: View {
                 }
             }
             Menu {
+                // Send from here for a piece he does not mean to read to the
+                // end; the button at the foot covers the ordinary case (D434).
+                if !highlights.isEmpty {
+                    Button {
+                        showHighlights = true
+                    } label: {
+                        Label("Highlights (\(highlights.count))", systemImage: "list.bullet")
+                    }
+                }
+                if highlights.contains(where: { $0.sent == nil }) {
+                    Button {
+                        sendToNote()
+                    } label: {
+                        Label("Send highlights to note", systemImage: "highlighter")
+                    }
+                }
                 Button {
                     showDetails = true
                 } label: {
@@ -547,6 +672,119 @@ struct SatchelReaderView: View {
             await SatchelArticleSweep.retry(doc, store: store, noteStore: NoteStore.shared)
             refetching = false
         }
+    }
+
+    // MARK: Highlights
+
+    /// The menu is shown for whichever highlight was tapped, and dismissing it
+    /// clears the tap. A computed binding rather than a second `Bool` so the two
+    /// cannot disagree about whether a menu is up.
+    private var highlightMenuShown: Binding<Bool> {
+        Binding(
+            get: { openHighlight != nil && !writingLine },
+            set: { shown in if !shown && !writingLine { openHighlight = nil } }
+        )
+    }
+
+    /// A passage was chosen in block `block`.
+    ///
+    /// **The words are what is stored, not the range** (D431): Fetch again
+    /// rewrites the article, and a character offset into the old text would
+    /// point at the middle of a sentence in the new one.
+    private func make(_ text: String, in block: Int) {
+        let trimmed: String = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A stray drag catches a single quote mark or a comma; one reached a
+        // note as a highlight of one curly quote (D443).
+        guard SatchelHighlightText.worthKeeping(trimmed) else { return }
+        // The same passage twice is one highlight, not two stacked on each other.
+        if highlights.contains(where: { $0.text == trimmed }) { return }
+        let made = SatchelHighlight(id: SatchelHighlight.newID(),
+                                    block: block,
+                                    text: trimmed,
+                                    line: "",
+                                    made: Date(),
+                                    sent: nil)
+        highlights.append(made)
+        persistHighlights()
+    }
+
+    private func removeOpenHighlight() {
+        guard let open = openHighlight else { return }
+        remove(open.id)
+        openHighlight = nil
+    }
+
+    private func remove(_ id: String) {
+        guard highlights.contains(where: { $0.id == id }) else { return }
+        highlights.removeAll { $0.id == id }
+        persistHighlights()
+    }
+
+    /// Close the list and scroll the article to that passage (D435). The block
+    /// it sits in now may not be the block it was made in, so the placement is
+    /// worked out again rather than trusting the stored number.
+    private func jump(to highlight: SatchelHighlight) {
+        showHighlights = false
+        let placed = SatchelHighlightText.placements([highlight], in: parsed.blocks)
+        guard let block = placed.keys.first else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            scroll.scrollTo(id: SatchelArticleBody.blockID(block), anchor: .center)
+        }
+        setBars(hidden: false)
+    }
+
+    private func saveLine() {
+        guard let open = openHighlight,
+              let index = highlights.firstIndex(where: { $0.id == open.id }) else { return }
+        highlights[index].line = lineDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        // **A line written after the passage was sent puts it back in the queue**
+        // (D444). Otherwise the note keeps the passage and never learns what he
+        // thought about it. The next send carries it again under its own dated
+        // line, which reads as a second thought rather than a duplicate.
+        if !highlights[index].line.isEmpty { highlights[index].sent = nil }
+        openHighlight = nil
+        lineDraft = ""
+        persistHighlights()
+    }
+
+    /// Write, then redraw. The write patches the document in the store rather
+    /// than reloading it, so the article he is reading does not flicker.
+    private func persistHighlights() {
+        let rendered: String = SatchelHighlightText.render(highlights)
+        try? store.writeHighlights(rendered, for: current)
+        recomputeMarks()
+    }
+
+    private func recomputeMarks() {
+        marks = SatchelHighlightText.marks(highlights, in: parsed.blocks)
+    }
+
+    /// **Only what has not been sent, appended, never rewriting his note**
+    /// (D434). The note is made on the first send if the document has none.
+    private func sendToNote() {
+        let unsent: [SatchelHighlight] = highlights.filter { $0.sent == nil }
+        guard !unsent.isEmpty else { return }
+        let doc: TraceMacDocument = current
+        let existingPath: String? = doc.noteFile
+        let path: String = existingPath ?? SatchelHighlightNote.path(forTitle: doc.title)
+        let now = Date()
+        let block: String = SatchelHighlightNote.block(
+            for: unsent,
+            title: doc.title,
+            site: SatchelShelf.site(doc),
+            address: doc.url,
+            firstSend: existingPath == nil,
+            intoExistingNote: SatchelHighlightNote.exists(at: path),
+            on: now
+        )
+        guard SatchelHighlightNote.append(block, to: path, title: doc.title) else { return }
+        for index in highlights.indices where highlights[index].sent == nil {
+            highlights[index].sent = now
+        }
+        let rendered: String = SatchelHighlightText.render(highlights)
+        try? store.writeHighlights(rendered, for: doc, noteFile: path)
+        sentNoteName = SatchelHighlightNote.name(of: path)
+        recomputeMarks()
     }
 
     // MARK: Place
@@ -648,7 +886,10 @@ struct SatchelReaderArticle: View {
     let serif: Bool
     let spacing: Int
     let colors: SatchelReaderPalette
+    var marks: [Int: [SatchelTextMark]] = [:]
     let onToggleRecap: () -> Void
+    var onMakeHighlight: ((Int, NSRange, String) -> Void)? = nil
+    var onOpenMark: ((String) -> Void)? = nil
 
     @State private var lead: UIImage?
 
@@ -659,7 +900,10 @@ struct SatchelReaderArticle: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             SatchelArticleBody(blocks: blocks, size: size, serif: serif, spacing: spacing,
-                               colors: colors.articleInk, photoBleed: 22)
+                               colors: colors.articleInk, photoBleed: 22,
+                               marks: marks,
+                               onMakeHighlight: onMakeHighlight,
+                               onOpenMark: onOpenMark)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: leadAddress) {

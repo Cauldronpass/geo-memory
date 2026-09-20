@@ -595,6 +595,28 @@ struct TraceMacDocument: Identifiable, Hashable {
     /// whose modification date stops meaning anything.
     var readPosition: Double? = nil
 
+    // MARK: Highlights (D431, Session 107)
+
+    /// The document's `## Highlights` section exactly as it sits in the sidecar,
+    /// parsed on demand by `SatchelHighlight.parse`.
+    ///
+    /// **Raw text on the model, not `[SatchelHighlight]`.** Every list in both
+    /// apps holds these documents and redraws them constantly; parsing a section
+    /// nine documents in ten do not have, on every row, is the cost D436 had to
+    /// undo on Upcoming. The reader parses once when it opens an article, and
+    /// the Shelf's count is a cheap line count.
+    ///
+    /// Declared last so no existing memberwise call site's argument order moves.
+    var highlightsRaw: String = ""
+
+    /// The document's OWN note, sidecar key `note_file` (D433).
+    ///
+    /// Separate from `linkedNote`, which is the PROJECT note shared by every
+    /// document in a project, and separate from `endeavor`. A rail schedule can
+    /// be in the Japan endeavor, linked to a project note, and still have its
+    /// own note holding the trains he highlighted.
+    var noteFile: String? = nil
+
     /// What a typed address opens to, or nil when it does not open to anything.
     ///
     /// **On the model rather than in either app's editor, because both draw the

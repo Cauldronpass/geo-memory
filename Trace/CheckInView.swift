@@ -10,7 +10,7 @@ struct CheckInView: View {
 
     private let preselectedPlace: Place?
 
-    @State private var selectedPlace: Place? = nil
+    @State private var selectedPlace: Place?
     @State private var rating: Int? = nil
     @State private var notes: String
     @State private var checkInDate: Date = Date()
@@ -33,8 +33,8 @@ struct CheckInView: View {
     /// `trace://checkin` hand-off) — all of those pass nil and are unaffected.
     init(preselectedPlace: Place? = nil, prefillNotes: String? = nil) {
         self.preselectedPlace = preselectedPlace
-        _selectedPlace = State(initialValue: preselectedPlace)
-        _notes = State(initialValue: prefillNotes ?? "")
+        self.selectedPlace = preselectedPlace
+        self.notes = prefillNotes ?? ""
     }
 
     private var availableCategories: [String] {

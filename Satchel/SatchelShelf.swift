@@ -165,6 +165,19 @@ struct SatchelUpNextRow: View {
                         Text("·")
                     }
                     Text("\(SatchelShelf.minutes(document)) min")
+                    // **Home's Up Next rows are their OWN row type** (D449).
+                    // D448 put the highlight count on the Shelf tab's rows and
+                    // missed these, which are the ones on the screen he opens
+                    // first. Same glyph, same colour, same cheap count.
+                    let marked: Int = SatchelHighlightText.count(document.highlightsRaw)
+                    if marked > 0 {
+                        Image(systemName: "highlighter")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.satchelPin)
+                        Text("\(marked)")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.satchelPin)
+                    }
                 }
                 .font(.system(size: 12))
                 .foregroundStyle(Color.satchelSecondary)

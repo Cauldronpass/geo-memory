@@ -105,10 +105,17 @@ struct DayflowUpcomingView: View {
         return grouped
     }
 
-    private var daysWithContent: [Date] {
+    /// **Takes the grouping instead of reaching for it** (D436). `tasksByDay`
+    /// walks the entire task pool to build its dictionary. As a computed
+    /// property this filter called it once or twice per day, and
+    /// `startsNewMonth` called this list again for every day drawn, so a
+    /// fortnight cost hundreds of passes over every task on every redraw. That
+    /// is what made the scroll jump. The body works both out once and hands
+    /// them down.
+    private func daysWithContent(_ grouped: [Date: [ThingsTask]]) -> [Date] {
         days.filter { day in
-            if tasksOnly { return !(tasksByDay[day] ?? []).isEmpty }
-            return !(eventsByDay[day] ?? []).isEmpty || !(tasksByDay[day] ?? []).isEmpty
+            if tasksOnly { return !(grouped[day] ?? []).isEmpty }
+            return !(eventsByDay[day] ?? []).isEmpty || !(grouped[day] ?? []).isEmpty
         }
     }
 
@@ -121,24 +128,35 @@ struct DayflowUpcomingView: View {
     }
 
     var body: some View {
+        let grouped = tasksByDay
+        return screen(grouped: grouped, visible: daysWithContent(grouped))
+    }
+
+    /// The screen, handed the grouping and the day list already worked out
+    /// (D436). Nothing below this line reaches for `tasksByDay` again.
+    private func screen(grouped: [Date: [ThingsTask]], visible: [Date]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if isLoading && daysWithContent.isEmpty {
+            if isLoading && visible.isEmpty {
                 Spacer()
                 ProgressView().frame(maxWidth: .infinity)
                 Spacer()
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        if daysWithContent.isEmpty {
+                    // **Lazy since D436.** Every day, every meeting and every
+                    // task row used to be built before the first one appeared,
+                    // and since D428 each task row also carries a long-press
+                    // menu. Lazily built, only the rows on screen exist.
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if visible.isEmpty {
                             Text("Two clear weeks ahead.")
                                 .font(.dayflowSerif(16))
                                 .foregroundStyle(Color.dayflowMuted)
                                 .padding(.top, 32)
                                 .frame(maxWidth: .infinity)
                         } else {
-                            ForEach(daysWithContent, id: \.self) { day in
-                                daySection(day)
+                            ForEach(visible, id: \.self) { day in
+                                daySection(day, tasks: grouped[day] ?? [], visible: visible)
                             }
                         }
                         footer
@@ -302,9 +320,9 @@ struct DayflowUpcomingView: View {
     /// we have a cross over into a new month... I would expect the 1 Tuesday
     /// September to show up"). Named like a newspaper: a month masthead
     /// between the sections, not a longer day label.
-    private func startsNewMonth(_ day: Date) -> Bool {
-        guard let idx = daysWithContent.firstIndex(of: day), idx > 0 else { return false }
-        return !Calendar.current.isDate(day, equalTo: daysWithContent[idx - 1],
+    private func startsNewMonth(_ day: Date, in visible: [Date]) -> Bool {
+        guard let idx = visible.firstIndex(of: day), idx > 0 else { return false }
+        return !Calendar.current.isDate(day, equalTo: visible[idx - 1],
                                         toGranularity: .month)
     }
 
@@ -313,9 +331,9 @@ struct DayflowUpcomingView: View {
         return f.string(from: day).uppercased()
     }
 
-    private func daySection(_ day: Date) -> some View {
+    private func daySection(_ day: Date, tasks: [ThingsTask], visible: [Date]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if startsNewMonth(day) {
+            if startsNewMonth(day, in: visible) {
                 HStack(spacing: 10) {
                     Text(monthLabel(day))
                         .font(.system(size: 11, weight: .bold))
@@ -353,7 +371,7 @@ struct DayflowUpcomingView: View {
                     agendaLine(for: ev)
                 }
             }
-            ForEach(tasksByDay[day] ?? []) { task in
+            ForEach(tasks) { task in
                 taskRow(task)
             }
         }
