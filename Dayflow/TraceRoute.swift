@@ -22,12 +22,20 @@
 // screen exactly once. Screens ask the router; nothing keeps its own pending
 // state. Intents deliver into the router directly, so the inbox goes.
 //
-// ── Not wired yet ───────────────────────────────────────────────────────────
+// ── Wiring, as of D468 (merge pass (a), Session 109) ─────────────────────────
 //
-// Written ahead of the merge so pass (a) has a spine (D457 step 4). Nothing
-// calls it until the screens that come across from Trace are wired to it; the
-// two `ContentView`s keep their parsers until pass (c) retires them. The
-// stores' `markReady` calls are the first wiring job.
+// Written ahead of the merge so pass (a) has a spine (D457 step 4). What is
+// live now: the three stores report readiness through `wireStores()` at the
+// foot of this file, and `Dayflow/ContentView.swift` delivers every URL that
+// reaches the app, from `onOpenURL` and from `DayflowRouteInbox` alike.
+//
+// What is NOT live: nothing TAKES a route yet. `handleDeepLink` still does the
+// real work for every `dayflow://` host, exactly as before, and the screens
+// that come across from Trace are wired to `take(where:)` one at a time as
+// they arrive. A delivered route that no screen accepts simply expires after
+// `patience`, which is what that timer is for. The two `ContentView` parsers
+// and the pending-ID watchers retire in pass (c), branch by branch, as their
+// screens move over.
 
 import Foundation
 import Observation
@@ -317,5 +325,63 @@ final class TraceRouter {
     func clear() {
         held.removeAll()
         version += 1
+    }
+}
+
+// MARK: - Wiring the stores (D468)
+
+extension TraceRouter {
+
+    /// Connects the three stores' load hooks to `markReady`, and catches up on
+    /// anything that loaded before this ran. Called once, at launch, from
+    /// `DayflowApp`.
+    ///
+    /// **Why the stores publish through closures rather than calling this
+    /// router.** `NotionService.swift`, `NoteStore.swift` and
+    /// `ReminderTaskStore.swift` live in `Trace/` and compile into Trace, Jot,
+    /// Satchel, two widget extensions and TraceMac as well as this target.
+    /// `TraceRoute.swift` is in `Dayflow/` and compiles into this target alone.
+    /// A direct call from a shared store to a type only one target has is
+    /// D440's trap: a build breaking in an app nobody was working on. So each
+    /// store exposes a closure of its own vocabulary and this file, which knows
+    /// about both sides, joins them.
+    ///
+    /// **Why inside the fetches rather than at their call sites.** Forty-odd
+    /// callers across four apps, and the stores already make that argument
+    /// themselves for `PlacesFeed.publish` and the `fetchedAt` stamp.
+    static func wireStores() {
+        NotionService.onFeedLoaded = { feed in
+            switch feed {
+            case .places:   shared.markReady(.places)
+            case .people:   shared.markReady(.people)
+            case .visits:   shared.markReady(.visits)
+            case .captures: shared.markReady(.captures)
+            }
+        }
+        NoteStore.onAccess = { shared.markReady(.notes) }
+        ReminderTaskStore.onLoad = { shared.markReady(.tasks) }
+
+        // ── Catch-up ────────────────────────────────────────────────────────
+        //
+        // A store can finish before this runs. `NoteStore` resolves its
+        // container in `init`, which happens on the FIRST touch of `.shared`
+        // anywhere in the app, and that can easily precede the launch `.task`.
+        // Waiting for a second event that will never come is how a route sits
+        // held until `patience` drops it, with the data it needed sitting
+        // loaded the whole time.
+        //
+        // Each test below is the store's own record of a SUCCESSFUL load, not
+        // "is the array non-empty": a loaded-and-empty store is ready, and an
+        // empty one that never loaded is not, and only these flags tell them
+        // apart.
+        if NoteStore.shared.hasAccess { shared.markReady(.notes) }
+        if ReminderTaskStore.shared.lastFetched != nil { shared.markReady(.tasks) }
+        if NotionService.shared.placesLoad == .loaded { shared.markReady(.places) }
+        if NotionService.shared.peopleLoad == .loaded { shared.markReady(.people) }
+        // Visits and captures have no load state of their own (the reason is on
+        // `loadState(of:)`), so there is nothing here that could tell a cold
+        // store from a loaded empty one. Both are fetched after this call on a
+        // cold launch, so the hook covers them; a warm relaunch is the gap, and
+        // it closes when those two collections get load states of their own.
     }
 }

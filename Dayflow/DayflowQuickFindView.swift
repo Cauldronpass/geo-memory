@@ -127,6 +127,11 @@ struct DayflowQuickFindView: View {
     /// "real" is how one of them quietly starts offering Someday twice.
     private var browseLists: [String] { DayflowTaskPools.browseLists }
 
+    /// The task lists start collapsed onto one row (D480). Records had to go
+    /// somewhere and the lists are what gave up the height; they are also the
+    /// rows he scrolls past most, being four or five names he already knows.
+    @State private var listsExpanded = false
+
     private func openCount(in list: String) -> Int {
         DayflowTaskPools.openCount(in: list)
     }
@@ -147,7 +152,21 @@ struct DayflowQuickFindView: View {
                 // height already excludes the keyboard's safe-area inset,
                 // so the card always fits ABOVE it — nothing left for
                 // avoidance to move, nothing left to cover.
-                card(maxHeight: min(620, geo.size.height - 8))
+                // **Inset, so it floats** (D480). It used to be welded to the
+                // top edge with only its bottom corners rounded, which read as
+                // part of the screen rather than a thing laid over it. David,
+                // with a Things screenshot: *"The window floats."* So: 12pt of
+                // air at the top and 14pt at each side, all four corners
+                // rounded, over the dim it already had.
+                //
+                // **This does not break the skin's no-floating rule.** That
+                // rule is about page furniture — a card on a page should be a
+                // panel with a hairline, not a shadow. This is a transient
+                // overlay on a dimmed screen, and it already carried a shadow
+                // and an ink border on purpose before this change.
+                card(maxHeight: min(620, geo.size.height - 32))
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
             }
         }
         .task { endeavorNames = Set(EndeavorFile.nameIndex(from: NoteStore.shared).keys) }
@@ -204,17 +223,17 @@ struct DayflowQuickFindView: View {
         }
         .frame(maxHeight: maxHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
+        // All four corners, and no `ignoresSafeArea` — the card no longer
+        // runs under the status bar, because it no longer touches the top.
         .background(
-            UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color.dayflowPaper)
-                .ignoresSafeArea(edges: .top)
         )
-        .overlay(alignment: .bottom) {
-            UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18)
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(Color.dayflowInk.opacity(0.9), lineWidth: 1.5)
-                .ignoresSafeArea(edges: .top)
                 .allowsHitTesting(false)
-        }
+        )
         .shadow(color: .black.opacity(0.25), radius: 22, x: 0, y: 10)
     }
 
@@ -283,19 +302,82 @@ struct DayflowQuickFindView: View {
 
     // MARK: Browse (empty query)
 
+    // **RECORDS above TASKS** (D480). David: *"It is mostly task oriented now
+    // with the lists, anytime, someday... that might actually be the right
+    // move but we should think through the UI more critically."* He was right,
+    // and it was not a taste problem. Every row on this card was a Reminders
+    // list. The card was built when the app was tasks and notes, and nothing
+    // was added to it when Records grew, so People, Places, Endeavors and
+    // Notes could be reached from here only by typing their names.
+    //
+    // **The one card whose job is "where can I go" listed less than the app
+    // held**, which is the kind of quiet wrong this vault cares about: not a
+    // broken screen, a screen answering a narrower question than the one it
+    // appears to answer.
+    //
+    // `LISTS` becomes `TASKS`, because that heading only made sense while
+    // lists were the only thing here.
     private var browseContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sectionHeader("GO TO")
+            sectionHeader("RECORDS")
+            browseRow(icon: "person", title: "People",
+                      count: notion.people.count) { goToRecords("PEOPLE") }
+            browseRow(icon: "mappin.and.ellipse", title: "Places",
+                      count: notion.places.count) { goToRecords("PLACES") }
+            browseRow(icon: "sparkles", title: "Endeavors",
+                      count: EndeavorStore.shared.endeavors.count) { goToRecords("ENDEAVORS") }
+            // **No count on Notes**, deliberately. Counting them means walking
+            // the notes folder, and a synchronous container read on the main
+            // thread is exactly what froze this app on iOS 27 (D465). A figure
+            // is not worth a stutter, or worse.
+            browseRow(icon: "text.alignleft", title: "Notes",
+                      count: -1) { goToRecords("NOTES") }
+            // **The three rooms that had no door** (D486). `VisitsView`,
+            // `FitnessView` and `BilliardsView` have been in this target since
+            // D469 and reachable from nowhere; David's only way to a workout
+            // or a pool session was Trace's home screen, which is the app we
+            // are about to delete. Rows here rather than segments in Records:
+            // five words is already what that row holds, and these are places
+            // you go occasionally rather than modes you switch between.
+            browseRow(icon: DayflowRecordsRoom.visits.icon, title: "Visits",
+                      count: notion.visits.count) { goToRoom(.visits) }
+            browseRow(icon: DayflowRecordsRoom.fitness.icon, title: "Workouts",
+                      count: notion.workouts.count) { goToRoom(.fitness) }
+            browseRow(icon: DayflowRecordsRoom.billiards.icon, title: "Billiards",
+                      count: notion.billiardsSessions.count) { goToRoom(.billiards) }
+
+            sectionHeader("TASKS")
             browseRow(icon: "books.vertical", title: "Anytime",
                       count: DayflowTaskPools.anytime.count) { go(.anytime) }
             browseRow(icon: "archivebox", title: "Someday",
                       count: somedayCount) {
                 go(.list(ReminderTaskStore.somedayListName))
             }
-            sectionHeader("LISTS")
-            ForEach(browseLists, id: \.self) { name in
-                browseRow(icon: nil, title: name, count: openCount(in: name)) {
-                    go(.list(name))
+            if listsExpanded {
+                ForEach(browseLists, id: \.self) { name in
+                    browseRow(icon: nil, title: name, count: openCount(in: name)) {
+                        go(.list(name))
+                    }
+                }
+            } else {
+                // **"Lists", not the names joined together** (D487).
+                //
+                // D480 collapsed the task lists onto one row and drew that row
+                // as every list name with a separator between them, which the
+                // mockup showed fitting comfortably on one line. It showed
+                // that because the mockup invented four short names. David's
+                // are Personal, Trace, Birthdays & Anniversaries, Financial
+                // and Work: on the phone that wrapped to three lines and read
+                // as one very odd entry rather than as a group.
+                //
+                // Same fault as D477's top row, and from the same cause -
+                // a layout judged against made-up content. A collapsed group
+                // should say what it is and how many; the names are what you
+                // get for opening it.
+                browseRow(icon: "list.bullet",
+                          title: "Lists",
+                          count: browseLists.reduce(0) { $0 + openCount(in: $1) }) {
+                    withAnimation(.easeInOut(duration: 0.18)) { listsExpanded = true }
                 }
             }
             Button { showSettings = true } label: {
@@ -324,6 +406,20 @@ struct DayflowQuickFindView: View {
                 .padding(.top, 16)
             Rectangle().fill(Color.dayflowInk).frame(height: 1)
         }
+    }
+
+    /// Close the card and land on the Records tab at a segment (D480).
+    /// `DayflowRecordsRouter` is drained by `DayflowNotesView`; the root
+    /// selects the tab. Same shape as the task rows' `go`.
+    private func goToRecords(_ segment: String) {
+        DayflowRecordsRouter.shared.pendingSegment = segment
+        close()
+    }
+
+    /// Open a whole screen rather than a Records segment (D486).
+    private func goToRoom(_ room: DayflowRecordsRoom) {
+        DayflowRecordsRouter.shared.pendingRoom = room
+        close()
     }
 
     private func browseRow(icon: String?, title: String, count: Int,
@@ -804,23 +900,54 @@ extension View {
     /// card with a light haptic. `enabled` gates the fullScreenCover copies
     /// of the tab views, where the overlay would open invisibly underneath.
     func dayflowQuickFindPull(enabled: Bool = true) -> some View {
-        contentShape(Rectangle())
+        modifier(DayflowQuickFindPull(enabled: enabled))
+    }
+}
+
+/// The pull-down gesture (D159), as a modifier rather than a function, because
+/// it needs one piece of state of its own: whether THIS drag has already
+/// ticked.
+private struct DayflowQuickFindPull: ViewModifier {
+    let enabled: Bool
+    /// True once this drag has passed the threshold and the tick has fired.
+    /// Reset when the finger lifts, so one gesture gives one tick.
+    @State private var crossed = false
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
             .gesture(
+                // **The tick fires at the threshold, not on release** (D480).
+                //
+                // There has been a haptic here since D159 and it has never
+                // felt like anything, because it fired in `onEnded` — after
+                // the finger had already left the glass, at the same moment
+                // the card appeared. What David is describing in Things is
+                // feedback DURING the drag: the instant the pull has gone far
+                // enough the phone says so, and you let go knowing it worked.
+                //
+                // `.rigid` rather than `.light`: a definite tick, not a nudge.
                 DragGesture(minimumDistance: 30)
-                    .onEnded { value in
-                        guard enabled else { return }
-                        let vertical = value.translation.height
-                        let horizontal = value.translation.width
-                        guard vertical > 50,
-                              vertical > abs(horizontal) * 1.5 else { return }
+                    .onChanged { value in
+                        guard enabled, !crossed else { return }
+                        guard value.translation.height > 50,
+                              value.translation.height > abs(value.translation.width) * 1.5
+                        else { return }
+                        crossed = true
+                        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                    }
+                    .onEnded { _ in
+                        let fired = crossed
+                        crossed = false
+                        guard enabled, fired else { return }
                         withAnimation(.spring(duration: 0.32)) {
                             DayflowQuickFindRouter.shared.show = true
                         }
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
             )
     }
 }
+
 
 // MARK: - Manual order (Session 78 round 3)
 //

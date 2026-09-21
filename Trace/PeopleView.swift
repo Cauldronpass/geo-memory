@@ -43,9 +43,21 @@ private enum PeopleFilter: Equatable {
     }
 }
 
+/// **People first, and the default** (D482). David: *"the people screen has
+/// interactions first and people second. Id like those swapped so people is on
+/// the left side and the default."*
+///
+/// It was the other way round from Session 48, on the redesign mockup's
+/// "feed-first" call, and the merge mockup drew it that way too. Inside Trace
+/// this was a tab of its own and arriving on the feed made sense. In Records
+/// it is a scope you go to, and you go to it looking for a person — the feed
+/// is what you read when you are already there.
+///
+/// `CaseIterable` order is what the segmented control draws, so the order
+/// here IS the order on screen.
 enum PeopleTab: String, CaseIterable {
-    case interactions = "Interactions"
     case people       = "People"
+    case interactions = "Interactions"
 }
 
 struct PeopleView: View {
@@ -55,7 +67,7 @@ struct PeopleView: View {
     @State private var showingFilter = false
     @State private var selectedPerson: Person? = nil
     @State private var showAddPerson = false
-    @State private var selectedTab: PeopleTab = .interactions
+    @State private var selectedTab: PeopleTab = .people
     @State private var hasLoadedInteractions = false
     @State private var isLoadingInteractions = false
     /// Which row is currently peeled open. **One at a time** — two half-open rows
@@ -190,10 +202,12 @@ struct PeopleView: View {
         .navigationBarTitleDisplayMode(.large)
         .drawerToolbar()
         .task {
-            // Interactions is the default tab now, so it needs its own initial
-            // load — the onChange watcher below only covers switching *into*
-            // Interactions later, which never fires for the tab that's
-            // already selected on first appearance.
+            // **Still loaded eagerly, though Interactions is no longer the
+            // default** (D482). The fetch is kept rather than deferred to the
+            // first switch: it is one Notion query, it runs while he is
+            // reading the people list, and the alternative is a spinner on the
+            // first tap of a tab that is one tap away. The `onChange` below
+            // still covers the case where this has not finished.
             guard !hasLoadedInteractions else { return }
             hasLoadedInteractions = true
             isLoadingInteractions = true

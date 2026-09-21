@@ -113,6 +113,10 @@ struct DayflowApp: App {
                 .environment(notionService)
                 .preferredColorScheme(preferredScheme)
                 .task {
+                    // D468 — the router's stores report readiness from here on.
+                    // FIRST in the chain, so the fetches below are heard; the
+                    // call also catches up on anything already loaded.
+                    TraceRouter.wireStores()
                     await notionService.fetchPlaces()
                     await notionService.fetchPeople()
                     // Session 78, D165 — birthdays become tasks: a sweep
@@ -261,7 +265,29 @@ enum DayflowInboxBadge {
             total += (try? NoteStore.shared.listFiles(in: "Notes/Inbox").count) ?? 0
         }
         if wantsTasks {
-            await ReminderTaskStore.shared.refreshAll()
+            // **Reads the count; does NOT fetch** (D476).
+            //
+            // This line used to be `await ReminderTaskStore.shared.refreshAll()`
+            // followed by the read, and the two of them formed a loop with no
+            // bottom. `refreshAll` calls `fetch`, `fetch` calls `apply`, and
+            // `apply` ends by bumping `revision` — which is the value
+            // `DayflowApp`'s `.onChange` watches to call this function. Every
+            // refresh caused the next one. EventKit was queried, every task
+            // array reassigned and every task-showing view invalidated,
+            // continuously, for as long as the app was open.
+            //
+            // That is what David felt as the app being choppy, and it is the
+            // `onChange(of: UInt64) action tried to update multiple times per
+            // frame` warning in the console, written down since the first
+            // iOS 27 run and read as harmless.
+            //
+            // **Fetching here was never needed.** The badge is refreshed
+            // BECAUSE the store just applied a fetch, so the count is fresh by
+            // construction. On the two paths where it is not — launch, and a
+            // note-inbox change — the task figure is briefly whatever the last
+            // fetch left, and the next real fetch corrects it through the same
+            // `onChange`. A badge one fetch behind for a moment is worth
+            // incomparably less than a permanent loop.
             total += ReminderTaskStore.shared.inboxCount
         }
         try? await center.setBadgeCount(total)

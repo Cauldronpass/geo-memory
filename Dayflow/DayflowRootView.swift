@@ -56,6 +56,28 @@ struct DayflowRootView: View {
     /// screen consumes the pending value.
     @State private var quickActions = DayflowQuickActionRouter.shared
 
+    // MARK: Compose (D479)
+    //
+    // **Here, not on Today**, and that is the whole reason this placement was
+    // chosen. Three of the six doors — Check in, Log interaction, Pin here —
+    // are things recorded the moment they happen, and half of them are about
+    // people and places, which live under RECORDS. A compose button that only
+    // existed on Today would be asking him to travel back to Today first.
+    //
+    // The history is worth carrying: D188 put a floating + on Today, a later
+    // build removed it for being too heavy on a page that is otherwise rules
+    // and type, and that removal was never written down. D475 then wired this
+    // menu to the button that was no longer drawing; D477 moved it to the day
+    // strip and pushed that row's minimum width past the screen, laying the
+    // whole page off both edges; D478 took it out. This is the fourth
+    // placement and the first one in furniture with room to spare.
+    @State private var showCompose = false
+    @State private var showCheckIn = false
+    @State private var showLogInteraction = false
+    /// Pin here writes into today's note with no UI at all, so the only thing
+    /// it can ever need to say is that something went wrong.
+    @State private var quickPinMessage: String? = nil
+
     /// The tab a pending destination asked for, captured at the MOMENT the
     /// destination arrived rather than looked up later (Session 84, with
     /// `tab(for:)`).
@@ -103,6 +125,7 @@ struct DayflowRootView: View {
             HStack(spacing: 0) {
                 editorialTab(.today, "TODAY", "sun.max")
                 editorialTab(.tasks, "TASKS", "checklist")
+                composeCell
                 editorialTab(.upcoming, "UPCOMING", "calendar")
                 editorialTab(.records, "RECORDS", "folder")
             }
@@ -110,6 +133,60 @@ struct DayflowRootView: View {
             .padding(.bottom, 4)
         }
         .background(Color.dayflowPaper.ignoresSafeArea(edges: .bottom))
+    }
+
+    /// Compose, in the middle of the bar (D479).
+    ///
+    /// **A mark, not a fifth word.** This file's own header records why the
+    /// bar holds four: *"five sets of 9pt caps is where these labels start
+    /// truncating"*. A glyph is not a label, so four words stay four and
+    /// nothing truncates. It also keeps the bar honest — the four words still
+    /// answer "where am I", and the one thing between them that is not a word
+    /// is the one thing that is not a place.
+    ///
+    /// **Filled, unlike its neighbours**, in `dayflowFloatingAction` (ink in
+    /// light, accent in dark — the token that exists for exactly this). The
+    /// other four cells are navigation and wear their state; this one does
+    /// something and never looks selected.
+    private var composeCell: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showCompose = true
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(Color.dayflowPaper)
+                .frame(width: 34, height: 34)
+                .background(Color.dayflowFloatingAction,
+                            in: RoundedRectangle(cornerRadius: 4))
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Compose")
+    }
+
+    /// Pin here. Writes the marker into today's note with a 500 m place match
+    /// and no UI, which is what makes it worth a row: one tap in a car park
+    /// and it is done. `QuickPin.drop` is shared code this target already
+    /// compiled, so nothing had to move for it.
+    ///
+    /// **Silent when it works.** The only thing it says is that Notion was
+    /// unreachable and the line went in unlinked, which is the honest outcome
+    /// underground and not a failure of the pin.
+    private func pinHere() {
+        Task { @MainActor in
+            do {
+                let result = try await QuickPin.drop(label: nil, emoji: nil)
+                await NotionService.shared.fetchCaptures()
+                if !result.linked {
+                    quickPinMessage = "Pinned to today's note. Couldn't reach Notion, so it isn't linked to a capture."
+                }
+            } catch {
+                quickPinMessage = error.localizedDescription
+            }
+        }
     }
 
     /// The middle ground (David's call after seeing wordmarks proposed
@@ -186,6 +263,73 @@ struct DayflowRootView: View {
                 .tag(DayflowTab.records)
         }
         .tint(Color.dayflowAccent)
+        // ── The compose menu (D454, D479) ──────────────────────────────────
+        //
+        // **A confirmation dialog rather than a `Menu`.** The dialog is the
+        // control Trace's own floating button used, so the interaction is the
+        // one David already has in his hands, and it comes up from the bottom
+        // where his thumb already is.
+        //
+        // No section headings. The mockup drew TRACE and DAYFLOW above the two
+        // groups and said in its own caption they were a build aid; in the one
+        // app there are not two apps to label.
+        //
+        // The last three go through `DayflowQuickActionRouter`, which already
+        // switches to the right tab and is already drained by the screens that
+        // own those composers. A second path to them would be a second thing
+        // to keep in step.
+        .confirmationDialog("", isPresented: $showCompose, titleVisibility: .hidden) {
+            Button("Check in") { showCheckIn = true }
+            Button("Log interaction") { showLogInteraction = true }
+            Button("Pin here") { pinHere() }
+            Button("Add a task") { quickActions.pending = "AddTask" }
+            Button("Add an event") { quickActions.pending = "AddEvent" }
+            Button("New note") { quickActions.pending = "NewNote" }
+            Button("Cancel", role: .cancel) { }
+        }
+        // **The three rooms** (D486). A sheet rather than a
+        // `fullScreenCover`: none of these three carries a close button of its
+        // own — they were tabs in Trace and never needed one — so a cover
+        // would trap him in a room with no way out. A sheet swipes down.
+        .sheet(item: Binding(
+            get: { DayflowRecordsRouter.shared.pendingRoom },
+            set: { DayflowRecordsRouter.shared.pendingRoom = $0 }
+        )) { room in
+            // **`VisitsView` is NOT wrapped**, and that is not an
+            // oversight: it builds its own `NavigationStack`, and a stack
+            // inside a stack gives two navigation bars and pushes that land in
+            // the wrong one. The other two do not build one and need it for
+            // their own `NavigationLink`s.
+            Group {
+                switch room {
+                case .visits:
+                    VisitsView()
+                case .fitness:
+                    NavigationStack { FitnessView() }
+                case .billiards:
+                    NavigationStack { BilliardsView() }
+                }
+            }
+            .environment(NotionService.shared)
+            .environment(LocationManager.shared)
+        }
+        .sheet(isPresented: $showCheckIn) {
+            CheckInView()
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
+        }
+        .sheet(isPresented: $showLogInteraction) {
+            FABLogInteractionSheet()
+                .environment(NotionService.shared)
+        }
+        .alert("Pin here", isPresented: Binding(
+            get: { quickPinMessage != nil },
+            set: { if !$0 { quickPinMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(quickPinMessage ?? "")
+        }
         // The band pins to the SCREEN bottom: it ignores the keyboard's
         // safe area (the keyboard window simply draws over it, exactly as
         // it did over the system bar) rather than riding up above it.
@@ -218,6 +362,24 @@ struct DayflowRootView: View {
         // Session 78 evening — agenda NOTE rows (Today/Upcoming) route by
         // setting pendingDestination directly with Quick Find closed; land
         // on the tab that owns the note machinery.
+        // **A `trace://discover` link, before its screen can act on it**
+        // (D484). `hasHeld` looks without taking — it is what the router grew
+        // for exactly this: the root needs to select the tab, and the screen
+        // on that tab needs to still find the route waiting for it when it
+        // appears. Taking it here would consume it before anything could show
+        // it.
+        .onChange(of: TraceRouter.shared.version) { _, _ in
+            if TraceRouter.shared.hasHeld(where: {
+                if case .discover = $0 { return true } else { return false }
+            }) {
+                selectedTab = .records
+            }
+        }
+        // A Records row tapped in Quick Find (D480). The tab only; the
+        // Records screen owns the value and is the one that clears it.
+        .onChange(of: DayflowRecordsRouter.shared.pendingSegment) { _, wanted in
+            if wanted != nil { selectedTab = .records }
+        }
         .onChange(of: quickFind.pendingDestination) { _, destination in
             // Watches the VALUE, not "is it nil". The old form handed this
             // closure a Bool and left it to look the destination up again,
@@ -243,6 +405,14 @@ struct DayflowRootView: View {
         .onChange(of: quickActions.pending) { _, type in
             if type == "AddTask" { selectedTab = .tasks }
             if type == "AddEvent" || type == "NewNote" { selectedTab = .today }
+            // **Check In, new in D490.** It presents rather than routing to a
+            // tab, so it is consumed here: the other three are drained by the
+            // screens that own their composers, and this one has no screen of
+            // its own — it is the same sheet the compose menu opens.
+            if type == "checkin" {
+                quickActions.pending = nil
+                showCheckIn = true
+            }
         }
         // Cold launch from the quick action: pending was set before this view
         // existed, so onChange never fires — check once on appearance.
@@ -250,6 +420,13 @@ struct DayflowRootView: View {
             if quickActions.pending == "AddTask" { selectedTab = .tasks }
             if quickActions.pending == "AddEvent"
                 || quickActions.pending == "NewNote" { selectedTab = .today }
+            // Same catch-up for Check In (D490). A quick action taken from a
+            // cold start sets `pending` before this view exists, so `onChange`
+            // never fires for it and the sheet would never open.
+            if quickActions.pending == "checkin" {
+                quickActions.pending = nil
+                showCheckIn = true
+            }
         }
         .onOpenURL { url in
             // Tab selection only — ContentView's own handler does the real

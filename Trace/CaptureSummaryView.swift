@@ -111,6 +111,24 @@ struct CaptureSummaryView: View {
 
     @ViewBuilder
     private func content(for capture: Capture) -> some View {
+        // **A `ScrollView`, which is the fix for the title collision** (D482).
+        //
+        // David: *"when i pin a location the word 'Pin' is scrunched by the
+        // address. when I drag the card up it expands and looks ok."* Exactly
+        // right, and the "when I drag it up" half is the diagnosis: this card
+        // is presented at `.medium`, and its content — headline, timestamp, a
+        // 180pt map and three buttons — is taller than half a phone. With no
+        // scroller, the stack had nowhere to go and rode up under the inline
+        // navigation title, so "Pin" and the street address drew on the same
+        // line. At `.large` there is room, so it looked correct there, which
+        // is what made it read as a rendering glitch rather than an overflow.
+        //
+        // Fixed here rather than at the five call sites that present this
+        // sheet, and fixed by letting the content scroll rather than by
+        // dropping the `.medium` detent — a half card that expands is the
+        // right shape for a pin, and it was only ever the overflow that was
+        // wrong.
+        ScrollView {
         VStack(spacing: 20) {
             VStack(spacing: 4) {
                 Text(displayName)
@@ -215,6 +233,9 @@ struct CaptureSummaryView: View {
 
             Spacer(minLength: 0)
         }
+        .padding(.bottom, 16)
+        }
+        .scrollBounceBehavior(.basedOnSize)
     }
 
     private func load() async {

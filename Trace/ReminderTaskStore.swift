@@ -47,6 +47,11 @@ final class ReminderTaskStore {
 
     static let shared = ReminderTaskStore()
 
+    /// Called after every applied fetch (D468). A closure rather than a call to
+    /// `TraceRouter` for the reason given on `NotionService.onFeedLoaded`: this
+    /// file compiles into four targets and the router into one.
+    static var onLoad: (() -> Void)?
+
     /// The topical list for personal-life tasks, and the destination a
     /// DATED capture graduates to (D225/D236). Created on first write if
     /// missing.
@@ -202,6 +207,7 @@ final class ReminderTaskStore {
         revision &+= 1
         lastFetched = Date()
         lastError = nil
+        Self.onLoad?()
         // Session 78 — the tasks widget mirrors this store; any applied
         // change refreshes it (WidgetKit coalesces, so per-apply is cheap).
         WidgetCenter.shared.reloadTimelines(ofKind: "DayflowTasksWidget")

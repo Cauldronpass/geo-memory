@@ -12,6 +12,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>dayflow</string>
+				<string>trace</string>
 			</array>
 		</dict>
 	</array>
@@ -22,6 +23,14 @@
 	</dict>
 	<key>UIApplicationShortcutItems</key>
 	<array>
+		<dict>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>mappin.and.ellipse</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Check In</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>checkin</string>
+		</dict>
 		<dict>
 			<key>UIApplicationShortcutItemIconSymbolName</key>
 			<string>plus.circle</string>

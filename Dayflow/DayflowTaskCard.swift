@@ -304,7 +304,7 @@ final class DayflowTaskDraft {
     private func sendToTodoist(_ title: String, notes: String? = nil) async {
         do {
             _ = try await TodoistService.send(title: title, notes: notes, due: when.date)
-            logToDayNote(title)
+            DayflowWorkHandoff.logToDayNote(title)
             let landed = "\(title) — Todoist\(when.isDated ? ", " + when.label : "")"
             reset()
             createdTaskTitle = title
@@ -321,22 +321,10 @@ final class DayflowTaskDraft {
         }
     }
 
-    /// `☑ <title> → Todoist` under `## Work Items`, the same line the Mac writes
-    /// (D348, corrected to the glyph in D352). Same event, same sentence,
-    /// wherever it was captured.
-    private func logToDayNote(_ title: String) {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
-        f.dateFormat = "yyyy-MM-dd"
-        let path = "\(NoteStore.dailyFolder)/\(f.string(from: Date())).md"
-        let existing = (try? NoteStore.shared.readFile(path)) ?? ""
-        let line = "\u{2611} \(title) → Todoist"
-        guard !existing.contains(line) else { return }
-        try? NoteStore.shared.writeFile(path,
-                                        content: EndeavorFile.appending(line, under: "Work Items",
-                                                                        in: existing))
-    }
+    // The day-note line moved to `DayflowWorkHandoff` (D489), so the card
+    // and the task edit sheet write the same sentence. It was private here and
+    // a second copy in the sheet would have been two versions of the one line
+    // the day note promises to say the same way wherever a task was captured.
 }
 
 // MARK: - The snippet

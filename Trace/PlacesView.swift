@@ -12,6 +12,24 @@ enum PlacesSort: String, CaseIterable {
 // MARK: - Places View
 
 struct PlacesView: View {
+    /// Shown inside the merged app's Records tab rather than as a tab of its
+    /// own (D472). The only thing it changes is the big navigation title:
+    /// under the Records masthead a second large "Places" is one heading too
+    /// many, so the bar goes thin and keeps only the four buttons on its right.
+    ///
+    /// **The one edit this file takes, and why it is worth it.** D469's rule
+    /// is that the screens coming across stay byte for byte as the old app has
+    /// them while both apps are installed. `PeopleView` needed nothing.
+    /// This screen does, because it pushes `PlaceDetailView` with a
+    /// `NavigationLink` and hangs Add a place, Visits, Sort and Refresh off a
+    /// navigation bar. With no `NavigationStack` around it, tapping a place
+    /// does nothing and all four buttons are simply absent — a screen with
+    /// four missing controls and a dead row, which is worse than a parameter.
+    /// So Records wraps it in a `NavigationStack` and passes this.
+    ///
+    /// Default `false`, so Trace itself is unchanged.
+    var embedded: Bool = false
+
     @Environment(NotionService.self) private var notion
     @Environment(LocationManager.self) private var locationManager
 
@@ -85,32 +103,32 @@ struct PlacesView: View {
         VStack(spacing: 0) {
             // Search bar
             HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(Color.dayflowMuted)
                 TextField("Search places", text: $searchText)
                     .autocorrectionDisabled()
                     .focused($isSearchFocused)
                     .onSubmit { isSearchFocused = false }
                 if !searchText.isEmpty {
                     Button { searchText = ""; isSearchFocused = false } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(Color.dayflowMuted)
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(10)
-            .background(Color(.secondarySystemGroupedBackground))
+            .background(Color.dayflowPanel)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .padding(.horizontal, 12)
             .padding(.top, 10)
             .padding(.bottom, 4)
-            .background(Color(UIColor.systemGroupedBackground))
+            .background(Color.dayflowPaper)
 
             // Filter chips
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     Menu {
                         Button("All Categories") { selectedCategory = nil }
-                        Divider()
+                        Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                         ForEach(availableCategories, id: \.self) { cat in
                             Button(cat) { selectedCategory = cat }
                         }
@@ -156,8 +174,8 @@ struct PlacesView: View {
                                 .font(.subheadline)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .background(Color(.systemBackground).opacity(0.9))
-                                .foregroundStyle(.secondary)
+                                .background(Color.dayflowPaper.opacity(0.9))
+                                .foregroundStyle(Color.dayflowMuted)
                                 .clipShape(Capsule())
                                 .shadow(color: .black.opacity(0.1), radius: 3, x: 0, y: 1)
                         }
@@ -166,7 +184,7 @@ struct PlacesView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            .background(Color(UIColor.systemGroupedBackground))
+            .background(Color.dayflowPaper)
 
             if notion.isLoading {
                 ProgressView("Loading places…")
@@ -196,17 +214,22 @@ struct PlacesView: View {
                                 Button { checkInPlace = place } label: {
                                     Label("Check In", systemImage: "checkmark.circle.fill")
                                 }
-                                .tint(.teal)
+                                .tint(Color.dayflowAccent)
                             }
                         }
                     }
                 }
+                // D474 — keep the List and its separators; the system
+                // grouped background underneath it goes, so the rows sit on
+                // the same paper as everything else.
+                .scrollContentBackground(.hidden)
+                .background(Color.dayflowPaper)
                 .refreshable { await notion.fetchPlaces() }
                 .scrollDismissesKeyboard(.immediately)
             }
         }
-        .navigationTitle("Places")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationTitle(embedded ? "" : "Places")
+        .navigationBarTitleDisplayMode(embedded ? .inline : .large)
         .drawerToolbar()
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
@@ -289,7 +312,7 @@ struct PlacesListRow: View {
         HStack(spacing: 12) {
             Image(systemName: placeIcon(for: place.category))
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.dayflowPaper)
                 .frame(width: 36, height: 36)
                 .background(placeColor(for: place.category))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -303,17 +326,17 @@ struct PlacesListRow: View {
                     if place.flagged {
                         Image(systemName: "pin.fill")
                             .font(.caption2)
-                            .foregroundStyle(.yellow)
+                            .foregroundStyle(Color.dayflowAccent)
                     }
                     if place.frequent {
                         Image(systemName: "star.fill")
                             .font(.caption2)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Color.dayflowAccent)
                     }
                 }
                 Text([place.city, place.category].filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.dayflowMuted)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -322,16 +345,16 @@ struct PlacesListRow: View {
 
             VStack(alignment: .trailing, spacing: 3) {
                 if let dist = distanceLabel {
-                    Text(dist).font(.caption).foregroundStyle(.secondary)
+                    Text(dist).font(.caption).foregroundStyle(Color.dayflowMuted)
                 } else if let last = place.lastVisited {
-                    Text(last, style: .date).font(.caption).foregroundStyle(.secondary)
+                    Text(last, style: .date).font(.caption).foregroundStyle(Color.dayflowMuted)
                 } else if place.status == "Want to Visit" {
-                    Text("Want to visit").font(.caption).foregroundStyle(.blue)
+                    Text("Want to visit").font(.caption).foregroundStyle(Color.dayflowAccent)
                 }
                 if place.visitCount > 0 {
                     Text("\(place.visitCount) visit\(place.visitCount == 1 ? "" : "s")")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.dayflowFaint)
                 }
             }
         }

@@ -67,8 +67,6 @@ struct ContentView: View {
     /// undated = the Inbox +) — DayflowEventComposer replaced
     /// DayflowQuickAddSheet, and the Task/Event mode switch retired with it.
     @State private var showEventComposer = false
-    /// Guards the FAB's tap action after its long-press (hold = note) fires.
-    @State private var fabLongPressed = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var showNoteFullPage = false
     /// Session 38 addendum 5 — David found the home card's Daily Note
@@ -467,36 +465,12 @@ struct ContentView: View {
             }
             .padding()
             .frame(maxHeight: .infinity)
-            // Session 77, step (b): the + above the tab bar (design doc §
-            // Navigation), task mode — the same reset the old Agenda + did.
-            .overlay(alignment: .bottomTrailing) {
-                if selection.isActive { EmptyView() } else {
-                Button {
-                    if fabLongPressed { fabLongPressed = false; return }
-                    showEventComposer = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 21, weight: .semibold))
-                        .foregroundStyle(Color.dayflowPaper)
-                        .frame(width: 50, height: 50)
-                        .background(Color.dayflowFloatingAction, in: RoundedRectangle(cornerRadius: 2))
-                        .shadow(color: .black.opacity(0.22), radius: 8, x: 0, y: 4)
-                }
-                .buttonStyle(.plain)
-                // Hold for a note: tap = event, hold = a blank note into To
-                // file — the swipe-right door's visible backup (composer
-                // round, 2026-08-28).
-                .simultaneousGesture(
-                    LongPressGesture(minimumDuration: 0.45).onEnded { _ in
-                        fabLongPressed = true
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        inboxStartsInNewNote = true
-                        showNotesInbox = true
-                    }
-                )
-                .padding(.trailing, 4)
-                }
-            }
+            // **No floating + on this screen.** D188 added one, a later
+            // build removed it without logging that, D477 tried the top row
+            // and laid the whole page off the edge of the phone, D478 took it
+            // back out. Compose is a cell in the tab bar from D479, and it
+            // lives in `DayflowRootView` because that is the only place that
+            // can offer it from every tab rather than only from Today.
             .toolbar(.hidden, for: .navigationBar)
             // Skin fix 2026-07-21 (Session 30, round 3) — was chained onto
             // the NavigationStack itself (outside this closure). David
@@ -698,13 +672,13 @@ struct ContentView: View {
             consumeAddEventQuickAction()
         }
         .onOpenURL { url in
-            handleDeepLink(url)
+            receive(url)
         }
         // The same link, handed over directly (D376). See `DayflowRouteInbox`:
         // a `dayflow://` URL opened from Dayflow's own intents brings the app
         // forward without `onOpenURL` firing, so the card's taps arrive here.
         .onChange(of: DayflowRouteInbox.shared.pending?.serial) { _, _ in
-            if let url = DayflowRouteInbox.shared.consume() { handleDeepLink(url) }
+            if let url = DayflowRouteInbox.shared.consume() { receive(url) }
         }
         .onChange(of: scenePhase) { _, phase in
             // Drained on becoming active as well: the intent delivers while the
@@ -712,7 +686,7 @@ struct ContentView: View {
             // frontmost, and a route resolved under a covering overlay is a
             // route nobody sees land.
             guard phase == .active else { return }
-            if let url = DayflowRouteInbox.shared.consume() { handleDeepLink(url) }
+            if let url = DayflowRouteInbox.shared.consume() { receive(url) }
         }
         // Cold launch, first attempt. 50ms is a guess and IS SOMETIMES WRONG —
         // David hit exactly that on 2026-07-29: the first tap of "Open in
@@ -973,6 +947,27 @@ struct ContentView: View {
     /// stale path waiting to fire at a confusing moment.
     /// Every `dayflow://` route, in one place.
     ///
+    /// Every URL that reaches this app, from either door (D468).
+    ///
+    /// Two things happen to it, deliberately, and only one of them does
+    /// anything today. `TraceRouter` is handed the URL so that the screens
+    /// coming across from Trace can take their routes from one place; nothing
+    /// takes a route yet, and a held route that no screen accepts expires
+    /// after the router's `patience` rather than firing into a screen the
+    /// person has left. `handleDeepLink` below then does the real work for
+    /// every `dayflow://` host, unchanged. Its branches retire one at a time,
+    /// as each screen starts taking its own route (D457 pass (c)).
+    ///
+    /// **Not an either/or.** Routing a host through the router the moment the
+    /// router understands it would leave the app with two tables and a list of
+    /// which host is on which, which is the drift this file has already paid
+    /// for once. Everything is delivered; nothing is diverted until a screen
+    /// is ready to catch it.
+    private func receive(_ url: URL) {
+        TraceRouter.shared.deliver(url)
+        handleDeepLink(url)
+    }
+
     /// **Extracted from `.onOpenURL` so a second caller can reach it**
     /// (D376). Dayflow's own search card asks the system to open a
     /// `dayflow://` URL while Dayflow is already the running app, and in
@@ -1220,7 +1215,17 @@ struct ContentView: View {
             // The Mac's own nav is left-aligned with DAYS at the far end, so
             // matching it costs nothing and buys back the room.
             dayPill
-            Spacer(minLength: 24)
+            // **`minLength: 0`, and the reason is worth keeping** (D478).
+            // This was 24, which made it a 24pt FLOOR rather than a gap: the
+            // row's minimum width became the three day words plus 24 plus
+            // every trailing control, and when D477 added a fifth control
+            // that minimum went past the screen. An `HStack` that cannot meet
+            // its minimum reports the oversized width to its parent, so the
+            // whole page — masthead, sections, day note — was laid out wider
+            // than the phone and cut off at BOTH edges. The gap was never the
+            // point; it is whatever is left over, and it should be free to be
+            // nothing.
+            Spacer(minLength: 0)
             blocksButton
             daysButton
         }
@@ -1230,6 +1235,13 @@ struct ContentView: View {
     /// the last time this row grew: four words plus a phantom fifth did not
     /// fit and YESTERDAY wrapped to two lines on David's build. BLOCKS would
     /// have been the fifth word.
+    ///
+    /// **Deleted by accident in D479 and restored** (D481). The compose button
+    /// was declared directly above this one, and the cut that removed compose
+    /// was written as "everything from compose to `dayPill`" — which is this
+    /// declaration and the dead `iconButton` below it as well. A range that
+    /// names its start and its end deletes whatever happens to be sitting in
+    /// between, and nothing checked what that was.
     private var blocksButton: some View {
         Button {
             UISelectionFeedbackGenerator().selectionChanged()
@@ -1243,22 +1255,6 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("The day in blocks")
-    }
-
-    private func iconButton(systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 15))
-                // Skin fix 2026-07-21 (Session 30) — explicit ink color so
-                // this can't pick up accent tinting either, matching the
-                // Menu-icon fix above even though .buttonStyle(.plain) alone
-                // was likely already preventing it here.
-                .foregroundStyle(Color.dayflowInk)
-                .frame(width: 32, height: 32)
-                .background(.background, in: Circle())
-                .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)
     }
 
     private var dayPill: some View {

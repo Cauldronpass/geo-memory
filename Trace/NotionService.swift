@@ -58,9 +58,38 @@ enum NotionCollection: String, CaseIterable, Sendable {
     }
 }
 
+/// The four Notion feeds a screen can wait for (D468).
+///
+/// Deliberately NOT `NotionCollection`. That enum drives three exhaustive
+/// switches (`staleAfter`, `refreshStale`, `loadState`) and has no `captures`
+/// case, so widening it to carry this would change refresh behaviour in four
+/// apps as a side effect of a wiring change. Four values, one job.
+enum NotionFeed: Sendable {
+    case places, people, visits, captures
+}
+
 @Observable
 class NotionService {
     static let shared = NotionService()
+
+    /// Called when a feed finishes loading, once per successful fetch (D468).
+    ///
+    /// **Why a closure and not a call to `TraceRouter`.** This file compiles
+    /// into Trace, Jot, TraceMac and the merged Dayflow target;
+    /// `Dayflow/TraceRoute.swift` belongs to that last target alone. Naming the
+    /// router here would break the other three builds, which is D440's trap in
+    /// a new costume. `TraceRouter.wireStores()` sets this at launch.
+    ///
+    /// **Why here and not at the call sites.** There are forty-odd
+    /// `fetchPlaces()` / `fetchVisits()` / `fetchPeople()` callers across four
+    /// apps. Same argument `PlacesFeed.publish` and the `fetchedAt` stamp make
+    /// further down this file: a bookkeeping step bolted onto callers is forty
+    /// things to remember and one of them gets forgotten.
+    ///
+    /// **Success path only.** A fetch that failed has not loaded anything, and
+    /// a route released into an empty store would answer "no such place" when
+    /// the truth is "Notion did not answer".
+    static var onFeedLoaded: ((NotionFeed) -> Void)?
 
     var places: [Place] = []
     /// See `peopleLoad`. Same three states, same reason.
@@ -293,6 +322,7 @@ class NotionService {
                                       latitude: $0.latitude, longitude: $0.longitude) })
             placesLoad = .loaded
             fetchedAt[.places] = Date()
+            Self.onFeedLoaded?(.places)
             isLoading = false
         } catch {
             self.error = error.localizedDescription
@@ -324,6 +354,7 @@ class NotionService {
                 cursor = result["has_more"] as? Bool == true ? result["next_cursor"] as? String : nil
             } while cursor != nil
             visits = allVisits
+            Self.onFeedLoaded?(.visits)
             // Stamped here, in the function that owns `visits`, and not at the
             // eleven call sites that ask for it. Same rule as `PlacesFeed.publish`
             // one function up: a bookkeeping step bolted onto callers is eleven
@@ -357,6 +388,7 @@ class NotionService {
                 cursor = result["has_more"] as? Bool == true ? result["next_cursor"] as? String : nil
             } while cursor != nil
             captures = allCaptures
+            Self.onFeedLoaded?(.captures)
         } catch {
             self.error = error.localizedDescription
         }
@@ -779,6 +811,7 @@ class NotionService {
         }
         peopleLoad = .loaded
         fetchedAt[.people] = Date()
+        Self.onFeedLoaded?(.people)
         #if os(iOS)
         // Mirror for Satchel, which has no Notion. See `PeopleIndex`.
         PeopleIndex.write(people.filter { !$0.isArchived }.map {

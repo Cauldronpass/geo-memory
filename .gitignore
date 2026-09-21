@@ -7,3 +7,4 @@ _scratch/
 **/_scratch/
 .DS_Store
 **/.DS_Store
+*.pbxproj.bak-*

@@ -839,7 +839,61 @@ struct DayflowTaskEditSheet: View {
         return links
     }
 
+    /// Send this task to Todoist, write the day-note line, and tick the
+    /// reminder off here (D489).
+    ///
+    /// **The edited values, not the stored ones.** If he retitled it on the
+    /// way out, the title that leaves is the one he just typed.
+    ///
+    /// **Nothing local changes unless the send succeeds**, which is the whole
+    /// order of the hand-off: a task ticked off here that never arrived there
+    /// is gone from both places. On failure the sheet stays open and says why,
+    /// with the reminder exactly where it was.
+    private func handOffToWork() {
+        isSaving = true
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let n = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let due: Date? = {
+            switch when {
+            case .date(let d): return d
+            case .today:       return Date()
+            default:           return nil
+            }
+        }()
+        Task {
+            do {
+                try await DayflowWorkHandoff.handOff(
+                    taskID: taskID, title: t, notes: n.isEmpty ? nil : n, due: due)
+                await MainActor.run {
+                    isSaving = false
+                    writeMismatch = nil
+                    onSaved()
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isSaving = false
+                    writeMismatch = error.localizedDescription
+                }
+            }
+        }
+    }
+
     private func save() {
+        // **Work is Todoist, not a folder** (D489). The picker reads the live
+        // Reminders lists and one of them is called Work, so choosing it used
+        // to move the reminder into that list and stop — while the capture
+        // card on Today has known since D348 that Work means send it, log it,
+        // and keep nothing here. Two screens, one word, two meanings; David
+        // moved "Ask Mike about FLT" to Work and expected the flow to run.
+        //
+        // Only when the list CHANGES to Work. A task already sitting there
+        // being edited for some other reason is an edit, not a hand-off.
+        if list == DayflowWorkHandoff.listLabel,
+           initialList != DayflowWorkHandoff.listLabel {
+            handOffToWork()
+            return
+        }
         isSaving = true
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
 

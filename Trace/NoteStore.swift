@@ -373,6 +373,26 @@ class NoteStore {
     /// rule in the concurrency note above.
     nonisolated static let shared = NoteStore()
 
+    /// Called the moment the container is usable, local mode included (D468).
+    ///
+    /// A closure rather than a call to `TraceRouter` for the reason given on
+    /// `NotionService.onFeedLoaded`: this file compiles into seven targets and
+    /// the router into one. `TraceRouter.wireStores()` sets it at launch.
+    ///
+    /// `nonisolated(unsafe)` by the rule written out in the concurrency note
+    /// above — a mutable stored `var` a nonisolated caller must reach. The
+    /// caller is the `DispatchQueue.main.async` block in `init`, which is not
+    /// a Swift-concurrency main-actor context whatever thread it runs on.
+    ///
+    /// **The race is real and is already answered.** `init` runs on the first
+    /// touch of `.shared` anywhere in the app, which can precede the launch
+    /// `.task` that sets this. Then the hook is nil when it fires and the
+    /// event is lost. That is why `wireStores()` catches up by reading
+    /// `hasAccess` straight after it assigns this, rather than trusting the
+    /// hook alone. Written once at launch, read once or twice at launch;
+    /// nothing reassigns it afterwards.
+    nonisolated(unsafe) static var onAccess: (() -> Void)?
+
     /// True once the iCloud container URL has been resolved.
     var hasAccess: Bool = false
 
@@ -424,6 +444,7 @@ class NoteStore {
                     self.isLocalMode = false
                     self.containerPath = url.path
                     self.startObservingICloudChanges()
+                    NoteStore.onAccess?()
                 }
                 // Still on the GCD thread: ask iCloud for every note it has
                 // evicted, before any screen reads one (D465).
@@ -446,6 +467,7 @@ class NoteStore {
         isLocalMode = true
         containerPath = localRoot.path + " (LOCAL — no iCloud)"
         seedLocalContent(at: localRoot)
+        NoteStore.onAccess?()
     }
 
     // MARK: - Simulator test content

@@ -552,6 +552,20 @@ private struct DayflowConnectionsSettings: View {
             // screen at all.
             ClaudeAPIKeySection()
             TodoistKeySection()
+            // D485. Both were Trace's to hold and Trace is being deleted; the
+            // Google key was already unreachable from this app, which is why
+            // Discover's search returns nothing here. Full reasoning in
+            // `DayflowCredentialSections.swift`.
+            DayflowSecretSection(
+                title: "Notion token",
+                placeholder: "ntn_…",
+                storageKey: "notion_token",
+                footer: "Every person, place, visit and capture comes from Notion. Without this the app has no records at all, and nothing else on this screen can compensate for it.")
+            DayflowSecretSection(
+                title: "Google Places key",
+                placeholder: "AIza…",
+                storageKey: "google_places_key",
+                footer: "Searching for a new place on the Places map, and the category and address lookups when you add one. Without it the search field returns nothing and says nothing about why.")
         }
     }
 }

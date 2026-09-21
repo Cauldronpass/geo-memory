@@ -84,7 +84,16 @@ struct PlaceDetailView: View {
                     Text("Notes").tag(3)
                     Text("Settings").tag(4)
                 }
+                // D474 — kept as the stock segmented control, unlike the
+                // person screen's four tabs, and tinted rather than replaced.
+                // `TraceSegmentedControl` divides the width equally and does
+                // not shrink its text; OVERVIEW / INFO / VISITS / NOTES /
+                // SETTINGS is five words where that screen had four, and the
+                // first of them does not fit a phone at 11pt. The stock
+                // control shrinks to fit, so it stays, wearing the accent
+                // instead of the system blue.
                 .pickerStyle(.segmented)
+                .tint(Color.dayflowAccent)
                 .padding(.horizontal)
                 .padding(.vertical, 8)
 
@@ -99,6 +108,9 @@ struct PlaceDetailView: View {
 
                 actionBar
             }
+            // D474 — the whole screen on the skin's paper, in both
+            // appearances, instead of the default system background.
+            .background(Color.dayflowPaper)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -188,7 +200,7 @@ struct PlaceDetailView: View {
                 }
             }
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.dayflowMuted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -220,14 +232,14 @@ struct PlaceDetailView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Text(livePlace.status.isEmpty ? "None" : livePlace.status)
-                                .foregroundStyle(livePlace.status == "Visited" ? .green : .orange)
+                                .foregroundStyle(Color.dayflowAccent)
                                 .bold()
                             Image(systemName: "chevron.up.chevron.down")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.dayflowMuted)
                         }
                     }
-                    .tint(.primary)
+                    .tint(Color.dayflowInk)
                 }
                 DetailRow(label: "Category") {
                     // A presented list, not a Menu (Session 102). This was the
@@ -246,10 +258,10 @@ struct PlaceDetailView: View {
                             Text(livePlace.category.isEmpty ? "None" : livePlace.category)
                             Image(systemName: "chevron.up.chevron.down")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.dayflowMuted)
                         }
                     }
-                    .tint(.primary)
+                    .tint(Color.dayflowInk)
                     .sheet(isPresented: $showingCategoryPicker) {
                         PlaceCategoryPicker(selection: $pickedCategory)
                     }
@@ -313,7 +325,7 @@ struct PlaceDetailView: View {
                                         }
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 4)
-                                        .background(Color.secondary.opacity(0.15))
+                                        .background(Color.dayflowMuted.opacity(0.15))
                                         .clipShape(Capsule())
                                     }
                                 }
@@ -330,7 +342,7 @@ struct PlaceDetailView: View {
                                     .disabled(newTagText.trimmingCharacters(in: .whitespaces).isEmpty)
                                 Button("Cancel") { isEditingTags = false; newTagText = "" }
                                     .font(.subheadline)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.dayflowMuted)
                             }
                         } else {
                             // Picker of all existing tags across places, filtered to ones not already on this place
@@ -346,7 +358,7 @@ struct PlaceDetailView: View {
                                         Task { await addTagDirect(tag) }
                                     }
                                 }
-                                Divider()
+                                Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                                 Button {
                                     isEditingTags = true
                                 } label: {
@@ -406,10 +418,10 @@ struct PlaceDetailView: View {
                         }
                     } label: {
                         DetailRow(label: "Phone") {
-                            Text(phone).foregroundStyle(.blue)
+                            Text(phone).foregroundStyle(Color.dayflowAccent)
                         }
                     }
-                    .tint(.primary)
+                    .tint(Color.dayflowInk)
                 }
                 if let website = place.website, !website.isEmpty {
                     Button {
@@ -419,12 +431,12 @@ struct PlaceDetailView: View {
                     } label: {
                         DetailRow(label: "Website") {
                             Text(website)
-                                .foregroundStyle(.blue)
+                                .foregroundStyle(Color.dayflowAccent)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
                     }
-                    .tint(.primary)
+                    .tint(Color.dayflowInk)
                     // **Save to Satchel is first** (D390). Open and Copy are
                     // both one tap away already — the plain tap on this row
                     // opens the site, and it is unchanged — so the item that
@@ -461,15 +473,15 @@ struct PlaceDetailView: View {
                     DetailRow(label: "Notion") {
                         HStack {
                             Text("Open in Notion")
-                                .foregroundStyle(.blue)
+                                .foregroundStyle(Color.dayflowAccent)
                             Spacer()
                             Image(systemName: "arrow.up.right")
                                 .font(.caption)
-                                .foregroundStyle(.blue)
+                                .foregroundStyle(Color.dayflowAccent)
                         }
                     }
                 }
-                .tint(.primary)
+                .tint(Color.dayflowInk)
 
                 // Re-enrich
                 DetailRow(label: "Google Places") {
@@ -488,7 +500,7 @@ struct PlaceDetailView: View {
                             }
                         }
                         .disabled(isEnriching)
-                        .tint(.blue)
+                        .tint(Color.dayflowAccent)
                         if let err = enrichError {
                             Text(err)
                                 .font(.caption)
@@ -678,7 +690,7 @@ struct PlaceDetailView: View {
                         .multilineTextAlignment(.trailing)
                         .frame(width: 70)
                         .focused($settingsFieldFocused)
-                    Text("m").foregroundStyle(.secondary)
+                    Text("m").foregroundStyle(Color.dayflowMuted)
                 }
                 HStack {
                     Text("Dwell Time")
@@ -688,7 +700,7 @@ struct PlaceDetailView: View {
                         .multilineTextAlignment(.trailing)
                         .frame(width: 70)
                         .focused($settingsFieldFocused)
-                    Text("min").foregroundStyle(.secondary)
+                    Text("min").foregroundStyle(Color.dayflowMuted)
                 }
                 Button("Save Geofencing Settings") {
                     settingsFieldFocused = false
@@ -721,9 +733,9 @@ struct PlaceDetailView: View {
                 VStack(spacing: 12) {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.system(size: 40))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.dayflowMuted)
                     Text("No visits yet")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.dayflowMuted)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 60)
@@ -742,7 +754,7 @@ struct PlaceDetailView: View {
                                         if !visit.photoURLs.isEmpty {
                                             Label("\(visit.photoURLs.count)", systemImage: "photo")
                                                 .font(.caption)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.dayflowMuted)
                                         }
                                         if let rating = visit.rating {
                                             StarDisplay(rating: rating)
@@ -751,12 +763,12 @@ struct PlaceDetailView: View {
                                     if let notes = visit.notes, !notes.isEmpty {
                                         Text(notes)
                                             .font(.subheadline)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(Color.dayflowMuted)
                                     }
                                 }
                                 Image(systemName: "chevron.right")
                                     .font(.caption)
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(Color.dayflowFaint)
                                     .padding(.leading, 4)
                             }
                             .padding(.vertical, 8)
@@ -770,7 +782,7 @@ struct PlaceDetailView: View {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
-                        Divider()
+                        Rectangle().fill(Color.dayflowHairline).frame(height: 1)
                     }
                 }
                 .padding()
@@ -816,7 +828,7 @@ struct PlaceDetailView: View {
                     .frame(width: 36)
             }
             .buttonStyle(.bordered)
-            .tint(livePlace.flagged ? .yellow : .secondary)
+            .tint(livePlace.flagged ? Color.dayflowAccent : Color.dayflowFaint)
 
             Button {
                 Task {
@@ -829,7 +841,7 @@ struct PlaceDetailView: View {
                     .frame(width: 36)
             }
             .buttonStyle(.bordered)
-            .tint(markedForReview ? .orange : .secondary)
+            .tint(markedForReview ? Color.dayflowAccent : Color.dayflowFaint)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -1186,7 +1198,7 @@ struct DetailRow<Content: View>: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.dayflowMuted)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1201,7 +1213,7 @@ struct StarDisplay: View {
             ForEach(1...7, id: \.self) { star in
                 Image(systemName: star <= rating ? "star.fill" : "star")
                     .font(.caption)
-                    .foregroundStyle(star <= rating ? Color.yellow : Color.secondary)
+                    .foregroundStyle(star <= rating ? Color.dayflowAccent : Color.dayflowFaint)
             }
         }
     }

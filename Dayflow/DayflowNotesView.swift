@@ -113,6 +113,58 @@ import SwiftUI
 // when no days are pinned yet, so a fresh install / nobody's used the pin
 // feature yet looks identical to before this existed.
 
+/// Where Quick Find sends a Records destination (D480).
+///
+/// Quick Find's browse list gained People, Places, Endeavors and Notes, and a
+/// row there has to land on this screen at the right segment. One value, set
+/// by the card and drained here; `DayflowRootView` watches it to select the
+/// tab. The same shape as `DayflowQuickFindRouter.pendingDestination`, which
+/// does this job for the Today screen's destinations.
+///
+/// **Drained, not read twice.** The lesson is written out on
+/// `DayflowRootView.tab(for:)`: two views observing one pending value and both
+/// firing is how a route gets consumed out from under the thing deciding where
+/// to send it. The root only ever LOOKS at this; this screen clears it.
+@MainActor
+@Observable
+final class DayflowRecordsRouter {
+    static let shared = DayflowRecordsRouter()
+    /// A `NotesSegment` raw value: NOTES, PLACES, PEOPLE, ENDEAVORS, TO FILE.
+    var pendingSegment: String? = nil
+    /// A whole screen that is not a Records segment (D486). Presented by
+    /// `DayflowRootView` as a sheet over whatever tab is up.
+    var pendingRoom: DayflowRecordsRoom? = nil
+    private init() {}
+}
+
+/// Three of Trace's rooms that came into this target as dependencies and have
+/// never been reachable (D486).
+///
+/// David, asked which Trace-only screens he still uses: *"Trace home screen i
+/// use for accessing orange theory classes and billiards sessions (its my only
+/// door there). also recent visits are there and i use that as well."* The
+/// other four - the captures drawer, the quick-pin sheet, Nearby, Flagged - he
+/// did not recognise, so they go with the old app.
+///
+/// **Nothing was built for this.** `FitnessView`, `BilliardsView` and
+/// `VisitsView` have been compiled into this target since D469, carried in by
+/// `VisitDetailView`, which links a gym visit to its workout and a pool-hall
+/// visit to its session. They only ever lacked a door.
+enum DayflowRecordsRoom: String, Identifiable, CaseIterable {
+    case visits    = "Visits"
+    case fitness   = "Workouts"
+    case billiards = "Billiards"
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .visits:    return "clock.arrow.circlepath"
+        case .fitness:   return "figure.run"
+        case .billiards: return "circle.circle"
+        }
+    }
+}
+
 struct DayflowNotesView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -267,10 +319,48 @@ struct DayflowNotesView: View {
         // confirmed the replacement on a build — a way in must never come out
         // before its replacement is proven, which is the shape half this
         // session has been about.
-        case notes = "NOTES", endeavors = "ENDEAVORS", toFile = "TO FILE"
+        //
+        // **PEOPLE added (D470, merge pass (a)).** D454 put People into
+        // Records as a scope rather than a tab. The approved mockup drew the
+        // row as the six rounded pills, but those are `Scope`, the SEARCH
+        // vocabulary, which is a different control living inside search mode
+        // and carries two values — All and Daily — that have no browse list to
+        // show here at all (D297 moved Daily to Today). Drawn from memory
+        // rather than from the file, the same miss as mockup v1.1's day strip.
+        // The browse row is this one, and People joins it.
+        //
+        // **PLACES added (D472).** Sits before PEOPLE, the order the mockup
+        // and the `Scope` enum both use. List mode only in this build; the
+        // Discover map behind a MAP / LIST toggle is pass (b).
+        case notes = "NOTES", places = "PLACES", people = "PEOPLE",
+             endeavors = "ENDEAVORS", toFile = "TO FILE"
         var id: String { rawValue }
     }
     @State private var segment: NotesSegment = .notes
+    @State private var recordsRouter = DayflowRecordsRouter.shared
+
+    /// MAP or LIST inside the PLACES segment (D484). Discover becomes the map
+    /// behind Places rather than a screen of its own, which is D454.
+    private enum PlacesMode: String, CaseIterable { case list = "LIST", map = "MAP" }
+    @State private var placesMode: PlacesMode = .list
+    /// A coordinate handed to the map by `trace://discover?lat&lon&label`, or
+    /// by "Show on My Map" on a pin card. `DiscoverView` owns it from there
+    /// and clears it itself.
+    @State private var discoverPin: DiscoverDroppedPin? = nil
+    @State private var router = TraceRouter.shared
+
+    /// Takes the routed segment as an ARGUMENT rather than re-reading the
+    /// router, for the reason `DayflowRootView.tab(for:)` spells out at
+    /// length: a value that two views watch must be handed to the handler
+    /// that acts on it, never looked up again inside it.
+    private func applyRoutedSegment(_ wanted: String?) {
+        guard let wanted,
+              let match = NotesSegment.allCases.first(where: { $0.rawValue == wanted })
+        else { return }
+        searchActive = false
+        segment = match
+        recordsRouter.pendingSegment = nil
+    }
     @State private var searchActive = false
     /// Session 78 evening — the project-delete confirmation's subject.
     @State private var projectPendingDelete: String? = nil
@@ -307,6 +397,29 @@ struct DayflowNotesView: View {
             Button("Create") { createProject() }
         }
         .onChange(of: searchText) { _, _ in runSearch() }
+        // **The first screen to take a route from `TraceRouter`** (D484).
+        //
+        // `trace://discover?lat=&lon=&label=` used to cross a process boundary
+        // into the old Trace app. It lands here now. The router held it until
+        // places reported ready (D468), which is the whole point of D466: no
+        // pending ID on this screen, no retry watcher, no guessing whether
+        // Notion has answered yet.
+        .onChange(of: router.version) { _, _ in
+            guard let route = router.take(where: {
+                if case .discover = $0 { return true } else { return false }
+            }) else { return }
+            guard case .discover(let lat, let lon, let label) = route else { return }
+            searchActive = false
+            segment = .places
+            placesMode = .map
+            discoverPin = DiscoverDroppedPin(latitude: lat, longitude: lon,
+                                             label: label ?? "Dropped pin")
+        }
+        // The Records destination from Quick Find (D480). Cleared here, and
+        // only here.
+        .onChange(of: recordsRouter.pendingSegment) { _, wanted in
+            applyRoutedSegment(wanted)
+        }
         .onChange(of: scope) { _, _ in
             runSearch()
             loadTagCounts()
@@ -412,6 +525,56 @@ struct DayflowNotesView: View {
                     // Owns its own List (swipe actions need it) — not nested
                     // in the segment ScrollView.
                     DayflowNotesInboxView(embedded: true)
+                } else if segment == .places && placesMode == .map {
+                    // Discover, whole, as the map behind Places (D454, D484).
+                    // It is a `ZStack` of a full-bleed `Map` with its own
+                    // search field and filter chips laid over it, so it needs
+                    // no stack and no chrome from here — and its one reach
+                    // outside the merged target, `DrawerButtons()`, is already
+                    // answered as nothing by `TraceMergeShims` (D469).
+                    DiscoverView(droppedPin: $discoverPin)
+                        .environment(NotionService.shared)
+                        .environment(LocationManager.shared)
+                } else if segment == .places {
+                    // Trace's Places screen (D472), in a `NavigationStack` of
+                    // its own. Unlike People, this one needs the stack: it
+                    // pushes a place with a `NavigationLink` and hangs Add a
+                    // place, Visits, Sort and Refresh off a navigation bar.
+                    // Without a stack the row does nothing and the four
+                    // buttons never appear at all.
+                    //
+                    // `embedded: true` only empties the large title, so the
+                    // bar is a thin strip carrying those four buttons instead
+                    // of a second big heading under Records.
+                    //
+                    // `LocationManager` is injected here because the app root
+                    // supplies only `NotionService`, and this screen sorts by
+                    // distance.
+                    NavigationStack {
+                        PlacesView(embedded: true)
+                            .environment(LocationManager.shared)
+                    }
+                } else if segment == .people {
+                    // Trace's People screen, whole (D470) — Recent
+                    // interactions first, the everyone list behind its second
+                    // segment, search, filters, Add a person, and a tap opens
+                    // `PersonDetailView` as a sheet. That is frame 2 of the
+                    // approved mockup, already built.
+                    //
+                    // Outside the segment ScrollView for the same reason TO
+                    // FILE is: it brings its own scroller and its own swipe
+                    // rows, and a vertical scroller inside a vertical scroller
+                    // scrolls neither well.
+                    //
+                    // **Not one line of it edited.** Its `.navigationTitle`
+                    // and `.navigationBarTitleDisplayMode` are inert with no
+                    // NavigationStack around this body, `.drawerToolbar()` is
+                    // answered as nothing by `TraceMergeShims` (D469), and its
+                    // ten `TraceSkin` names are answered by `TraceSkinBridge`
+                    // (D467), so it draws Editorial in both appearances as it
+                    // stands. It is still the old app's file, byte for byte,
+                    // while the old app is still installed.
+                    PeopleView()
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 2) {
@@ -421,7 +584,7 @@ struct DayflowNotesView: View {
                                 projectNotesSection
                             case .endeavors:
                                 DayflowEndeavorListSection()
-                            case .toFile:
+                            case .places, .people, .toFile:
                                 EmptyView()
                             }
                         }
@@ -436,7 +599,47 @@ struct DayflowNotesView: View {
         .dayflowSkinBackground()
     }
 
+    /// The figure on the masthead, for the segment actually being shown.
+    ///
+    /// Was `"\(projectNames.count) NOTES"` unconditionally, so the screen read
+    /// "12 NOTES" while ENDEAVORS was up. One segment made that easy to miss;
+    /// D470 adds a second and the next build a third, at which point three of
+    /// five screens would be stating a number about something they are not
+    /// showing. Nil where there is no honest figure: TO FILE already wears its
+    /// own dot, and the endeavor list carries its own headings.
+    ///
+    /// **Nil, not zero, for People before the fetch lands.** An empty
+    /// `people` array is a store that has not loaded and a store that loaded
+    /// and found nobody, and nothing here can tell them apart. "0 PEOPLE"
+    /// would pick one and be wrong half the time.
+    private var segmentCountLabel: String? {
+        switch segment {
+        case .notes:
+            return "\(projectNames.count) NOTES"
+        case .places:
+            let n = NotionService.shared.places.count
+            return n == 0 ? nil : "\(n) PLACES"
+        case .people:
+            let n = NotionService.shared.people.count
+            return n == 0 ? nil : "\(n) PEOPLE"
+        case .endeavors, .toFile:
+            return nil
+        }
+    }
+
     private var segmentRow: some View {
+        // **A horizontal scroller from D470**, while it still makes no visible
+        // difference: four labels fit a phone, five will not. This file has
+        // already recorded that failure twice — `scopeRow`'s own comment
+        // ("five pills fitted a phone width; Endeavors made six and the labels
+        // started truncating mid-word") and the `fixedSize()` note below,
+        // written after "PROJECT S" wrapped mid-word on David's first device
+        // build. PLACES makes five here in the next build; the fix goes in
+        // ahead of the label rather than after the screenshot.
+        //
+        // `.scrollClipDisabled` so the active segment's accent underline is
+        // not sheared at the edges, matching `scopeRow`.
+        ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 18) {
             ForEach(NotesSegment.allCases) { seg in
                 Button { segment = seg } label: {
@@ -467,10 +670,11 @@ struct DayflowNotesView: View {
                 }
                 .buttonStyle(.plain)
             }
-            Spacer()
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
+        }
+        .scrollClipDisabled()
     }
 
 
@@ -511,10 +715,28 @@ struct DayflowNotesView: View {
                     .font(.dayflowSerif(30, weight: .heavy))
                     .foregroundStyle(Color.dayflowInk)
                 Spacer()
-                Text("\(projectNames.count) NOTES")
-                    .font(.system(size: 10, weight: .medium))
-                    .tracking(1.4)
-                    .foregroundStyle(Color.dayflowFaint)
+                if segment == .places {
+                    // **The toggle sits where the count sits** (D484). The
+                    // masthead already has one small right-hand slot and the
+                    // count is the least useful thing that could be in it
+                    // while you are looking at a map. A row of its own would
+                    // put four bands of chrome above Discover's own search
+                    // field, which is the shape that made Trace's Home screen
+                    // feel busy.
+                    Picker("", selection: $placesMode) {
+                        ForEach(PlacesMode.allCases, id: \.self) { m in
+                            Text(m.rawValue).tag(m)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .tint(Color.dayflowAccent)
+                    .fixedSize()
+                } else if let label = segmentCountLabel {
+                    Text(label)
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(1.4)
+                        .foregroundStyle(Color.dayflowFaint)
+                }
             }
             .padding(.vertical, 10)
             Rectangle().fill(Color.dayflowInk).frame(height: 1)

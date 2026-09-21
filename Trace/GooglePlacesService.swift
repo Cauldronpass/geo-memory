@@ -198,8 +198,28 @@ class GooglePlacesService {
     static let shared = GooglePlacesService()
     private let baseURL = "https://places.googleapis.com/v1/places"
 
+    /// **The App Group first, then this app's own defaults** (D485).
+    ///
+    /// This used to read `UserDefaults.standard` alone, which is PER APP. The
+    /// key David pasted lives in Trace's defaults, so the merged app — which
+    /// now owns the Places map — had no key at all, and every search returned
+    /// nothing while saying nothing about why. `GooglePlacesError.missingKey`
+    /// existed for exactly this state and nothing was reaching it, because an
+    /// empty key returns empty results rather than throwing on the search
+    /// path.
+    ///
+    /// Reading through to the old location and writing it across means the
+    /// value migrates the first time any app in the family asks for it, with
+    /// nothing for David to re-paste. Same shape `NotionService.token` has
+    /// used since it moved.
     private var apiKey: String {
-        UserDefaults.standard.string(forKey: "google_places_key") ?? ""
+        let shared = UserDefaults(suiteName: "group.com.david.trace") ?? .standard
+        if let v = shared.string(forKey: "google_places_key"), !v.isEmpty { return v }
+        if let legacy = UserDefaults.standard.string(forKey: "google_places_key"), !legacy.isEmpty {
+            shared.set(legacy, forKey: "google_places_key")
+            return legacy
+        }
+        return ""
     }
 
     private var fieldMask: String {

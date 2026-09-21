@@ -121,29 +121,55 @@
 		636863EB300D799E000A3F02 /* Exceptions for "Trace" folder in "Dayflow" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				AddCaptureView.swift,
+				AddPhotoView.swift,
+				AddPlaceView.swift,
+				AppleMapsSearchService.swift,
+				BilliardsScanService.swift,
+				BilliardsView.swift,
+				BilliardsWizardView.swift,
+				CalendarGridView.swift,
 				CalendarService.swift,
 				CaptureSummaryView.swift,
 				CheckInBridge.swift,
+				CheckInView.swift,
 				CommonsImages.swift,
 				Config.swift,
+				ContactPickerView.swift,
 				DayflowAgendaMatch.swift,
 				DayflowFlagStore.swift,
 				DayflowMeetingColors.swift,
+				DayNoteSheet.swift,
+				DiscoverQuery.swift,
+				DiscoverView.swift,
+				DocumentSearchPredicate.swift,
 				Endeavor.swift,
 				EndeavorPhrasing.swift,
+				FitnessView.swift,
 				GeofenceManager.swift,
 				GooglePlacesService.swift,
 				IOSDocumentStore.swift,
 				KitWindow.swift,
+				LifeView.swift,
 				LocationManager.swift,
+				MapView.swift,
 				MarkdownEditorView.swift,
 				MarkdownTextStorage.swift,
 				Models.swift,
 				NoteStore.swift,
 				NotionService.swift,
+				OTScanService.swift,
+				PeopleView.swift,
+				PersonDetailView.swift,
+				PersonEnrichSheet.swift,
+				PlaceDetailView.swift,
 				PlaceHelpers.swift,
 				PlaceLink.swift,
+				PlacePickerSheet.swift,
+				PlacesView.swift,
 				ReminderTaskStore.swift,
+				SaveCaptureAsPlaceSheet.swift,
+				SpotsMapView.swift,
 				TaskLineParser.swift,
 				ThingsService.swift,
 				TodoistService.swift,
@@ -154,6 +180,9 @@
 				TraceSatchelHandoff.swift,
 				TraceSearchIOS.swift,
 				TripLog.swift,
+				VisitDetailView.swift,
+				VisitsView.swift,
+				WorkoutWizardView.swift,
 			);
 			target = 636863DD300D7848000A3F02 /* Dayflow */;
 		};
@@ -966,11 +995,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Dayflow/Dayflow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 86;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Dayflow/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Trace;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dayflow uses your calendar to show today's events alongside your tasks in the Agenda";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Dayflow uses your calendar to show today's events alongside your tasks in the Agenda";
@@ -987,7 +1017,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1;
+				MARKETING_VERSION = 2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.david.Dayflow;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -1007,11 +1037,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Dayflow/Dayflow.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 86;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Dayflow/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Trace;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Dayflow uses your calendar to show today's events alongside your tasks in the Agenda";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Dayflow uses your calendar to show today's events alongside your tasks in the Agenda";
@@ -1028,7 +1059,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1;
+				MARKETING_VERSION = 2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.david.Dayflow;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -1185,7 +1216,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = DayflowWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 86;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DayflowWidget/Info.plist;
@@ -1198,7 +1229,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1;
+				MARKETING_VERSION = 2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.david.Dayflow.DayflowWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1218,7 +1249,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = DayflowWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 86;
 				DEVELOPMENT_TEAM = KZFRL4A856;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DayflowWidget/Info.plist;
@@ -1231,7 +1262,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1;
+				MARKETING_VERSION = 2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.david.Dayflow.DayflowWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

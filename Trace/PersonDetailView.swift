@@ -52,12 +52,12 @@ private struct PersonPhotoCircle: View {
                     .clipShape(Circle())
             } else {
                 Circle()
-                    .fill(Color.purple.opacity(0.15))
+                    .fill(Color.dayflowPanel)
                     .frame(width: size, height: size)
                     .overlay(
                         Text(initials)
                             .font(.system(size: size * 0.33, weight: .medium))
-                            .foregroundStyle(.purple)
+                            .foregroundStyle(Color.dayflowMuted)
                     )
             }
         }
@@ -213,7 +213,7 @@ struct PersonDetailView: View {
                                 }
                             } label: {
                                 Image(systemName: isArchived ? "archivebox.fill" : "archivebox")
-                                    .foregroundStyle(isArchived ? Color.accentColor : .secondary)
+                                    .foregroundStyle(isArchived ? Color.dayflowAccent : Color.dayflowMuted)
                             }
                             // DELETE, added 2026-07-31 on David's ask. Seventh
                             // instance this week of a capability that exists
@@ -232,7 +232,7 @@ struct PersonDetailView: View {
                                 }
                             } label: {
                                 Image(systemName: "ellipsis.circle")
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.dayflowMuted)
                             }
                         }
                         Button {
@@ -332,12 +332,13 @@ struct PersonDetailView: View {
 
             // Tab picker
             Section {
-                Picker("", selection: $selectedTab) {
-                    ForEach(PersonTab.allCases, id: \.self) { tab in
-                        Text(tab.rawValue).tag(tab)
-                    }
-                }
-                .pickerStyle(.segmented)
+                // D473 — was `.pickerStyle(.segmented)`. The stock control
+                // paints itself from the system tint and ignores the skin
+                // entirely, so it was the one bright blue left on the screen.
+                // Same options, same binding, drawn like Records' pills.
+                TraceSegmentedControl(options: PersonTab.allCases,
+                                      label: { $0.rawValue },
+                                      selection: $selectedTab)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
             .listRowBackground(Color.clear)
@@ -350,6 +351,12 @@ struct PersonDetailView: View {
             case .notes:        notesTab(d)
             }
         }
+        // D473 — the screen sits on the skin's paper in both appearances
+        // instead of the system grouped grey, which has no dark counterpart
+        // that matches. Rows keep their own separators; the hairline and the
+        // system separator are within a shade of each other.
+        .scrollContentBackground(.hidden)
+        .background(Color.dayflowPaper)
         .onChange(of: selectedTab) { _, tab in
             if tab == .notes { loadNoteStoreNote() }
         }
@@ -407,7 +414,7 @@ struct PersonDetailView: View {
                 }
                 .disabled(birthdayReminderState == .working)
                 if case .failed(let why) = birthdayReminderState {
-                    Text(why).font(.caption).foregroundStyle(.orange)
+                    Text(why).font(.caption).foregroundStyle(Color.dayflowAccent)
                 }
             }
             if let met = d.howWeMet, !met.isEmpty { row("How We Met", value: met) }
@@ -417,9 +424,9 @@ struct PersonDetailView: View {
             if let phone = d.phone, !phone.isEmpty {
                 Button { phoneForAction = phone } label: {
                     HStack {
-                        Text("Phone").foregroundStyle(.secondary)
+                        Text("Phone").foregroundStyle(Color.dayflowMuted)
                         Spacer()
-                        Text(phone).foregroundStyle(.blue)
+                        Text(phone).foregroundStyle(Color.dayflowAccent)
                     }
                 }
                 .buttonStyle(.plain)
@@ -429,9 +436,9 @@ struct PersonDetailView: View {
                     if let url = URL(string: "mailto:\(email)") { openURL(url) }
                 } label: {
                     HStack {
-                        Text("Email").foregroundStyle(.secondary)
+                        Text("Email").foregroundStyle(Color.dayflowMuted)
                         Spacer()
-                        Text(email).foregroundStyle(.blue)
+                        Text(email).foregroundStyle(Color.dayflowAccent)
                     }
                 }
                 .buttonStyle(.plain)
@@ -442,9 +449,9 @@ struct PersonDetailView: View {
                     if let url = URL(string: "maps://?q=\(encoded)") { openURL(url) }
                 } label: {
                     HStack(alignment: .top) {
-                        Text("Address").foregroundStyle(.secondary)
+                        Text("Address").foregroundStyle(Color.dayflowMuted)
                         Spacer()
-                        Text(address).foregroundStyle(.blue).multilineTextAlignment(.trailing)
+                        Text(address).foregroundStyle(Color.dayflowAccent).multilineTextAlignment(.trailing)
                     }
                 }
                 .buttonStyle(.plain)
@@ -476,12 +483,12 @@ struct PersonDetailView: View {
                                             .font(.caption2.weight(.semibold))
                                     }
                                     .buttonStyle(.plain)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.dayflowMuted)
                                 }
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
-                                .background(Color.accentColor.opacity(0.12))
-                                .foregroundStyle(Color.accentColor)
+                                .background(Color.dayflowPanel)
+                                .foregroundStyle(Color.dayflowAccent)
                                 .clipShape(Capsule())
                             }
                         }
@@ -499,7 +506,7 @@ struct PersonDetailView: View {
                             .disabled(newTagText.trimmingCharacters(in: .whitespaces).isEmpty)
                         Button("Cancel") { isEditingTags = false; newTagText = "" }
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.dayflowMuted)
                     }
                 } else {
                     // No menu of tags already in use, unlike the place editor:
@@ -527,19 +534,19 @@ struct PersonDetailView: View {
             HStack(spacing: 20) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(sharedVisits.count)")
-                        .font(.title2.bold())
+                        .font(.dayflowSerif(22, weight: .semibold))
                     Text("visits together")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.dayflowMuted)
                 }
                 if let lv = d.lastVisitDate {
-                    Divider().frame(height: 36)
+                    Rectangle().fill(Color.dayflowHairline).frame(width: 1, height: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(lv.formatted(.dateTime.month(.abbreviated).day().year()))
                             .font(.subheadline.weight(.medium))
                         Text("last seen")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.dayflowMuted)
                     }
                 }
             }
@@ -549,7 +556,7 @@ struct PersonDetailView: View {
         Section {
             if sharedVisits.isEmpty {
                 Text("No visits together yet")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.dayflowMuted)
                     .font(.subheadline)
                     .padding(.vertical, 4)
             } else {
@@ -560,20 +567,20 @@ struct PersonDetailView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(visit.placeName)
                                     .font(.subheadline)
-                                    .foregroundStyle(.primary)
+                                    .foregroundStyle(Color.dayflowInk)
                                 Text(visit.date.formatted(.dateTime.month(.abbreviated).day().year()))
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.dayflowMuted)
                             }
                             Spacer()
                             if let rating = visit.rating, rating > 0 {
                                 Text(String(repeating: "★", count: min(rating, 7)))
                                     .font(.caption)
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(Color.dayflowAccent)
                             }
                             Image(systemName: "chevron.right")
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(Color.dayflowFaint)
                         }
                         .padding(.vertical, 2)
                     }
@@ -584,7 +591,7 @@ struct PersonDetailView: View {
                         showAllVisits.toggle()
                     }
                     .font(.subheadline)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(Color.dayflowAccent)
                     .padding(.vertical, 2)
                 }
             }
@@ -601,7 +608,7 @@ struct PersonDetailView: View {
         Section {
             if agendaItems.isEmpty {
                 Text("Nothing queued")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.dayflowMuted)
                     .font(.subheadline)
             } else {
                 ForEach(agendaItems, id: \.self) { raw in
@@ -612,18 +619,18 @@ struct PersonDetailView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.text)
                                 .font(.subheadline)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(Color.dayflowInk)
                             if let days = item.daysAway, let due = item.due {
                                 Text(dueLabel(days, due))
                                     .font(.caption)
-                                    .foregroundStyle(item.isOverdue ? .orange : .secondary)
+                                    .foregroundStyle(item.isOverdue ? Color.dayflowAccent : Color.dayflowMuted)
                             } else {
                                 // Said out loud, because it is the difference
                                 // between an item that will surface and one that
                                 // never will.
                                 Text("No date")
                                     .font(.caption)
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(Color.dayflowFaint)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -669,15 +676,15 @@ struct PersonDetailView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Image(systemName: "checkmark")
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(Color.dayflowFaint)
                             Text(entry.text)
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.dayflowMuted)
                             Spacer(minLength: 8)
                             if !entry.date.isEmpty {
                                 Text(entry.date)
                                     .font(.caption2)
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(Color.dayflowFaint)
                             }
                         }
                     }
@@ -690,7 +697,7 @@ struct PersonDetailView: View {
                         Image(systemName: showCompleted ? "chevron.down" : "chevron.right")
                             .font(.system(size: 9, weight: .semibold))
                         Text("Done")
-                        Text("\(completedItems.count)").foregroundStyle(.tertiary)
+                        Text("\(completedItems.count)").foregroundStyle(Color.dayflowFaint)
                         Spacer()
                     }
                     .contentShape(Rectangle())
@@ -707,7 +714,7 @@ struct PersonDetailView: View {
                 ProgressView().frame(maxWidth: .infinity)
             } else if interactions.isEmpty {
                 Text("No interactions logged yet")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.dayflowMuted)
                     .font(.subheadline)
                     .padding(.vertical, 4)
             } else {
@@ -720,22 +727,22 @@ struct PersonDetailView: View {
                                     Label(interaction.type.capitalized,
                                           systemImage: interactionIcon(interaction.type))
                                         .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(.primary)
+                                        .foregroundStyle(Color.dayflowInk)
                                     Spacer()
                                     Text(interaction.date.formatted(.dateTime.month(.abbreviated).day().year()))
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.dayflowMuted)
                                 }
                                 if let notes = interaction.notes, !notes.isEmpty {
                                     Text(notes)
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.dayflowMuted)
                                         .lineLimit(2)
                                 }
                             }
                             Image(systemName: "chevron.right")
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(Color.dayflowFaint)
                                 .padding(.top, 3)
                         }
                         .padding(.vertical, 2)
@@ -747,7 +754,7 @@ struct PersonDetailView: View {
                         showAllInteractions.toggle()
                     }
                     .font(.subheadline)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(Color.dayflowAccent)
                     .padding(.vertical, 2)
                 }
             }
@@ -817,15 +824,15 @@ struct PersonDetailView: View {
             VStack(alignment: .leading, spacing: 10) {
                 if let phone = d.phone, !phone.isEmpty {
                     let digits = phone.filter { $0.isNumber || $0 == "+" }
-                    quickActionButton(icon: "phone.fill", label: "Call", color: .green) {
+                    quickActionButton(icon: "phone.fill", label: "Call", color: Color.dayflowAccent) {
                         if let url = URL(string: "tel:\(digits)") { openURL(url) }
                     }
-                    quickActionButton(icon: "message.fill", label: "Message", color: .blue) {
+                    quickActionButton(icon: "message.fill", label: "Message", color: Color.dayflowAccent) {
                         if let url = URL(string: "sms:\(digits)") { openURL(url) }
                     }
                 }
                 if let email = d.email, !email.isEmpty {
-                    quickActionButton(icon: "envelope.fill", label: "Email", color: .orange) {
+                    quickActionButton(icon: "envelope.fill", label: "Email", color: Color.dayflowAccent) {
                         if let url = URL(string: "mailto:\(email)") { openURL(url) }
                     }
                 }
@@ -846,13 +853,13 @@ struct PersonDetailView: View {
             HStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.dayflowPaper)
                     .frame(width: 38, height: 38)
                     .background(color)
                     .clipShape(RoundedRectangle(cornerRadius: 9))
                 Text(label)
                     .font(.subheadline)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.dayflowInk)
             }
         }
         .buttonStyle(.plain)
@@ -870,20 +877,20 @@ struct PersonDetailView: View {
                 HStack(spacing: 12) {
                     Image(systemName: placeIcon(for: place.category))
                         .font(.system(size: 13))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.dayflowPaper)
                         .frame(width: 30, height: 30)
                         .background(placeColor(for: place.category))
                         .clipShape(RoundedRectangle(cornerRadius: 7))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(place.name).foregroundStyle(.primary)
+                        Text(place.name).foregroundStyle(Color.dayflowInk)
                         if !place.city.isEmpty {
-                            Text(place.city).font(.caption).foregroundStyle(.secondary)
+                            Text(place.city).font(.caption).foregroundStyle(Color.dayflowMuted)
                         }
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption)
-                        .foregroundStyle(Color(.tertiaryLabel))
+                        .foregroundStyle(Color.dayflowFaint)
                 }
             }
             .buttonStyle(.plain)
@@ -904,7 +911,7 @@ struct PersonDetailView: View {
                     Task { await createPlaceFromAddress(address, for: d) }
                 } label: {
                     if isCreatingPlace {
-                        HStack { ProgressView(); Text("Creating place…").foregroundStyle(.secondary) }
+                        HStack { ProgressView(); Text("Creating place…").foregroundStyle(Color.dayflowMuted) }
                     } else {
                         Text("Create Place from Address")
                     }
@@ -922,7 +929,7 @@ struct PersonDetailView: View {
     @ViewBuilder
     private func row(_ label: String, value: String) -> some View {
         HStack {
-            Text(label).foregroundStyle(.secondary)
+            Text(label).foregroundStyle(Color.dayflowMuted)
             Spacer()
             Text(value).multilineTextAlignment(.trailing)
         }
@@ -935,12 +942,12 @@ struct PersonDetailView: View {
             ? String(parts[0].prefix(1)) + String(parts[1].prefix(1))
             : String(name.prefix(2)).uppercased()
         Circle()
-            .fill(Color.purple.opacity(0.15))
+            .fill(Color.dayflowPanel)
             .frame(width: size, height: size)
             .overlay(
                 Text(initials)
                     .font(.system(size: size * 0.33, weight: .medium))
-                    .foregroundStyle(.purple)
+                    .foregroundStyle(Color.dayflowMuted)
             )
     }
 
