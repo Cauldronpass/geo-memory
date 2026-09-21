@@ -352,7 +352,27 @@ extension TraceRouter {
     static func wireStores() {
         NotionService.onFeedLoaded = { feed in
             switch feed {
-            case .places:   shared.markReady(.places)
+            case .places:
+                shared.markReady(.places)
+                // **The geofences are registered here, and this is the only
+                // place they can be** (D492). `GeofenceManager` is started at
+                // launch, before any fetch, so it starts with an empty array:
+                // significant-location-change monitoring on, and not one region
+                // registered. The three existing `startMonitoring` calls inside
+                // `NotionService` are all per-place EDITS (frequent, radius,
+                // excluded) and none of them is the fetch.
+                //
+                // Without this line the switch reads on, the status row reads
+                // Always, and the app watches nothing until he happens to edit a
+                // place - which is a screen telling him a true-sounding thing
+                // about a feature that is not running.
+                //
+                // `isMonitoring` guards it, so this does nothing when the switch
+                // is off, and it re-ranks the twenty on every later fetch, which
+                // is what the manager wants anyway.
+                if GeofenceManager.shared.isMonitoring {
+                    GeofenceManager.shared.startMonitoring(places: NotionService.shared.places)
+                }
             case .people:   shared.markReady(.people)
             case .visits:   shared.markReady(.visits)
             case .captures: shared.markReady(.captures)

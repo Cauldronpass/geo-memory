@@ -77,7 +77,7 @@ enum DayflowPlaceAlarms {
             // guard stands anyway (a record's coordinates can be cleared
             // after the toggle was set).
             guard place.latitude != 0 || place.longitude != 0 else { continue }
-            let linked = tasks.filter { ($0.notes ?? "").contains("[[\(place.name)]]") }
+            let linked = linkedOpenTasks(for: place, in: tasks)
             guard !linked.isEmpty else { continue }
 
             let content = UNMutableNotificationContent()
@@ -105,5 +105,36 @@ enum DayflowPlaceAlarms {
                                                         content: content,
                                                         trigger: trigger))
         }
+    }
+
+    // MARK: - What is actually armed (D493)
+
+    /// The open tasks linked to a place by `[[name]]`.
+    ///
+    /// **One definition, used by the scheduler above and by `armedPlaceIDs`
+    /// below.** They have to agree: the second exists to tell `GeofenceManager`
+    /// which places are already spoken for, and a second copy of this filter is
+    /// how that answer would quietly stop matching what was actually scheduled.
+    static func linkedOpenTasks(for place: Place, in tasks: [ThingsTask]) -> [ThingsTask] {
+        tasks.filter { ($0.notes ?? "").contains("[[\(place.name)]]") }
+    }
+
+    /// The places that currently have an arrival region of their own.
+    ///
+    /// **Not "the places he toggled on".** A toggled place with no pin, or with
+    /// no open linked tasks, schedules nothing — the feature is deliberately
+    /// silent then. Reserving a geofence slot for a region that does not exist
+    /// would cost him a watched place for nothing, which is the same class of
+    /// quiet wrong answer as counting an empty list as a full one.
+    @MainActor
+    static func armedPlaceIDs() -> Set<String> {
+        let enabled = DayflowPlaceAlarmStore.shared.enabledIDs
+        guard !enabled.isEmpty else { return [] }
+        let tasks = ReminderTaskStore.shared.allTasks
+        return Set(NotionService.shared.places.filter { place in
+            enabled.contains(place.id)
+                && (place.latitude != 0 || place.longitude != 0)
+                && !linkedOpenTasks(for: place, in: tasks).isEmpty
+        }.map(\.id))
     }
 }

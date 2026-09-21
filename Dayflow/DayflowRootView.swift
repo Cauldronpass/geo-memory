@@ -73,6 +73,11 @@ struct DayflowRootView: View {
     // placement and the first one in furniture with room to spare.
     @State private var showCompose = false
     @State private var showCheckIn = false
+    /// The place a geofence check-in arrived for, resolved from the router
+    /// (D492). Nil when Check In was opened from the compose menu or the quick
+    /// action, which is what `showCheckIn` covers.
+    @State private var geofencePlace: Place? = nil
+    @State private var showWorkoutPrompt = false
     @State private var showLogInteraction = false
     /// Pin here writes into today's note with no UI at all, so the only thing
     /// it can ever need to say is that something went wrong.
@@ -186,6 +191,35 @@ struct DayflowRootView: View {
             } catch {
                 quickPinMessage = error.localizedDescription
             }
+        }
+    }
+
+    // MARK: - Geofence notifications (D492)
+
+    /// Takes the two routes a geofence notification can produce.
+    ///
+    /// **`.checkIn` is taken only when it carries a place.** A bare
+    /// `trace://checkin` needs nothing and is the compose menu's and the quick
+    /// action's own door, already answered by `showCheckIn` above. Taking every
+    /// `.checkIn` here would mean this sheet and that one race for the same
+    /// route, and which won would depend on view order.
+    ///
+    /// The router has already held the route until `NotionService` reported
+    /// places ready, so `first(where:)` here is a lookup and not a retry. If the
+    /// ID matches nothing the route is spent and nothing opens: the place was
+    /// deleted between the notification firing and the tap, and a check-in sheet
+    /// offering the wrong place would be worse than none.
+    private func takeGeofenceRoutes() {
+        if let route = TraceRouter.shared.take(where: {
+            if case .checkIn(let id, _) = $0 { return id != nil }
+            return false
+        }), case .checkIn(let id, _) = route, let id {
+            geofencePlace = NotionService.shared.places.first { $0.id == id }
+        }
+        if TraceRouter.shared.take(where: {
+            if case .workout = $0 { return true } else { return false }
+        }) != nil {
+            showWorkoutPrompt = true
         }
     }
 
@@ -318,6 +352,25 @@ struct DayflowRootView: View {
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
         }
+        // **The geofence check-in, arriving with a place** (D492). A separate
+        // `item:` sheet rather than a flag plus a stored place: the place IS the
+        // presentation condition, so binding them together removes the state
+        // where one is set and the other is not.
+        .sheet(item: $geofencePlace) { place in
+            CheckInView(preselectedPlace: place)
+                .environment(NotionService.shared)
+                .environment(LocationManager.shared)
+        }
+        // The workout prompt on leaving somewhere (D492). Empty, as it is in the
+        // old app - the notification's place ID was stored there and never read.
+        .sheet(isPresented: $showWorkoutPrompt) {
+            // **No `NavigationStack` around it**, checked rather than assumed:
+            // the wizard builds its own at line 149 and Trace presents it bare.
+            // Wrapping it would give two navigation bars, which is the fault
+            // D486 avoided the same way for `VisitsView`.
+            WorkoutWizardView()
+                .environment(NotionService.shared)
+        }
         .sheet(isPresented: $showLogInteraction) {
             FABLogInteractionSheet()
                 .environment(NotionService.shared)
@@ -374,7 +427,11 @@ struct DayflowRootView: View {
             }) {
                 selectedTab = .records
             }
+            takeGeofenceRoutes()
         }
+        // Cold launch from a geofence notification: the route is delivered
+        // before this view exists, so `version` never changes for it.
+        .task { takeGeofenceRoutes() }
         // A Records row tapped in Quick Find (D480). The tab only; the
         // Records screen owns the value and is the one that clears it.
         .onChange(of: DayflowRecordsRouter.shared.pendingSegment) { _, wanted in

@@ -196,7 +196,7 @@ struct TraceApp: App {
                     await notionService.fetchPeople()
                     await notionService.fetchBilliardsSessions()
                     // Start geofencing if enabled in Settings
-                    if UserDefaults.standard.bool(forKey: "geofence_enabled") {
+                    if GeofenceManager.isEnabled {
                         GeofenceManager.shared.startMonitoring(places: notionService.places)
                     }
                 }

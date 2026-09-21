@@ -35,10 +35,12 @@ struct SatchelRootView: View {
     /// Whether a full-screen surface has asked for the bar to go (D419).
     @State private var chrome = SatchelChrome()
 
-    /// The band's height, as padding under the Shelf and All lists. Zero while
-    /// the reader is open, or the reader's own bottom bar would float 72 points
-    /// above the bottom of the screen over an empty strip.
-    private var barInset: CGFloat { chrome.hidesTabBar ? 0 : 72 }
+    /// The room the bar needs under a screen's content. Zero while the reader is
+    /// open, or the reader's own bottom bar would float above the bottom of the
+    /// screen over an empty strip.
+    ///
+    /// **Was 72, which was the bar's HEIGHT and not a clearance** (D495).
+    private var barInset: CGFloat { chrome.hidesTabBar ? 0 : SatchelTabBar.clearance }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -120,6 +122,28 @@ final class SatchelChrome {
 // MARK: - The bar
 
 struct SatchelTabBar: View {
+
+    /// **The one number for this bar** (D495, and D333's lesson about the
+    /// category list applied to a measurement).
+    ///
+    /// There were three. The root padded Shelf and All by 72, the viewer by 72,
+    /// and Home by 110 - one bar, three answers, and nothing naming which was
+    /// right. David, on the viewer: *"the pills at the bottom are slightly still
+    /// too low. they seem to be riding the bottom pane with the home, shelf, all
+    /// icons."*
+    ///
+    /// **He is describing the 72 exactly, because 72 IS the bar.** Measured off
+    /// this view rather than guessed: `.padding(.top, 9)` + the item (a 20pt
+    /// icon, 3pt of spacing, a 10pt caption ≈ 35) + `.padding(.bottom, 26)` ≈
+    /// **70 points**. So a 72-point inset stops the content two points above the
+    /// bar's top edge - not under it, which is what D444 fixed, but flush against
+    /// it, which is what it looks like.
+    ///
+    /// **110 is the number Home has been using all along** and the one screen
+    /// nobody has complained about: the bar plus about 40 points of actual gap.
+    /// Adopted rather than invented, and named here so the next screen cannot
+    /// pick a fourth.
+    static let clearance: CGFloat = 110
 
     @Binding var tab: SatchelTab
     let unreadOnShelf: Bool

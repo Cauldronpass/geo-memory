@@ -12,10 +12,8 @@ import UIKit
 //   headers the old mockup kept.
 // - Each day: its events (time · colour square · title, same language as
 //   Today's strip) then its tasks (ink circle completes, serif title, tap
-//   edits). A repeating task from the Trace list is almost certainly a
-//   birthday/holiday written by Trace's person-page Remind button, so its
-//   sub-label reads "from Trace · yearly" per the design; other tasks show
-//   their list.
+//   edits). Every task shows its list as a sub-label. The old "from Trace ·
+//   yearly" special case retired with the Trace list itself (D491).
 // - Footer, whole row tappable: "Nothing until <date>" — the next dated
 //   reminder BEYOND the two weeks (the store already looks 60 days out) —
 //   over "Open Reminders", which opens Apple's app.
@@ -515,9 +513,17 @@ struct DayflowUpcomingView: View {
     }
 
     private func taskRow(_ task: ThingsTask, agendaDay: Date? = nil) -> some View {
-        // The Trace list's repeating reminders are the person-page birthdays
-        // and holidays — the design marks them "from Trace · yearly".
-        let isTraceYearly = task.repeats && task.list == ReminderService.listName
+        // **The "from Trace · yearly" sub-label is gone** (D491). It existed to
+        // compensate for a list name that said nothing: a repeating reminder in a
+        // list called Trace needed the row to explain itself. Birthdays now go to
+        // his own Birthdays & Anniversaries, so the list name IS the explanation
+        // and the row just shows it, like every other task.
+        //
+        // The word "yearly" went with it rather than being kept beside the new
+        // name. `ThingsTask.repeats` is a Bool and does not know the frequency, so
+        // saying "yearly" was only ever safe while one list held nothing but
+        // annual dates written by one button. That is a claim about his data the
+        // row cannot actually check.
         let selected = selection.ids.contains(task.id)
         return HStack(alignment: .center, spacing: 12) {
             Button {
@@ -542,11 +548,7 @@ struct DayflowUpcomingView: View {
                     .font(.system(size: 14.5, design: .serif))
                     .foregroundStyle(Color.dayflowInk)
                     .lineLimit(2)
-                if isTraceYearly {
-                    Text("from Trace \u{00B7} yearly")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.dayflowFaint)
-                } else if let list = task.list, !list.isEmpty {
+                if let list = task.list, !list.isEmpty {
                     Text(list)
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dayflowFaint)
@@ -610,7 +612,11 @@ struct DayflowUpcomingView: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.dayflowAccent)
             }
-            if task.repeats && !isTraceYearly {
+            // **The repeat glyph now shows on every repeating task** (D491). It
+            // was suppressed on the old Trace-list rows because their sub-label
+            // already read "yearly"; that label is gone, so the glyph is the only
+            // thing left saying a task recurs, and it should say it everywhere.
+            if task.repeats {
                 Image(systemName: "repeat")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.dayflowFaint)

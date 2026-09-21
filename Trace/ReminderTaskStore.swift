@@ -58,8 +58,9 @@ final class ReminderTaskStore {
     ///
     /// **No longer the fallback for a capture that names no list.** That
     /// is the Inbox as of D262: falling back here is how a task David
-    /// never classified came to wear a list he never chose. The Trace
-    /// list (`ReminderService.listName`) is what the apps write to.
+    /// never classified came to wear a list he never chose. Reminders the
+    /// apps create go to `ReminderService.Destination` — the Inbox, or his
+    /// birthdays list for an annual date (D491).
     static let personalListName = "Personal"
     /// The Inbox's dateless way out (Session 78): "not now" without a fake
     /// date. A real Reminders list — the only structure EventKit exposes
@@ -985,11 +986,16 @@ final class ReminderTaskStore {
         catch { return nil }
     }
 
-    /// Every list's name, for pickers. Personal first, Trace second, the rest
+    /// Every list's name, for pickers. Personal first, then the rest
     /// alphabetical.
+    ///
+    /// **Trace was pinned second and is not any more** (D491). That pin existed
+    /// because the apps wrote to a list called Trace; they no longer do, and the
+    /// list itself is going. Nothing replaces it: the Inbox is not a browse list
+    /// and his birthdays list sorts near the top on its own.
     var listNames: [String] {
         let names = store.calendars(for: .reminder).map(\.title)
-        let pinned = [Self.personalListName, ReminderService.listName].filter { names.contains($0) }
+        let pinned = [Self.personalListName].filter { names.contains($0) }
         let rest = names.filter { !pinned.contains($0) }.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         return pinned + rest
     }

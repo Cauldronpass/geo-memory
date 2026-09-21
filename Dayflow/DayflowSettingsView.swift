@@ -226,7 +226,7 @@ private struct DayflowRemindersSettings: View {
         } header: {
             Text("Reminders")
         } footer: {
-            Text("Tasks come from Apple's Reminders app. Every list is read. New tasks you type here go to the Personal list; documents and birthdays from Trace and Satchel go to the Trace list.")
+            Text("Tasks come from Apple's Reminders app. Every list is read. New tasks you type here go to the Personal list. Reminders this app makes for you go to the Inbox, except birthdays from a person's page, which go to Birthdays & Anniversaries.")
         }
     }
 
@@ -312,6 +312,7 @@ private struct DayflowNotificationsSettings: View {
     var body: some View {
         DayflowSettingsScreen(title: "Notifications") {
             morningSummarySection
+            DayflowGeofenceSection()
             badgeSection
         }
     }

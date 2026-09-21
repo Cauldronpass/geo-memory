@@ -252,7 +252,7 @@ struct SettingsView: View {
                     Label("Auto Check-in Reminders", systemImage: "location.circle")
                 }
                 .onChange(of: geofenceEnabled) { _, enabled in
-                    UserDefaults.standard.set(enabled, forKey: "geofence_enabled")
+                    GeofenceManager.isEnabled = enabled
                     if enabled {
                         GeofenceManager.shared.requestAlwaysPermission()
                         GeofenceManager.shared.startMonitoring(places: NotionService.shared.places)
@@ -319,7 +319,7 @@ struct SettingsView: View {
             let sl = UserDefaults.standard.integer(forKey: "billiards_my_sl")
             billiardsMyslStr  = sl > 0 ? "\(sl)" : ""
             calShowAllDay     = UserDefaults.standard.bool(forKey: "cal_show_all_day")
-            geofenceEnabled   = UserDefaults.standard.bool(forKey: "geofence_enabled")
+            geofenceEnabled   = GeofenceManager.isEnabled
         }
     }
 

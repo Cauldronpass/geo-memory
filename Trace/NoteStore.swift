@@ -2093,25 +2093,82 @@ enum ReminderService {
 
     enum Failure: Error { case denied, saveFailed }
 
-    /// The list new reminders land in. **"Trace", David's call, 2026-08-01.**
+    /// Where a reminder this family of apps creates is written. **D491,
+    /// 2026-09-20, replacing the single list called "Trace".**
     ///
-    /// **Its own key, not the Tweek one.** These were briefly sharing
-    /// `tweek_reminders_list`, which was wrong in a way that would only have shown
-    /// up later: the editor's send-to-Tweek exists so a task gets swept into his
-    /// weekly planner, and a birthday reminder has no business being swept
-    /// anywhere. Two purposes, two lists, two keys — and the Tweek send is left
-    /// exactly as it was.
+    /// **Why the old one went.** Everything here used to land in one list named
+    /// Trace, which was fine while Trace was the other app. After the rename the
+    /// pull-down showed a list with the same name as the app it was inside, and
+    /// David: *"Trace isn't anything. I'm not sure why it should be on this at
+    /// all."* He was right twice over: the list was also EMPTY, and his birthdays
+    /// were in a list of his own called Birthdays & Anniversaries. So this was
+    /// never a list he kept. It was a list the apps had made for themselves and
+    /// then never used.
     ///
-    /// Read from the App Group so all three apps agree. The editor's own copy
-    /// still reads `UserDefaults.standard`, which is fine now that they are not
-    /// pretending to be the same setting.
-    static let listKey = "trace_reminders_list"
+    /// **Two destinations, both lists he already keeps**, so nothing new appears
+    /// in his Reminders and nothing lands under a name he did not choose.
+    ///
+    /// Each keeps its own App Group key so a name can be changed without a build,
+    /// the shape the old `trace_reminders_list` had. **Its own key, not the Tweek
+    /// one** — the editor's send-to-Tweek sweeps a task into his weekly planner
+    /// and a birthday has no business being swept anywhere. That separation is
+    /// unchanged; the Tweek send is untouched.
+    enum Destination {
+        /// Dates that are annual by nature, from the person page's Remind button.
+        /// His own list, read from his phone in Session 110 rather than guessed.
+        case birthdays
+        /// Everything else the apps create: a person's agenda line, a Satchel
+        /// document, an endeavor's date.
+        ///
+        /// **Not Personal**, on this file's own prior reasoning (D262): falling
+        /// back to Personal is how a task David never classified came to wear a
+        /// list he never chose. He dated these; he never picked a list for them,
+        /// so they go to the queue that exists for exactly that state.
+        case inbox
 
-    static var listName: String {
-        UserDefaults(suiteName: "group.com.david.trace")?.string(forKey: listKey) ?? "Trace"
+        var key: String {
+            switch self {
+            case .birthdays: return "birthday_reminders_list"
+            case .inbox: return "created_reminders_list"
+            }
+        }
+
+        /// **Both names are literals here, and "Inbox" deliberately does not
+        /// reference `ReminderTaskStore.inboxListName`**, which is the same
+        /// string. Checked in the project file rather than assumed: Jot and
+        /// JotWidgetExtension compile this file WITHOUT `ReminderTaskStore.swift`,
+        /// so naming that type from here breaks two targets nobody is working in.
+        /// That is D440's trap and it has cost this project a session before.
+        /// If the Inbox is ever renamed, both literals move together.
+        var fallbackName: String {
+            switch self {
+            case .birthdays: return "Birthdays & Anniversaries"
+            case .inbox: return "Inbox"
+            }
+        }
+
+        /// Whether a missing list may be created.
+        ///
+        /// **False for birthdays, and that is the point of the flag.** The name
+        /// is his, typed by him, and a near miss on it — "and" for "&", a
+        /// stripped plural — would silently create a SECOND list beside the one
+        /// holding his seventeen birthdays, and split them with nothing on screen
+        /// to say so. A birthday landing in the Inbox is visible and recoverable.
+        /// A duplicate list is neither.
+        var mayCreate: Bool {
+            switch self {
+            case .birthdays: return false
+            case .inbox: return true
+            }
+        }
+
+        var name: String {
+            UserDefaults(suiteName: "group.com.david.trace")?
+                .string(forKey: key) ?? fallbackName
+        }
     }
 
-    /// The list to write into, creating it the first time.
+    /// The list to write into, creating it the first time where that is allowed.
     ///
     /// **Creating it matters.** `calendars(for:).first { $0.title == … }` returns
     /// nil until the list exists, and the old fallback quietly used the default
@@ -2119,11 +2176,20 @@ enum ReminderService {
     /// with nothing on screen to say why, and the list named in the UI would not
     /// exist. Now it is made once and used thereafter.
     ///
+    /// **Except for a destination that may not be created** (`.birthdays`), where
+    /// the name belongs to a list David typed himself. There, a miss falls through
+    /// to `.inbox` rather than inventing a second list beside his own. The
+    /// recursion is one level deep and cannot loop: `.inbox` may create.
+    ///
     /// Still falls back to the default list if creation fails, because a reminder
     /// in the wrong list beats no reminder at all.
-    private static func targetList(_ store: EKEventStore) -> EKCalendar? {
+    private static func targetList(_ store: EKEventStore,
+                                   _ destination: Destination) -> EKCalendar? {
         let lists = store.calendars(for: .reminder)
-        if let existing = lists.first(where: { $0.title == listName }) { return existing }
+        let wanted = destination.name
+        if let existing = lists.first(where: { $0.title == wanted }) { return existing }
+
+        guard destination.mayCreate else { return targetList(store, .inbox) }
 
         // A source that can actually hold reminders. The default list's source is
         // the right answer when there is one; otherwise take the first that is
@@ -2133,7 +2199,7 @@ enum ReminderService {
         else { return store.defaultCalendarForNewReminders() }
 
         let made = EKCalendar(for: .reminder, eventStore: store)
-        made.title = listName
+        made.title = wanted
         made.source = source
         do {
             try store.saveCalendar(made, commit: true)
@@ -2246,15 +2312,20 @@ enum ReminderService {
     /// happens and nothing explains why. **The date recurs whether or not the
     /// reminder does**, which is exactly the kind of gap that looks like the app
     /// forgetting.
+    ///
+    /// `destination` is which of David's two lists it lands in. It defaults to
+    /// `.inbox`, so the only caller that has to say anything is the person page's
+    /// birthday button — the one whose date is annual and whose list is his own.
     static func add(title: String, due: Date?, notes: String? = nil,
-                    repeatsYearly: Bool = false) async throws -> String {
+                    repeatsYearly: Bool = false,
+                    destination: Destination = .inbox) async throws -> String {
         let store = EKEventStore()
         guard await requestAccess(store) else { throw Failure.denied }
 
         let reminder = EKReminder(eventStore: store)
         reminder.title = title
         reminder.notes = notes
-        reminder.calendar = targetList(store)
+        reminder.calendar = targetList(store, destination)
 
         if let due {
             reminder.dueDateComponents = Calendar.current

@@ -117,7 +117,26 @@ struct SatchelViewerView: View {
         // sitting underneath it. David: *"the bottom row ... is covered up by the
         // home, shelf, all and plus icons."* The screen now owns its clearance
         // wherever it is pushed from.
-        .safeAreaPadding(.bottom, chrome?.hidesTabBar == true ? 0 : 72)
+        //
+        // **And the same complaint came back on 2026-09-21, for a reason worth
+        // keeping** (D494). This 72 was measured against the card as it stood,
+        // whose last element was the four-across button row. The Remind button
+        // was added BELOW that row a month later and nobody re-checked the number
+        // it was landing in, so it sat in the margin this fix had created and
+        // half under the bar - *"too far down and difficult to reach."* **A
+        // clearance is measured against a specific last element, and adding
+        // anything after it silently spends the measurement.** Remind has moved
+        // into the button row, so the element this number was measured against is
+        // the last one again.
+        //
+        // **And the number itself was wrong, which D494 did not catch** (D495).
+        // 72 is the bar's own HEIGHT - see the derivation on
+        // `SatchelTabBar.clearance` - so it stopped the content two points above
+        // the bar rather than leaving a gap. Moving the reminder up made that
+        // visible instead of fixing it: *"the pills at the bottom are slightly
+        // still too low. they seem to be riding the bottom pane."* One named
+        // constant now, 110, the value Home had been using all along.
+        .safeAreaPadding(.bottom, chrome?.hidesTabBar == true ? 0 : SatchelTabBar.clearance)
         .navigationTitle(navTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -633,14 +652,18 @@ struct SatchelViewerView: View {
     private var actions: some View {
         VStack(spacing: 7) {
             pdfHighlightRow
+            // **Four buttons, and Share is no longer one of them** (D494).
+            //
+            // **Share was on this screen twice**, identically: here, and as the
+            // system icon at `topBarTrailing` (line ~126), same `ShareLink`, same
+            // `fileURL`, same `if let` condition. One of them had to go and the
+            // toolbar one is the one iOS users reach for without being taught.
+            // Recorded as a REMOVAL rather than left to be noticed, which is what
+            // D477-D479 cost three builds to learn.
+            //
+            // The slot it frees goes to Remind, which is what this change is
+            // actually for - see the note below.
             HStack(spacing: 10) {
-                if let fileURL {
-                    ShareLink(item: fileURL) {
-                        actionLabel("Share")
-                    }
-                    .buttonStyle(.plain)
-                }
-
                 NavigationLink {
                     SatchelDocumentDetailView(document: current, store: store)
                 } label: {
@@ -665,34 +688,41 @@ struct SatchelViewerView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isWorking)
-            }
 
-            // REMIND ME. David, 2026-08-01: *"documents in Satchel that might need
-            // a reminder"* — his tuxedo receipt says pickup on 19 September and
-            // nothing in the system knows that.
-            //
-            // **No `remind:` sidecar key, and that is deliberate.** Trace owns the
-            // date for an agenda item because Coming Up has to show it and clear
-            // it. Satchel has no screen that lists documents by date, so a stored
-            // date would be a field with no reader — the exact shape that has
-            // produced a bug roughly ten times this week. The reminder IS the
-            // record here, until there is a surface that would read one.
-            //
-            // The reminder carries `satchel://document?path=…` in its notes, so it
-            // opens the document rather than merely naming it.
-            Button {
-                remindDue = current.remindOn
-                    ?? Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
-                remindState = .idle
-                sheet = .remind
-            } label: {
-                actionLabel(current.remindOn == nil ? "Remind me" : "Due " +
-                            current.remindOn!.formatted(.dateTime.month(.abbreviated).day()),
-                            symbol: "bell",
-                            tint: current.remindOn == nil ? .satchelBlue : .satchelPin)
+                // REMIND ME. David, 2026-08-01: *"documents in Satchel that might need
+                // a reminder"* — his tuxedo receipt says pickup on 19 September and
+                // nothing in the system knows that.
+                //
+                // **No `remind:` sidecar key, and that is deliberate.** Trace owns
+                // the date for an agenda item because Coming Up has to show it and
+                // clear it. Satchel has no screen that lists documents by date, so
+                // a stored date would be a field with no reader — the exact shape
+                // that has produced a bug roughly ten times this week. The reminder
+                // IS the record here, until there is a surface that would read one.
+                //
+                // The reminder carries `satchel://document?path=…` in its notes, so
+                // it opens the document rather than merely naming it.
+                //
+                // **It moved into this row from a full-width row of its own**
+                // (D494). David, with a screenshot of the CD One Price Cleaners
+                // receipt: *"The reminder at the bottom of a satchel document is
+                // too far down and difficult to reach."* It was the last thing on
+                // the tallest card in the app, under the four buttons, at the very
+                // bottom of his thumb's range and half behind the tab bar.
+                Button {
+                    remindDue = current.remindOn
+                        ?? Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
+                    remindState = .idle
+                    sheet = .remind
+                } label: {
+                    actionLabel(current.remindOn == nil ? "Remind me" : "Due " +
+                                current.remindOn!.formatted(.dateTime.month(.abbreviated).day()),
+                                symbol: "bell",
+                                tint: current.remindOn == nil ? .satchelBlue : .satchelPin)
+                }
+                .buttonStyle(.plain)
+                .disabled(isWorking)
             }
-            .buttonStyle(.plain)
-            .disabled(isWorking)
 
             if let kitTrip {
                 Text(tripCaption(for: kitTrip))

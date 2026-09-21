@@ -219,7 +219,7 @@ struct SatchelLibraryView: View {
                         searchBar
                         content
                     }
-                    .padding(.bottom, 110)
+                    .padding(.bottom, SatchelTabBar.clearance)
                 }
                 .refreshable {
                 await store.reload()
@@ -3080,7 +3080,7 @@ struct SatchelDocumentDetailView: View {
     // 2026-08-27. The CD One receipt said "Ready On: Saturday 8/15" and nothing
     // read it. The scan now fills `remind:`; this row shows it, lets him fix
     // or clear it, and hands it to Apple's Reminders through the same
-    // `ReminderService` Dayflow's Endeavor screen already uses (list "Trace",
+    // `ReminderService` Dayflow's Endeavor screen already uses (the Inbox list,
     // 9am alarm, link tracked so completing round-trips). David: *"I would like
     // a way to surface this on my daily note of Dailyflow and ideally in a
     // task app."* The day note half lives in `SatchelDocumentChips`.
@@ -3088,9 +3088,10 @@ struct SatchelDocumentDetailView: View {
         field("Remind") {
             VStack(alignment: .leading, spacing: 8) {
                 remindRow
-                // With or without a date. Undated, it lands in the Trace list
+                // With or without a date. Undated, it lands in the Inbox list
                 // with no day and no alarm — Reminders' inbox shape. David,
                 // 2026-08-27, after asking whether he had to add a date first.
+                // (Was the Trace list until D491 retired it.)
                 reminderButton(for: remindOn)
             }
         }
@@ -3178,7 +3179,7 @@ struct SatchelDocumentDetailView: View {
         }
     }
 
-    /// One reminder per document, in the Trace list, due that day with the 9am
+    /// One reminder per document, in the Inbox list (D491), due that day with the 9am
     /// alarm `ReminderService` adds. The note carries the Satchel link so the
     /// reminder opens the receipt. Saves first, so the date on disk is the
     /// date in Reminders.

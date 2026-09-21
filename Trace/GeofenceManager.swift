@@ -31,10 +31,63 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
     private override init() {
         super.init()
         locationManager.delegate = self
-        locationManager.allowsBackgroundLocationUpdates = true
+        // **`allowsBackgroundLocationUpdates` is deliberately NOT set** (D492).
+        //
+        // It was `true` here for years and it bought nothing. That flag is for
+        // CONTINUOUS updates while backgrounded - `startUpdatingLocation` running
+        // with the app away - and this manager never calls that. Region
+        // monitoring and significant-location-change both relaunch the app on
+        // their own, without it and without any `UIBackgroundModes` entry, which
+        // is why geofencing has worked all this time in an app whose project file
+        // has never declared one.
+        //
+        // Setting it without `location` in `UIBackgroundModes` is documented to
+        // raise. It evidently has not on his phone, but leaving a line that is
+        // both useless and documented to throw is a crash waiting for an OS
+        // version to start enforcing it.
         locationManager.pausesLocationUpdatesAutomatically = false
         authorizationStatus = locationManager.authorizationStatus
     }
+
+    // MARK: - The on/off switch
+
+    /// **Read from the App Group, not `UserDefaults.standard`** (D492, and the
+    /// same fault D485 found in `GooglePlacesService`).
+    ///
+    /// `UserDefaults.standard` is PER APP. The switch David turned on lives in
+    /// the OLD Trace app's defaults, so the merged app read `false` and
+    /// geofencing was simply off in it, silently, with a Settings row that would
+    /// have said so honestly and nothing to explain why it had reset.
+    ///
+    /// **The legacy read below does NOT rescue his setting, and D492 claimed it
+    /// did.** `UserDefaults.standard` here means the defaults of whichever app is
+    /// RUNNING. Read from the merged app it is the merged app's own, which never
+    /// held this key; the value David set is in the old Trace app's sandbox and
+    /// is not reachable from outside it. The legacy branch only lets the OLD app
+    /// publish its value to the group, and that needs the old app rebuilt with
+    /// this code and run once - which will not happen, because it was deleted
+    /// from his phone on 2026-09-20.
+    ///
+    /// So the branch is correct and useless to him, and the honest answer is the
+    /// Settings row: he turns it on once. Kept rather than deleted because it is
+    /// still right for any other app in the family that carries a legacy value.
+    static var isEnabled: Bool {
+        get {
+            let group = UserDefaults(suiteName: "group.com.david.trace")
+            if let shared = group?.object(forKey: enabledKey) as? Bool { return shared }
+            let legacy = UserDefaults.standard.bool(forKey: enabledKey)
+            if legacy { group?.set(true, forKey: enabledKey) }
+            return legacy
+        }
+        set {
+            UserDefaults(suiteName: "group.com.david.trace")?.set(newValue, forKey: enabledKey)
+            // Written to both while the old Trace app is still installed, so the
+            // two cannot disagree about whether they are monitoring.
+            UserDefaults.standard.set(newValue, forKey: enabledKey)
+        }
+    }
+
+    private static let enabledKey = "geofence_enabled"
 
     // MARK: - Permission
 
@@ -43,6 +96,20 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     // MARK: - Start / Stop
+
+    /// Places the HOST app is already watching by some other means, and the
+    /// slots they cost. **D493.**
+    ///
+    /// **Why a closure and not a direct call.** The merged app has a second
+    /// arrival system, `DayflowPlaceAlarms` (D183): an opt-in "Ring on arrival"
+    /// per place that fires a notification naming the open tasks linked there.
+    /// It lives in `Dayflow/` and this file is in `Trace/`, compiled by up to
+    /// seven targets. Naming that type from here breaks every one of them that
+    /// does not have it, which is D440's trap and has cost this project a
+    /// session. So the host sets this; where nothing sets it, nothing changes.
+    ///
+    /// Returns the place IDs that have a live region of their own right now.
+    static var reservedByHost: (() -> Set<String>)?
 
     func startMonitoring(places: [Place]) {
         guard authorizationStatus == .authorizedAlways else { return }
@@ -58,8 +125,15 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
             return
         }
 
-        // Exclude places opted out of geofencing
-        let eligible = places.filter { !$0.geofenceExcluded }
+        // **Two exclusions, not one** (D493).
+        //
+        // `geofenceExcluded` is his own per-place opt-out and has always been
+        // here. `reserved` is the merge's: a place that already rings on arrival
+        // would otherwise notify him TWICE for one arrival — the alarm naming
+        // his tasks, then this one asking him to check in a few minutes later.
+        // The alarm is the more useful of the two, so this one gives way.
+        let reserved = Self.reservedByHost?() ?? []
+        let eligible = places.filter { !$0.geofenceExcluded && !reserved.contains($0.id) }
 
         // Frequent places first (regardless of distance), then nearest non-frequent
         let frequent = eligible.filter { $0.frequent }
@@ -75,7 +149,15 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
             nonFrequent = eligible.filter { !$0.frequent }
         }
 
-        let toMonitor = Array((frequent + nonFrequent).prefix(maxGeofences))
+        // **And the budget shrinks by what is reserved**, which is the half of
+        // this that is not about notifications at all. iOS caps an app at twenty
+        // monitored regions, and a `UNLocationNotificationTrigger` region counts
+        // against the SAME twenty. So every armed place alarm is one fewer
+        // geofence whether or not anything here admits it. Taking the full
+        // twenty anyway would push the total past the cap and iOS would drop
+        // registrations, silently, in an order nobody chose.
+        let budget = max(0, maxGeofences - reserved.count)
+        let toMonitor = Array((frequent + nonFrequent).prefix(budget))
 
         for place in toMonitor {
             let radius: Double
@@ -111,8 +193,7 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
-        if authorizationStatus == .authorizedAlways,
-           UserDefaults.standard.bool(forKey: "geofence_enabled") {
+        if authorizationStatus == .authorizedAlways, Self.isEnabled {
             startMonitoring(places: NotionService.shared.places)
         }
     }

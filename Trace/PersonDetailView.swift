@@ -990,7 +990,9 @@ struct PersonDetailView: View {
                     due: fireOn,
                     notes: "Trace · \(next.formatted(.dateTime.month(.wide).day()))",
                     // A birthday is annual. Set once, not once a year.
-                    repeatsYearly: true)
+                    repeatsYearly: true,
+                    // His own list, not one this app made for itself (D491).
+                    destination: .birthdays)
                 // Keyed by lead as well as person, so adding "two weeks" does not
                 // overwrite the link for "on the day". Two reminders, two links.
                 ReminderService.link(id, to: "birthday|\(personID)|\(lead.rawValue)")
