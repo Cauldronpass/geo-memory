@@ -385,7 +385,12 @@ enum iOSDocumentScanService {
         // paragraph of prose further down, so it took the null every time. On
         // device that looked like the AI half-working: correct icon, correct
         // tint, good tags, no title and no description. Found 2026-07-28.
-        let titleSlot = filenameIsGenerated
+        // Session 111 adds the second case: typed context also closes the null
+        // off. Typing context and pressing the button is an explicit request
+        // for a title, and the rule below used to discard it on filename
+        // grounds alone.
+        let hasContext = !userContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let titleSlot = (filenameIsGenerated || hasContext)
             ? "\"Short descriptive title\""
             : "\"Short descriptive title\" or null"
 
@@ -408,7 +413,7 @@ enum iOSDocumentScanService {
         - EVERY key above is required. Never omit one, and never return an empty string for description.
         - tags: 2–5 short lowercase words or phrases. \(tagHint)
         - description: factual, concise, never empty. Include key amounts, dates, or parties if present.
-        - title: \(titleRule(filename: filename, stamp: stamp, generated: filenameIsGenerated))
+        - title: \(titleRule(filename: filename, stamp: stamp, generated: filenameIsGenerated, hasContext: hasContext))
         - remind: the date the document itself says it needs attention, as "YYYY-MM-DD": a pickup or ready date, a due date, an expiry, an appointment, an RSVP-by. Use the printed date, never today's. Return null if the document states no such date. Never guess one.
         - dated: the date printed on the document as when it was issued or when the event it records happened, as "YYYY-MM-DD" — a receipt's transaction date, a statement date, an event date. Null if none is printed.
         - people: names from this list ONLY, exactly as spelled, of anyone the document is about, for, or from, or whom the owner's context names: [\(knownPeople.joined(separator: ", "))]. Return [] if none apply. Never return a name that is not on the list.
@@ -428,7 +433,17 @@ enum iOSDocumentScanService {
     /// An app-generated one ("scan", "photo") never is, and the model has no
     /// way to know the difference — asked to judge, it reads "scan" as
     /// descriptive and returns null.
-    private static func titleRule(filename: String, stamp: String, generated: Bool) -> String {
+    ///
+    /// **Session 111 widened both halves.** The old fall-through tested whether
+    /// a filename LOOKED auto-generated, which is not the question: a vet
+    /// portal's `paymenthistory-2` is lowercase English words and names a
+    /// category, not a document, so the model read it as descriptive and
+    /// declined — correctly obeying a rule that was wrong. The test is now
+    /// whether the filename identifies THIS document. And typed context
+    /// forecloses null entirely, in the rule and in the output template both,
+    /// because the two disagreeing is what cost this file a fix on 2026-07-28.
+    private static func titleRule(filename: String, stamp: String, generated: Bool,
+                                  hasContext: Bool = false) -> String {
         if generated {
             return """
             ALWAYS suggest a short human-readable title (3–6 words, title case) describing what this document is. \
@@ -437,11 +452,17 @@ enum iOSDocumentScanService {
             or "ComEd Bill, July 2026". If the content is unrecognizable, use "Scan \(stamp)".
             """
         }
+        let contextClause = hasContext
+            ? "The user has supplied context below: ALWAYS return a title, let that context shape it, and never return null. "
+            : ""
         return """
-        suggest a short human-readable title (3–6 words, title case) ONLY if the filename looks auto-generated \
-        (e.g. IMG_xxxx, CleanShot timestamp, DSC_xxxx, screenshot dates, random strings). The original filename is: \(filename). \
-        If the filename is already descriptive, return null for title. If the content is unrecognizable or too generic to name \
-        meaningfully, use the fallback title "Image \(stamp)".
+        a short human-readable title (3–6 words, title case), taken from the document's own content. \
+        The original filename is: \(filename). The test is whether that filename NAMES THIS DOCUMENT, not whether it looks like words. \
+        Return null ONLY when the filename already identifies this particular document well enough to find it again. \
+        Return a title when the filename names a CATEGORY rather than a document — portal, bank and scanner exports such as \
+        paymenthistory, invoice, statement, receipt, summary, document, scan, export, download, with or without a trailing number \
+        or copy suffix — or when it is auto-generated (IMG_xxxx, CleanShot timestamp, DSC_xxxx, screenshot dates, random strings). \
+        \(contextClause)If the content is unrecognizable or too generic to name meaningfully, use the fallback title "Image \(stamp)".
         """
     }
 

@@ -1352,6 +1352,26 @@ enum DocumentScanService {
             ? ""
             : "\n\nUser-provided context (treat as authoritative — use it to sharpen the title, tags, and description): \(userContext)"
 
+        // **THE TEMPLATE AND THE RULES MUST NOT DISAGREE**, and this Mac copy
+        // never learned what the phone learned on 2026-07-28. The template
+        // below offered `"title": "…" or null` unconditionally while the rule
+        // underneath it described when a title was wanted. A model takes the
+        // concrete output template over a paragraph of prose further down, so
+        // the null won. See the same comment in
+        // `Trace/IOSDocumentScanService.swift`, which is where this was first
+        // paid for.
+        //
+        // **Typed context closes the null off**, because typing context and
+        // pressing the button is an explicit request for a better title.
+        // Session 111: David typed "Arlington Animal Hospital receipt for Scout
+        // meds" on a file called `paymenthistory-2`, pressed Re-run repeatedly,
+        // and could not move the title — the context reached the tags and the
+        // description and was forbidden to reach the one field he was watching.
+        let hasContext = !userContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let titleSlot = hasContext
+            ? "\"Short descriptive title\""
+            : "\"Short descriptive title\" or null"
+
         return """
         Analyze this \(docRef) and return JSON only — no explanation, no markdown fences.
 
@@ -1359,7 +1379,7 @@ enum DocumentScanService {
         {
           "tags": ["tag1", "tag2", "tag3"],
           "description": "One to two sentence summary of what this document is.",
-          "title": "Short descriptive title" or null,
+          "title": \(titleSlot),
           "icon": "one token from the icon list below",
           "remind": "YYYY-MM-DD" or null,
           "dated": "YYYY-MM-DD" or null,
@@ -1372,7 +1392,7 @@ enum DocumentScanService {
         - remind: the date the document itself says it needs attention, as "YYYY-MM-DD": a pickup or ready date, a due date, an expiry, an appointment, an RSVP-by. Use the printed date, never today's. Return null if the document states no such date. Never guess one.
         - dated: the date printed on the document as when it was issued or when the event it records happened, as "YYYY-MM-DD" — a receipt's transaction date, a statement date, an event date. Null if none is printed.
         - people: names from this list ONLY, exactly as spelled, of anyone the document is about, for, or from, or whom the owner's context names: [\(knownPeople.joined(separator: ", "))]. Return [] if none apply. Never return a name that is not on the list.
-        - title: suggest a short human-readable title (3–6 words, title case) ONLY if the filename looks auto-generated (e.g. IMG_xxxx, CleanShot timestamp, DSC_xxxx, screenshot dates, random strings). The original filename is: \(filename). If the filename is already descriptive, return null for title. If the image has recognizable content, use that for the title. If the content is unrecognizable or too generic to name meaningfully (e.g. a plain portrait with no context, a blank or unclear photo), use the fallback title "Image \(stamp)".
+        - title: a short human-readable title, 3–6 words, title case, taken from the document's own content. The original filename is: \(filename). The test is whether that filename NAMES THIS DOCUMENT, not whether it looks like words. Return null ONLY when the filename already identifies this particular document well enough to find it again. Return a title when the filename names a CATEGORY rather than a document — portal, bank and scanner exports such as paymenthistory, invoice, statement, receipt, summary, document, scan, export, download, with or without a trailing number or copy suffix — or when it is auto-generated (IMG_xxxx, CleanShot timestamps, DSC_xxxx, screenshot dates, random strings). If user-provided context appears below, ALWAYS return a title and let that context shape it; never return null in that case. If the content is unrecognizable or too generic to name meaningfully (e.g. a plain portrait with no context, a blank or unclear photo), use the fallback title "Image \(stamp)".
         - icon: EXACTLY one token from this list, nothing else. Choose what the document is ABOUT — its subject, the part of life it belongs to — NOT what kind of artifact it is. A receipt from a restaurant is "menu". A vet bill is "pet". The fact that something is a receipt, a bill or a screenshot is carried by the tint below and by the tags, so never spend the icon on it. Only fall back to a form-based token ("receipt", "card", "photo", "document") when the document genuinely has no subject.
         \(DocumentIcon.promptGuide)
         - If you are unsure of the icon, use "document".
