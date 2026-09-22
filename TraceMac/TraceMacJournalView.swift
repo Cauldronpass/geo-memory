@@ -1375,6 +1375,20 @@ struct TraceMacNoteEditor: View {
                 // never reports a minimum, so anything competing for the
                 // column would win it (Today learned this in Session 80).
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // **The floating bar needs a clearance, and it never had one**
+                // (Session 111). The overlay below carries the note: "floating,
+                // not stacked ... an overlay takes nothing from the page." That
+                // is true of the editor's HEIGHT, which was Session 80's
+                // concern, and it is exactly why the last lines of a note
+                // scrolled underneath the capsule and were covered by it.
+                //
+                // Reserved only while the bar is actually shown, because the
+                // bar is a toggle (⇧⌘Y, or the B I U button) and an empty strip
+                // under every note nobody is formatting is a page tax. The
+                // wikilink suggestions are deliberately NOT reserved for: they
+                // appear for the length of a `[[` and reserving a permanent
+                // strip for a transient bar spends the page the other way.
+                .padding(.bottom, showNoteToolbar ? MacNoteChrome.clearance : 0)
 
         }
         // **One chrome for every note on the Mac** (D258, Session 83).
@@ -1665,6 +1679,26 @@ struct TraceMacNoteEditor: View {
     }
 
     // MARK: - The floating chrome (D258)
+
+    /// **One number for the floating bar, derived rather than picked.**
+    ///
+    /// D495 replaced three different tab-bar clearances in Satchel with one
+    /// named constant after two of them turned out never to have been derived
+    /// by anyone. This is the same measurement on the Mac, written down the
+    /// first time rather than the third.
+    ///
+    /// The capsule: a 24pt button row plus `.padding(.vertical, 5)` on each
+    /// side = **34**. `floatingChrome` then sits `.padding(.bottom, 18)` off
+    /// the bottom edge = **52** from that edge to the top of the capsule. The
+    /// remaining **24** is the gap between the last line of the note and the
+    /// bar, which is what makes this a clearance rather than a measurement of
+    /// the bar itself - the mistake D495 found.
+    ///
+    /// **Anything added below the bar spends this number** (D494), so a second
+    /// row under the capsule means re-deriving, not increasing.
+    private enum MacNoteChrome {
+        static let clearance: CGFloat = 34 + 18 + 24   // capsule + inset + gap
+    }
 
     /// Suggestions above, formatting bar below, both bottom-centred. Either
     /// can be absent; the stack collapses to whichever is there.
