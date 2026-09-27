@@ -90,6 +90,10 @@ enum TraceRoute: Equatable, Sendable {
     /// Hands to Satchel (`satchel://scan`); stays a hop, Satchel is its own app (D452).
     case addDocument
     case workout
+    /// D509. The exit prompt at a place categorised Billiards. Carries no
+    /// payload for the same reason `.workout` does not: the wizard opens empty
+    /// and he picks.
+    case billiards
     /// The compose menu on Today (D454). `trace://homefab`
     case compose
 
@@ -110,11 +114,34 @@ enum TraceRoute: Equatable, Sendable {
 
     /// Accepts `trace://` and `dayflow://`. Hosts are matched without case, so
     /// `dayflow://addEvent` and `dayflow://addevent` are the same door.
+    ///
+    /// **A third slash is the same door too** (D501). David's check-in Shortcut
+    /// was written `trace:///checkin`, which is a legal URL with an EMPTY
+    /// authority and `/checkin` as its path - so `url.host` is empty, this
+    /// initialiser returned nil, and the app came to the front and sat on
+    /// whatever screen was already open. **Nothing was wrong and nothing said
+    /// so**, which is the worst shape available: a Shortcut that looks like it
+    /// fired, an app that looks like it launched, and no route.
+    ///
+    /// Reading the first path component when the authority is empty is the same
+    /// tolerance the case-insensitive match above already grants, for the same
+    /// reason: `trace://checkin` and `trace:///checkin` are one intention typed
+    /// two ways, not two doors. No route in this file reads `url.path`, so
+    /// nothing is being taken away from another case.
+    ///
     /// Returns nil for a scheme or host this app does not know, and the
     /// caller decides whether to log it or open it elsewhere.
     init?(url: URL) {
-        guard let scheme = url.scheme?.lowercased(), scheme == "trace" || scheme == "dayflow",
-              let host = url.host?.lowercased() else { return nil }
+        guard let scheme = url.scheme?.lowercased(), scheme == "trace" || scheme == "dayflow"
+        else { return nil }
+        let host: String
+        if let named = url.host?.lowercased(), !named.isEmpty {
+            host = named
+        } else if let first = url.pathComponents.first(where: { $0 != "/" && !$0.isEmpty })?.lowercased() {
+            host = first
+        } else {
+            return nil
+        }
         let items: [URLQueryItem] = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         /// A query value, trimmed, nil when absent or blank. Names match without case.
         func value(_ name: String) -> String? {
@@ -172,6 +199,8 @@ enum TraceRoute: Equatable, Sendable {
             self = .addDocument
         case "workout":
             self = .workout
+        case "billiards":
+            self = .billiards
         case "homefab":
             self = .compose
         case "launch":
@@ -217,7 +246,7 @@ enum TraceRoute: Equatable, Sendable {
         case .task:                     return [.tasks]
         case .discover, .pinHere, .quickPin,
              .addTask, .addEvent, .addNote, .addPhoto, .addPlace, .addPerson,
-             .addDocument, .workout, .compose, .launch, .openCalendar, .openJot:
+             .addDocument, .workout, .billiards, .compose, .launch, .openCalendar, .openJot:
             return []
         }
     }

@@ -14,7 +14,8 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
 
     private let locationManager = CLLocationManager()
     private var pendingDwellPlaceIDs: Set<String> = []  // tracks places with scheduled dwell notifications
-    private var entryTimes: [String: Date] = [:]         // records when we entered each geofence
+    // `entryTimes` was here as a plain dictionary and is now persisted — see the
+    // computed property near the cooldowns at the foot of this file (D508).
 
     // Design decisions (locked Build 18)
     private let defaultDwellSeconds: Double = 180   // 3 minutes
@@ -113,6 +114,7 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
 
     func startMonitoring(places: [Place]) {
         guard authorizationStatus == .authorizedAlways else { return }
+        pruneStaleEntryTimes()
 
         // Clear existing regions only — leave any pending dwell notifications intact
         for region in locationManager.monitoredRegions {
@@ -227,8 +229,19 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
            place.promptLog,
            let entryTime = entryTimes[placeID] {
             let duration = Date().timeIntervalSince(entryTime)
-            if duration >= workoutMinDwellSeconds && !isOnWorkoutCooldown(placeID: placeID) {
-                scheduleWorkoutPromptNotification(for: place, duration: duration)
+            // **A ceiling as well as a floor, and it arrives with persistence**
+            // (D508). While entry times lived in memory a stale one was
+            // impossible: the process died and took it with it. Now that they
+            // survive, an entry whose exit never came — monitoring stopped, the
+            // region was dropped, the place was deleted and re-added — would sit
+            // there until some later exit turned it into "You were there for
+            // 5,832 minutes." **A notification stating a duration that did not
+            // happen is the class this project cares about most**, so an entry
+            // older than the ceiling fires nothing and is simply cleared.
+            if duration <= staleEntrySeconds,
+               duration >= workoutMinDwellSeconds,
+               !isOnWorkoutCooldown(placeID: placeID) {
+                scheduleExitPromptNotification(for: place, duration: duration)
                 setWorkoutCooldown(placeID: placeID)
             }
         }
@@ -286,21 +299,56 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
         pendingDwellPlaceIDs.removeAll()
     }
 
-    // MARK: - Workout Prompt Notification
+    // MARK: - Exit Prompt Notification
 
-    private func scheduleWorkoutPromptNotification(for place: Place, duration: TimeInterval) {
+    /// **The prompt says what the place is, and opens what it says** (D509).
+    ///
+    /// It used to be hardcoded: every exit prompt read "Log your <place>
+    /// workout?" and every tap opened the fitness wizard, whatever the place
+    /// was. `Place.promptLog`'s own declaration in `Models.swift` has always
+    /// said otherwise - *"fire a log prompt on exit (workout, billiards,
+    /// etc.)"* - **so the field knew about the other cases and this function
+    /// only ever learned the first one.**
+    ///
+    /// It has never mattered because the prompt has never fired (D508, its
+    /// entry time died with the process). It is about to. **David has this
+    /// ticked on a dry cleaner**, so the first firing of a feature that has
+    /// never fired would have asked him to log a workout at CD Cleaners and
+    /// dropped him in a fitness wizard. A screen stating something that is not
+    /// true, on its very first outing.
+    ///
+    /// Category is the only thing on a place that can answer this, which is why
+    /// `Billiards` joins `PlaceCategory.all` in the same change. Anything that
+    /// is neither gym nor pool hall gets the honest general version: it says how
+    /// long he was there and offers to log the visit, which is a check-in and is
+    /// already built.
+    private func scheduleExitPromptNotification(for place: Place, duration: TimeInterval) {
         let minutes = Int(duration / 60)
         let content = UNMutableNotificationContent()
-        content.title = "Log your \(place.name) workout?"
+
+        switch place.category {
+        case "Fitness":
+            content.title = "Log your \(place.name) workout?"
+            content.categoryIdentifier = "WORKOUT_PROMPT"
+        case "Billiards":
+            content.title = "Log your session at \(place.name)?"
+            content.categoryIdentifier = "BILLIARDS_PROMPT"
+        default:
+            content.title = "Log your visit to \(place.name)?"
+            content.categoryIdentifier = "VISIT_PROMPT"
+        }
+
         content.body  = "You were there for \(minutes) minutes."
         content.sound = .default
         content.userInfo = ["placeID": place.id, "placeName": place.name]
-        content.categoryIdentifier = "WORKOUT_PROMPT"
 
         // Fire immediately (1-second delay required by UNTimeIntervalNotificationTrigger)
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         let request = UNNotificationRequest(
-            identifier: "workout-\(place.id)",
+            // Renamed from "workout-" with the function: one exit, one prompt,
+            // whichever kind it turned out to be. Nothing else referenced the
+            // old identifier - checked, not assumed.
+            identifier: "exit-\(place.id)",
             content: content,
             trigger: trigger
         )
@@ -339,6 +387,55 @@ class GeofenceManager: NSObject, CLLocationManagerDelegate {
         var c = cooldowns
         c[placeID] = Date()
         cooldowns = c
+    }
+
+    // MARK: - Entry times (UserDefaults-backed [placeID: Date])
+
+    /// **When we entered each geofence, and it has to outlive the process**
+    /// (D508).
+    ///
+    /// This was a plain in-memory dictionary, and that is why David has never
+    /// seen the exit prompt fire. iOS routinely terminates the app between an
+    /// arrival and a departure and relaunches it for the exit event; the new
+    /// process found no entry time, the `if let` fell through, and **the prompt
+    /// was skipped in silence**. The feature only ever worked when the process
+    /// happened to survive the whole visit — which, for a thirty-minute-plus
+    /// stay with the phone in a pocket, is the unlikely case.
+    ///
+    /// **So no test of the exit prompt was evidence until this**, and that is
+    /// recorded in `Exit-Prompt-Design.md` as the reason its other two faults
+    /// could not be judged either.
+    ///
+    /// `UserDefaults.standard` deliberately, beside the two cooldowns it sits
+    /// with. D485 and D492 are not an argument against standard defaults; they
+    /// are an argument against putting a value there that has to cross between
+    /// apps. **This one must not cross**: it is the running state of whichever
+    /// app is monitoring, and only one app monitors now.
+    private var entryTimes: [String: Date] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: "geofence_entry_times"),
+                  let decoded = try? JSONDecoder().decode([String: Date].self, from: data)
+            else { return [:] }
+            return decoded
+        }
+        set {
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(encoded, forKey: "geofence_entry_times")
+            }
+        }
+    }
+
+    /// Beyond this, an entry time is treated as never having had its exit.
+    /// Generous for anything worth logging as a session, and far short of the
+    /// weeks a truly orphaned entry would otherwise accumulate.
+    private let staleEntrySeconds: Double = 24 * 3600
+
+    /// Dropped at the start of every monitoring pass, so orphans cannot pile up
+    /// across months in a store that now has no other way of clearing itself.
+    private func pruneStaleEntryTimes() {
+        let now = Date()
+        let fresh = entryTimes.filter { now.timeIntervalSince($0.value) <= staleEntrySeconds }
+        if fresh.count != entryTimes.count { entryTimes = fresh }
     }
 
     private var cooldowns: [String: Date] {

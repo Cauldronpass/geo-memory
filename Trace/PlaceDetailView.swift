@@ -1,6 +1,28 @@
 import SwiftUI
 import CoreLocation
 
+/// **The host's per-place arrival reminder, reached by closure** (D507).
+///
+/// The feature is `DayflowPlaceAlarms` (D183). It lives in `Dayflow/` and this
+/// file is in `Trace/`, compiled by up to seven targets, so naming that type
+/// from here breaks every target that does not have it - D440's trap, which has
+/// cost this project a session. Same answer as `GeofenceManager.reservedByHost`
+/// (D493) and `wireStores` (D468): **the host sets these; where nothing sets
+/// them, the row does not appear and nothing changes.**
+///
+/// Its previous and only home was `DayflowWikiSummaryView`, which pass (c)
+/// deletes. Moving it here had to happen BEFORE that deletion, or a live
+/// feature would have lost its only control with nothing on screen to say so -
+/// the third time that shape appeared in two sessions (D485, D492, D493).
+enum PlaceArrivalReminderHost {
+    /// Is the reminder on for this place ID?
+    static var isOn: ((String) -> Bool)?
+    /// Flip it.
+    static var toggle: ((String) -> Void)?
+
+    static var isAvailable: Bool { isOn != nil && toggle != nil }
+}
+
 struct PlaceDetailView: View {
     let place: Place
 
@@ -17,6 +39,11 @@ struct PlaceDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedTab: Int
+    /// Mirrored rather than read live, because this file cannot see the host's
+    /// observable store across the wall. It is seeded when the screen opens and
+    /// re-read after every flip, and this screen is the only place it changes
+    /// while it is open.
+    @State private var arrivalReminderOn = false
     @State private var placeNoteContent: String = ""
     @State private var placeNoteLoaded = false
     @State private var wikiLinkTarget: WikiLinkTarget? = nil
@@ -677,6 +704,39 @@ struct PlaceDetailView: View {
                 ))
             }
 
+            // **Its own section, above Geofencing and not inside it.** Two
+            // different systems fire on one arrival: this one names your open
+            // linked tasks, geofencing asks you to check in. Putting this row
+            // inside the Geofencing section would say they are one thing.
+            //
+            // **Renamed from "Ring on arrival" in the same move** (D507).
+            // Nothing rings: it is a notification listing tasks, and "ring"
+            // reads as an alarm or a phone call. David, seeing the name in
+            // writing: *"why do we call it ring on arrival"* - which is the
+            // question a name should never provoke.
+            if PlaceArrivalReminderHost.isAvailable,
+               livePlace.latitude != 0 || livePlace.longitude != 0 {
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { arrivalReminderOn },
+                        set: { _ in
+                            PlaceArrivalReminderHost.toggle?(livePlace.id)
+                            arrivalReminderOn = PlaceArrivalReminderHost.isOn?(livePlace.id) ?? false
+                        }
+                    )) {
+                        Label("Remind me on arrival", systemImage: "bell.badge")
+                    }
+                } header: {
+                    Text("Arrival")
+                } footer: {
+                    // **The collision, said where he sets it** (D493). The rule
+                    // was decided months after the feature and lived only in a
+                    // decisions log; a person turning this on had no way to know
+                    // it silently cost him a check-in prompt here.
+                    Text("Arriving here pings you with this place's open linked tasks. Silent when there are none. A place set to remind you is left out of check-in geofencing, so one arrival is one notification.")
+                }
+            }
+
             Section {
                 Toggle("Exclude from Geofencing", isOn: Binding(
                     get: { livePlace.geofenceExcluded },
@@ -722,6 +782,11 @@ struct PlaceDetailView: View {
         .onAppear {
             radiusStr = livePlace.geofenceRadius.map { String($0) } ?? ""
             dwellStr = livePlace.dwellTime.map { String($0) } ?? ""
+        }
+        // Keyed on the place, so opening a second place from this screen reads
+        // that place's setting rather than keeping the first one's.
+        .task(id: place.id) {
+            arrivalReminderOn = PlaceArrivalReminderHost.isOn?(place.id) ?? false
         }
     }
 

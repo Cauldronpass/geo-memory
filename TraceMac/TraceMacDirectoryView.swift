@@ -20,6 +20,10 @@ struct TraceMacDirectoryView: View {
         case places   = "Places"
         case visits   = "Visits"
         case discover = "Discover"
+        /// D504. Retirement balances: a form he types into, which writes
+        /// `Notes/Finance/Retirement.md`. Last, because it is the only tab here
+        /// that is not a record of the world.
+        case accounts = "Accounts"
         var id: String { rawValue }
     }
 
@@ -71,6 +75,11 @@ struct TraceMacDirectoryView: View {
                     TraceMacDiscoverView(deepLinkQuery: deepLinkDiscoverQuery,
                                          onSavedPlace: onSavedPlace)
                         .environment(notionService)
+                        .environment(noteStore)
+                case .accounts:
+                    // Notion is not injected because it is not read: this tab's
+                    // whole store is one note (D504).
+                    TraceMacAccountsView()
                         .environment(noteStore)
                 }
             }

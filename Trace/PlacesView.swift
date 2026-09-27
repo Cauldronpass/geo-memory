@@ -34,7 +34,18 @@ struct PlacesView: View {
     @Environment(LocationManager.self) private var locationManager
 
     @State private var searchText        = ""
-    @State private var sort: PlacesSort  = .lastVisited
+    /// **Sticky, because a sort is how he reads this list and not a decision he
+    /// makes afresh each visit** (D503). It was `@State`, so every return to
+    /// Places snapped back to Last Visited - David picked Name, left, came back
+    /// to a date order and read it as the screen having no sort at all.
+    ///
+    /// **`UserDefaults.standard` is correct HERE and must not be "fixed" into
+    /// the App Group.** D485 and D492 were both per-app storage holding a value
+    /// that needed to cross apps - a token and a switch - and the lesson from
+    /// them is not that standard defaults are wrong, it is that a shared value
+    /// does not belong in them. How one screen sorts is per app and per device
+    /// by nature. The Mac reading its own order is right, not a bug.
+    @AppStorage("places_sort") private var sort: PlacesSort = .lastVisited
     @State private var selectedCategory: String? = nil
     @State private var frequentOnly      = false
     @State private var pinnedOnly        = false

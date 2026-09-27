@@ -78,6 +78,8 @@ struct DayflowRootView: View {
     /// action, which is what `showCheckIn` covers.
     @State private var geofencePlace: Place? = nil
     @State private var showWorkoutPrompt = false
+    /// D509. The same exit prompt at a place categorised Billiards.
+    @State private var showBilliardsPrompt = false
     @State private var showLogInteraction = false
     /// Pin here writes into today's note with no UI at all, so the only thing
     /// it can ever need to say is that something went wrong.
@@ -194,32 +196,62 @@ struct DayflowRootView: View {
         }
     }
 
-    // MARK: - Geofence notifications (D492)
+    // MARK: - Routes this view takes (D492, widened D502)
 
-    /// Takes the two routes a geofence notification can produce.
+    /// Takes the routes no screen of its own answers: both halves of a geofence
+    /// notification, and a bare check-in.
     ///
-    /// **`.checkIn` is taken only when it carries a place.** A bare
-    /// `trace://checkin` needs nothing and is the compose menu's and the quick
-    /// action's own door, already answered by `showCheckIn` above. Taking every
-    /// `.checkIn` here would mean this sheet and that one race for the same
-    /// route, and which won would depend on view order.
+    /// **A place-carrying `.checkIn` and a bare one are different sheets, and
+    /// the partition is what keeps them apart.** D492 took only the first and
+    /// said the second "is the compose menu's and the quick action's own door,
+    /// already answered by `showCheckIn` above." **Those are an in-app button
+    /// and a Home Screen quick action. Neither is a URL**, and the thing that
+    /// used to answer `trace://checkin` was the old app's
+    /// `Trace/ContentView.swift` - which is NOT in the Dayflow target's
+    /// inclusion list and has never been compiled into the merged app.
     ///
-    /// The router has already held the route until `NotionService` reported
-    /// places ready, so `first(where:)` here is a lookup and not a retry. If the
-    /// ID matches nothing the route is spent and nothing opens: the place was
-    /// deleted between the notification firing and the tap, and a check-in sheet
-    /// offering the wrong place would be worse than none.
-    private func takeGeofenceRoutes() {
+    /// So from the merge until D502, David's check-in Shortcut parsed cleanly,
+    /// was delivered to the router, was taken by nobody, and expired after
+    /// `patience`. The app came to the front and sat on whatever screen was
+    /// already open. **Fourth time a live door has been found lost in the merge
+    /// with nothing saying so** - the Notion token (D485), the geofence switch
+    /// (D492), Ring on arrival (D493), this.
+    ///
+    /// **D492's worry was real and is answered by `id`, not by declining the
+    /// route.** Taking every `.checkIn` in one place would have let this sheet
+    /// and `showCheckIn` race, with view order deciding. The two takes below are
+    /// disjoint - `id != nil` and `id == nil` - so exactly one of them can ever
+    /// match a given route.
+    ///
+    /// The router has already held the place-carrying route until
+    /// `NotionService` reported places ready, so `first(where:)` is a lookup and
+    /// not a retry. If the ID matches nothing the route is spent and nothing
+    /// opens: the place was deleted between the notification firing and the tap,
+    /// and a check-in sheet offering the wrong place would be worse than none.
+    private func takeRoutes() {
         if let route = TraceRouter.shared.take(where: {
             if case .checkIn(let id, _) = $0 { return id != nil }
             return false
         }), case .checkIn(let id, _) = route, let id {
             geofencePlace = NotionService.shared.places.first { $0.id == id }
         }
+        // The bare check-in: the Shortcut, the Action Button, any `trace://checkin`.
+        // Opens the same sheet the compose menu opens, because it is the same act.
+        if TraceRouter.shared.take(where: {
+            if case .checkIn(let id, _) = $0 { return id == nil }
+            return false
+        }) != nil {
+            showCheckIn = true
+        }
         if TraceRouter.shared.take(where: {
             if case .workout = $0 { return true } else { return false }
         }) != nil {
             showWorkoutPrompt = true
+        }
+        if TraceRouter.shared.take(where: {
+            if case .billiards = $0 { return true } else { return false }
+        }) != nil {
+            showBilliardsPrompt = true
         }
     }
 
@@ -371,6 +403,13 @@ struct DayflowRootView: View {
             WorkoutWizardView()
                 .environment(NotionService.shared)
         }
+        // The same prompt at a pool hall (D509). Bare for the same reason:
+        // `BilliardsWizardView` builds its own `NavigationStack` (line 164) and
+        // `BilliardsView` presents it without one. Checked, not assumed.
+        .sheet(isPresented: $showBilliardsPrompt) {
+            BilliardsWizardView()
+                .environment(NotionService.shared)
+        }
         .sheet(isPresented: $showLogInteraction) {
             FABLogInteractionSheet()
                 .environment(NotionService.shared)
@@ -427,11 +466,11 @@ struct DayflowRootView: View {
             }) {
                 selectedTab = .records
             }
-            takeGeofenceRoutes()
+            takeRoutes()
         }
         // Cold launch from a geofence notification: the route is delivered
         // before this view exists, so `version` never changes for it.
-        .task { takeGeofenceRoutes() }
+        .task { takeRoutes() }
         // A Records row tapped in Quick Find (D480). The tab only; the
         // Records screen owns the value and is the one that clears it.
         .onChange(of: DayflowRecordsRouter.shared.pendingSegment) { _, wanted in

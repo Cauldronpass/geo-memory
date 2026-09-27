@@ -438,10 +438,20 @@ enum PlaceCategory {
     ///
     /// **Notion needs no schema edit.** Writing an unknown option to a select
     /// creates it, so the first place saved under a new category adds it there.
+    /// **Billiards added 2026-09-26 (D509), appended like the rest.** The exit
+    /// prompt has to tell a pool hall from a gym to say the right sentence and
+    /// open the right wizard, and category is the only thing on a place that
+    /// could carry it. A pool hall was landing on Venue or Bar.
+    ///
+    /// Session 110 ranked this option BELOW guessing, on the grounds that a new
+    /// category "is also a Notion select option". **The note four lines above
+    /// says otherwise** - an unknown option writes itself - and that is the
+    /// whole cost: one line here, six pickers, no schema edit.
     static let all = ["Restaurant", "Bar", "Cafe", "Hotel", "Shop",
                       "Attraction", "Venue", "House", "Fitness",
                       "Office", "Airport", "Medical", "Park", "Grocery",
-                      "City", "Gas", "School", "Parking", "Service"]
+                      "City", "Gas", "School", "Parking", "Service",
+                      "Billiards"]
 
     /// Best guess for a Google `primaryType`, or nil when there is no honest one.
     ///

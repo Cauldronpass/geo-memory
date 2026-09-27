@@ -50,12 +50,27 @@ enum DayflowGeofenceNotifications {
         let logWorkout = UNNotificationAction(identifier: "LOG_WORKOUT_ACTION",
                                               title: "Log Workout",
                                               options: .foreground)
+        // D509. The exit prompt now has three shapes, and **each one needs its
+        // category registered here or its button silently will not exist** -
+        // the failure this function's own note describes.
+        let logSession = UNNotificationAction(identifier: "LOG_SESSION_ACTION",
+                                              title: "Log Session",
+                                              options: .foreground)
+        let logVisit = UNNotificationAction(identifier: "LOG_VISIT_ACTION",
+                                            title: "Log Visit",
+                                            options: .foreground)
         UNUserNotificationCenter.current().setNotificationCategories([
             UNNotificationCategory(identifier: "GEOFENCE_CHECKIN",
                                    actions: [checkIn],
                                    intentIdentifiers: []),
             UNNotificationCategory(identifier: "WORKOUT_PROMPT",
                                    actions: [logWorkout],
+                                   intentIdentifiers: []),
+            UNNotificationCategory(identifier: "BILLIARDS_PROMPT",
+                                   actions: [logSession],
+                                   intentIdentifiers: []),
+            UNNotificationCategory(identifier: "VISIT_PROMPT",
+                                   actions: [logVisit],
                                    intentIdentifiers: [])
         ])
     }
@@ -108,6 +123,18 @@ final class DayflowNotificationDelegate: NSObject, UNUserNotificationCenterDeleg
                 // payload for the same reason, so nothing here pretends to know
                 // more than the screen will use.
                 TraceRouter.shared.deliver(.workout)
+            case "BILLIARDS_PROMPT":
+                // Same reasoning as the workout prompt above: no payload, the
+                // wizard opens empty and he picks (D509).
+                TraceRouter.shared.deliver(.billiards)
+            case "VISIT_PROMPT":
+                // **This one DOES carry the place**, and it is not an
+                // inconsistency. The other two open a wizard that asks what you
+                // did; this one opens the check-in for the place you just left,
+                // and a check-in with no place is the compose menu's door, not
+                // this one. Same route the arrival prompt uses, already built
+                // and already proven on his phone (D492/D493).
+                TraceRouter.shared.deliver(.checkIn(placeID: placeID, notes: nil))
             default:
                 break
             }
@@ -151,6 +178,16 @@ extension DayflowAppDelegate {
         // any monitoring starts, so the very first registration already knows
         // which places are spoken for.
         GeofenceManager.reservedByHost = { DayflowPlaceAlarms.armedPlaceIDs() }
+
+        // **The other arrival system's control, wired to the screen that now
+        // carries it** (D507). `PlaceDetailView` is in `Trace/` and cannot name
+        // `DayflowPlaceAlarmStore`, so it asks through these. Set here rather
+        // than inside the `isEnabled` guard below: the reminder has nothing to
+        // do with whether check-in geofencing is switched on, and hiding its row
+        // from a person who has geofencing off would be a second lost door.
+        PlaceArrivalReminderHost.isOn = { DayflowPlaceAlarmStore.shared.isEnabled($0) }
+        PlaceArrivalReminderHost.toggle = { DayflowPlaceAlarmStore.shared.toggle($0) }
+
         guard GeofenceManager.isEnabled else { return }
         GeofenceManager.shared.startMonitoring(places: NotionService.shared.places)
     }

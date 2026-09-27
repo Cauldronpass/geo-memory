@@ -7,7 +7,8 @@ import UserNotifications
 // Session 78, D183. Location alarms, PLACE-attached — David's own question
 // ("would it be attached to a task or attached to the place?") exposed the
 // better design over the task-attached mockup: a place record gets one
-// quiet "Ring on arrival" toggle, and arriving fires a single notification
+// quiet "Remind me on arrival" toggle (renamed and moved to
+// `PlaceDetailView`'s SETTINGS tab in D507), and arriving fires a single notification
 // carrying whatever open tasks are linked [[place name]] at that moment.
 // The linking gesture he already has IS the setup; a place with the toggle
 // on but no open linked tasks stays silent; one geofence per place keeps
