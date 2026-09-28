@@ -1868,6 +1868,34 @@ struct DocNotePanel: View {
 
 // MARK: - Metadata panel
 
+/// Which documents have already had an UNASKED AI scan this session (D514).
+///
+/// `DocMetadataPanel.load()` runs on every store reload, not once per
+/// selection: `TraceMacDocument.id` is a fresh `UUID()` each time the folder is
+/// walked, so `.onChange(of: doc.id)` fires on every reload, and reloads come
+/// from every file event in `Documents/` - the scan's own save, text
+/// extraction, iCloud delivering the phone's copy. `load()` starts a scan
+/// whenever the document in hand has no tags and no description. So any reload
+/// that caught the sidecar mid-write or mid-sync, blank for a moment, paid for
+/// another call to Claude, and the result's own save fired the next reload.
+/// David saw it as the list stuck on "Loading..." and the description
+/// flashing on and off.
+///
+/// **One unasked scan per document per launch, shared by both automatic
+/// paths** (this panel and `autoScanNewArrivals`, which had its own set per
+/// store instance and there are several instances). Re-run is untouched: a
+/// scan he asks for always runs.
+@MainActor
+final class MacAutoScanLedger {
+    static let shared = MacAutoScanLedger()
+    private var claimed: Set<String> = []
+    private init() {}
+    /// True the first time a path is claimed, false every time after.
+    func claim(_ relativePath: String) -> Bool {
+        claimed.insert(relativePath).inserted
+    }
+}
+
 struct DocMetadataPanel: View {
     let doc: TraceMacDocument
     let store: TraceMacDocumentStore
@@ -2970,7 +2998,9 @@ struct DocMetadataPanel: View {
         // Auto-scan if this looks like a freshly imported doc with no metadata yet
         let noMetadata = doc.tags.isEmpty && doc.description.isEmpty
         let scannable = doc.isPDF || doc.isImage
-        if noMetadata && scannable && !isScanning {
+        // D514: at most once per document per launch, whatever reloads.
+        if noMetadata && scannable && !isScanning
+            && MacAutoScanLedger.shared.claim(doc.relativePath) {
             runScan()
         }
     }

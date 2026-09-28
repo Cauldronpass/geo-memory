@@ -669,6 +669,17 @@ class NotionService {
         }
     }
 
+    /// Deletes a place outright (D518): the page goes to Notion's trash, where
+    /// Notion keeps it for 30 days. For a place that should never have existed
+    /// - a test, a duplicate - where Archive, which is for places he may want
+    /// back, is the wrong word. Visits that pointed at it keep their rows and
+    /// lose the place name.
+    func deletePlace(_ place: Place) async throws {
+        _ = try await patch("\(baseURL)/pages/\(place.id)", body: ["archived": true])
+        places.removeAll { $0.id == place.id }
+        archivedPlaces.removeAll { $0.id == place.id }
+    }
+
     /// Brings an archived place back.
     ///
     /// **Restored as "Visited", which is a choice rather than a memory.** The
@@ -2131,8 +2142,31 @@ class NotionService {
             placeID: ((props["Place"] as? [String: Any])?["relation"] as? [[String: Any]])?.first?["id"] as? String,
             placeName: title(props["Name"]),
             status: select(props["Status"]) ?? "Unlinked",
-            photoURL: (props["Photo URL"] as? [String: Any])?["url"] as? String
+            photoURL: (props["Photo URL"] as? [String: Any])?["url"] as? String,
+            category: select(props["Category"])
         )
+    }
+
+    /// Rename a pin (D520): its name, category and note. Creates nothing -
+    /// that is Save as a Place's job. An empty category clears it.
+    func renameCapture(id: String, name: String, category: String?, notes: String) async throws {
+        let props: [String: Any] = [
+            "Name": ["title": [["text": ["content": name]]]],
+            "Category": category.map { ["select": ["name": $0]] } ?? ["select": NSNull()],
+            "Notes": ["rich_text": notes.isEmpty ? [] : [["text": ["content": notes]]]]
+        ]
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
+    }
+
+    /// Match a pin to a place he already has (D520): the `Place` relation and
+    /// the pin's name. **No visit is logged** - a pin records standing
+    /// somewhere, and a visit is a separate claim made through check-in.
+    func matchCapture(id: String, to place: Place) async throws {
+        let props: [String: Any] = [
+            "Place": ["relation": [["id": place.id]]],
+            "Name": ["title": [["text": ["content": place.name]]]]
+        ]
+        _ = try await patch("\(baseURL)/pages/\(id)", body: ["properties": props])
     }
 
     // MARK: - Bookings (D266)

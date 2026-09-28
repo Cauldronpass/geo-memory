@@ -73,14 +73,14 @@ class iOSDocumentStore {
                     guard noteStore.fileExists(companion) else { continue }
                 }
 
-                let sidecarRelative = relativePath.hasSuffix(".\(ext)")
+                let sidecarRelative = relativePath.lowercased().hasSuffix(".\(ext)")
                     ? String(relativePath.dropLast(ext.count + 1)) + ".md"
                     : relativePath + ".md"
 
                 let sidecar = parseSidecar(at: sidecarRelative)
                 let body = readBody(at: sidecarRelative)
 
-                let nameNoExt = filename.hasSuffix(".\(ext)")
+                let nameNoExt = filename.lowercased().hasSuffix(".\(ext)")
                     ? String(filename.dropLast(ext.count + 1))
                     : filename
                 let timestampPattern = #"^\d{4}-\d{2}-\d{2}-\d{6}-"#

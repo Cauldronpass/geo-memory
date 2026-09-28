@@ -37,8 +37,74 @@
 import SwiftUI
 import MapKit
 
+/// What the host app lets this card do in-process (D517).
+///
+/// **Both of the card's Trace buttons were dead in the merged app.** They open
+/// `trace://saveplace` and `trace://discover`, and since the merged app took the
+/// `trace://` scheme that is the app opening its own URL while frontmost -
+/// which D376 found does not fire `onOpenURL`. The old Trace app used to answer
+/// both; it retired on 2026-09-20. David pressed Save as a Place on Dayflow
+/// build 94: *"nothing happens."*
+///
+/// This file is also compiled by Jot, so it cannot name `TraceRouter` or
+/// `SaveCaptureAsPlaceSheet` (not in Jot's list) - D440's trap. The host sets
+/// these at launch, the D493/D507 shape. **Where nothing sets them the card
+/// behaves exactly as before**: Jot opens the URL, which is another app there
+/// and does cross.
+enum CaptureCardHost {
+    /// Hands a `trace://` URL to the host's router. `true` if it was taken.
+    @MainActor static var deliver: ((URL) -> Bool)? = nil
+    /// Builds the host's save-as-place sheet for a loaded capture.
+    @MainActor static var savePlaceSheet: ((Capture) -> AnyView)? = nil
+}
+
+/// The pin's line in its day note: `[label](capture://open?id=<id>)` (D401).
+///
+/// Rewrites the LABEL of the one marker carrying this capture's ID, in the day
+/// note of the day it was pinned. Link and every other line are untouched.
+/// Best effort: a note that cannot be read or written changes nothing else.
+/// D518 wrote it for Save as a Place; D520 moved it here so Rename and Match
+/// use the same code.
+enum PinMarker {
+    @MainActor
+    static func relabel(captureID: String, pinnedAt: Date, to newLabel: String) {
+        let label = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "]", with: ")")
+            .replacingOccurrences(of: "[", with: "(")
+        guard !label.isEmpty else { return }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        f.dateFormat = "yyyy-MM-dd"
+        let path = "Calendar/\(f.string(from: pinnedAt)).md"
+        guard let raw = try? NoteStore.shared.readFile(path), !raw.isEmpty else { return }
+        let id = NSRegularExpression.escapedPattern(for: captureID)
+        guard let regex = try? NSRegularExpression(
+            pattern: "\\[[^\\]]*\\]\\((capture://open\\?id=\(id))\\)") else { return }
+        let range = NSRange(raw.startIndex..., in: raw)
+        let template = "[" + NSRegularExpression.escapedTemplate(for: label) + "]($1)"
+        let updated = regex.stringByReplacingMatches(in: raw, range: range, withTemplate: template)
+        guard updated != raw else { return }
+        try? NoteStore.shared.writeFile(path, content: updated)
+    }
+}
+
 struct CaptureSummaryView: View {
     let captureID: String
+    /// One sub-sheet host for the card's three sheets (D517, D520): Save as a
+    /// Place, Match a place, Rename. One `.sheet(item:)` rather than three
+    /// stacked `.sheet` modifiers, the rule the task edit sheet taught.
+    private enum CardSheet: Identifiable {
+        case save(Capture), match(Capture), rename(Capture)
+        var id: String {
+            switch self {
+            case .save(let c):   return "save-\(c.id)"
+            case .match(let c):  return "match-\(c.id)"
+            case .rename(let c): return "rename-\(c.id)"
+            }
+        }
+    }
+    @State private var cardSheet: CardSheet? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -107,6 +173,25 @@ struct CaptureSummaryView: View {
             }
         }
         .task { await load() }
+        .sheet(item: $cardSheet) { sheet in
+            switch sheet {
+            case .save(let c):
+                if let make = CaptureCardHost.savePlaceSheet { make(c) }
+            case .match(let c):
+                PinMatchPlaceSheet(capture: c) { place in
+                    capture?.placeID = place.id
+                    capture?.placeName = place.name
+                }
+                .environment(notion)
+            case .rename(let c):
+                PinRenameSheet(capture: c) { name, category, notes in
+                    capture?.placeName = name
+                    capture?.category = category
+                    capture?.notes = notes
+                }
+                .environment(notion)
+            }
+        }
     }
 
     @ViewBuilder
@@ -164,6 +249,31 @@ struct CaptureSummaryView: View {
                 .padding(.horizontal, 20)
             }
 
+            // NAME THIS PIN (D520). David: *"shouldnt there be a way within the
+            // card even later for me to match it to an existing place or rename
+            // it?"* Save as a Place was the only naming act, and it creates a
+            // place and logs a visit - wrong for "this was Orangetheory" and for
+            // "call it the soccer field". Neither of these creates anything.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("NAME THIS PIN")
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Button { cardSheet = .match(capture) } label: {
+                        Label("Match a place", systemImage: "mappin.and.ellipse")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    Button { cardSheet = .rename(capture) } label: {
+                        Label("Rename", systemImage: "pencil")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(.horizontal, 20)
+
             VStack(spacing: 10) {
                 // **Was "Open in Trace", and it had stopped meaning anything**
                 // (Session 103). David: *"the link still says open in trace
@@ -173,6 +283,11 @@ struct CaptureSummaryView: View {
                 // a Place — places are Trace's, and "this one is worth keeping"
                 // is the only thing left to say about a pin you are looking at.
                 Button {
+                    // D517: in-process when the host can, the URL otherwise.
+                    if CaptureCardHost.savePlaceSheet != nil {
+                        cardSheet = .save(capture)
+                        return
+                    }
                     var comps = URLComponents()
                     comps.scheme = "trace"
                     comps.host = "saveplace"
@@ -207,7 +322,15 @@ struct CaptureSummaryView: View {
                             URLQueryItem(name: "lon", value: String(lon)),
                             URLQueryItem(name: "label", value: displayName)
                         ]
-                        if let url = comps.url { openURL(url) }
+                        // D517: the merged app's router when it is the host;
+                        // opening its own scheme from inside goes nowhere.
+                        if let url = comps.url {
+                            if let deliver = CaptureCardHost.deliver, deliver(url) {
+                                // taken in-process
+                            } else {
+                                openURL(url)
+                            }
+                        }
                         // The map is the destination; a card still covering it
                         // is the same dead end in a different costume.
                         dismiss()
@@ -254,5 +377,163 @@ struct CaptureSummaryView: View {
             loadFailed = true
         }
         isLoading = false
+    }
+}
+
+// MARK: - Name this pin (D520)
+
+/// His own places, nearest to where the pin was dropped first, with search.
+/// Picking one links the pin to it and renames the pin and its note line.
+/// **Logs no visit** - a pin records standing somewhere; a visit is a claim he
+/// makes through check-in. D398 took the automatic 500 m guess away on purpose,
+/// so this list never preselects: he picks.
+struct PinMatchPlaceSheet: View {
+    let capture: Capture
+    let onMatched: (Place) -> Void
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    @State private var saving = false
+    @State private var errorText: String? = nil
+
+    private func distance(to place: Place) -> Double? {
+        guard let lat = capture.gpsLat, let lon = capture.gpsLon else { return nil }
+        let a = CLLocation(latitude: lat, longitude: lon)
+        return a.distance(from: CLLocation(latitude: place.latitude, longitude: place.longitude))
+    }
+
+    private var rows: [Place] {
+        let q = search.trimmingCharacters(in: .whitespaces)
+        let base = q.isEmpty ? notion.places
+            : notion.places.filter { $0.name.localizedCaseInsensitiveContains(q)
+                || $0.city.localizedCaseInsensitiveContains(q) }
+        return base.sorted { (distance(to: $0) ?? .infinity) < (distance(to: $1) ?? .infinity) }
+    }
+
+    private func label(_ meters: Double?) -> String {
+        guard let m = meters else { return "" }
+        return m < 1000 ? "\(Int(m.rounded())) m" : String(format: "%.1f km", m / 1000)
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let errorText {
+                    Text(errorText).foregroundStyle(.red).font(.footnote)
+                }
+                Section(search.isEmpty ? "Nearest to this pin" : "Matches") {
+                    ForEach(rows.prefix(40)) { place in
+                        Button {
+                            Task { await pick(place) }
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(place.name).foregroundStyle(.primary)
+                                    Text(place.category).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(label(distance(to: place))).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .disabled(saving)
+                    }
+                }
+            }
+            .searchable(text: $search, prompt: "Search your places")
+            .navigationTitle("Match a place")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+            .task { if notion.places.isEmpty { await notion.fetchPlaces() } }
+        }
+    }
+
+    @MainActor
+    private func pick(_ place: Place) async {
+        saving = true
+        do {
+            try await notion.matchCapture(id: capture.id, to: place)
+            PinMarker.relabel(captureID: capture.id, pinnedAt: capture.timestamp, to: place.name)
+            onMatched(place)
+            dismiss()
+        } catch {
+            // A save that did not happen says so; the pin keeps its old name.
+            errorText = "Couldn't reach Notion: \(error.localizedDescription)"
+            saving = false
+        }
+    }
+}
+
+/// Name, category and note for a pin that is not worth being a place - a
+/// parking space, a field. Creates nothing. Time, location and photo are the
+/// record of the pin and are deliberately not editable.
+struct PinRenameSheet: View {
+    let capture: Capture
+    let onSaved: (String, String?, String) -> Void
+    @Environment(NotionService.self) private var notion
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var category = ""
+    @State private var notes = ""
+    @State private var saving = false
+    @State private var errorText: String? = nil
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Name") {
+                    TextField("What is this spot?", text: $name)
+                }
+                Section("Category") {
+                    Picker("Category", selection: $category) {
+                        Text("None").tag("")
+                        ForEach(PlaceCategory.all, id: \.self) { Text($0).tag($0) }
+                    }
+                }
+                Section {
+                    TextField("Row F, near the east gate", text: $notes, axis: .vertical)
+                        .lineLimit(2...5)
+                } header: {
+                    Text("Note")
+                } footer: {
+                    Text("Changes only this pin, here and in the day note. It does not create a place.")
+                }
+                if let errorText {
+                    Text(errorText).foregroundStyle(.red).font(.footnote)
+                }
+            }
+            .navigationTitle("Rename pin")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { Task { await save() } }
+                        .disabled(saving || name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .onAppear {
+                name = capture.placeName ?? ""
+                category = capture.category ?? ""
+                notes = capture.notes
+            }
+        }
+    }
+
+    @MainActor
+    private func save() async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cat: String? = category.isEmpty ? nil : category
+        saving = true
+        do {
+            try await notion.renameCapture(id: capture.id, name: trimmed, category: cat, notes: note)
+            PinMarker.relabel(captureID: capture.id, pinnedAt: capture.timestamp, to: trimmed)
+            onSaved(trimmed, cat, note)
+            dismiss()
+        } catch {
+            errorText = "Couldn't reach Notion: \(error.localizedDescription)"
+            saving = false
+        }
     }
 }

@@ -192,6 +192,7 @@ struct SaveCaptureAsPlaceSheet: View {
                     try await notion.linkCapture(capture.id, toVisit: visitID, captureNotes: capture.notes)
                     await notion.fetchCaptures()
                 }
+                relabelMarker(to: name.trimmingCharacters(in: .whitespaces))
             } else {
                 let formatter = DateFormatter()
                 formatter.dateFormat = "h:mm a"
@@ -218,6 +219,7 @@ struct SaveCaptureAsPlaceSheet: View {
                 // Dismiss the capture from the shelf (no visit for temp places)
                 try await notion.dismissCapture(capture.id)
                 await notion.fetchCaptures()
+                relabelMarker(to: placeName)
             }
             dismiss()
         } catch {
@@ -227,6 +229,13 @@ struct SaveCaptureAsPlaceSheet: View {
     }
 
     // MARK: - Notification
+
+    /// Renames the pin's line in its day note to the place it became (D518).
+    /// The work moved to `PinMarker.relabel` in D520 so Rename and Match on
+    /// the pin card use the same code.
+    private func relabelMarker(to newLabel: String) {
+        PinMarker.relabel(captureID: capture.id, pinnedAt: capture.timestamp, to: newLabel)
+    }
 
     private func scheduleExpiryNotification(placeID: String, name: String, expiry: Date) {
         Task.detached {

@@ -161,7 +161,7 @@ class TraceMacDocumentStore {
                     guard noteStore.fileExists(companion) else { continue }
                 }
 
-                let sidecarRelative = relativePath.hasSuffix(".\(ext)")
+                let sidecarRelative = relativePath.lowercased().hasSuffix(".\(ext)")
                     ? String(relativePath.dropLast(ext.count + 1)) + ".md"
                     : relativePath + ".md"
 
@@ -170,7 +170,7 @@ class TraceMacDocumentStore {
                 let body = readBody(at: sidecarRelative)
 
                 // Derive title from filename — strip leading timestamp (yyyy-MM-dd-HHmmss-)
-                let nameNoExt = filename.hasSuffix(".\(ext)")
+                let nameNoExt = filename.lowercased().hasSuffix(".\(ext)")
                     ? String(filename.dropLast(ext.count + 1))
                     : filename
                 let timestampPattern = #"^\d{4}-\d{2}-\d{2}-\d{6}-"#
@@ -605,7 +605,7 @@ class TraceMacDocumentStore {
 
         // Same derivation `moveDocument` uses: drop the extension, add `.md`.
         let ext = sourceURL.pathExtension
-        let base = (!ext.isEmpty && relativePath.hasSuffix(".\(ext)"))
+        let base = (!ext.isEmpty && relativePath.lowercased().hasSuffix(".\(ext.lowercased())"))
             ? String(relativePath.dropLast(ext.count + 1))
             : relativePath
         let sidecarPath = "\(base).md"
@@ -887,6 +887,10 @@ class TraceMacDocumentStore {
             // finished delivering the sidecar — reconsiders it.
             guard privacyOnDisk(doc) == .notPrivate else { continue }
             scanAttempted.insert(doc.relativePath)
+            // D514: shared with the metadata panel's own automatic scan, so the
+            // two unasked paths cannot each pay for the same document.
+            let path = doc.relativePath
+            guard await MainActor.run(body: { MacAutoScanLedger.shared.claim(path) }) else { continue }
             guard let result = try? await DocumentScanService.scan(
                 doc: doc,
                 noteStore: noteStore,
@@ -1017,7 +1021,16 @@ class TraceMacDocumentStore {
         body.text = text
         body.hasTextSection = true
 
-        var data = parseSidecar(at: doc.sidecarPath) ?? SidecarData()
+        // D514: a sidecar that is on disk but does not parse right now is NOT
+        // an empty one. Writing `SidecarData()` over it erased the title, tags
+        // and description whenever this read landed mid-write or mid-sync, and
+        // a blank document is what the metadata panel sends to the AI. Skip it;
+        // the next pass reads it whole.
+        let parsed = parseSidecar(at: doc.sidecarPath)
+        if parsed == nil, noteStore.fileExists(doc.sidecarPath) {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var data = parsed ?? SidecarData()
         if data.created == nil { data.created = doc.created ?? Date() }
 
         try noteStore.writeFile(doc.sidecarPath, content: renderSidecar(data, body: body))

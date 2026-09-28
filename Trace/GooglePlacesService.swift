@@ -276,6 +276,26 @@ class GooglePlacesService {
             }
     }
 
+    /// What is around a point, nearest first, with no query (D521).
+    ///
+    /// Places API (New) `searchNearby`, restricted to a circle and ranked by
+    /// distance. For Check In's "Nearby, not in your places": the question
+    /// there is "what am I standing in", which has no search term to type.
+    func placesAround(_ coordinate: CLLocationCoordinate2D,
+                      radiusMeters: Double = 250) async throws -> [GooglePlace] {
+        let body: [String: Any] = [
+            "locationRestriction": [
+                "circle": [
+                    "center": ["latitude": coordinate.latitude, "longitude": coordinate.longitude],
+                    "radius": radiusMeters
+                ]
+            ],
+            "rankPreference": "DISTANCE",
+            "maxResultCount": 20
+        ]
+        return try await search(body: body, endpoint: "searchNearby")
+    }
+
     // Nearby search — used when tapping a map POI
     func nearbySearch(coordinate: CLLocationCoordinate2D, query: String) async throws -> [GooglePlace] {
         let body: [String: Any] = [
@@ -350,9 +370,9 @@ class GooglePlacesService {
     ///
     /// An empty array still means exactly one thing after this change:
     /// **the search ran and matched nothing.**
-    private func search(body: [String: Any]) async throws -> [GooglePlace] {
+    private func search(body: [String: Any], endpoint: String = "searchText") async throws -> [GooglePlace] {
         guard !apiKey.isEmpty else { throw GooglePlacesError.missingKey }
-        let url = URL(string: "\(baseURL):searchText")!
+        let url = URL(string: "\(baseURL):\(endpoint)")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

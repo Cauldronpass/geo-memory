@@ -329,6 +329,148 @@ enum DayflowDailyNoteAppend {
     }
 }
 
+// MARK: - Check in by voice (D522)
+//
+// David: *"I'd like to next be able to use my voice to run Dayflow ... I'd like
+// to start with the place and visit capability."* Two actions, because a Siri
+// phrase cannot carry free text: one that opens Check In on the nearby list
+// (D521), and one that asks where and checks in with no screen. He makes his own
+// Shortcuts named "Check in" / "Check in at" so Siri needs no app name (D498's
+// pattern). One clear match checks in straight away - his call: *"Yes it
+// should."*
+
+struct DayflowCheckInNearbyIntent: AppIntent {
+    static var title: LocalizedStringResource = "Check In Nearby"
+    static var description = IntentDescription(
+        "Opens Check In with your nearest places and nearby places you have not saved yet."
+    )
+    /// Opening IS the action: the list needs his eyes and a tap.
+    static var openAppWhenRun: Bool = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        // The bare check-in route, taken by `DayflowRootView.takeRoutes` (D502).
+        TraceRouter.shared.deliver(.checkIn(placeID: nil, notes: nil))
+        return .result()
+    }
+}
+
+struct DayflowCheckInAtIntent: AppIntent {
+    static var title: LocalizedStringResource = "Check In at a Place"
+    static var description = IntentDescription(
+        "Checks you in at one of your saved places by name, without opening the app."
+    )
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "Place", requestValueDialog: "Where are you?")
+    var place: String
+
+    init() {}
+    /// For a button on the Tell Trace card that already knows the place (D523).
+    init(place: String) { self.place = place }
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Check in at \(\.$place)")
+    }
+
+    static func normalized(_ s: String) -> String {
+        var t = s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.hasPrefix("the ") { t.removeFirst(4) }
+        return t.filter { $0.isLetter || $0.isNumber || $0 == " " }
+    }
+
+    /// The name part of what he said, without a town or a tail (D533):
+    /// "the Westin in Charlotte to my places" -> "westin". The town still goes
+    /// to Google in the full phrase; it just must not be matched as a name.
+    static func coreName(_ spoken: String) -> String {
+        var t = " " + normalized(spoken) + " "
+        for tail in [" to my places ", " to places ", " to my list ", " as a place "] {
+            t = t.replacingOccurrences(of: tail, with: " ")
+        }
+        for sep in [" in ", " near ", " by "] {
+            if let r = t.range(of: sep), t.distance(from: t.startIndex, to: r.lowerBound) > 1 {
+                t = String(t[..<r.lowerBound])
+            }
+        }
+        return t.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// His non-archived places matching a spoken name (D533 tightened).
+    ///
+    /// Exact name first; then a saved name that CONTAINS what he said; then
+    /// what he said containing a saved name only when that name is most of it.
+    /// Build 102 answered "Add the Westin in Charlotte" with "Charlotte is
+    /// already in your places": a city he had saved sat inside the phrase and
+    /// the old either-way contains let a one-word place stand for the Westin.
+    @MainActor
+    static func matches(for spokenName: String) async -> [Place] {
+        let notion = NotionService.shared
+        if notion.places.isEmpty { await notion.fetchPlaces() }
+        let core = coreName(spokenName)
+        guard !core.isEmpty else { return [] }
+        let active = notion.places.filter { $0.status != "Archived" }
+        let exact = active.filter { normalized($0.name) == core }
+        if !exact.isEmpty { return exact }
+        let savedContains = active.filter { core.count >= 3 && normalized($0.name).contains(core) }
+        if !savedContains.isEmpty { return savedContains }
+        return active.filter {
+            let n = normalized($0.name)
+            return n.count >= 3 && core.contains(n) && Double(n.count) >= Double(core.count) * 0.6
+        }
+    }
+
+    /// The check-in itself, exactly as the Check In sheet does it: the visit,
+    /// the dwell prompt cancelled, the weekly check-in log line.
+    @MainActor
+    static func checkIn(at chosen: Place) async throws {
+        let now = Date()
+        let visitID = try await NotionService.shared.checkIn(place: chosen, rating: nil, notes: nil, date: now, people: nil)
+        GeofenceManager.shared.cancelDwellNotificationForManualCheckIn(placeID: chosen.id)
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        f.dateFormat = "h:mm a"
+        let logLine = "\(f.string(from: now)) — [[\(chosen.name)]]"
+        try? NoteStore.shared.appendToWeeklyCheckInLog(logLine, date: now)
+        // D528: so "undo that" can take the check-in back.
+        TellTraceUndo.note("checked you in at \(chosen.name)") {
+            $0.visitID = visitID; $0.weekLogDate = now; $0.weekLogLine = logLine
+        }
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let candidates = await Self.matches(for: place)
+        guard !candidates.isEmpty else {
+            // D524: not saved yet - look it up around him and add it.
+            switch await NewPlaceCheckIn.resolve(place, checkIn: true) {
+            case .checkedIn(let name):
+                return .result(dialog: "Added \(name) to your places and checked in.")
+            case .choose(let options):
+                let picked = try await $place.requestDisambiguation(
+                    among: options.map(\.name), dialog: "\(place) isn't in your places. Which one?")
+                guard let here = await NewPlaceCheckIn.here(),
+                      let g = (try? await NewPlaceCheckIn.search(picked, near: here))?
+                        .first(where: { o in options.contains { $0.googleID == o.id } && o.name == picked })
+                else { return .result(dialog: "I couldn't find \(picked) again. Try Check in.") }
+                let saved = try await NewPlaceCheckIn.add(g, checkIn: true)
+                return .result(dialog: "Added \(saved.name) to your places and checked in.")
+            case .failed(let why):
+                return .result(dialog: "\(why)")
+            }
+        }
+        var chosen = candidates[0]
+        if candidates.count > 1 {
+            // More than one: ask, never guess (D398).
+            let names = Array(candidates.prefix(5).map(\.name))
+            let picked = try await $place.requestDisambiguation(among: names, dialog: "Which one?")
+            chosen = candidates.first { $0.name == picked } ?? chosen
+        }
+        try await Self.checkIn(at: chosen)
+        return .result(dialog: "Checked in at \(chosen.name).")
+    }
+}
+
 // MARK: - Siri phrases
 
 /// The three actions also appear in the Shortcuts app without this — any
@@ -359,6 +501,26 @@ struct DayflowAppShortcuts: AppShortcutsProvider {
             phrases: ["Add a note to \(.applicationName)"],
             shortTitle: "Add to Today's Note",
             systemImageName: "square.and.pencil"
+        )
+        // D523
+        AppShortcut(
+            intent: TellTraceIntent(),
+            phrases: ["Tell \(.applicationName)"],
+            shortTitle: "Tell Trace",
+            systemImageName: "waveform"
+        )
+        // D522
+        AppShortcut(
+            intent: DayflowCheckInNearbyIntent(),
+            phrases: ["Check in with \(.applicationName)"],
+            shortTitle: "Check In Nearby",
+            systemImageName: "location.circle"
+        )
+        AppShortcut(
+            intent: DayflowCheckInAtIntent(),
+            phrases: ["Check in at a place with \(.applicationName)"],
+            shortTitle: "Check In at a Place",
+            systemImageName: "mappin.circle"
         )
         AppShortcut(
             intent: DayflowPinHereIntent(),

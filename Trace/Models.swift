@@ -732,6 +732,9 @@ struct Capture: Identifiable, Codable {
     var placeName: String?
     var status: String // "Unlinked", "Linked", "Archived"
     var photoURL: String?
+    /// D520. Notion "Category" select on Captures, added 2026-09-27; the
+    /// `PlaceCategory.all` vocabulary. Set by Rename on the pin card.
+    var category: String? = nil
 }
 struct Workout: Identifiable, Codable {
     let id: String

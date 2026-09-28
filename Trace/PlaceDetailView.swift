@@ -1077,6 +1077,7 @@ struct PlaceEditSheet: View {
     @State private var isSaving = false
     @State private var saveError: String?
     @State private var showingArchiveConfirm = false
+    @State private var showingDeleteConfirm = false
 
     init(place: Place) {
         self.place = place
@@ -1198,8 +1199,15 @@ struct PlaceEditSheet: View {
                         Label("Archive Place", systemImage: "archivebox")
                             .frame(maxWidth: .infinity)
                     }
+                    // D518: for a place that should not exist at all.
+                    Button(role: .destructive) {
+                        showingDeleteConfirm = true
+                    } label: {
+                        Label("Delete Place", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
                 } footer: {
-                    Text("Archived places are hidden from all views but not deleted.")
+                    Text("Archive hides a place you may want back. Delete removes it; Notion keeps it in its trash for 30 days.")
                 }
             }
             .navigationTitle("Edit Place")
@@ -1219,6 +1227,17 @@ struct PlaceEditSheet: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This place will be hidden from all views.")
+            }
+            .confirmationDialog("Delete \(place.name)?", isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    Task {
+                        try? await notion.deletePlace(place)
+                        dismiss()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("It moves to Notion's trash. Visits logged here keep their dates but lose the place name.")
             }
         }
     }

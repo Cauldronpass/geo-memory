@@ -77,6 +77,9 @@ struct DayflowRootView: View {
     /// (D492). Nil when Check In was opened from the compose menu or the quick
     /// action, which is what `showCheckIn` covers.
     @State private var geofencePlace: Place? = nil
+    /// D517. A `trace://saveplace?id=` from OUTSIDE this app - Jot's pin card,
+    /// a Shortcut. Inside the app the card presents the sheet itself.
+    @State private var savePlaceCapture: Capture? = nil
     @State private var showWorkoutPrompt = false
     /// D509. The same exit prompt at a place categorised Billiards.
     @State private var showBilliardsPrompt = false
@@ -243,6 +246,14 @@ struct DayflowRootView: View {
         }) != nil {
             showCheckIn = true
         }
+        // D517: fetch the one capture, as the old app did, then present.
+        if let route = TraceRouter.shared.take(where: {
+            if case .savePlace = $0 { return true } else { return false }
+        }), case .savePlace(let captureID) = route {
+            Task { @MainActor in
+                savePlaceCapture = try? await NotionService.shared.fetchCapture(id: captureID)
+            }
+        }
         if TraceRouter.shared.take(where: {
             if case .workout = $0 { return true } else { return false }
         }) != nil {
@@ -393,6 +404,11 @@ struct DayflowRootView: View {
                 .environment(NotionService.shared)
                 .environment(LocationManager.shared)
         }
+        // D517. Same `item:` shape as the geofence sheet above.
+        .sheet(item: $savePlaceCapture) { capture in
+            SaveCaptureAsPlaceSheet(capture: capture)
+                .environment(NotionService.shared)
+        }
         // The workout prompt on leaving somewhere (D492). Empty, as it is in the
         // old app - the notification's place ID was stored there and never read.
         .sheet(isPresented: $showWorkoutPrompt) {
@@ -534,7 +550,12 @@ struct DayflowRootView: View {
                 // it and opens the capture card.
                 selectedTab = .tasks
                 quickActions.pending = "AddTask"
-            case "addEvent", "note", "endeavor", "task":
+            // "day" added (D534). David: *"My iOS shortcut for My Day only works
+            // if the last screen I was on is Today. If it's tasks or Records
+            // ... it brings me back to that screen."* `dayflow://day` is
+            // answered by ContentView, which is the Today tab, so the day's
+            // blocks opened on a tab he was not looking at.
+            case "addEvent", "note", "endeavor", "task", "day":
                 selectedTab = .today
             case "launch":
                 let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?

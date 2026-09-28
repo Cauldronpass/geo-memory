@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 // MARK: - CheckInView
 
@@ -24,6 +25,29 @@ struct CheckInView: View {
     @State private var selectedTag: String? = nil
     @State private var showingAddPlace = false
     @State private var showingBilliardsWizard = false
+
+    // MARK: D521 - check in at a place not yet saved
+    //
+    // David, before a trip: *"When i know that i do not have a place in my
+    // system i have to go to the directory find it then add it then check in.
+    // its time consuming..."* This sheet listed only his own places, and its
+    // `+` opened a blank form. Now it also lists what Google says is around
+    // him that he has not saved; picking one adds it (as Visited, his call)
+    // and checks in, in one press. Nothing is preselected (D398): he picks.
+
+    private enum NearbyState: Equatable { case idle, loading, loaded, failed(String) }
+    @State private var nearby: [GooglePlace] = []
+    /// D525. What Google finds for the typed search, near him but not only
+    /// near him. David typed "Bonobos" and nothing happened: the field only
+    /// filtered his own places and the 250 m list, and a shop across town is in
+    /// neither.
+    @State private var typedResults: [GooglePlace] = []
+    @State private var typedSearching = false
+    @State private var nearbyState: NearbyState = .idle
+    /// The Google result being checked into, while it is not yet a Place.
+    @State private var pendingNew: GooglePlace? = nil
+    /// Its category, guessed from Google's type and editable before saving.
+    @State private var newCategory: String = "Attraction"
 
     /// AI-prefill, Session 28 — optional suggested Notes riding in on the
     /// `trace://checkin` URL's "notes" query param (see DayflowWikiSummaryView.swift's
@@ -74,6 +98,97 @@ struct CheckInView: View {
             && (selectedCategory == nil || $0.category == selectedCategory)
             && (selectedTag == nil || $0.tags.contains(selectedTag!))
         }
+    }
+
+    /// Google results that are not already one of his places: same Google
+    /// ID, or the same name within 100 m, counts as already saved.
+    private var nearbyNew: [GooglePlace] {
+        let mine = notionService.places + notionService.archivedPlaces
+        let unsaved = nearby.filter { g in
+            !mine.contains { p in
+                if let gid = p.googlePlaceID, !gid.isEmpty, gid == g.id { return true }
+                guard p.name.caseInsensitiveCompare(g.name) == .orderedSame else { return false }
+                return CLLocation(latitude: p.latitude, longitude: p.longitude)
+                    .distance(from: CLLocation(latitude: g.latitude, longitude: g.longitude)) < 100
+            }
+        }
+        let q = searchText.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return unsaved }
+        // Typed: Google's answer for the words, nearest first, then anything in
+        // the 250 m list that also matches. De-duplicated by Google ID.
+        let typedUnsaved = typedResults.filter { g in !unsavedIDsExcluded(g, mine: mine) }
+        var seen = Set<String>()
+        return (typedUnsaved + unsaved.filter { $0.name.localizedCaseInsensitiveContains(q) })
+            .filter { seen.insert($0.id).inserted }
+    }
+
+    private func unsavedIDsExcluded(_ g: GooglePlace, mine: [Place]) -> Bool {
+        mine.contains { p in
+            if let gid = p.googlePlaceID, !gid.isEmpty, gid == g.id { return true }
+            guard p.name.caseInsensitiveCompare(g.name) == .orderedSame else { return false }
+            return CLLocation(latitude: p.latitude, longitude: p.longitude)
+                .distance(from: CLLocation(latitude: g.latitude, longitude: g.longitude)) < 100
+        }
+    }
+
+    /// Looks the typed words up on Google after a short pause (D525).
+    @MainActor
+    private func searchTyped(_ text: String) async {
+        let q = text.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 3 else { typedResults = []; return }
+        try? await Task.sleep(for: .milliseconds(450))
+        guard !Task.isCancelled else { return }
+        typedSearching = true
+        defer { typedSearching = false }
+        let here = locationManager.location?.coordinate
+        let found = (try? await GooglePlacesService.shared.textSearch(query: q, coordinate: here)) ?? []
+        guard !Task.isCancelled else { return }
+        if let here {
+            let loc = CLLocation(latitude: here.latitude, longitude: here.longitude)
+            typedResults = found.sorted {
+                loc.distance(from: CLLocation(latitude: $0.latitude, longitude: $0.longitude))
+                    < loc.distance(from: CLLocation(latitude: $1.latitude, longitude: $1.longitude))
+            }
+        } else {
+            typedResults = found
+        }
+    }
+
+    /// A stand-in `Place` so the ordinary check-in screen can show a Google
+    /// result before it exists in Notion. Never saved as it stands.
+    private func provisional(_ g: GooglePlace) -> Place {
+        Place(id: "google:\(g.id)", name: g.name, city: g.city, address: g.addressWithRegion,
+              category: newCategory, latitude: g.latitude, longitude: g.longitude,
+              flagged: false, googlePlaceID: g.id, googleMapsURL: nil, phone: g.phone,
+              website: g.website, hours: nil, status: "Visited", ratingExternal: g.rating,
+              ratingPersonal: nil, visitCount: 0, lastVisited: nil, tags: [],
+              aiSummary: nil, notes: nil)
+    }
+
+    @MainActor
+    private func loadNearby() async {
+        guard nearbyState != .loading, nearbyState != .loaded else { return }
+        // Location can arrive a moment after the sheet opens; wait up to 3 s.
+        for _ in 0..<6 where locationManager.location == nil {
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        guard let here = locationManager.location?.coordinate else {
+            nearbyState = .failed("Your location isn't available yet, so nearby places can't be listed.")
+            return
+        }
+        nearbyState = .loading
+        do {
+            nearby = try await GooglePlacesService.shared.placesAround(here)
+            nearbyState = .loaded
+        } catch {
+            nearbyState = .failed("Nearby places need a connection. Your own places are above.")
+        }
+    }
+
+    private func distanceLabel(_ g: GooglePlace) -> String {
+        guard let here = locationManager.location else { return "" }
+        let m = here.distance(from: CLLocation(latitude: g.latitude, longitude: g.longitude))
+        return m < 1000 ? "\(Int(m.rounded())) m" : String(format: "%.1f km", m / 1000)
     }
 
     var body: some View {
@@ -161,7 +276,59 @@ struct CheckInView: View {
                 }
                 .tint(.primary)
             }
+
+            // D521
+            Section {
+                switch nearbyState {
+                case .idle, .loading:
+                    HStack { ProgressView(); Text("Looking around you…").foregroundStyle(.secondary) }
+                case .failed(let why):
+                    Text(why).font(.footnote).foregroundStyle(.secondary)
+                case .loaded:
+                    if typedSearching {
+                        HStack { ProgressView(); Text("Searching Google…").foregroundStyle(.secondary) }
+                    } else if nearbyNew.isEmpty {
+                        Text(searchText.isEmpty ? "Everything nearby is already in your places."
+                                                : "Google found nothing new for that.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    ForEach(nearbyNew) { g in
+                        Button {
+                            newCategory = PlaceCategory.suggest(from: g.primaryType) ?? "Attraction"
+                            pendingNew = g
+                            selectedPlace = provisional(g)
+                            rating = nil
+                            notes = ""
+                            searchText = ""
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 6) {
+                                        Text(g.name)
+                                        Text("NEW")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundStyle(.orange)
+                                            .padding(.horizontal, 4).padding(.vertical, 1)
+                                            .overlay(RoundedRectangle(cornerRadius: 3).stroke(.orange, lineWidth: 1))
+                                    }
+                                    Text([PlaceCategory.suggest(from: g.primaryType),
+                                          g.rating.map { String(format: "%.1f ★", $0) }]
+                                            .compactMap { $0 }.joined(separator: " · "))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(distanceLabel(g)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .tint(.primary)
+                    }
+                }
+            } header: {
+                Text(searchText.isEmpty ? "Nearby, not in your places" : "Not in your places")
+            }
         }
+        .task { await loadNearby() }
+        .task(id: searchText) { await searchTyped(searchText) }
         .navigationTitle("Check In")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -201,6 +368,19 @@ struct CheckInView: View {
                     }
                 }
                 .padding(.vertical, 4)
+            }
+
+            // D521: say out loud that this press also adds a place.
+            if pendingNew != nil {
+                Section {
+                    Picker("Category", selection: $newCategory) {
+                        ForEach(PlaceCategory.all, id: \.self) { Text($0).tag($0) }
+                    }
+                } header: {
+                    Text("New place")
+                } footer: {
+                    Text("Checking in also adds this to your places, as Visited.")
+                }
             }
 
             Section("Date") {
@@ -263,7 +443,7 @@ struct CheckInView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button(preselectedPlace != nil ? "Cancel" : "Back") {
-                    if preselectedPlace != nil { dismiss() } else { selectedPlace = nil }
+                    if preselectedPlace != nil { dismiss() } else { selectedPlace = nil; pendingNew = nil }
                 }
             }
             // A SECOND WAY TO COMMIT, IN THE BAR.
@@ -312,9 +492,30 @@ struct CheckInView: View {
 
     // MARK: - Action
 
-    private func performCheckIn(place: Place) async {
+    private func performCheckIn(place provisionalOrReal: Place) async {
         isLoading = true
         do {
+            // D521: a Google result becomes a real place first, then the visit
+            // is logged against it. `addPlace` returns an existing row instead
+            // of a duplicate if one already matches, so a race cannot make two.
+            var place = provisionalOrReal
+            if let g = pendingNew {
+                let newID = try await notionService.addPlace(
+                    name: g.name, address: g.addressWithRegion, city: g.city,
+                    category: newCategory, latitude: g.latitude, longitude: g.longitude,
+                    googlePlaceID: g.id, phone: g.phone, website: g.website,
+                    status: "Visited")
+                await notionService.fetchPlaces()
+                guard let saved = notionService.places.first(where: { $0.id == newID }) else {
+                    throw NSError(domain: "CheckIn", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "\(g.name) was added, but it did not come back from Notion yet. Try checking in again in a moment."])
+                }
+                // Hours, Maps link and Google's rating: best effort, the
+                // place and the visit do not wait on it.
+                try? await notionService.enrichPlace(saved, from: g)
+                place = saved
+                pendingNew = nil
+            }
             _ = try await notionService.checkIn(
                 place: place,
                 rating: rating,

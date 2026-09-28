@@ -112,6 +112,17 @@ import SwiftUI
 // same as Project Notes shows on both `.all` and `.projects`; renders nothing
 // when no days are pinned yet, so a fresh install / nobody's used the pin
 // feature yet looks identical to before this existed.
+//
+// **The search mode is gone - D513, 2026-09-27 (Session 112).** Nothing ever
+// set `searchActive` true after the Session 77 redesign moved search behind a
+// header icon and D159 retired the icon, so the whole branch - search field,
+// scope pills, tag chips, results, sort, backlinks - had been unreachable for
+// months (D471). Removed with everything that only it reached: `browseContent`
+// and the pinned-days list (never called; pinned days live on Today's day
+// list, the month unfold and In Play), the Trace hand-off row, and
+// `loadTagCounts`, which still read every note on each appearance and each
+// write to fill chips nobody could see. Search now lives in Quick Find.
+// Most of the history above describes that removed machinery.
 
 /// Where Quick Find sends a Records destination (D480).
 ///
@@ -167,7 +178,9 @@ enum DayflowRecordsRoom: String, Identifiable, CaseIterable {
 
 struct DayflowNotesView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
+    /// Unread since D513 removed the search results and pinned days that
+    /// opened a day from here. Kept so every caller still compiles; drop it
+    /// together with the call sites if it is ever wanted again.
     @Binding var selectedDate: Date
     /// Set by `dayflow://note?path=Notes/Projects/…` so the screen opens straight
     /// into a project instead of its browse list (E35, 2026-07-29). Defaulted, so
@@ -177,93 +190,7 @@ struct DayflowNotesView: View {
     /// hides the chevron and disables the header's swipe-right-to-dismiss
     /// (there is no presentation to dismiss there).
     var isTabRoot: Bool = false
-    @State private var showDailyNote = false
-    @State private var wikiLinkTarget: WikiLinkTarget? = nil
 
-    private enum Scope: String, CaseIterable, Identifiable {
-        case all = "All", daily = "Daily", projects = "Notes", places = "Places", people = "People"
-        /// Added 2026-07-29. Endeavors are notes in the shared pool like any
-        /// other, but they carry frontmatter and are browsed by imminence
-        /// rather than searched by name — so this scope renders its own list
-        /// (`DayflowEndeavorListSection`) instead of search results.
-        case endeavors = "Endeavors"
-        var id: String { rawValue }
-
-        /// Daily/Project folders scanned by file content — unchanged mechanism,
-        /// see this file's original header comment. Places/People are NOT here
-        /// any more — see `includesPlaces`/`includesPeople` below and this
-        /// file's Session 25 header addendum for why.
-        var noteFolders: [(label: String, path: String)] {
-            switch self {
-            // Endeavors added to `.all` on 2026-07-30. David: *"on the all
-            // screen i only see the project notes even though i have a japan
-            // endeavor note."* Correct — the scope was written before Endeavors
-            // existed and never revisited, so "All" quietly meant "days and
-            // projects". A scope called All that omits a whole note type is worse
-            // than no All at all, because it answers "not there" convincingly.
-            case .all:      return [("Daily", "Calendar"),
-                                    ("Notes", "Notes/Projects"),
-                                    ("Endeavors", "Notes/Endeavors")]
-            case .daily:    return [("Daily", "Calendar")]
-            case .projects: return [("Notes", "Notes/Projects")]
-            case .places, .people, .endeavors: return []
-            }
-        }
-        var includesPlaces: Bool { self == .all || self == .places }
-        var includesPeople: Bool { self == .all || self == .people }
-    }
-
-    private struct SearchResult: Identifiable {
-        let id = UUID()
-        let subfolder: String
-        let displayName: String
-        let scopeLabel: String
-        let snippet: String
-        /// Full vault-relative path, e.g. "Notes/Projects/P018-Title.md" — added
-        /// Session 22 (search result metadata + sorting) for two things: the
-        /// modified-date sort/display below, and as the `excludePath` a tapped
-        /// result's own DayflowBacklinksView passes to findWikilinkMentions so a
-        /// note never lists itself as "mentioning itself." For a Place/Person
-        /// result (Session 25) this is the note file's path whether or not that
-        /// file actually exists yet — fine for both uses: a missing file just
-        /// means `modified` below is nil and `excludePath` never matches a real
-        /// backlink (nothing links to a file that isn't there).
-        let relativePath: String
-        /// Added Session 22 — `NoteStore.fileModifiedDate(_:)`, same
-        /// `.contentModificationDateKey` call `findWikilinkMentions` already uses
-        /// elsewhere. Shown on the row and drives the Newest/Oldest sort options.
-        let modified: Date?
-        /// Added Session 25 — set only for Place/People results, found by
-        /// entity name rather than by scanning a note file. Tapping the row
-        /// opens this directly (the exact same card a [[wikilink]] tap opens
-        /// anywhere else in the app), no file needs to exist for that to work —
-        /// see this file's Session 25 header addendum for the full reasoning.
-        let wikiTarget: WikiLinkTarget?
-    }
-
-    /// Identifies which search result's backlinks to show — drives
-    /// `.sheet(item:)` below. Added Session 22 alongside DayflowBacklinksView.swift.
-    private struct BacklinksTarget: Identifiable {
-        let id = UUID()
-        let noteTitle: String
-        let lookupName: String
-        let excludePath: String
-    }
-
-    /// One pinned Calendar day — Session 38 addendum 9, see this file's
-    /// header comment. `relativePath` is the same "Calendar/yyyy-MM-dd.md"
-    /// key `DayflowFlagStore` is keyed on everywhere else in this app.
-    private struct PinnedDay: Identifiable {
-        let id: String
-        let date: Date
-        let relativePath: String
-    }
-
-    @State private var searchText = ""
-    @State private var scope: Scope = .all
-    @State private var results: [SearchResult] = []
-    @State private var sortOrder: DayflowNoteSortOrder = .newest
-    @State private var backlinksTarget: BacklinksTarget? = nil
     @State private var projectNames: [String] = []
     @State private var selectedProjectTitle: String? = nil
     @State private var showNewProjectAlert = false
@@ -295,15 +222,11 @@ struct DayflowNotesView: View {
     /// 2026-07-30 regression noted in `ContentView.onOpenNotes` — a one-shot
     /// route has to be consumed, and "consumed" means "this one", not "any".
     @State private var consumedInitialProject: String? = nil
-    /// Tags found on the notes in the current scope, most-used first. Rebuilt when
-    /// the scope changes and when the screen appears; see `loadTagCounts`.
-    @State private var tagCounts: [(tag: String, count: Int)] = []
 
     // Session 77 step (d) — the tab's segments (Dayflow-Tasks-Design.md,
     // Notes tab): opens on Days; To file is the renamed notes-staging inbox
-    // and wears a dot while it has items. Search moved behind the header
-    // icon; the old scope pills survive INSIDE search mode, where
-    // Places/People scoping still earns its keep.
+    // and wears a dot while it has items. (The search mode that once sat
+    // behind the header icon, with its scope pills, was removed in D513.)
     private enum NotesSegment: String, CaseIterable, Identifiable {
         // Session 89 (D298). Two changes, one each of the two kinds of drift
         // David found when he asked whether this tab had come adrift from the
@@ -357,28 +280,37 @@ struct DayflowNotesView: View {
         guard let wanted,
               let match = NotesSegment.allCases.first(where: { $0.rawValue == wanted })
         else { return }
-        searchActive = false
         segment = match
         recordsRouter.pendingSegment = nil
     }
-    @State private var searchActive = false
     /// Session 78 evening — the project-delete confirmation's subject.
     @State private var projectPendingDelete: String? = nil
     @State private var toFileCount = 0
     /// Session 78, Notes redesign — routed PROJECT notes land on this tab
     /// (in place, tab bar visible) instead of ContentView's cover.
     @State private var quickFindRouter = DayflowQuickFindRouter.shared
-    @FocusState private var searchFocused: Bool
-
-    private var sortedResults: [SearchResult] {
-        switch sortOrder {
-        case .newest: return results.sorted { ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
-        case .oldest: return results.sorted { ($0.modified ?? .distantPast) < ($1.modified ?? .distantPast) }
-        case .name:   return results.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-        }
-    }
 
     private let noteStore = NoteStore.shared
+
+    /// Takes a held `trace://discover` and opens the map on its pin (D484).
+    ///
+    /// **Called on appear as well as on `router.version` (D519).** The root
+    /// switches to this tab when a discover route is held, but a `TabView` tab
+    /// that has not been shown this launch is not built yet, so the version
+    /// change that announced the route happened before this view existed and
+    /// was never heard. D484's own note said this screen must "still find the
+    /// route waiting for it when it appears"; nothing on appear ever looked.
+    /// Show on My Map on the pin card, on Dayflow 95: *"does nothing."*
+    private func takeDiscoverRoute() {
+        guard let route = router.take(where: {
+            if case .discover = $0 { return true } else { return false }
+        }) else { return }
+        guard case .discover(let lat, let lon, let label) = route else { return }
+        segment = .places
+        placesMode = .map
+        discoverPin = DiscoverDroppedPin(latitude: lat, longitude: lon,
+                                         label: label ?? "Dropped pin")
+    }
 
     var body: some View {
         Group {
@@ -396,7 +328,6 @@ struct DayflowNotesView: View {
             Button("Cancel", role: .cancel) { newProjectName = "" }
             Button("Create") { createProject() }
         }
-        .onChange(of: searchText) { _, _ in runSearch() }
         // **The first screen to take a route from `TraceRouter`** (D484).
         //
         // `trace://discover?lat=&lon=&label=` used to cross a process boundary
@@ -404,45 +335,17 @@ struct DayflowNotesView: View {
         // places reported ready (D468), which is the whole point of D466: no
         // pending ID on this screen, no retry watcher, no guessing whether
         // Notion has answered yet.
-        .onChange(of: router.version) { _, _ in
-            guard let route = router.take(where: {
-                if case .discover = $0 { return true } else { return false }
-            }) else { return }
-            guard case .discover(let lat, let lon, let label) = route else { return }
-            searchActive = false
-            segment = .places
-            placesMode = .map
-            discoverPin = DiscoverDroppedPin(latitude: lat, longitude: lon,
-                                             label: label ?? "Dropped pin")
-        }
+        .onChange(of: router.version) { _, _ in takeDiscoverRoute() }
         // The Records destination from Quick Find (D480). Cleared here, and
         // only here.
         .onChange(of: recordsRouter.pendingSegment) { _, wanted in
             applyRoutedSegment(wanted)
         }
-        .onChange(of: scope) { _, _ in
-            runSearch()
-            loadTagCounts()
-        }
-        // Recount when ANY note is written, wherever from.
-        //
-        // `onAppear` alone was not enough: an Endeavor opens as a sheet ON TOP of
-        // this screen, and dismissing a sheet does not re-fire the parent's
-        // `onAppear`. So a tag removed there left its chip sitting in this row
-        // until the whole screen was rebuilt — which is what David saw, and why
-        // leaving Dayflow's notes screen entirely and coming back "fixed" it.
-        //
-        // Cheap enough to do on every write: ~40 small files today, and the editor
-        // debounces its saves, so this is not per-keystroke.
-        .onReceive(NotificationCenter.default.publisher(for: .noteStoreFileDidChange)) { _ in
-            loadTagCounts()
-        }
         .onAppear {
+            // D519: a route delivered before this tab was ever built fired
+            // `router.version` with nothing here to hear it. Look on arrival.
+            takeDiscoverRoute()
             loadProjectNames()
-            // Also on every appearance, not only on scope change: a tag added on
-            // the note screen and then backed out of would otherwise not show up
-            // until the scope was toggled.
-            loadTagCounts()
             applyRoutedProject()
             refreshToFileCount()
             drainRoutedProjectNote()
@@ -466,52 +369,77 @@ struct DayflowNotesView: View {
         //
         // The value is the event. Watch the value.
         .onChange(of: initialProjectTitle) { _, _ in applyRoutedProject() }
-        .fullScreenCover(isPresented: $showDailyNote) {
-            DayflowNoteFullPageView(selectedDate: $selectedDate)
-        }
-        .sheet(item: $wikiLinkTarget) { target in
-            NavigationStack {
-                DayflowWikiSummaryView(target: target)
-            }
-        }
-        .sheet(item: $backlinksTarget) { target in
-            NavigationStack {
-                DayflowBacklinksView(
-                    noteTitle: target.noteTitle,
-                    lookupName: target.lookupName,
-                    excludePath: target.excludePath,
-                    selectedDate: $selectedDate
-                )
-            }
-        }
     }
 
     private var mainBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if searchActive {
-                // Search mode: the pre-(d) machinery, intact — scope pills
-                // (incl. Places/People), tags, results. browseContent's job
-                // moved to the segments.
-                searchBar
-                scopeRow
-                scopeActionRow
-                tagFilterRow
+            segmentRow
+            if segment == .toFile {
+                // Owns its own List (swipe actions need it) — not nested
+                // in the segment ScrollView.
+                DayflowNotesInboxView(embedded: true)
+            } else if segment == .places && placesMode == .map {
+                // Discover, whole, as the map behind Places (D454, D484).
+                // It is a `ZStack` of a full-bleed `Map` with its own
+                // search field and filter chips laid over it, so it needs
+                // no stack and no chrome from here — and its one reach
+                // outside the merged target, `DrawerButtons()`, is already
+                // answered as nothing by `TraceMergeShims` (D469).
+                DiscoverView(droppedPin: $discoverPin)
+                    .environment(NotionService.shared)
+                    .environment(LocationManager.shared)
+            } else if segment == .places {
+                // Trace's Places screen (D472), in a `NavigationStack` of
+                // its own. Unlike People, this one needs the stack: it
+                // pushes a place with a `NavigationLink` and hangs Add a
+                // place, Visits, Sort and Refresh off a navigation bar.
+                // Without a stack the row does nothing and the four
+                // buttons never appear at all.
+                //
+                // `embedded: true` only empties the large title, so the
+                // bar is a thin strip carrying those four buttons instead
+                // of a second big heading under Records.
+                //
+                // `LocationManager` is injected here because the app root
+                // supplies only `NotionService`, and this screen sorts by
+                // distance.
+                NavigationStack {
+                    PlacesView(embedded: true)
+                        .environment(LocationManager.shared)
+                }
+            } else if segment == .people {
+                // Trace's People screen, whole (D470) — Recent
+                // interactions first, the everyone list behind its second
+                // segment, search, filters, Add a person, and a tap opens
+                // `PersonDetailView` as a sheet. That is frame 2 of the
+                // approved mockup, already built.
+                //
+                // Outside the segment ScrollView for the same reason TO
+                // FILE is: it brings its own scroller and its own swipe
+                // rows, and a vertical scroller inside a vertical scroller
+                // scrolls neither well.
+                //
+                // **Not one line of it edited.** Its `.navigationTitle`
+                // and `.navigationBarTitleDisplayMode` are inert with no
+                // NavigationStack around this body, `.drawerToolbar()` is
+                // answered as nothing by `TraceMergeShims` (D469), and its
+                // ten `TraceSkin` names are answered by `TraceSkinBridge`
+                // (D467), so it draws Editorial in both appearances as it
+                // stands. It is still the old app's file, byte for byte,
+                // while the old app is still installed.
+                PeopleView()
+            } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
-                        if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
-                            Text("Search notes, days, places, people and #tags.")
-                                .font(.subheadline)
-                                .foregroundStyle(Color.dayflowMuted)
-                                .padding(.top, 24)
-                        } else if results.isEmpty {
-                            Text("No notes match \"\(searchText)\".")
-                                .font(.subheadline)
-                                .foregroundStyle(Color.dayflowMuted)
-                                .padding(.top, 24)
-                        } else {
-                            resultsHeader
-                            ForEach(sortedResults) { r in resultRow(r) }
+                        switch segment {
+                        case .notes:
+                            newProjectRow
+                            projectNotesSection
+                        case .endeavors:
+                            DayflowEndeavorListSection()
+                        case .places, .people, .toFile:
+                            EmptyView()
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -519,81 +447,6 @@ struct DayflowNotesView: View {
                     .padding(.bottom, 24)
                 }
                 .scrollIndicators(.hidden)
-            } else {
-                segmentRow
-                if segment == .toFile {
-                    // Owns its own List (swipe actions need it) — not nested
-                    // in the segment ScrollView.
-                    DayflowNotesInboxView(embedded: true)
-                } else if segment == .places && placesMode == .map {
-                    // Discover, whole, as the map behind Places (D454, D484).
-                    // It is a `ZStack` of a full-bleed `Map` with its own
-                    // search field and filter chips laid over it, so it needs
-                    // no stack and no chrome from here — and its one reach
-                    // outside the merged target, `DrawerButtons()`, is already
-                    // answered as nothing by `TraceMergeShims` (D469).
-                    DiscoverView(droppedPin: $discoverPin)
-                        .environment(NotionService.shared)
-                        .environment(LocationManager.shared)
-                } else if segment == .places {
-                    // Trace's Places screen (D472), in a `NavigationStack` of
-                    // its own. Unlike People, this one needs the stack: it
-                    // pushes a place with a `NavigationLink` and hangs Add a
-                    // place, Visits, Sort and Refresh off a navigation bar.
-                    // Without a stack the row does nothing and the four
-                    // buttons never appear at all.
-                    //
-                    // `embedded: true` only empties the large title, so the
-                    // bar is a thin strip carrying those four buttons instead
-                    // of a second big heading under Records.
-                    //
-                    // `LocationManager` is injected here because the app root
-                    // supplies only `NotionService`, and this screen sorts by
-                    // distance.
-                    NavigationStack {
-                        PlacesView(embedded: true)
-                            .environment(LocationManager.shared)
-                    }
-                } else if segment == .people {
-                    // Trace's People screen, whole (D470) — Recent
-                    // interactions first, the everyone list behind its second
-                    // segment, search, filters, Add a person, and a tap opens
-                    // `PersonDetailView` as a sheet. That is frame 2 of the
-                    // approved mockup, already built.
-                    //
-                    // Outside the segment ScrollView for the same reason TO
-                    // FILE is: it brings its own scroller and its own swipe
-                    // rows, and a vertical scroller inside a vertical scroller
-                    // scrolls neither well.
-                    //
-                    // **Not one line of it edited.** Its `.navigationTitle`
-                    // and `.navigationBarTitleDisplayMode` are inert with no
-                    // NavigationStack around this body, `.drawerToolbar()` is
-                    // answered as nothing by `TraceMergeShims` (D469), and its
-                    // ten `TraceSkin` names are answered by `TraceSkinBridge`
-                    // (D467), so it draws Editorial in both appearances as it
-                    // stands. It is still the old app's file, byte for byte,
-                    // while the old app is still installed.
-                    PeopleView()
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
-                            switch segment {
-                            case .notes:
-                                newProjectRow
-                                projectNotesSection
-                            case .endeavors:
-                                DayflowEndeavorListSection()
-                            case .places, .people, .toFile:
-                                EmptyView()
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 24)
-                    }
-                    .scrollIndicators(.hidden)
-                }
             }
         }
         .dayflowSkinBackground()
@@ -630,7 +483,7 @@ struct DayflowNotesView: View {
     private var segmentRow: some View {
         // **A horizontal scroller from D470**, while it still makes no visible
         // difference: four labels fit a phone, five will not. This file has
-        // already recorded that failure twice — `scopeRow`'s own comment
+        // already recorded that failure twice — the old scope pills' comment
         // ("five pills fitted a phone width; Endeavors made six and the labels
         // started truncating mid-word") and the `fixedSize()` note below,
         // written after "PROJECT S" wrapped mid-word on David's first device
@@ -638,7 +491,7 @@ struct DayflowNotesView: View {
         // ahead of the label rather than after the screenshot.
         //
         // `.scrollClipDisabled` so the active segment's accent underline is
-        // not sheared at the edges, matching `scopeRow`.
+        // not sheared at the edges (the scope pills that did the same went in D513).
         ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 18) {
             ForEach(NotesSegment.allCases) { seg in
@@ -692,7 +545,8 @@ struct DayflowNotesView: View {
         // Session 78, Notes redesign — the Today masthead family: triple
         // rule (3pt over, 1pt under), serif title, a quiet count on the
         // right. The magnifier stayed retired (D159, Quick Find reaches
-        // notes from anywhere); `searchActive`'s machinery stays dormant.
+        // notes from anywhere). The dormant search mode it once opened was
+        // removed in D513.
         VStack(alignment: .leading, spacing: 0) {
             Rectangle().fill(Color.dayflowInk).frame(height: 3)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -747,27 +601,6 @@ struct DayflowNotesView: View {
         .dayflowQuickFindPull(enabled: isTabRoot)
     }
 
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search notes, #tags…", text: $searchText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .focused($searchFocused)
-            if !searchText.isEmpty {
-                Button { searchText = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color(.quaternarySystemFill), in: RoundedRectangle(cornerRadius: 10))
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
-    }
-
     /// Applies a routed project title, at most once per distinct title.
     ///
     /// Called from both `.onAppear` and `.onChange(of: initialProjectTitle)`:
@@ -796,75 +629,6 @@ struct DayflowNotesView: View {
         selectedProjectTitle = initialProjectTitle
     }
 
-    private var scopeRow: some View {
-        // Horizontal scroller since 2026-07-29. Five pills fitted a phone
-        // width; Endeavors made six and the labels started truncating
-        // mid-word. `.scrollClipDisabled` so the active pill's shadow is not
-        // sheared off at the edges.
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-            ForEach(Scope.allCases) { s in
-                Button { scope = s } label: {
-                    Text(s.rawValue)
-                        // Skin fix 2026-07-22 (Session 31) — was a solid blue
-                        // capsule + white text, the same pre-skin pattern
-                        // fixed on the home screen's Yesterday/Today/Tomorrow
-                        // pill (Session 30 addendum), never carried over
-                        // here. Now matches that same white/near-black active
-                        // + muted inactive language. See DayflowSkin.swift.
-                        .font(.system(size: 11.5, weight: scope == s ? .bold : .medium))
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 5)
-                        .background(scope == s ? Color.white : Color.dayflowInk.opacity(0.055), in: Capsule())
-                        .foregroundStyle(scope == s ? Color.dayflowInk : Color.dayflowPillInactiveText)
-                        .shadow(color: .black.opacity(scope == s ? 0.10 : 0), radius: 2, x: 0, y: 1)
-                }
-                .buttonStyle(.plain)
-            }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 2)
-        }
-        .scrollClipDisabled()
-        .padding(.bottom, 12)
-    }
-
-    // MARK: Scope action row — Session 25
-    //
-    // Was a single unconditional `newProjectRow` (rendered on every tab,
-    // including Places — the exact bug David flagged from a screenshot).
-    // Now scope-conditional: Projects keeps "New project note" (unchanged,
-    // still the only in-app entity creation this view does — CRM-light
-    // boundary, Places/People never get an in-app creation button, only a
-    // hand-off to Trace, which is the only place actually allowed to create
-    // a Notion place/person record).
-
-    @ViewBuilder
-    private var scopeActionRow: some View {
-        Group {
-        switch scope {
-        case .projects: newProjectRow
-        case .places:   traceHandoffRow(title: "Add a Place in Trace", urlHost: "addplace")
-        case .people:   traceHandoffRow(title: "Add a Person in Trace", urlHost: "addperson")
-        // 2026-07-27 — the All tab renders `projectNotesSection` too (see
-        // `browseContent` below), so it needs the create button that belongs
-        // with that list. Session 25's scope-conditional rewrite correctly
-        // stopped this row from rendering on Places/People, but it also
-        // dropped it from All, where the project list still shows. David hit
-        // exactly that: full project list on the default tab, no way to add
-        // one, and no reason to guess the button was hiding behind the
-        // Projects pill. Daily stays empty (no browse list, nothing to
-        // create there).
-        case .all:      newProjectRow
-        case .daily:    EmptyView()
-        // The Endeavors list carries its own New button, inside the section, so
-        // it does not need one out here as well.
-        case .endeavors: EmptyView()
-        }
-        }
-        .padding(.horizontal, 16)
-    }
-
     private var newProjectRow: some View {
         Button {
             newProjectName = ""
@@ -888,63 +652,17 @@ struct DayflowNotesView: View {
         .padding(.bottom, 2)
     }
 
-    /// Trace hand-off button — Session 25, same visual language as
-    /// `newProjectRow` (so Places/People don't look like a lesser tab) but a
-    /// distinct icon (`arrow.up.forward.app`) signaling this leaves Dayflow,
-    /// same convention DayflowWikiSummaryView's/DayflowVisitDetailView's own
-    /// Trace hand-off buttons use.
-    private func traceHandoffRow(title: String, urlHost: String) -> some View {
-        Button {
-            var comps = URLComponents()
-            comps.scheme = "trace"
-            comps.host = urlHost
-            if let url = comps.url { openURL(url) }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.up.forward.app")
-                    .foregroundStyle(Color.dayflowAccent)
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.dayflowInk)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .overlay(RoundedRectangle(cornerRadius: 11)
-                .strokeBorder(Color.dayflowHairline, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .padding(.bottom, 10)
-    }
-
-    // MARK: Browse (no search text). Projects (and the All tab) keep the
-    // existing project browse list. Daily/Places/People show a short hint
-    // instead — Session 25: this used to show the Projects browse list
-    // unconditionally regardless of scope too (same class of bug as
-    // `newProjectRow`'s old unconditional rendering), just less visible since
-    // it only showed up with an empty search box.
+    // MARK: Project list ordering
     //
-    // **Flagged-first ordering, added 2026-07-22 (Session 37).** David flagged
-    // that this list may grow long and wanted a way to pin important notes to
-    // the top — see DayflowFlagStore.swift for the storage design. `listFiles`
-    // already returns `projectNames` alphabetically; `sortedProjectNames`
-    // layers "flagged first" on top of that without touching the underlying
-    // order otherwise.
+    // **Pinned first (Session 37, 2026-07-22).** David wanted important notes
+    // held at the top as the list grows - see DayflowFlagStore.swift for the
+    // storage. `projectNotesSection` splits pinned from the rest and sorts each
+    // group with `applyProjectSort`, so pinning never fights the chosen order.
     //
-    // **Sort option, added 2026-07-22 (Session 37 addendum 3).** David asked
-    // for a sort control on this list too, same as search results already
-    // have. Reuses the existing `DayflowNoteSortOrder` (Newest/Oldest/Name) —
-    // same enum, same Menu pattern as `resultsHeader` below — rather than a
-    // second, differently-shaped sort type. Pinned notes still float to the
-    // top regardless of sort choice; the chosen order only decides ranking
-    // within the pinned group and within the unpinned group.
-
-    private var sortedProjectNames: [String] {
-        let store = DayflowFlagStore.shared
-        let flagged = projectNames.filter { store.isFlagged(projectNotePath($0)) }
-        let unflagged = projectNames.filter { !store.isFlagged(projectNotePath($0)) }
-        return applyProjectSort(flagged) + applyProjectSort(unflagged)
-    }
+    // **Sort (Session 37 addendum 3).** `DayflowNoteSortOrder` (Newest/Oldest/
+    // Name) lives in DayflowModels.swift and is SHARED - `DayflowBacklinksView`
+    // sorts with it too. The search results that first used it here were
+    // removed in D513; the enum was never this file's to remove.
 
     private func applyProjectSort(_ names: [String]) -> [String] {
         switch projectSortOrder {
@@ -962,95 +680,6 @@ struct DayflowNotesView: View {
     }
 
     private func projectNotePath(_ name: String) -> String { "Notes/Projects/\(name).md" }
-
-    /// Live-computed, same pattern as DayflowCalendarBrowseView's own
-    /// `pinnedDates` (Session 38 addendum 8) — reads straight off
-    /// `DayflowFlagStore.shared` rather than caching in `@State`, so pinning/
-    /// unpinning from the card, full page, or right here all show up
-    /// immediately without a manual reload. Filtered to "Calendar/"-prefixed
-    /// paths only, so a Project Note's own flagged path never leaks in here.
-    /// Sorted newest day first — unlike Project Notes' name-default sort, a
-    /// pinned-days list reads more usefully as "most recent pin at the top."
-    private var pinnedDays: [PinnedDay] {
-        let calendarPrefix = "Calendar/"
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
-        formatter.dateFormat = "yyyy-MM-dd"
-        let days = DayflowFlagStore.shared.flaggedAt.keys.compactMap { path -> PinnedDay? in
-            guard path.hasPrefix(calendarPrefix), path.hasSuffix(".md") else { return nil }
-            let stem = String(path.dropFirst(calendarPrefix.count).dropLast(3))
-            guard let parsed = formatter.date(from: stem) else { return nil }
-            return PinnedDay(id: path, date: parsed, relativePath: path)
-        }
-        return days.sorted { $0.date > $1.date }
-    }
-
-    /// Same "yyyy-MM-dd · Weekday" format `resultTitle(for:)` already uses
-    /// for Calendar search results, kept as its own helper here since this
-    /// section has no `SearchResult` to hand that function.
-    private func pinnedDayLabel(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone.current
-        f.dateFormat = "yyyy-MM-dd"
-        let stem = f.string(from: date)
-        let weekday = DateFormatter()
-        weekday.dateFormat = "EEEE"
-        return "\(stem) · \(weekday.string(from: date))"
-    }
-
-    @ViewBuilder
-    private var pinnedDaysSection: some View {
-        if !pinnedDays.isEmpty {
-            Text("PINNED")
-                .font(.system(size: 10, weight: .bold))
-                .tracking(1.8)
-                .foregroundStyle(Color.dayflowFaint)
-                .padding(.top, 10)
-                .padding(.bottom, 4)
-            ForEach(pinnedDays) { day in
-                pinnedDayRow(day)
-            }
-        }
-    }
-
-    /// Two independent tap targets, same reasoning as `projectRow` below —
-    /// the pin toggle can't nest inside the row's own navigation Button.
-    /// Every row here is, by definition, already pinned, so the pin icon is
-    /// always the filled state and tapping it only ever unpins.
-    @ViewBuilder
-    private func pinnedDayRow(_ day: PinnedDay) -> some View {
-        HStack(spacing: 10) {
-            // Redesign: the accent square marks a pinned row; the chevron
-            // is gone (Editorial rows do not wear one anywhere else).
-            Rectangle().fill(Color.dayflowAccent).frame(width: 6, height: 6)
-            Button {
-                selectedDate = day.date
-                showDailyNote = true
-            } label: {
-                HStack {
-                    Text(pinnedDayLabel(day.date))
-                        .font(.dayflowSerif(15, weight: .semibold))
-                        .foregroundStyle(Color.dayflowInk)
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            Button {
-                DayflowFlagStore.shared.toggleFlag(day.relativePath)
-            } label: {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.dayflowInk)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Unpin \(pinnedDayLabel(day.date))")
-        }
-        .padding(.vertical, 8)
-        Rectangle().fill(Color.dayflowHairline).frame(height: 1)
-    }
 
     @ViewBuilder
     private var projectNotesSection: some View {
@@ -1117,163 +746,6 @@ struct DayflowNotesView: View {
             // Also here: archiving the LAST project would otherwise take the only
             // route to the archive away with it.
             archivedProjectsSection
-        }
-    }
-
-    // MARK: Tag filter
-    //
-    // David's choice over showing tags on every row: *"yes lets filter tags
-    // only."* The reasoning behind that choice is worth keeping — a tag column on
-    // every row repeats itself (every trip note tagged `#travel`) so it costs
-    // attention on every row while telling you nothing. A chip row answers "what
-    // is in here" once, at the top.
-    //
-    // **Tapping a chip runs the search that already exists.** `runSearch` has
-    // understood `#tag` tokens since Session 25, so this sets `searchText` rather
-    // than adding a second filtering path — one list, one predicate, no chance of
-    // the chip row and the search box disagreeing.
-    //
-    // Asymmetry worth knowing, in the generous direction: **chips come from the
-    // canonical tag line** (the same tags the pills show), while **tapping matches
-    // `#tag` anywhere in a note**. So a tag typed mid-prose can appear in results
-    // without ever producing a chip. Deliberate — the chips reflect what you
-    // assigned on purpose; the search finds everything that mentions it.
-    //
-    // Shown during search as well as browse, so the active chip is the way back
-    // out. Hidden entirely when the scope has no tags, rather than sitting there
-    // as an empty band.
-
-    @ViewBuilder
-    private var tagFilterRow: some View {
-        if !tagCounts.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(tagCounts, id: \.tag) { entry in
-                        let active = searchText.trimmingCharacters(in: .whitespaces)
-                            .caseInsensitiveCompare("#\(entry.tag)") == .orderedSame
-                        Button {
-                            // Tapping the active chip clears it. Without this the
-                            // only way out of a tag filter would be to empty the
-                            // search box, which is not where the eye is.
-                            searchText = active ? "" : "#\(entry.tag)"
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text("#\(entry.tag)")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text("\(entry.count)")
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .opacity(0.65)
-                            }
-                            .foregroundStyle(active ? .white : Color(uiColor: .systemPurple))
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(active ? Color(uiColor: .systemPurple)
-                                               : Color(uiColor: .systemPurple).opacity(0.12),
-                                        in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-            }
-            // So the active chip's fill is not sheared at the edge of the scroll
-            // view — same fix the six scope pills needed on 2026-07-29.
-            .scrollClipDisabled()
-        }
-    }
-
-    /// Counts the canonical tags across the scope's folders.
-    ///
-    /// A full read of every file in scope, deliberately: 31 day notes, 4 projects
-    /// and 1 Endeavor is 164KB today, and an index cached on anything other than a
-    /// fresh read is how four stale-read bugs happened in two days. Revisit if the
-    /// vault ever grows enough for this to be felt — the honest trigger is a
-    /// visible pause on opening this screen, not a guess now.
-    ///
-    /// **Project notes need their Related Notes table stripped first.** The table
-    /// is appended after the prose when the file is composed, so the last line of
-    /// the FILE is a table row rather than the tag line, and parsing the raw file
-    /// would find no tags at all on exactly the notes most likely to have them.
-    /// Endeavor notes need their frontmatter stripped for the mirror-image reason.
-    private func loadTagCounts() {
-        var counts: [String: Int] = [:]
-
-        for (_, path) in scope.noteFolders {
-            for filename in (try? noteStore.listFiles(in: path)) ?? [] {
-                guard filename.hasSuffix(".md"),
-                      let raw = try? noteStore.readFile("\(path)/\(filename)")
-                else { continue }
-
-                let prose: String
-                switch path {
-                case "Notes/Endeavors":
-                    prose = EndeavorStore.splitFrontmatter(raw).1
-                case "Notes/Projects":
-                    prose = DayflowRelatedNotesEngine.split(raw).prose
-                default:
-                    prose = raw
-                }
-
-                for tag in NoteTagLine.parse(prose) {
-                    counts[tag.lowercased(), default: 0] += 1
-                }
-            }
-        }
-
-        tagCounts = counts
-            .map { (tag: $0.key, count: $0.value) }
-            .sorted { $0.count == $1.count ? $0.tag < $1.tag : $0.count > $1.count }
-    }
-
-    // `@ViewBuilder` below is REQUIRED: this body is a `switch` whose cases produce
-    // different view types, and several produce more than one view. Without it the
-    // compiler says "no return statements in its body from which to infer an
-    // underlying type", then a cascade of "expression of type 'some View' is
-    // unused" — which is exactly what happened on 2026-07-30, when inserting a new
-    // property above this one stranded the attribute on the wrong declaration and
-    // gave it two result builders at once.
-    //
-    // The comment sits ABOVE the attribute on purpose. Comments between an
-    // attribute and its declaration compile fine, but they look like the mistake
-    // this comment exists to prevent.
-    @ViewBuilder
-    private var browseContent: some View {
-        switch scope {
-        case .all:
-            pinnedDaysSection
-            // Same omission as `noteFolders` above: browsing All showed days and
-            // projects only. Endeavors go ABOVE projects because they are sorted
-            // by imminence — what is running or about to — where the project list
-            // is alphabetical and answers a different question.
-            Text("ENDEAVORS")
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(0.4)
-                .foregroundStyle(.secondary)
-                .padding(.top, pinnedDays.isEmpty ? 4 : 14)
-                .padding(.bottom, 6)
-            DayflowEndeavorListSection()
-            projectNotesSection
-        case .projects:
-            projectNotesSection
-        case .daily:
-            pinnedDaysSection
-            Text("Search for a date, or open a day from the main Agenda.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding(.top, pinnedDays.isEmpty ? 24 : 12)
-        case .places:
-            Text("Search for a place by name.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding(.top, 24)
-        case .people:
-            Text("Search for a person by name.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding(.top, 24)
-        case .endeavors:
-            DayflowEndeavorListSection()
         }
     }
 
@@ -1427,153 +899,6 @@ struct DayflowNotesView: View {
         }
     }
 
-    // MARK: Results header (count + sort — Session 22, search result metadata + sorting)
-
-    private var resultsHeader: some View {
-        HStack {
-            Text("\(results.count) result\(results.count == 1 ? "" : "s")")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Menu {
-                ForEach(DayflowNoteSortOrder.allCases) { order in
-                    Button {
-                        sortOrder = order
-                    } label: {
-                        if sortOrder == order {
-                            Label(order.rawValue, systemImage: "checkmark")
-                        } else {
-                            Text(order.rawValue)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 3) {
-                    Text(sortOrder.rawValue)
-                    Image(systemName: "chevron.up.chevron.down")
-                }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.top, 6)
-        .padding(.bottom, 2)
-    }
-
-    // MARK: Result row (search mode)
-    //
-    // Two independent tap targets, not a single wrapping Button — SwiftUI
-    // doesn't handle a Button nested inside another Button's label well (the
-    // inner tap can fire the outer too), so the row content uses
-    // .onTapGesture and the trailing "Links" icon is its own sibling Button.
-    // Added Session 22: modified-date caption, and the Links button that
-    // lazily opens DayflowBacklinksView for just this one result (see that
-    // file's header comment for why this stays lazy/per-row rather than an
-    // eagerly-computed inbound count on every row).
-
-    @ViewBuilder
-    private func resultRow(_ r: SearchResult) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(resultTitle(for: r)).font(.system(size: 13.5)).foregroundStyle(.primary)
-                    Spacer()
-                    Text(r.scopeLabel)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Color.blue.opacity(0.75)))
-                }
-                if !r.snippet.isEmpty {
-                    Text(r.snippet).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
-                }
-                if let modified = r.modified {
-                    Text(modified.formatted(.dateTime.month(.abbreviated).day().year()))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { openResult(r) }
-
-            Button {
-                openBacklinks(for: r)
-            } label: {
-                Image(systemName: "link")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 26, height: 26)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.vertical, 8)
-        Divider()
-    }
-
-    /// Daily results show as a bare `yyyy-MM-dd` (`r.displayName`, still the
-    /// raw filename stem `openResult` below parses back into a `Date`) —
-    /// David asked for the day of week alongside it so a search result reads
-    /// at a glance instead of needing the date worked out. Display-only: does
-    /// NOT touch `r.displayName` itself, since `openResult`'s date-jump and
-    /// `openBacklinks`' lookup both still depend on that exact "yyyy-MM-dd"
-    /// string.
-    private func resultTitle(for r: SearchResult) -> String {
-        guard r.subfolder == "Calendar" else { return r.displayName }
-        let parser = DateFormatter()
-        parser.locale = Locale(identifier: "en_US_POSIX")
-        parser.timeZone = TimeZone.current
-        parser.dateFormat = "yyyy-MM-dd"
-        guard let date = parser.date(from: r.displayName) else { return r.displayName }
-        let weekday = DateFormatter()
-        weekday.dateFormat = "EEEE"
-        return "\(r.displayName) · \(weekday.string(from: date))"
-    }
-
-    /// Dispatches a tapped search result to whichever detail view already
-    /// exists for its subfolder — see this file's Session 19 header comment.
-    /// Projects: unchanged, sets `selectedProjectTitle` (handled by `body`'s
-    /// own `Group` switch). Calendar (Daily): parses the filename back into a
-    /// `Date` (same "yyyy-MM-dd" / en_US_POSIX / TimeZone.current pattern
-    /// `DayflowDailyNoteEditor` uses to go the other direction) and opens
-    /// `DayflowNoteFullPageView` on that date via the shared `selectedDate`
-    /// binding. Places/People (Session 25): `r.wikiTarget` is already the real
-    /// `Place`/`Person` — set directly by `runSearch` from the entity-name
-    /// match, no filename round-trip needed any more. If a Calendar date
-    /// fails to parse (shouldn't happen — a round-trip of a value this view
-    /// itself produced), this silently no-ops rather than crashing; nothing
-    /// else in the row implies a destination exists in that case.
-    private func openResult(_ r: SearchResult) {
-        if let target = r.wikiTarget {
-            wikiLinkTarget = target
-            return
-        }
-        switch r.subfolder {
-        case "Notes/Projects":
-            selectedProjectTitle = r.displayName
-        case "Calendar":
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone.current
-            formatter.dateFormat = "yyyy-MM-dd"
-            if let parsed = formatter.date(from: r.displayName) {
-                selectedDate = parsed
-                showDailyNote = true
-            }
-        default:
-            break
-        }
-    }
-
-    /// Opens DayflowBacklinksView for one result — Session 22. Simplified in
-    /// Session 25: `r.displayName` is now always the entity's/note's real
-    /// title for every scope (Places/People results are built straight from
-    /// `place.name`/`person.name`, not a filesystem-sanitized filename any
-    /// more — see `runSearch`), so `lookupName` no longer needs a per-scope
-    /// special case to recover the real name.
-    private func openBacklinks(for r: SearchResult) {
-        backlinksTarget = BacklinksTarget(noteTitle: r.displayName, lookupName: r.displayName, excludePath: r.relativePath)
-    }
-
     // MARK: Data
 
     private func loadProjectNames() {
@@ -1593,100 +918,5 @@ struct DayflowNotesView: View {
         loadProjectNames()
         newProjectName = ""
         selectedProjectTitle = name
-    }
-
-    private func runSearch() {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { results = []; return }
-        let tokens = query.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-        let tagTokens = tokens.filter { $0.hasPrefix("#") }.map { String($0.dropFirst()).lowercased() }
-        let plainTokens = tokens.filter { !$0.hasPrefix("#") }.map { $0.lowercased() }
-
-        var found: [SearchResult] = []
-
-        // Daily + Projects — unchanged folder-content scan.
-        for (label, path) in scope.noteFolders {
-            let files = (try? noteStore.listFiles(in: path)) ?? []
-            for filename in files {
-                guard filename.hasSuffix(".md") else { continue }
-                let content = (try? noteStore.readFile("\(path)/\(filename)")) ?? ""
-                let contentLower = content.lowercased()
-                let nameLower = filename.replacingOccurrences(of: ".md", with: "").lowercased()
-
-                let tagsMatch = tagTokens.allSatisfy { contentLower.contains("#\($0)") }
-                let plainMatch = plainTokens.allSatisfy { nameLower.contains($0) || contentLower.contains($0) }
-                guard tagsMatch && plainMatch else { continue }
-
-                let relativePath = "\(path)/\(filename)"
-                // MATCH on the whole file, SNIPPET from the body only.
-                //
-                // Endeavor notes carry frontmatter, so a snippet taken from the
-                // raw file reads "id: japan-2026 name: Japan type: Travel" — true,
-                // and useless as a search result. Matching still uses the whole
-                // file on purpose: `destination: Kyoto` and `type: Travel` are
-                // genuinely worth finding.
-                let body = path == "Notes/Endeavors"
-                    ? EndeavorStore.splitFrontmatter(content).1
-                    : content
-                found.append(SearchResult(
-                    subfolder: path,
-                    displayName: filename.replacingOccurrences(of: ".md", with: ""),
-                    scopeLabel: label,
-                    snippet: snippet(from: body, tokens: plainTokens + tagTokens.map { "#\($0)" }),
-                    relativePath: relativePath,
-                    modified: noteStore.fileModifiedDate(relativePath),
-                    wikiTarget: nil
-                ))
-            }
-        }
-
-        // Places + People — Session 25: entity-name search, in memory, no
-        // folder scan. Tag tokens don't apply to an entity's name, so a
-        // query that's tags-only (no plain tokens) matches nothing here,
-        // same as it would against a folder with no matching content.
-        if scope.includesPlaces, !plainTokens.isEmpty {
-            for place in NotionService.shared.places {
-                let nameLower = place.name.lowercased()
-                guard plainTokens.allSatisfy({ nameLower.contains($0) }) else { continue }
-                let relativePath = "Notes/Places/\(noteStore.placeNoteFilename(for: place.name)).md"
-                found.append(SearchResult(
-                    subfolder: "Notes/Places",
-                    displayName: place.name,
-                    scopeLabel: "Places",
-                    snippet: [place.category, place.city].filter { !$0.isEmpty }.joined(separator: " · "),
-                    relativePath: relativePath,
-                    modified: noteStore.fileModifiedDate(relativePath),
-                    wikiTarget: .place(place)
-                ))
-            }
-        }
-        if scope.includesPeople, !plainTokens.isEmpty {
-            for person in NotionService.shared.people {
-                let nameLower = person.name.lowercased()
-                guard plainTokens.allSatisfy({ nameLower.contains($0) }) else { continue }
-                let relativePath = "Notes/People/\(person.name).md"
-                found.append(SearchResult(
-                    subfolder: "Notes/People",
-                    displayName: person.name,
-                    scopeLabel: "People",
-                    snippet: person.relationship ?? "",
-                    relativePath: relativePath,
-                    modified: noteStore.fileModifiedDate(relativePath),
-                    wikiTarget: .person(person)
-                ))
-            }
-        }
-
-        results = found
-    }
-
-    private func snippet(from content: String, tokens: [String]) -> String {
-        let lines = content.components(separatedBy: "\n")
-        for token in tokens where !token.isEmpty {
-            if let line = lines.first(where: { $0.lowercased().contains(token) }) {
-                return String(line.trimmingCharacters(in: .whitespaces).prefix(120))
-            }
-        }
-        return String((lines.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "").prefix(120))
     }
 }

@@ -45,9 +45,30 @@ struct TraceMacPlacesView: View {
     @State private var hasLoadedVisits = false
     @State private var isLoadingVisits = false
 
+    /// D518. David: *"on mac places i dont see a way to sort those places."*
+    /// The list was alphabetical with no control. The phone's two orders that
+    /// mean anything on a desk; Near Me stays phone-only. Name is the default,
+    /// so nobody's list reorders itself on the first launch of this build.
+    /// Per-Mac by nature, so `UserDefaults.standard` (the D503 reasoning).
+    enum MacPlacesSort: String, CaseIterable { case name = "Name", lastVisited = "Last Visited" }
+    @AppStorage("tracemac.places.sort") private var placesSort: MacPlacesSort = .name
+
     private var filteredPlaces: [Place] {
-        let sorted = notionService.places.sorted {
-            $0.name.localizedCompare($1.name) == .orderedAscending
+        let sorted: [Place]
+        switch placesSort {
+        case .name:
+            sorted = notionService.places.sorted {
+                $0.name.localizedCompare($1.name) == .orderedAscending
+            }
+        case .lastVisited:
+            sorted = notionService.places.sorted {
+                switch ($0.lastVisited, $1.lastVisited) {
+                case (let a?, let b?): return a > b
+                case (_?, nil):        return true
+                case (nil, _?):        return false
+                case (nil, nil):       return $0.name.localizedCompare($1.name) == .orderedAscending
+                }
+            }
         }
         guard !searchText.isEmpty else { return sorted }
         return sorted.filter {
@@ -140,6 +161,16 @@ struct TraceMacPlacesView: View {
                         isLoadingVisits = false
                     }
                 }
+            }
+
+            if sidebarMode == .places {
+                Picker("Sort", selection: $placesSort) {
+                    ForEach(MacPlacesSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .font(.caption)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
             }
 
             Divider()

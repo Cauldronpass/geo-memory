@@ -418,6 +418,8 @@ class NoteStore {
     /// Watches the iCloud container for externally-delivered file changes (e.g. from Mac app).
     private var metadataQuery: NSMetadataQuery?
     private var metadataObserver: Any?
+    /// Last content signature seen per path (D515). See `contentSignature`.
+    @ObservationIgnored private var lastSeenSignature: [String: String] = [:]
 
     init() {
 #if targetEnvironment(simulator)
@@ -777,6 +779,15 @@ class NoteStore {
         query.start()
     }
 
+    /// Content modification date and download status, and nothing that moves
+    /// while a file merely uploads (D515).
+    private static func contentSignature(of item: NSMetadataItem) -> String {
+        let date = (item.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date)?
+            .timeIntervalSinceReferenceDate ?? 0
+        let status = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingStatusKey) as? String ?? "-"
+        return "\(date)|\(status)"
+    }
+
     private func handleMetadataUpdate(_ notification: Notification) {
         guard let query = notification.object as? NSMetadataQuery else { return }
         query.disableUpdates()
@@ -787,6 +798,23 @@ class NoteStore {
 
         for item in changed + added {
             guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String else { continue }
+            // **Only a change to what the file SAYS is announced (D515).**
+            // iCloud reports an item as "changed" for attribute updates too -
+            // upload percentage, uploading/uploaded, a server round-trip - and
+            // with a 1-second batching interval a file that is slow to upload
+            // reported itself changed every second. Every one became a
+            // documents-changed post, every post a full Satchel reload, every
+            // reload a fresh `UUID` on every document and so a reset of the
+            // open panel: David's list stuck on "Loading..." and the
+            // description flashing on and off, with nothing being written.
+            //
+            // The signature is the content date PLUS the download state, on
+            // purpose: a file that finishes downloading keeps its content
+            // date but has only now become readable, and that arrival must
+            // still be announced.
+            let signature = Self.contentSignature(of: item)
+            if lastSeenSignature[path] == signature { continue }
+            lastSeenSignature[path] = signature
             let filename = (path as NSString).lastPathComponent
 
             // Checked first: a sidecar in `Documents/` is also a `.md`, and

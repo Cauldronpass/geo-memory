@@ -39,6 +39,8 @@
 
 import Foundation
 import Observation
+// D517: `AnyView` for the pin card's save-as-place hook in `wireStores`.
+import SwiftUI
 
 // MARK: - The routes
 
@@ -241,7 +243,9 @@ enum TraceRoute: Equatable, Sendable {
         case .logInteraction:           return [.people]
         case .visit:                    return [.visits]
         case .capture(let id):          return id == nil ? [] : [.captures]
-        case .savePlace:                return [.places, .captures]
+        // D517: the taker fetches the ONE capture by ID, as the old app did,
+        // so the cached list of every Unlinked capture is not needed.
+        case .savePlace:                return [.places]
         case .note, .endeavor, .day:    return [.notes]
         case .task:                     return [.tasks]
         case .discover, .pinHere, .quickPin,
@@ -409,6 +413,14 @@ extension TraceRouter {
         }
         NoteStore.onAccess = { shared.markReady(.notes) }
         ReminderTaskStore.onLoad = { shared.markReady(.tasks) }
+
+        // D517 - the pin card's two Trace buttons, in-process. See
+        // `CaptureCardHost` for why a URL from inside this app goes nowhere.
+        CaptureCardHost.deliver = { url in shared.deliver(url) }
+        CaptureCardHost.savePlaceSheet = { capture in
+            AnyView(SaveCaptureAsPlaceSheet(capture: capture)
+                .environment(NotionService.shared))
+        }
 
         // ── Catch-up ────────────────────────────────────────────────────────
         //
